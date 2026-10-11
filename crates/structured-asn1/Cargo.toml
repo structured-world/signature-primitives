@@ -1,0 +1,26 @@
+[package]
+name = "structured-asn1"
+description = "Borrowed BER/DER parsing with shared work budgets and exact byte ranges"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["asn1", "der", "ber", "no-std", "parser"]
+categories = ["encoding", "parser-implementations", "no-std"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE"]
+
+[features]
+default = []
+std = []
+alloc = []
+
+[dependencies]
+# The adapter relies on this Global implementation returning exact Layout size.
+allocator-api2 = { version = "=0.2.21", default-features = false, features = ["alloc"] }
+# The pre-admission bound is audited against this table's control-group layout.
+hashbrown = { version = "=0.16.1", default-features = false, features = ["default-hasher", "inline-more", "allocator-api2", "raw-entry"] }
+
+[lints]
+workspace = true

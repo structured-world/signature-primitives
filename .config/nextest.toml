@@ -1,0 +1,9 @@
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[[profile.default-miri.overrides]]
+# This 448-key collision test performs quadratic probe work under Miri's
+# interpreter. Keep the ordinary runtime deadline; allow instrumentation time
+# for this concrete allocation/admission regression only.
+filter = "test(table_resize_admits_collision_probe_fanout_before_rehashing)"
+slow-timeout = { period = "60s", terminate-after = 5 }

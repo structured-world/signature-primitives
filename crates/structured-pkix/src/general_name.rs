@@ -59,10 +59,35 @@ pub(crate) fn read_list<'a>(
     field: &'static str,
     offset: u64,
 ) -> Result<OwnedVec<GeneralName<'a>>> {
+    read_list_as(inside, field, offset, AddressForm::Single)
+}
+
+/// Distribution locations use URI grammar, rather than SAN host identity
+/// rules. RFC5280 §4.2.1.13 explicitly permits ldap:/// with no host.
+pub(crate) fn read_locations<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    field: &'static str,
+) -> Result<OwnedVec<GeneralName<'a>>> {
+    let mut inside = parent.enter(element).field(field)?;
+    read_list_as(
+        &mut inside,
+        field,
+        element.span().start,
+        AddressForm::Location,
+    )
+}
+
+fn read_list_as<'a>(
+    inside: &mut Reader<'a>,
+    field: &'static str,
+    offset: u64,
+    form: AddressForm,
+) -> Result<OwnedVec<GeneralName<'a>>> {
     let mut names = inside.memory().vector();
     while let Some(entry) = inside.next_element().field(field)? {
         names
-            .try_push(read(inside, &entry, field)?)
+            .try_push(read_as(inside, &entry, field, form)?)
             .map_err(|reason| Error::resource(reason, field, entry.span().start))?;
     }
 
@@ -100,6 +125,8 @@ pub fn read_alternative<'a>(
 pub(crate) enum AddressForm {
     /// A name in a list of names: a bare address, a mailbox, a URI.
     Single,
+    /// Distribution location: general URI, not a certificate SAN host.
+    Location,
     /// The base of a name-constraint subtree: an address with its mask, and
     /// the host and domain forms of a mail or location constraint.
     WithMask,
@@ -108,7 +135,7 @@ pub(crate) enum AddressForm {
 impl AddressForm {
     fn permits(self, length: usize) -> bool {
         match self {
-            Self::Single => length == 4 || length == 16,
+            Self::Single | Self::Location => length == 4 || length == 16,
             Self::WithMask => length == 8 || length == 32,
         }
     }
@@ -139,7 +166,7 @@ pub fn read<'a>(
 /// (4.2.1.10).
 fn mailbox_fits(text: &str, address_form: AddressForm) -> bool {
     match address_form {
-        AddressForm::Single => is_mailbox(text),
+        AddressForm::Single | AddressForm::Location => is_mailbox(text),
         AddressForm::WithMask => {
             is_mailbox(text) || is_domain(text) || text.strip_prefix('.').is_some_and(is_domain)
         }
@@ -164,7 +191,7 @@ fn mailbox_fits(text: &str, address_form: AddressForm) -> bool {
 /// is preserved as written.
 fn domain_fits(text: &str, address_form: AddressForm) -> bool {
     match address_form {
-        AddressForm::Single => is_domain(text),
+        AddressForm::Single | AddressForm::Location => is_domain(text),
         AddressForm::WithMask => is_domain(text) || text.strip_prefix('.').is_some_and(is_domain),
     }
 }
@@ -236,7 +263,7 @@ pub(crate) fn read_as<'a>(
             // The walk touches every attribute's contents, and a kind whose
             // schema leaves the size unbounded has no local ceiling, so the
             // lengths are charged to the shared work budget before it runs.
-            if address_form == AddressForm::Single && name.is_empty() {
+            if address_form != AddressForm::WithMask && name.is_empty() {
                 return Err(fail(ErrorCode::MalformedValue));
             }
             for attribute in name.attributes() {
@@ -269,6 +296,13 @@ pub(crate) fn read_as<'a>(
                     // selecting the existing scheme/authority semantic core.
                     parent.charge(location.len() as u64).field(field)?;
                     is_uri(location)
+                }
+                AddressForm::Location => {
+                    // RFC5280 §4.2.1.13 permits an empty LDAP host and leaves
+                    // server selection to the caller. No host is invented.
+                    // https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.13
+                    parent.charge(location.len() as u64).field(field)?;
+                    is_cps_uri(location)
                 }
                 AddressForm::WithMask => {
                     is_domain(location) || location.strip_prefix('.').is_some_and(is_domain)

@@ -26,10 +26,14 @@ extern crate alloc;
 #[cfg(test)]
 mod fixtures;
 
+#[cfg(test)]
+mod revocation_tests;
+
 pub mod access;
 pub mod algorithm;
 pub mod certificate;
 pub mod constraints;
+pub mod crl;
 pub mod der;
 pub mod error;
 pub mod extension;
@@ -37,6 +41,7 @@ pub mod general_name;
 pub mod identifier;
 pub mod key;
 pub mod name;
+pub mod ocsp;
 pub mod oid;
 pub mod path;
 pub mod policy;

@@ -99,6 +99,19 @@ pub const NAME_CONSTRAINTS: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x1e]);
 /// `2.5.29.31`, where revocation lists are published.
 pub const CRL_DISTRIBUTION_POINTS: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x1f]);
 
+/// Monotonic CRL number, RFC 5280 §5.2.3.
+pub const CRL_NUMBER: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x14]);
+/// CRL entry revocation reason, RFC 5280 §5.3.1.
+pub const CRL_REASON: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x15]);
+/// CRL entry invalidity date, RFC 5280 §5.3.2.
+pub const INVALIDITY_DATE: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x18]);
+/// Delta CRL base number, RFC 5280 §5.2.4.
+pub const DELTA_CRL_INDICATOR: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x1b]);
+/// CRL distribution point and scope, RFC 5280 §5.2.5.
+pub const ISSUING_DISTRIBUTION_POINT: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x1c]);
+/// Indirect CRL entry issuer, RFC 5280 §5.3.3.
+pub const CERTIFICATE_ISSUER: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x1d]);
+
 /// `2.5.29.32`, the policies this certificate was issued under.
 pub const CERTIFICATE_POLICIES: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x20]);
 
@@ -136,6 +149,15 @@ pub const QC_STATEMENTS: Oid<'static> =
 
 /// `1.3.6.1.5.5.7.48.1`, a status service.
 pub const OCSP: Oid<'static> = Oid::from_bytes(&[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01]);
+
+/// Mandatory basic OCSP response syntax (RFC6960 §4.2.1).
+pub const OCSP_BASIC: Oid<'static> = Oid::from_bytes(&[0x2b, 6, 1, 5, 5, 7, 0x30, 1, 1]);
+
+/// Request/response nonce (RFC9654 §2.1).
+pub const OCSP_NONCE: Oid<'static> = Oid::from_bytes(&[0x2b, 6, 1, 5, 5, 7, 0x30, 1, 2]);
+
+/// Responder certificate revocation exemption (RFC6960 §4.2.2.2.1).
+pub const OCSP_NO_CHECK: Oid<'static> = Oid::from_bytes(&[0x2b, 6, 1, 5, 5, 7, 0x30, 1, 5]);
 
 /// `1.3.6.1.5.5.7.48.2`, the issuer's own certificate.
 pub const CA_ISSUERS: Oid<'static> =

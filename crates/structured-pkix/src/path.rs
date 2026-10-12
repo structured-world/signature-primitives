@@ -29,8 +29,8 @@ mod validation;
 
 pub use error::{BuildError, BuildResult};
 pub use validation::{
-    ConstraintSource, NameConstraintFailure, Rejection, RejectionReason, Validation,
-    ValidationBounds, ValidationContext, ValidationFacts, validate,
+    ConstraintSource, EffectiveAnchor, NameConstraintFailure, Rejection, RejectionReason,
+    Validation, ValidationBounds, ValidationContext, ValidationFacts, validate, validate_effective,
 };
 
 use crate::algorithm::AlgorithmIdentifier;
@@ -172,7 +172,9 @@ impl<'a> WorkingKey<'a> {
 
     /// The parameters in force: the key's own where it has them, and the ones
     /// carried down from above where it does not and belongs to the same
-    /// algorithm.
+    /// algorithm, subject to its specific key profile. An absent PSS parameter
+    /// field means unrestricted PSS usage and does not inherit restrictions
+    /// (RFC4055 §3.3 case2).
     ///
     /// "If the certificate subjectPublicKey algorithm and the
     /// `working_public_key_algorithm` are different, set the
@@ -183,23 +185,44 @@ impl<'a> WorkingKey<'a> {
     /// a verifier a key described by parameters that are not its own, which
     /// it can only refuse.
     ///
-    /// A key that writes an explicit null inherits exactly as one that omits
-    /// its parameters does. The clause opens on "an algorithm field with
-    /// null parameters or parameters are omitted" and gives the two one
-    /// rule, so a key that writes a null and names the algorithm in force
-    /// stands in what is in force, whatever a given algorithm's own encoding
-    /// rules say about which of the two spellings it should have used. The
-    /// same tolerance is `AlgorithmIdentifier::same_as`, and reading a null
-    /// as a refusal here would refuse paths the profile builds.
+    /// The generic RFC5280 transition treats explicit NULL and omitted
+    /// parameters alike. A specific key profile may define absence differently,
+    /// as PSS does. This projection does not validate algorithm-specific syntax:
+    /// the provider also receives the original SPKI and must reject a spelling
+    /// forbidden by its algorithm contract.
     ///
-    /// `None` says the algorithm takes none, which is not the same as a key
-    /// whose parameters were inherited.
+    /// `None` means no effective parameters were supplied or inherited. It
+    /// does not itself prove that the key's encoding is valid for its algorithm.
     #[must_use]
     pub fn parameters(self) -> Option<&'a [u8]> {
         if !self.key.algorithm().has_no_parameters() {
             return self.key.algorithm().parameters();
         }
         self.inherited
+    }
+
+    /// Project the subject's effective key using the current parameter state.
+    /// This is only the RFC 5280 §6.1.4(d)–(e) state transition: it does not
+    /// authenticate the certificate, bind issuer names, or establish trust.
+    /// <https://www.rfc-editor.org/rfc/rfc5280#section-6.1.4>
+    ///
+    /// A caller projecting a key from an already validated path starts at its
+    /// anchor and visits the original certificates in issuer-to-subject order.
+    /// Returned SPKI and parameters borrow those sources; no key catalogue,
+    /// copy or repeated signature verification is needed. The current execution
+    /// account pays for each transition and data-dependent OID comparison.
+    ///
+    /// # Panics
+    /// Only if the internal unit-meter invariant is violated: that meter
+    /// always admits local work and cannot produce a truncated transition.
+    pub fn subject(self, certificate: &'a Certificate<'a>, execution: &Memory) -> Result<Self> {
+        execution
+            .charge_work(1)
+            .map_err(|reason| certificate.tbs().subject().resource(reason))?;
+        // The unit meter never returns local truncation; the same transition
+        // core still enforces the shared execution domain before comparisons.
+        self.below(certificate, execution, &mut ())
+            .map(|key| key.expect("unit meter never truncates parameter projection"))
     }
 
     /// The working key one certificate further down: this certificate's own
@@ -220,6 +243,27 @@ impl<'a> WorkingKey<'a> {
         {
             let previous = self.key.algorithm().algorithm().as_bytes();
             let current = key.algorithm().algorithm().as_bytes();
+            // RFC4055 §§3.1,3.3 case2 overrides generic parameter inheritance
+            // for a PSS SPKI with absent parameters: no key restrictions.
+            // https://www.rfc-editor.org/rfc/rfc4055#section-3.3
+            // NULL is not the absent spelling and remains available to the
+            // provider's algorithm-specific syntax validation.
+            let pss = crate::oid::RSASSA_PSS.as_bytes();
+            if key.algorithm().parameters().is_none() && current.len() == pss.len() {
+                let reads = (pss.len() as u64) * 2;
+                if !meter.spend(reads / cost::COMPARED)? {
+                    return Ok(None);
+                }
+                execution
+                    .charge_work(reads)
+                    .map_err(|reason| certificate.tbs().subject().resource(reason))?;
+                if current == pss {
+                    return Ok(Some(Self {
+                        key,
+                        inherited: None,
+                    }));
+                }
+            }
             if previous.len() == current.len() {
                 if core::ptr::eq(previous, current) {
                     inherited = Some(parameters);

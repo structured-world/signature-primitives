@@ -25,6 +25,8 @@ structured-email-address = { version = "0.0.21", default-features = false, featu
 
 [dev-dependencies]
 p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }
+# Independent protocol-identity test oracle; production hashing stays injected.
+sha1 = { version = "0.11", default-features = false }
 
 [lints]
 workspace = true

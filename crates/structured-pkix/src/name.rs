@@ -221,6 +221,10 @@ impl<'a> Name<'a> {
         Ok(self.order(other, execution)? == core::cmp::Ordering::Equal)
     }
 
+    pub(crate) fn offset(&self) -> u64 {
+        self.offset
+    }
+
     pub(crate) fn resource(&self, reason: structured_asn1::memory::MemoryError) -> Error {
         Error::resource(reason, self.field, self.offset)
     }
@@ -323,6 +327,54 @@ impl Ordered<'_> {
             .order(&other.prepared, execution)
             .map_err(|reason| Error::resource(reason, "name", self.offset))
     }
+}
+
+/// Match virtual names without inventing an encoding for the appended RDN.
+/// CRL distribution names append relative fragments to their own issuer bases.
+/// The existing prepared-part core owns all attribute and SET semantics.
+pub(crate) fn matches_composed(
+    left: &Name<'_>,
+    left_suffix: Option<&RelativeName<'_>>,
+    right: &Name<'_>,
+    right_suffix: Option<&RelativeName<'_>>,
+    execution: &Memory,
+) -> Result<bool> {
+    if left_suffix.is_none() && right_suffix.is_none() {
+        return left.matches(right, execution);
+    }
+    let left_len = left
+        .parts
+        .len()
+        .checked_add(usize::from(left_suffix.is_some()))
+        .ok_or_else(|| left.resource(structured_asn1::memory::MemoryError::WorkExceeded))?;
+    let right_len = right
+        .parts
+        .len()
+        .checked_add(usize::from(right_suffix.is_some()))
+        .ok_or_else(|| right.resource(structured_asn1::memory::MemoryError::WorkExceeded))?;
+    if left_len != right_len {
+        return Ok(false);
+    }
+    for index in 0..left_len {
+        execution
+            .charge_work(1)
+            .map_err(|reason| left.resource(reason))?;
+        let left_part = if index < left.parts.len() {
+            &left.parts[index]
+        } else {
+            left_suffix.expect("suffix was counted")
+        };
+        let right_part = if index < right.parts.len() {
+            &right.parts[index]
+        } else {
+            right_suffix.expect("suffix was counted")
+        };
+        if prepared::compare_parts(left_part, right_part, execution)? != core::cmp::Ordering::Equal
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 impl<'a> RelativeName<'a> {

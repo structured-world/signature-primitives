@@ -14,7 +14,79 @@
 use crate::error::{Error, ErrorCode, Result};
 use crate::temporal::Instant;
 use core::fmt;
-use structured_asn1::{Element, Tag, universal};
+use structured_asn1::{Element, Reader, Tag, universal};
+
+/// UTC-qualified relation of a source label to the caller's lossless reading.
+/// This is a temporal fact, not a rule for application acceptance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relation {
+    /// Source label is strictly before the reading.
+    Before,
+    /// Source label equals the exact reading.
+    At,
+    /// Source label is strictly after the reading.
+    After,
+    /// Supplied UTC facts cannot establish an input label.
+    Uncertain(crate::temporal::Uncertainty),
+}
+
+pub(crate) fn relation_in(
+    label: Instant,
+    now: crate::temporal::Reading,
+    utc: &crate::temporal::LeapTable<'_>,
+    execution: &structured_asn1::memory::Memory,
+    origin: (&'static str, u64),
+) -> Result<Relation> {
+    let (field, at) = origin;
+    // Two labels, three binary searches each, before calling the table core.
+    let searches = u64::from(usize::BITS - utc.transitions().len().leading_zeros() + 1);
+    execution
+        .charge_work(searches * 6 + 64)
+        .map_err(|reason| Error::resource(reason, field, at))?;
+    for compared in [label, now.start()] {
+        if let Err(reason) = utc.shift(compared, 0) {
+            return Ok(Relation::Uncertain(reason));
+        }
+    }
+    Ok(
+        if label < now.start() || (label == now.start() && now.has_subnanosecond_remainder()) {
+            Relation::Before
+        } else if label == now.start() {
+            Relation::At
+        } else {
+            Relation::After
+        },
+    )
+}
+
+/// Profile calendar conversion with producing-reader admission and location.
+pub(crate) fn read_in(
+    parent: &Reader<'_>,
+    element: &Element<'_>,
+    field: &'static str,
+) -> Result<Time> {
+    // Fixed calendar conversion plus four byte passes includes validation,
+    // digit conversion and the shared GeneralizedTime semantic core.
+    let work = u64::try_from(element.contents().len())
+        .ok()
+        .and_then(|length| length.checked_mul(4))
+        .and_then(|work| work.checked_add(64))
+        .ok_or_else(|| {
+            Error::resource(
+                structured_asn1::memory::MemoryError::WorkExceeded,
+                field,
+                element.span().start,
+            )
+        })?;
+    parent.charge(work).map_err(|error| {
+        Error::new(
+            ErrorCode::Encoding(error.code()),
+            field,
+            element.span().start,
+        )
+    })?;
+    read(element, field)
+}
 
 /// Which form a time was written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

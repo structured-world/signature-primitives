@@ -1,4 +1,4 @@
-# structured-pkix — X.509 certificates and PKIX paths in Rust
+# structured-pkix — X.509, PKIX paths and revocation evidence in Rust
 
 [![crates.io](https://img.shields.io/crates/v/structured-pkix)](https://crates.io/crates/structured-pkix)
 [![downloads](https://img.shields.io/crates/d/structured-pkix)](https://crates.io/crates/structured-pkix)
@@ -80,6 +80,11 @@ searches candidate issuers. Both entry points use the same static processing cor
 `Validation::Accepted` returns the target's effective `WorkingKey`, the number
 of non-self-issued intermediate CAs, and the accepted authority/user policy OIDs.
 Inherited key parameters refer to the original anchor or certificate bytes.
+The shared transition preserves the algorithm-specific PSS absence rule:
+an id-RSASSA-PSS key with omitted parameters is unrestricted and does not
+inherit its parent's PSS restrictions (RFC 4055 §3.3). This source correction
+is not in registry version 0.1.2. Providers still validate the original SPKI
+syntax under the selected key algorithm.
 The policy container owns its allocation and retains its capacity charge after
 validation returns; the contained OIDs still borrow the original input.
 `into_policies()` transfers that storage without copying or reserving it again.
@@ -144,6 +149,74 @@ encoding; string segments are interpreted through the common iterative walker.
 ASCII singleton comparisons need no projection allocation; Unicode preparation
 and multivalued sorting use accounted execution scratch. Owned selectors and
 formatted strings keep their capacity charge independently of the input/parser.
+
+## CRL, delta CRL and OCSP evidence
+
+The source version adds `crl` and `ocsp`; these modules are not in crates.io
+0.1.2. They process caller-supplied DER without fetching, a clock, implicit trust
+discovery, or a built-in cryptographic backend. The original signed ranges,
+certificate identities and evidence sources remain borrowed throughout.
+
+For CRLs, read `CertificateList`, authenticate its exact TBS with the actual
+issuer certificate and effective `WorkingKey`, then call `evaluate` for the
+target and caller-supplied UTC facts. Authentication alone establishes neither
+applicability nor freshness. Evaluation keeps distribution-point/category/reason
+scope, complete-list entry processing, unsupported critical demands, conflicts
+and update-window facts separate. Indirect entries carry their certificate
+issuer state. URI distribution points use scheme-aware identity rules.
+
+`bind_delta` checks the original authenticated sources, effective signing keys,
+authority identifiers, issuing-distribution-point scope and arbitrary-width
+CRL numbers. A bound pair evaluates entries delta-first; `removeFromCRL` does
+not fall back to the base. A current delta may update a stale base, but future,
+invalid or uncertain base times cannot establish absence. An unpaired delta
+never establishes standalone absence.
+
+Only usable, conflict-free absence or delta removal can create `AbsenceEvidence`.
+`Coverage` unions its reason masks while retaining exact contributing sources.
+It rejects different targets, evaluation moments and execution accounts. This
+growing collection belongs to one request; its owned capacity remains charged
+until drop. Complete reason coverage is still not a whole-certificate trust
+verdict. The caller supplies authenticated issuer paths and their trust-anchor
+provenance. Cached CRLs permit the exact `nextUpdate` boundary; newly obtained
+replacements require a strictly later expiry. Missing expiry remains explicit.
+
+For OCSP, read the response envelope and move successful `ResponseBytes` into
+`into_basic(&execution)`. Deferred parsing keeps the original reader's offsets,
+depth and cumulative work ceiling. Unsigned error responses remain distinct
+from a signed BasicResponse. `authenticate_signature` checks the actual signer,
+ResponderID and exact ResponseData with injected `Digest` and `path::Verify`.
+Digest providers resolve an algorithm to a handle and fixed output width, then
+compare original input bytes with the expected digest. Incorrect widths are
+rejected before hashing. Protocol-imposed SHA-1 for byKey identity is separate
+from the CertID's original algorithm identifier.
+
+Bind a signed response to its issuer using `bind_issuer`, or to completed direct
+delegation facts using `check_delegate` and `bind_delegate`. Direct delegation
+uses the common supplied-path processor and requires explicit OCSP signing
+purpose and permitted key usage. It checks current validity even with noCheck;
+without noCheck the responder's revocation remains unresolved. The local issuer
+anchor does not resume constraints from the caller's original root path.
+`trust_for_issuer` is a separate, explicit assertion of caller-configured
+responder trust, never a choice made from response content.
+
+`ScopedResponse::evaluate` retains the selected target assertion, unique or
+ambiguous identity, intended-signer binding, nonce binding, critical-extension
+support and update window. `Good` is the responder's assertion, not automatic
+acceptance. Unknown hashes, missing assertions, duplicate identities, unsupported
+critical extensions, provider errors and resource refusals remain distinct.
+Unimplemented optional noncritical extensions remain opaque.
+New requester nonces require 32–128 bytes; `RequestNonce::from_sent` also represents
+actual legacy 1–128 byte wire requests without treating an invalid size as absent.
+
+Both CRL entry and OCSP revocation dates expose UTC-qualified `time::Relation`
+facts (`Before`, `At`, `After`, `Uncertain`) against a lossless `Reading`.
+Applications decide historical-status policy, source age when no expiry exists,
+replay/request history, delegated responder revocation and final acceptance.
+They also bound the internals of injected providers. Resource errors retain
+original document offsets and are never converted to absence or a positive
+status. Tests exercise actual P-256 signatures and SHA-1 identities through an
+independent test provider; that provider is not shipped as a runtime backend.
 
 ## UTC time and leap seconds
 

@@ -352,43 +352,56 @@ fn read_point<'a>(
 /// Reads the name of a point, which is a choice between naming the list
 /// outright and naming it under whoever issues it. A choice cannot take the
 /// tag of its position, so the field wraps it.
-fn read_point_name<'a>(
+#[derive(Debug)]
+pub(crate) enum PointName<'a> {
+    Full(OwnedVec<GeneralName<'a>>),
+    Relative(RelativeName<'a>),
+}
+
+/// Shared `DistributionPointName` grammar for certificate DPs and CRL IDPs.
+pub(crate) fn read_distribution_name<'a>(
     parent: &Reader<'a>,
     element: &Element<'a>,
     field: &'static str,
-    point: &mut DistributionPoint<'a>,
-) -> Result<()> {
+) -> Result<PointName<'a>> {
     let fail = |code| Error::new(code, field, element.span().start);
-
     let mut inside = parent.enter(element).field(field)?;
     let chosen = inside
         .next_element()
         .field(field)?
         .ok_or_else(|| fail(ErrorCode::MissingField))?;
-
-    match extension::context_of(chosen.tag()) {
-        Some((0, true)) => point.full_name = general_name::read_all(&inside, &chosen, field)?,
+    let name = match extension::context_of(chosen.tag()) {
+        Some((0, true)) => PointName::Full(general_name::read_locations(&inside, &chosen, field)?),
         Some((1, true)) => {
             let relative = name::read_relative(&inside, &chosen, field)?;
-            // The same rule as for a whole directory name: an attribute of a
-            // kind this crate names must be written inside its syntax, or
-            // the point's name was never read while reading as one.
             for attribute in relative.attributes() {
                 if !name::well_formed_in(attribute, &inside, field)? {
                     return Err(fail(ErrorCode::MalformedValue));
                 }
             }
-            point.name_relative_to_issuer = Some(relative);
+            PointName::Relative(relative)
         }
         _ => {
             return Err(fail(ErrorCode::Encoding(
                 structured_asn1::ErrorCode::UnexpectedTag,
             )));
         }
-    }
-
+    };
     if !inside.is_empty() {
         return Err(fail(ErrorCode::TrailingData));
+    }
+    Ok(name)
+}
+
+fn read_point_name<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    field: &'static str,
+    point: &mut DistributionPoint<'a>,
+) -> Result<()> {
+    match read_distribution_name(parent, element, field)? {
+        PointName::Full(names) => point.full_name = names,
+        PointName::Relative(name) => point.name_relative_to_issuer = Some(name),
     }
     Ok(())
 }

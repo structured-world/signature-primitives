@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.1.1...structured-asn1-v0.1.2) - 2026-10-12
+
+### Fixed
+
+- *(time)* read constructed GeneralizedTime ([#28](https://github.com/structured-world/signature-primitives/pull/28))
+
 ## [0.1.1](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.1.0...structured-asn1-v0.1.1) - 2026-10-12
 
 ### Added

@@ -29,11 +29,11 @@ def review_clear(sha, pushed, reactions, reviews, unresolved, writable):
     signals = [r for r in reactions if r["user"]["login"] == CODEX
                and r["content"] in ("+1", "eyes")]
     if signals:
-        last = max(signals, key=lambda r: r["created_at"])
+        last = max(signals, key=lambda r: (r["created_at"], r["content"] == "eyes"))
         # Missing push evidence fails closed; author timestamps are not push times.
-        if last["content"] == "eyes":
+        if last["content"] == "eyes" and (not pushed or last["created_at"] >= pushed):
             return False
-        if pushed and last["created_at"] > pushed:
+        if last["content"] == "+1" and pushed and last["created_at"] > pushed:
             return True
     return any(r["state"] == "APPROVED" and r["commit_id"] == sha
                and r.get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR")

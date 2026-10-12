@@ -75,6 +75,20 @@ class ReviewTests(unittest.TestCase):
                     "author_association": "COLLABORATOR"}
         self.assertTrue(self.clear([old], [approved]))
 
+    def test_only_current_or_unlocatable_eyes_block_writer_approval(self):
+        # A review on the previous head cannot keep a later approved head waiting.
+        approved = {"user": {"login": "maintainer"}, "state": "APPROVED",
+                    "submitted_at": self.thumb["created_at"], "commit_id": self.sha,
+                    "author_association": "COLLABORATOR"}
+        stale = dict(self.thumb, content="eyes", created_at="2026-10-12T09:59:59Z")
+        self.assertTrue(self.clear([stale], [approved]))
+        current = dict(stale, created_at=self.thumb["created_at"])
+        self.assertFalse(self.clear([current], [approved]))
+        tied = dict(stale, created_at=self.push)
+        self.assertFalse(self.clear([tied], [approved]))
+        self.assertFalse(POLICY.review_clear(self.sha, None, [stale], [approved], False,
+                                            lambda login: True))
+
     def test_comment_only_review_preserves_the_existing_decision(self):
         # Comment feedback neither revokes approval nor clears requested changes.
         approved = {"user": {"login": "maintainer"}, "state": "APPROVED",

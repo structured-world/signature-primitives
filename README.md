@@ -25,7 +25,7 @@ retain each package's name, even though both packages share their version.
 
 Registry publishing uses OIDC, bound to this repository, `release-plz.yml` and
 the `release` environment. No long-lived crates.io token is stored in GitHub.
-The workflow's default manual run verifies token exchange without uploading
+The workflow's manual run verifies token exchange without uploading
 a new version. First-time publication of a new package still requires an owner
 to bootstrap it and register its trusted publisher on crates.io.
 
@@ -38,6 +38,11 @@ and the `wasm32-unknown-unknown` and `thumbv7em-none-eabihf` targets.
 Verify distributable archives with `bash scripts/check-packages.sh`; it uses
 fresh temporary package state so earlier same-version workspace archives cannot
 substitute stale source during verification.
+Release-trigger regressions use GitHub's expression evaluator: run
+`npm ci --prefix .github/tests --ignore-scripts` followed by
+`npm run check --prefix .github/tests`. CI runs the same checks before a main
+commit can approve publication, including manual/fork refusals and preservation
+of separate main-push validation runs.
 
 Mechanism processing admits allocation capacity and input-dependent work through
 an explicit shared `Memory`. Owned results retain their storage charge until

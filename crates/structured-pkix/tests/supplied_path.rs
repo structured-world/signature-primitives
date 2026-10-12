@@ -29,6 +29,9 @@ fn seq(parts: &[Vec<u8>]) -> Vec<u8> {
     tlv(0x30, &parts.concat())
 }
 fn name(text: &str) -> Vec<u8> {
+    if text.is_empty() {
+        return seq(&[]);
+    }
     seq(&[tlv(
         0x31,
         &seq(&[
@@ -291,6 +294,120 @@ fn public_duplicate_extension_error_stays_at_the_decoding_boundary() {
     assert!(error.offset() >= 700);
     assert!(error.offset() < 700 + der.len() as u64);
     assert!(!error.is_resource());
+}
+
+#[test]
+fn critical_uri_san_with_fragment_identifies_an_empty_subject() {
+    // Public-path consumer regression: RFC5280 §4.2.1.6 permits a critical
+    // URI SAN as the sole identity, including RFC3986 §3's fragment component.
+    let value = "https://operator@example.com:8443/path?q=1#id";
+    let san = seq(&[
+        tlv(0x06, oid::SUBJECT_ALT_NAME.as_bytes()),
+        tlv(0x01, &[0xff]),
+        tlv(0x04, &seq(&[tlv(0x86, value.as_bytes())])),
+    ]);
+    let root_der = certificate("Root", false);
+    let leaf_der = certificate_with_extensions("", &[san]);
+    let parser = Parser::der(memory(1_000_000, 1_000_000));
+    let root = Certificate::read(&parser, &root_der, 0).unwrap();
+    let leaf = Certificate::read(&parser, &leaf_der, 700).unwrap();
+    assert!(leaf.tbs().subject().is_empty());
+    let execution = memory(1_000_000, 1_000_000);
+    let provider = Provider {
+        signed: leaf.signed_bytes(),
+        calls: Cell::new(0),
+        error: false,
+    };
+    let context = ValidationContext {
+        execution: &execution,
+        interval: Interval::at_instant(leaf.tbs().validity().not_before().instant()),
+        policy: Policy::default(),
+        bounds: ValidationBounds::default(),
+        verifier: &provider,
+        watch: &(),
+        recognizer: &(),
+    };
+    let outcome = path::validate(
+        &[&leaf],
+        Anchor::new(root.tbs().subject(), root.tbs().public_key()),
+        &context,
+    )
+    .unwrap();
+    assert!(matches!(outcome, Validation::Accepted(_)), "{outcome:?}");
+    assert_eq!(provider.calls.get(), 1);
+    drop(outcome);
+    assert_eq!(execution.used(), 0);
+}
+
+#[test]
+fn malformed_critical_policy_extensions_keep_decoder_details() {
+    // Criticality cannot replace a relevant decoder's code/field/offset
+    // with the unknown-critical-extension verdict. Leaf-only mappings and
+    // inhibitAnyPolicy still need decoding when their critical bit is set.
+    for (kind, critical) in [
+        (structured_pkix::oid::CERTIFICATE_POLICIES, false),
+        (structured_pkix::oid::CERTIFICATE_POLICIES, true),
+        (structured_pkix::oid::POLICY_CONSTRAINTS, false),
+        (structured_pkix::oid::POLICY_CONSTRAINTS, true),
+        (structured_pkix::oid::POLICY_MAPPINGS, true),
+        (structured_pkix::oid::INHIBIT_ANY_POLICY, true),
+    ] {
+        let root_der = certificate("Root", false);
+        let mut components = vec![tlv(0x06, kind.as_bytes())];
+        if critical {
+            components.push(tlv(0x01, &[0xff]));
+        }
+        components.push(tlv(0x04, &[0x05, 0x00]));
+        let leaf_der = certificate_with_extensions("Leaf", &[seq(&components)]);
+        let parser = Parser::der(memory(1_000_000, 1_000_000));
+        let root = Certificate::read(&parser, &root_der, 0).unwrap();
+        let leaf = Certificate::read(&parser, &leaf_der, 700).unwrap();
+        let execution = memory(1_000_000, 1_000_000);
+        let extensions = leaf.tbs().extensions();
+        let expected = if kind == structured_pkix::oid::CERTIFICATE_POLICIES {
+            extensions.certificate_policies(&execution).map(|_| ())
+        } else if kind == structured_pkix::oid::POLICY_CONSTRAINTS {
+            extensions.policy_constraints(&execution).map(|_| ())
+        } else if kind == structured_pkix::oid::POLICY_MAPPINGS {
+            extensions.policy_mappings(&execution).map(|_| ())
+        } else {
+            extensions.inhibit_any_policy(&execution).map(|_| ())
+        }
+        .unwrap_err();
+        let provider = Provider {
+            signed: leaf.signed_bytes(),
+            calls: Cell::new(0),
+            error: false,
+        };
+        let context = ValidationContext {
+            execution: &execution,
+            interval: Interval::at_instant(leaf.tbs().validity().not_before().instant()),
+            policy: Policy::default(),
+            bounds: ValidationBounds::default(),
+            verifier: &provider,
+            watch: &(),
+            recognizer: &(),
+        };
+        let Validation::Rejected(rejected) = path::validate(
+            &[&leaf],
+            Anchor::new(root.tbs().subject(), root.tbs().public_key()),
+            &context,
+        )
+        .unwrap() else {
+            panic!("malformed policy extension is a completed rejection")
+        };
+        assert_eq!(rejected.at, Some(ConstraintSource::Certificate(0)));
+        assert_eq!(
+            rejected.reason,
+            RejectionReason::MalformedExtension {
+                extension: kind,
+                code: expected.code(),
+                field: expected.field(),
+                offset: expected.offset(),
+            }
+        );
+        assert_eq!(execution.used(), 0);
+    }
 }
 
 #[test]

@@ -7,7 +7,7 @@ use super::{
     WorkingKey, cost, sorting_rounds,
 };
 use crate::constraints::BasicConstraints;
-use crate::extension::Recognizer;
+use crate::extension::{Extensions, Recognizer};
 use crate::{Certificate, ErrorCode, Name, oid};
 use structured_asn1::Oid;
 use structured_asn1::memory::{Memory, MemoryError, OwnedVec};
@@ -237,10 +237,20 @@ fn decode<T>(
     if !meter.spend(cost::EXTENSION)? {
         return Ok(Decoded::Incomplete);
     }
-    match action() {
-        Ok(value) => Ok(Decoded::Value(value)),
+    Ok(match decoded(kind, action())? {
+        Ok(value) => Decoded::Value(value),
+        Err(reason) => Decoded::Rejected(reason),
+    })
+}
+
+fn decoded<T>(
+    kind: Oid<'static>,
+    result: crate::Result<T>,
+) -> crate::Result<core::result::Result<T, RejectionReason<'static>>> {
+    match result {
+        Ok(value) => Ok(Ok(value)),
         Err(error) if error.is_resource() => Err(error),
-        Err(error) => Ok(Decoded::Rejected(RejectionReason::MalformedExtension {
+        Err(error) => Ok(Err(RejectionReason::MalformedExtension {
             extension: kind,
             code: error.code(),
             field: error.field(),
@@ -265,6 +275,37 @@ pub(super) fn spend_names(
         .and_then(|work| work.checked_add(cost::NAME))
         .ok_or_else(|| left.resource(MemoryError::WorkExceeded))?;
     meter.spend(work)
+}
+
+fn critical_policy(
+    kind: Oid<'_>,
+    extensions: &Extensions<'_>,
+    execution: &Memory,
+) -> Option<(Oid<'static>, crate::Result<()>)> {
+    // Known path extensions retain decoder failures even when critical.
+    if kind == oid::CERTIFICATE_POLICIES {
+        Some((
+            oid::CERTIFICATE_POLICIES,
+            extensions.certificate_policies(execution).map(|_| ()),
+        ))
+    } else if kind == oid::POLICY_CONSTRAINTS {
+        Some((
+            oid::POLICY_CONSTRAINTS,
+            extensions.policy_constraints(execution).map(|_| ()),
+        ))
+    } else if kind == oid::POLICY_MAPPINGS {
+        Some((
+            oid::POLICY_MAPPINGS,
+            extensions.policy_mappings(execution).map(|_| ()),
+        ))
+    } else if kind == oid::INHIBIT_ANY_POLICY {
+        Some((
+            oid::INHIBIT_ANY_POLICY,
+            extensions.inhibit_any_policy(execution).map(|_| ()),
+        ))
+    } else {
+        None
+    }
 }
 
 pub(super) fn certificate_facts<'a, E, R: Recognizer, M: Meter>(
@@ -342,6 +383,18 @@ pub(super) fn certificate_facts<'a, E, R: Recognizer, M: Meter>(
                 Some(RejectionReason::MalformedExtension { .. })
             ) {
                 facts.rejected = facts.issuing;
+                return Ok(Some(facts));
+            }
+            continue;
+        }
+        // RFC5280 §6.1.3/§6.1.4/§6.1.5: these are known path-processing
+        // extensions. A malformed value keeps its decoder details even if
+        // critical; it is not an unrecognized extension. Critical mappings
+        // and inhibitAnyPolicy must decode even on the final certificate,
+        // where their intermediate-only state transitions do not apply.
+        if let Some((kind, result)) = critical_policy(demand.kind(), extensions, execution) {
+            if let Err(reason) = decoded(kind, result)? {
+                facts.rejected = Some(reason);
                 return Ok(Some(facts));
             }
             continue;

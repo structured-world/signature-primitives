@@ -499,14 +499,42 @@ fn an_x400_extension_value_is_decoded_by_its_declared_type() {
 }
 
 #[test]
-fn a_fragment_in_a_location_is_refused() {
-    // absolute-URI has no fragment (RFC 3986 4.3): the delimiter belongs to
-    // URI references, and a location carrying one is not the form the field
-    // holds.
-    let der = seq(&[implicit(6, b"https://example.test/#fragment")]);
-    let parser = Parser::der(crate::fixtures::memory());
-    let error = parse(&parser, &der).unwrap_err();
-    assert_eq!(error.code(), ErrorCode::MalformedValue);
+fn uri_names_keep_valid_fragments_and_original_borrowed_text() {
+    // RFC5280 §4.2.1.6 forbids relative URIs, not fragments. RFC3986 §3
+    // URI includes fragment; §4.3 absolute-URI is a different production.
+    for value in [
+        "https://operator@example.com:8443/path?q=1#id",
+        "https://example.test/#",
+        "urn:example:document#section%20two",
+    ] {
+        let der = seq(&[implicit(6, value.as_bytes())]);
+        let parser = Parser::der(crate::fixtures::memory());
+        let names = parse(&parser, &der).unwrap();
+        let GeneralName::Uri(location) = names[0] else {
+            panic!("URI")
+        };
+        assert_eq!(location, value);
+        assert!(location.as_ptr() >= der.as_ptr());
+        assert!(location.as_ptr() < der.as_ptr().wrapping_add(der.len()));
+    }
+}
+
+#[test]
+fn malformed_uri_fragments_are_refused() {
+    // RFC3986 §3.5 permits a fragment, but excludes a second raw '#' and
+    // requires complete percent encodings. Relative references stay refused.
+    for value in [
+        "https://example.test/#first#second",
+        "https://example.test/#bad%",
+        "https://example.test/#bad%GG",
+        "https://example.test/#raw space",
+        "#fragment",
+    ] {
+        let der = seq(&[implicit(6, value.as_bytes())]);
+        let parser = Parser::der(crate::fixtures::memory());
+        let error = parse(&parser, &der).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::MalformedValue);
+    }
 }
 
 #[test]

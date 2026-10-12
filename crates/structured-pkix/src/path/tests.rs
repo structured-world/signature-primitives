@@ -776,6 +776,34 @@ fn supplied_effective_target_key_retains_inherited_parameters() {
 }
 
 #[test]
+fn inheritance_local_refusal_precedes_shared_work_admission() {
+    // A stopped local operation cannot consume shared work or report shared
+    // exhaustion instead of its own refusal, even when both limits refuse.
+    struct Stopped;
+    impl super::Meter for Stopped {
+        fn spend(&mut self, _work: u64) -> crate::Result<bool> {
+            Ok(false)
+        }
+    }
+    let ders = inheriting();
+    let parser = Parser::der(crate::fixtures::memory());
+    let read = parse(&parser, &ders);
+    for work in [0, 1_000_000] {
+        let execution = structured_asn1::memory::Memory::new(alloc::sync::Arc::new(
+            structured_asn1::memory::MemoryAccount::new(0, work),
+        ));
+        let result = super::WorkingKey::standing(read[2].tbs().public_key()).below(
+            &read[1],
+            &execution,
+            &mut Stopped,
+        );
+        assert!(result.unwrap().is_none());
+        assert_eq!(execution.work_used(), 0);
+        assert_eq!(execution.used(), 0);
+    }
+}
+
+#[test]
 fn inherited_algorithm_matching_is_admitted_at_the_current_certificate() {
     // A parameterless key needs a data-dependent algorithm comparison before
     // inheriting. Exhausting the shared domain inside the provider must refuse

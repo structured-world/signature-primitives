@@ -230,12 +230,12 @@ impl<'a> WorkingKey<'a> {
                             .subject()
                             .resource(structured_asn1::memory::MemoryError::WorkExceeded)
                     })?;
-                    execution
-                        .charge_work(reads)
-                        .map_err(|reason| certificate.tbs().subject().resource(reason))?;
                     if !meter.spend(reads / cost::COMPARED)? {
                         return Ok(None);
                     }
+                    execution
+                        .charge_work(reads)
+                        .map_err(|reason| certificate.tbs().subject().resource(reason))?;
                     if previous == current {
                         inherited = Some(parameters);
                     }

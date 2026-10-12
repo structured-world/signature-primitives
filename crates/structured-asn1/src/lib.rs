@@ -62,7 +62,7 @@ pub use length::{Encoding, Length};
 pub use limits::Limits;
 pub use reader::{Element, Parser, Reader, Span};
 pub use tag::{Class, Tag, universal};
-pub use value::{Arcs, BitString, Integer, Oid};
+pub use value::{Arcs, BitString, Integer, Oid, OwnedOid};
 
 #[cfg(test)]
 pub(crate) fn test_memory() -> memory::Memory {

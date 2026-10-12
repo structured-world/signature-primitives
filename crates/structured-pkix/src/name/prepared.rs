@@ -1,5 +1,6 @@
 //! Fallible name preparation with separately charged execution and storage.
 
+use crate::error::{Error, Located};
 use core::cmp::Ordering;
 use structured_asn1::memory::{Memory, MemoryError, OwnedVec};
 
@@ -20,15 +21,23 @@ pub(super) struct PreparedName<'a> {
 }
 
 impl<'a> PreparedName<'a> {
-    pub(super) fn of(parts: &[RelativeName<'a>], memory: &Memory) -> Result<Self, MemoryError> {
+    pub(super) fn of(parts: &[RelativeName<'a>], memory: &Memory) -> Result<Self, Error> {
         let mut attributes = memory.vector();
         let mut lengths = memory.vector();
-        memory.charge_work(parts.len() as u64)?;
+        if parts.is_empty() {
+            return Ok(Self {
+                attributes,
+                lengths,
+            });
+        }
+        let offset = parts[0].attributes[0].value.offset;
+        let fail = |reason| Error::resource(reason, "name.attribute", offset);
+        memory.charge_work(parts.len() as u64).map_err(fail)?;
         for relative in parts {
             let prepared = part(relative, memory)?;
-            lengths.try_push(prepared.len())?;
+            lengths.try_push(prepared.len()).map_err(fail)?;
             for attribute in prepared {
-                attributes.try_push(attribute)?;
+                attributes.try_push(attribute).map_err(fail)?;
             }
         }
         Ok(Self {
@@ -74,11 +83,17 @@ enum Canonical<'a> {
     // ASCII NFKC is identity; folding and whitespace handling stream without
     // a canonical copy, which avoids per-attribute allocations on this path.
     Ascii(&'a str),
+    // DN IA5 identities have exact ASCII case-insensitive rules, without
+    // DirectoryString's whitespace mapping/compression or Unicode preparation.
+    ExactAscii(&'a str),
     Unicode(OwnedVec<char>),
 }
 
 impl<'a> Prepared<'a> {
-    pub(super) fn of(attribute: Attribute<'a>, memory: &Memory) -> Result<Self, MemoryError> {
+    pub(super) fn is_prepared(&self) -> bool {
+        self.canonical.is_some()
+    }
+    pub(super) fn of(attribute: Attribute<'a>, memory: &Memory) -> Result<Self, Error> {
         Ok(Self {
             attribute,
             canonical: canonical(attribute, memory)?,
@@ -121,7 +136,7 @@ impl<'a> Prepared<'a> {
 impl Canonical<'_> {
     fn work(&self) -> u64 {
         match self {
-            Self::Ascii(text) => text.len() as u64,
+            Self::Ascii(text) | Self::ExactAscii(text) => text.len() as u64,
             Self::Unicode(characters) => characters.len() as u64,
         }
     }
@@ -129,6 +144,7 @@ impl Canonical<'_> {
     fn characters(&self) -> Characters<'_> {
         match self {
             Self::Ascii(text) => Characters::Ascii(Spaced::over(Mapped::over(text.chars()))),
+            Self::ExactAscii(text) => Characters::ExactAscii(text.bytes()),
             Self::Unicode(characters) => Characters::Unicode(characters.iter().copied()),
         }
     }
@@ -136,6 +152,7 @@ impl Canonical<'_> {
 
 enum Characters<'a> {
     Ascii(Spaced<Mapped<core::str::Chars<'a>>>),
+    ExactAscii(core::str::Bytes<'a>),
     Unicode(core::iter::Copied<core::slice::Iter<'a, char>>),
 }
 
@@ -144,24 +161,94 @@ impl Iterator for Characters<'_> {
     fn next(&mut self) -> Option<char> {
         match self {
             Self::Ascii(characters) => characters.next(),
+            Self::ExactAscii(bytes) => Some(char::from(bytes.next()?.to_ascii_lowercase())),
             Self::Unicode(characters) => characters.next(),
         }
     }
 }
 
-pub(super) fn folds(attribute: Attribute<'_>, memory: &Memory) -> Result<bool, MemoryError> {
+pub(super) fn folds(attribute: Attribute<'_>, memory: &Memory) -> Result<bool, Error> {
     Ok(canonical(attribute, memory)?.is_some())
 }
 
 fn canonical<'a>(
     attribute: Attribute<'a>,
     memory: &Memory,
+) -> Result<Option<Canonical<'a>>, Error> {
+    let value = attribute.value;
+    let fail = |reason| Error::resource(reason, "name.attribute", value.offset);
+    if value.tag.is_constructed()
+        && value.tag.class() == structured_asn1::Class::Universal
+        && value
+            .tag
+            .number()
+            .is_some_and(super::segmented_universal_type)
+        && value.tag.number() != Some(structured_asn1::universal::BIT_STRING)
+    {
+        memory
+            .charge_work(
+                (attribute.kind.as_bytes().len() as u64)
+                    .checked_mul(40)
+                    .ok_or_else(|| fail(MemoryError::WorkExceeded))?,
+            )
+            .map_err(fail)?;
+        let tag = structured_asn1::Tag::primitive(value.tag.number().expect("universal string"));
+        let encoding = super::AttributeValue { tag, ..value }.encoding();
+        if !super::permits(attribute.kind, encoding) {
+            return Ok(None);
+        }
+        let parser = structured_asn1::Parser::ber(memory.clone());
+        let mut reader = parser
+            .read(value.der, value.offset)
+            .field("name.attribute")?;
+        let element = reader
+            .next_element()
+            .field("name.attribute")?
+            .expect("validated attribute contains one value");
+        let mut contents = memory.vector();
+        super::segments::walk(
+            &reader,
+            &element,
+            "name.attribute",
+            false,
+            Some(&mut contents),
+        )?;
+        let logical = Attribute {
+            kind: attribute.kind,
+            value: super::AttributeValue {
+                tag: structured_asn1::Tag::primitive(value.tag.number().expect("universal string")),
+                contents: &contents,
+                der: value.der,
+                offset: value.offset,
+            },
+        };
+        let Some(prepared) = canonical_primitive(logical, memory).map_err(fail)? else {
+            return Ok(None);
+        };
+        // The flattened bytes are scratch. Canonical characters own their
+        // storage, avoiding references into an allocation that will move/drop.
+        if let Canonical::Unicode(characters) = prepared {
+            return Ok(Some(Canonical::Unicode(characters)));
+        }
+        memory.charge_work(prepared.work()).map_err(fail)?;
+        let mut characters = memory.vector();
+        for character in prepared.characters() {
+            characters.try_push(character).map_err(fail)?;
+        }
+        return Ok(Some(Canonical::Unicode(characters)));
+    }
+    canonical_primitive(attribute, memory).map_err(fail)
+}
+
+fn canonical_primitive<'a>(
+    attribute: Attribute<'a>,
+    memory: &Memory,
 ) -> Result<Option<Canonical<'a>>, MemoryError> {
-    // The schema's fixed OID table examines at most forty kind-byte passes.
+    // Syntax, size and identity rules examine at most 64 kind-byte passes.
     // UTF-8 validation, alphabet/count validation, ASCII detection and decoding
     // each visit the value once. Admit these before any of those scans.
     let work = (attribute.kind.as_bytes().len() as u64)
-        .checked_mul(40)
+        .checked_mul(64)
         .and_then(|kind| {
             (attribute.value.contents.len() as u64)
                 .checked_mul(4)
@@ -173,6 +260,20 @@ fn canonical<'a>(
     // validation preserves it, but preservation must not authorize folding.
     if !super::permits(attribute.kind, attribute.value.encoding()) {
         return Ok(None);
+    }
+    if attribute.kind == crate::oid::EMAIL_ADDRESS || attribute.kind == crate::oid::DOMAIN_COMPONENT
+    {
+        // emailAddress: RFC2985 §§5.2.1/6.1, whole-value pkcs9CaseIgnoreMatch.
+        // domainComponent: RFC5280 §7.3, case-insensitive exact comparison.
+        // The mailbox local-part rule of §7.5 belongs to GeneralName.rfc822Name.
+        // https://www.rfc-editor.org/rfc/rfc2985.html#section-6.1
+        // https://www.rfc-editor.org/rfc/rfc5280.html#section-7.3
+        if !inside_syntax(&attribute, Asking::Shape, |_| true) {
+            return Ok(None);
+        }
+        let text =
+            core::str::from_utf8(attribute.value.contents).expect("validated IA5String is ASCII");
+        return Ok(Some(Canonical::ExactAscii(text)));
     }
     if !inside_syntax(&attribute, Asking::Folding, |character| {
         !prohibited(character)
@@ -207,14 +308,17 @@ fn canonical<'a>(
 pub(super) fn part<'a>(
     part: &RelativeName<'a>,
     memory: &Memory,
-) -> Result<OwnedVec<Prepared<'a>>, MemoryError> {
+) -> Result<OwnedVec<Prepared<'a>>, Error> {
     let mut attributes = memory.vector();
+    let fail = |reason| Error::resource(reason, "name.attribute", part.attributes[0].value.offset);
     for &attribute in part.attributes() {
-        attributes.try_push(Prepared::of(attribute, memory)?)?;
+        attributes
+            .try_push(Prepared::of(attribute, memory)?)
+            .map_err(fail)?;
     }
     attributes
         .try_sort_unstable_by(|left, right| left.order(right, memory))
-        .map_err(MemoryError::from)?;
+        .map_err(|reason| fail(MemoryError::from(reason)))?;
     Ok(attributes)
 }
 
@@ -222,23 +326,69 @@ pub(super) fn compare_parts(
     left: &RelativeName<'_>,
     right: &RelativeName<'_>,
     execution: &Memory,
-) -> Result<Ordering, MemoryError> {
-    let length = left.attributes.len().cmp(&right.attributes.len());
+) -> Result<Ordering, Error> {
+    compare_views(
+        left.attributes
+            .iter()
+            .copied()
+            .map(|attribute| Prepared::of(attribute, execution)),
+        right
+            .attributes
+            .iter()
+            .copied()
+            .map(|attribute| Prepared::of(attribute, execution)),
+        execution,
+        |reason| Error::resource(reason, "name.attribute", left.attributes[0].value.offset),
+    )
+}
+
+/// Borrowed projections are evaluated only as preparation requires them.
+/// Singleton RDNs allocate no catalogue; multi-valued RDNs allocate only
+/// the prepared sorting scratch shared with certificate Name comparison.
+pub(super) fn compare_views<'a, 'b, E>(
+    mut left: impl ExactSizeIterator<Item = Result<Prepared<'a>, E>>,
+    mut right: impl ExactSizeIterator<Item = Result<Prepared<'b>, E>>,
+    execution: &Memory,
+    fail: impl Fn(MemoryError) -> E + Copy,
+) -> Result<Ordering, E> {
+    let length = left.len().cmp(&right.len());
     if length != Ordering::Equal {
         return Ok(length);
     }
-    if let ([left], [right]) = (&left.attributes[..], &right.attributes[..]) {
-        return Prepared::of(*left, execution)?.order(&Prepared::of(*right, execution)?, execution);
+    if left.len() == 1 {
+        return left
+            .next()
+            .expect("one attribute")?
+            .order(&right.next().expect("one attribute")?, execution)
+            .map_err(fail);
     }
-    let left = part(left, execution)?;
-    let right = part(right, execution)?;
+    let left = prepare_view(left, execution, fail)?;
+    let right = prepare_view(right, execution, fail)?;
     for (left, right) in left.iter().zip(&right) {
-        let order = left.order(right, execution)?;
+        let order = left.order(right, execution).map_err(fail)?;
         if order != Ordering::Equal {
             return Ok(order);
         }
     }
     Ok(Ordering::Equal)
+}
+
+fn prepare_view<'a, E>(
+    attributes: impl ExactSizeIterator<Item = Result<Prepared<'a>, E>>,
+    execution: &Memory,
+    fail: impl Fn(MemoryError) -> E + Copy,
+) -> Result<OwnedVec<Prepared<'a>>, E> {
+    execution
+        .charge_work(attributes.len() as u64)
+        .map_err(fail)?;
+    let mut prepared = execution.vector();
+    for attribute in attributes {
+        prepared.try_push(attribute?).map_err(fail)?;
+    }
+    prepared
+        .try_sort_unstable_by(|left, right| left.order(right, execution))
+        .map_err(|reason| fail(MemoryError::from(reason)))?;
+    Ok(prepared)
 }
 
 #[cfg(test)]

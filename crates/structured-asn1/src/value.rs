@@ -10,7 +10,9 @@ use crate::error::ErrorCode;
 use crate::length::Encoding;
 use crate::memory::{Memory, MemoryError, OwnedString};
 
+mod owned;
 mod text;
+pub use owned::OwnedOid;
 
 /// An object identifier, as the arcs are encoded, without the tag or length.
 ///

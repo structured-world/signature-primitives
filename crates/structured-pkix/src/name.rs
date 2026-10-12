@@ -22,6 +22,10 @@ use unicode_bidi::BidiClass;
 mod fold;
 mod normalize;
 mod prepared;
+mod render;
+mod segments;
+mod selector;
+pub use selector::Selector;
 mod unassigned;
 
 /// A distinguished name, as the sequence of parts the certificate holds.
@@ -184,14 +188,17 @@ impl<'a> Name<'a> {
     /// parts in the same order, each holding the same attributes, with strings
     /// compared ignoring case and runs of whitespace.
     ///
-    /// Strings are compared after the preparation the profile requires
+    /// Directory strings are compared after the preparation the profile requires
     /// (RFC 5280 7.1, over RFC 4518): the characters that carry no meaning
     /// are dropped, case is folded in full, the value is normalized to form
     /// KC, and runs of space count as one between words and none at the
-    /// edges. A value the profile prohibits, or one wider than the
-    /// preparation is bounded to, is not prepared at all and takes part in
-    /// identity as its bytes, which the profile names as a sufficient
-    /// matching rule. The same holds for a value the direction step refuses.
+    /// edges. Unsupported types and nonconforming stored values retain their
+    /// encoded identity; that preservation does not validate an LDAP assertion.
+    /// Valid supported values use the schema's size bounds and the current
+    /// work/storage budget, independently of display truncation.
+    /// IA5 emailAddress and domainComponent values instead use their exact
+    /// ASCII case-insensitive rules without whitespace compression; the DN
+    /// emailAddress rule covers the whole value, unlike rfc822Name mailboxes.
     ///
     /// # Errors
     /// Returns a located resource error before unfunded comparison work.
@@ -199,8 +206,8 @@ impl<'a> Name<'a> {
         if self.parts.len() != other.parts.len() {
             return Ok(false);
         }
-        // RFC 5280 section 7.1 permits binary identity even for values that
-        // cannot be prepared. Admit the byte comparison before reading bytes.
+        // Identical original encodings have the same retained wire identity.
+        // This fast path does not validate a nonconforming stored value.
         if self.der.len() == other.der.len() {
             execution
                 .charge_work(self.der.len() as u64)
@@ -243,8 +250,7 @@ impl<'a> Name<'a> {
             execution
                 .charge_work(1)
                 .map_err(|reason| Error::resource(reason, self.field, self.offset))?;
-            let order = prepared::compare_parts(left, right, execution)
-                .map_err(|reason| Error::resource(reason, self.field, self.offset))?;
+            let order = prepared::compare_parts(left, right, execution)?;
             if order != core::cmp::Ordering::Equal {
                 return Ok(order);
             }
@@ -262,8 +268,7 @@ impl<'a> Name<'a> {
     /// Returns a located resource error if preparation cannot be financed.
     pub fn ordered(&self, execution: &Memory) -> Result<Ordered<'a>> {
         Ok(Ordered {
-            prepared: prepared::PreparedName::of(&self.parts, execution)
-                .map_err(|reason| Error::resource(reason, self.field, self.offset))?,
+            prepared: prepared::PreparedName::of(&self.parts, execution)?,
             offset: self.offset,
         })
     }
@@ -287,8 +292,7 @@ impl<'a> Name<'a> {
             execution
                 .charge_work(1)
                 .map_err(|reason| self.resource(reason))?;
-            let order = prepared::compare_parts(left, right, execution)
-                .map_err(|reason| self.resource(reason))?;
+            let order = prepared::compare_parts(left, right, execution)?;
             if order != core::cmp::Ordering::Equal {
                 return Ok(false);
             }
@@ -518,37 +522,37 @@ pub(crate) fn well_formed_in(
     parent: &Reader<'_>,
     field: &'static str,
 ) -> Result<bool> {
-    parent
-        .charge(1 + attribute.value.contents.len() as u64)
-        .field(field)?;
+    let work = (attribute.kind.as_bytes().len() as u64)
+        .checked_mul(64)
+        .and_then(|kinds| {
+            (attribute.value.contents.len() as u64)
+                .checked_mul(2)
+                .and_then(|contents| kinds.checked_add(contents))
+        })
+        .and_then(|work| work.checked_add(1))
+        .ok_or_else(|| {
+            Error::resource(
+                structured_asn1::memory::MemoryError::WorkExceeded,
+                field,
+                attribute.value.offset,
+            )
+        })?;
+    parent.charge(work).field(field)?;
     Ok(well_formed(attribute))
 }
 
-/// How many characters a value may have and still be prepared for the
-/// comparison rather than compared as bytes.
-///
-/// X.520 leaves some attribute types unbounded, and the preparation is not
-/// free: normalizing holds a run of combining characters until a starter
-/// ends it, so a value with no starter is held whole. An element may be four
-/// gibibytes, and a comparison that held one would exhaust the browser it
-/// runs in.
-///
-/// Thirty-two thousand seven hundred and sixty-eight is the widest bound the
-/// profile itself names for a name component (RFC 5280 A.1, `ub-name`), so
-/// nothing an issuer writes as a name comes near it.
-const PREPARATION_CEILING: usize = 32_768;
+/// Display text may truncate at this bound. Identity preparation instead uses
+/// the schema bound and the operation's admitted work/storage: RFC5280 §7.1
+/// requires `StringPrep` for valid `UTF8String`/`PrintableString` values.
+/// A display limit must never silently substitute binary equality.
+/// <https://www.rfc-editor.org/rfc/rfc5280.html#section-7.1>
+const DISPLAY_CEILING: usize = 32_768;
 
 /// Whether the preparation can run on a value at all.
 ///
-/// Two things stop it, and both leave the value comparable as bytes, which
-/// the profile names as a sufficient matching rule (RFC 5280 7.1) and which
-/// this already does for a value outside its syntax. Neither refuses the
-/// certificate: a name is still a name, and is still shown to a person.
-///
-/// The first is width, above. The second is the Prohibit step: a value
-/// carrying a code point the profile prohibits has no defined preparation,
-/// so what the remaining steps produce is not a value the profile ever said
-/// was equal to anything.
+/// Unsupported encodings, malformed stored values and prohibited code points
+/// retain only their encoded identity. That preservation does not validate
+/// an LDAP assertion. Valid values have no display-derived preparation limit.
 #[cfg(test)]
 fn preparable(attribute: &Attribute<'_>) -> bool {
     if !inside_syntax(attribute, Asking::Folding, |c| !prohibited(c)) {
@@ -689,10 +693,7 @@ fn inside_syntax(
     match syntax_of(attribute.kind) {
         Some(syntax) => {
             let (least, schema) = size_bounds(attribute.kind);
-            let most = match asking {
-                Asking::Shape => schema,
-                Asking::Folding => schema.min(PREPARATION_CEILING),
-            };
+            let most = schema;
             // The ceiling is checked on the encoded bytes first: no encoding
             // here spends fewer than one byte per character or more than
             // four, so a value whose bytes exceed four times the character
@@ -718,14 +719,13 @@ fn inside_syntax(
             if attribute.value.encoding() == Encoding::Teletex && asking == Asking::Shape {
                 return (least..=most).contains(&attribute.value.contents().len());
             }
+            let country = attribute.kind == oid::COUNTRY;
             attribute
                 .value
                 // The country is a two-letter ISO 3166 code: digits and
                 // punctuation fit the printable repertoire and the size
                 // without naming any country. Case is left to folding.
-                .validated_count(|c| {
-                    (attribute.kind != oid::COUNTRY || c.is_ascii_alphabetic()) && keep(c)
-                })
+                .validated_count(|c| (!country || c.is_ascii_alphabetic()) && keep(c))
                 .is_some_and(|count| (least..=most).contains(&count))
         }
         None => true,
@@ -1045,7 +1045,6 @@ impl<'a> Attribute<'a> {
     /// Returns a located resource error if preparation cannot be financed.
     pub fn folds(self, execution: &Memory) -> Result<bool> {
         prepared::folds(self, execution)
-            .map_err(|reason| Error::resource(reason, "name.attribute", self.value.offset))
     }
 
     /// The decoded characters of a value that takes part in folding: the
@@ -1121,7 +1120,7 @@ impl<'a> AttributeValue<'a> {
                 if !self.contents.len().is_multiple_of(width) {
                     return Ok(None);
                 }
-                let bound = ((PREPARATION_CEILING + 1) * width).min(self.contents.len());
+                let bound = ((DISPLAY_CEILING + 1) * width).min(self.contents.len());
                 display_text(wide_chars(&self.contents[..bound], width), execution).map_err(fail)
             }
             // Every remaining type is a subset of ASCII by its definition, and
@@ -1408,8 +1407,8 @@ fn associated_sequence_fits<'a>(
                         let mut held = inside.enter(&member).field(field)?;
                         held.next_element().field(field)?.is_some() && held.is_empty()
                     }
-                    Some(1) => !tag.is_constructed() || !inside.encoding().is_der(),
-                    Some(2) => reads(inside.bit_string(&member), field)?,
+                    Some(1) => segments::implicit(&inside, &member, field, false)?,
+                    Some(2) => segments::implicit(&inside, &member, field, true)?,
                     _ => false,
                 };
                 return Ok(carried && inside.is_empty());
@@ -1454,10 +1453,9 @@ fn associated_sequence_fits<'a>(
     let Some(value) = inside.next_element().field(field)? else {
         return Ok(false);
     };
-    let whole = !value.tag().is_constructed() || !inside.encoding().is_der();
     Ok(value.tag().class() == Class::ContextSpecific
         && value.tag().number() == Some(2)
-        && whole
+        && segments::implicit(&inside, &value, field, false)?
         && inside.is_empty())
 }
 
@@ -1688,7 +1686,9 @@ fn check_der<'a>(
         // and universal numbers that wide are not assigned at all.
         let container = tag.number().is_some_and(constructed_universal_type);
         let wrong = if tag.is_constructed() {
-            !container && parent.encoding().is_der()
+            !container
+                && (parent.encoding().is_der()
+                    || !tag.number().is_some_and(segmented_universal_type))
         } else {
             container
         };
@@ -1696,6 +1696,10 @@ fn check_der<'a>(
             return Err(fail(ErrorCode::Encoding(
                 structured_asn1::ErrorCode::UnexpectedTag,
             )));
+        }
+        if tag.is_constructed() && tag.number().is_some_and(segmented_universal_type) {
+            segments::validate(parent, element, field, strings)?;
+            return Ok(false);
         }
         // Three of the containers are not containers of anything: their
         // encoding is the encoding of a sequence defined for them, whose
@@ -1747,16 +1751,7 @@ fn check_der<'a>(
                     // as long as the element permits: the length goes on the
                     // shared meter first, as it does for the identifier and
                     // the strings below.
-                    parent
-                        .charge(element.contents().len() as u64)
-                        .field(field)?;
-                    // DER spelling walks the digits once; GeneralizedTime's
-                    // shared semantic conversion has two additional passes.
-                    if tag.number() == Some(universal::GENERALIZED_TIME) {
-                        crate::temporal::admit_generalized(parent, element, field)?;
-                    }
-                    crate::time::read_as(element, field, crate::time::Fraction::Written)
-                        .map(|_| ())?;
+                    useful_time_fits(parent, element, field)?;
                 }
                 // The newer time types, whose contents are the value notation
                 // with the characters X.690 8.26 names taken out. What each
@@ -1844,6 +1839,44 @@ fn check_der<'a>(
     Ok(true)
 }
 
+fn useful_time_fits(parent: &Reader<'_>, element: &Element<'_>, field: &'static str) -> Result<()> {
+    let generalized = element.tag().number() == Some(universal::GENERALIZED_TIME);
+    let bytes = element.contents();
+    if parent.encoding().is_der() {
+        parent.charge(bytes.len() as u64).field(field)?;
+        if generalized {
+            crate::temporal::admit_generalized(parent, element, field)?;
+        }
+        crate::time::read_as(element, field, crate::time::Fraction::Written)?;
+    } else {
+        let work = (bytes.len() as u64).checked_mul(3).ok_or_else(|| {
+            Error::resource(
+                structured_asn1::memory::MemoryError::WorkExceeded,
+                field,
+                element.span().start,
+            )
+        })?;
+        parent.charge(work).field(field)?;
+        if !crate::time::ber_fits(bytes, generalized) {
+            return Err(Error::new(
+                ErrorCode::MalformedTime,
+                field,
+                element.span().start,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// BER permits segmentation only for bit/octet strings and the restricted
+/// character strings, including the useful time types implicitly based on
+/// `VisibleString`. It does not change primitive-only scalar encodings.
+/// X.690 §§8.6, 8.7, 8.23; X.680 §§46.3, 47.3, 48.3.
+/// <https://www.itu.int/rec/T-REC-X.690-202102-I/en>
+fn segmented_universal_type(number: u32) -> bool {
+    matches!(number, 3 | 4 | 7 | 12 | 18..=28 | 30)
+}
+
 /// Whether the bytes stay inside the `IA5String` alphabet, the 128-character
 /// IRV (X.680, 41.4): a byte above 0x7f wears the tag but is not the type.
 pub(crate) fn is_ia5(bytes: &[u8]) -> bool {
@@ -1918,7 +1951,7 @@ fn display_text(
     execution: &Memory,
 ) -> core::result::Result<Option<OwnedString>, structured_asn1::memory::MemoryError> {
     let mut text = execution.string();
-    for index in 0..=PREPARATION_CEILING {
+    for index in 0..=DISPLAY_CEILING {
         execution.charge_work(1)?;
         let Some(character) = characters.next() else {
             break;
@@ -1926,7 +1959,7 @@ fn display_text(
         let Some(character) = character else {
             return Ok(None);
         };
-        if index == PREPARATION_CEILING {
+        if index == DISPLAY_CEILING {
             text.try_push('…')?;
             break;
         }

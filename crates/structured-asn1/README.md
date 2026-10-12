@@ -74,6 +74,12 @@ current execution account; iteration prepays control buckets, including sparse
 holes. Rebuilding a collection in another domain requires an explicit fallible
 copy; retained allocations are never silently rebound.
 
+The source uses allocator-api2 0.4.0 for vectors and hashbrown 0.17.1 for maps.
+Hashbrown's published allocator interface still requires allocator-api2 0.2.21;
+that interface forwards to the same account allocator. Both container families
+share capacity, work, growth-peak and rollback rules. These dependency updates
+are not in registry version 0.1.2.
+
 Raw byte views and ordinary formatting/equality traits leave application-owned
 traversal and output storage to the caller. An explicit budget bounds admitted
 mechanism work; it does not automatically account arbitrary caller code.

@@ -6,7 +6,7 @@
 [![CI](https://github.com/structured-world/signature-primitives/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/structured-world/signature-primitives/actions/workflows/ci.yml)
 [![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/structured-world/signature-primitives/blob/main/LICENSE)
 
-Parse X.509 certificates and build certification paths in Rust while borrowing
+Parse X.509 certificates and check or build certification paths while borrowing
 the original DER input. Read names, extensions and validity times, and retain
 the exact bytes covered by each certificate signature. Signature verification
 is supplied through `path::Verify`, so applications choose their crypto provider.
@@ -69,6 +69,40 @@ Applications own trust decisions, external data acquisition and the accounting
 of work inside their injected verification and recognizer callbacks. Merely
 passing an execution account does not bound arbitrary external callback code.
 
+### Check an already supplied chain
+
+The source version adds `path::validate` and `ValidationContext`; these APIs are
+not available in the initial crates.io 0.1.0 release. Pass a borrowed leaf-first
+chain and one explicit `Anchor`, excluding the anchor's certificate from the
+chain. Validation checks exactly those certificates; `path::build` additionally
+searches candidate issuers. Both entry points use the same static processing core.
+
+`Validation::Accepted` returns the target's effective `WorkingKey`, the number
+of non-self-issued intermediate CAs, and the accepted authority/user policy OIDs.
+Inherited key parameters refer to the original anchor or certificate bytes.
+The policy container owns its allocation and retains its capacity charge after
+validation returns; the contained OIDs still borrow the original input.
+`into_policies()` transfers that storage without copying or reserving it again.
+
+`Validation::Rejected` reports a completed semantic failure and its leaf-first
+certificate position. Name-constraint and path-length failures also identify
+the constraining certificate or anchor; path-length errors retain the original
+limit. Malformed relevant extensions retain their decoder code, field and offset.
+Provider `No` and `Unsupported` are separate reasons. Resource and callback
+failures remain errors; local work, depth, policy-graph or deadline limits yield
+`Incomplete`, without accepted facts.
+
+Certificate-policy processing follows RFC 9618 with shared graph nodes and
+multiple parent edges rather than duplicated path histories. The local policy
+bound counts retained nodes, parent edges and expected OIDs; the shared memory
+account separately admits actual capacity and processing work. Mapping output
+preserves authority-side policy identifiers.
+
+Accepted static facts do not settle revocation, application purpose, algorithm
+permissions, key strength or trust-anchor selection. Applications supply these
+decisions and account their injected providers. The API example is included in
+the source documentation for `path::validate`.
+
 ## UTC time and leap seconds
 
 UTC arithmetic uses `temporal::LeapTable`, a borrowed application-supplied table
@@ -84,6 +118,12 @@ only its POSIX projection and maps an inserted second to the preceding
 ordinary second's label. Use the lossless label for comparisons. Strict DER
 GeneralizedTime accepts inserted-second labels; UTCTime retains its separate
 00–59 seconds grammar. An accepted label does not authenticate its occurrence.
+
+The source version also accepts lossless validation endpoints through
+`Interval::at_instant` and `Interval::between_instants`, preserving leap labels
+and nanoseconds. Existing integer-second constructors remain available;
+`from_instant`/`to_instant` expose complete labels, while `from`/`to` are POSIX
+whole-second projections.
 
 ## Deferred decoding and resource accounting
 

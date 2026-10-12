@@ -10,6 +10,179 @@ fn memory() -> structured_asn1::memory::Memory {
 }
 
 #[test]
+fn constructed_generalized_time_keeps_the_reading_and_der_refusal_separate() {
+    // X.680 §46.3 and X.690 §§8.25, 8.23 allow OCTET STRING fragments
+    // under the useful time tag. A readable BER value is still not DER.
+    let bytes = b"\x38\x13\x04\x0820260101\x04\x07000000Z";
+    let parser = Parser::ber(memory());
+    let mut reader = parser.read(bytes, 400).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let reading = temporal::read_generalized(&reader, &element, "genTime").unwrap();
+    assert_eq!(
+        reading.start(),
+        temporal::Instant::new(1_767_225_600, 0).unwrap()
+    );
+    assert!(!reading.has_subnanosecond_remainder());
+    let mut distinguished = reader.reread(&element, Encoding::Der).unwrap();
+    let encoded = distinguished.next_element().unwrap().unwrap();
+    let error = der::conforms(&distinguished, &encoded, "genTime").unwrap_err();
+    assert_eq!(
+        error.code(),
+        structured_pkix::ErrorCode::Encoding(AsnError::UnexpectedTag)
+    );
+    assert_eq!(error.offset(), 400);
+}
+
+fn segmented_time(label: &[u8]) -> Vec<u8> {
+    // Mix empty, primitive and nested indefinite OCTET STRING fragments.
+    let mut bytes = vec![0x38, 0x80, 0x04, 0, 0x24, 0x80, 0x04, 8];
+    bytes.extend_from_slice(&label[..8]);
+    bytes.extend_from_slice(&[0x04, u8::try_from(label.len() - 8).unwrap()]);
+    bytes.extend_from_slice(&label[8..]);
+    bytes.extend_from_slice(&[0, 0, 0, 0]);
+    bytes
+}
+
+#[test]
+fn constructed_generalized_time_shares_decimal_calendar_and_leap_semantics() {
+    // Segmentation changes encoding only: optional fields, offset conversion,
+    // arbitrary decimal carry and leap labels use the primitive semantic core.
+    for label in [
+        &b"20260101000000Z"[..],
+        &b"20161231235960.1234567891Z"[..],
+        &b"2017010100.0000000000002777777777777777777777778Z"[..],
+        &b"2026010101,5+0130"[..],
+    ] {
+        let mut primitive = vec![0x18, u8::try_from(label.len()).unwrap()];
+        primitive.extend_from_slice(label);
+        let constructed = segmented_time(label);
+        let mut readings = Vec::new();
+        for bytes in [&primitive, &constructed] {
+            let execution = memory();
+            let parser = Parser::ber(execution.clone());
+            let mut reader = parser.read(bytes, 401).unwrap();
+            let element = reader.next_element().unwrap().unwrap();
+            let storage = execution.used();
+            readings.push(temporal::read_generalized(&reader, &element, "genTime").unwrap());
+            assert_eq!(execution.used(), storage);
+        }
+        assert_eq!(readings[0].start(), readings[1].start());
+        assert_eq!(
+            readings[0].has_subnanosecond_remainder(),
+            readings[1].has_subnanosecond_remainder()
+        );
+    }
+}
+
+#[test]
+fn constructed_generalized_time_refuses_invalid_children_and_labels() {
+    // The useful type inherits OCTET STRING children, not recursive time
+    // tags. Complete but invalid or unzoned labels cannot become readings.
+    let wrong_child = b"\x38\x11\x18\x0f20260101000000Z".to_vec();
+    let cases = [
+        (wrong_child, structured_pkix::ErrorCode::MalformedValue, 403),
+        (
+            segmented_time(b"20260230000000Z"),
+            structured_pkix::ErrorCode::TimeOutOfRange,
+            401,
+        ),
+        (
+            segmented_time(b"20260101000000"),
+            structured_pkix::ErrorCode::MalformedTime,
+            401,
+        ),
+        (
+            segmented_time(b"20260101000000.Z"),
+            structured_pkix::ErrorCode::MalformedTime,
+            401,
+        ),
+    ];
+    for (bytes, code, offset) in cases {
+        let execution = memory();
+        let parser = Parser::ber(execution.clone());
+        let mut reader = parser.read(&bytes, 401).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let storage = execution.used();
+        let error = temporal::read_generalized(&reader, &element, "genTime").unwrap_err();
+        assert_eq!(error.code(), code);
+        assert_eq!(error.offset(), offset);
+        assert_eq!(error.field(), "genTime");
+        assert_eq!(execution.used(), storage);
+    }
+}
+
+#[test]
+fn constructed_generalized_time_keeps_current_storage_work_and_original_depth_limits() {
+    // Deferred decoding uses its new domain, releases partial scratch on
+    // refusal and cannot reset the source reader's inherited depth ceiling.
+    use structured_asn1::memory::{Memory, MemoryAccount};
+    let bytes = segmented_time(b"20260101000000Z");
+    for (storage, work) in [(0, 1_000_000), (1_000_000, 0)] {
+        let original = memory();
+        let parser = Parser::ber(original.clone());
+        let mut reader = parser.read(&bytes, 401).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let before = original.work_used();
+        let execution = Memory::new(std::sync::Arc::new(MemoryAccount::new(storage, work)));
+        let reader = reader.with_execution(&execution);
+        let error = temporal::read_generalized(&reader, &element, "genTime").unwrap_err();
+        assert!(error.is_resource());
+        assert_eq!(error.field(), "genTime");
+        assert_eq!(execution.used(), 0);
+        assert_eq!(original.work_used(), before);
+    }
+    // Definite lengths defer descent until the temporal walker; indefinite
+    // lengths would already exercise the ASN.1 scanner's same depth ceiling.
+    let nested = b"\x38\x15\x24\x13\x04\x0820260101\x04\x07000000Z";
+    let parser = Parser::new(
+        Encoding::Ber,
+        Limits {
+            max_depth: 1,
+            ..Limits::default()
+        },
+        memory(),
+    );
+    let mut reader = parser.read(nested, 401).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let error = temporal::read_generalized(&reader, &element, "genTime").unwrap_err();
+    assert_eq!(
+        error.code(),
+        structured_pkix::ErrorCode::Encoding(AsnError::LimitExceeded(Limit::Depth))
+    );
+}
+
+#[test]
+fn constructed_generalized_time_cannot_reset_local_work_with_a_new_execution_domain() {
+    // The original parser has enough work to read the outer header and first
+    // child header, but not to copy that child. Rebinding cannot refill it.
+    let bytes = b"\x38\x13\x04\x0820260101\x04\x07000000Z";
+    let original = memory();
+    let parser = Parser::new(
+        Encoding::Ber,
+        Limits {
+            max_work: 6,
+            ..Limits::default()
+        },
+        original.clone(),
+    );
+    let mut reader = parser.read(bytes, 401).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let before = original.work_used();
+    let execution = memory();
+    let reader = reader.with_execution(&execution);
+    let error = temporal::read_generalized(&reader, &element, "genTime").unwrap_err();
+    assert_eq!(
+        error.code(),
+        structured_pkix::ErrorCode::Encoding(AsnError::LimitExceeded(Limit::Work))
+    );
+    // Reader::charge reports the current original-source cursor after the
+    // selected child header/content; no synthetic joined-buffer offset.
+    assert_eq!(error.offset(), 413);
+    assert_eq!(execution.used(), 0);
+    assert_eq!(original.work_used(), before);
+}
+
+#[test]
 fn public_mailbox_decode_needs_no_storage_and_uses_current_work() {
     // The producing parser's account cannot finance a later mailbox check.
     // Syntax-only success and refusal need no result/scratch allocation;

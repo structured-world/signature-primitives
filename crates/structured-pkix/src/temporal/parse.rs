@@ -11,12 +11,16 @@ use structured_asn1::{Element, Reader, Tag, universal};
 /// returns `MalformedTime`. This reader does not enforce DER spelling or
 /// authenticate an occurrence of a leap second; those are separate checks.
 /// <https://www.itu.int/rec/T-REC-X.680-202102-I/en>
+/// Primitive and constructed BER forms are accepted. Constructed contents
+/// use OCTET STRING fragments, including nested and indefinite forms.
 ///
 /// `parent` must belong to the session and source that produced `element`.
 /// This is a caller precondition, not a provenance check. It supplies the
 /// current execution account and original parser-local cumulative ceiling.
 /// Two work units per content octet plus one fixed decode unit are admitted
 /// before scanning, covering forward digit validation and reverse conversion.
+/// Constructed traversal, copying and temporary capacity are admitted separately;
+/// scratch storage is released before this independent reading is returned.
 ///
 /// # Errors
 /// Returns malformed-time or calendar errors, or a located resource refusal
@@ -26,6 +30,16 @@ pub fn read_generalized(
     element: &Element<'_>,
     field: &'static str,
 ) -> Result<Reading> {
+    if element.tag() == Tag::constructed(universal::GENERALIZED_TIME) {
+        // X.680 §46.3 defines GeneralizedTime as IMPLICIT VisibleString;
+        // X.690 §§8.25, 8.23.3 and 8.23.6 inherit OCTET STRING construction.
+        // The primitive requirement in §8.26 concerns the distinct TIME type.
+        // https://www.itu.int/rec/T-REC-X.690-202102-I/en
+        let mut contents = parent.memory().vector();
+        crate::name::segments::walk(parent, element, field, false, Some(&mut contents))?;
+        admit_label(parent, contents.len(), element.span().start, field)?;
+        return generalized_label(&contents, element.span().start, field);
+    }
     if element.tag() != Tag::primitive(universal::GENERALIZED_TIME) {
         return Err(Error::new(
             ErrorCode::Encoding(structured_asn1::ErrorCode::UnexpectedTag),
@@ -43,30 +57,40 @@ pub(crate) fn admit_generalized(
     element: &Element<'_>,
     field: &'static str,
 ) -> Result<()> {
-    let work = u64::try_from(element.contents().len())
+    admit_label(
+        parent,
+        element.contents().len(),
+        element.span().start,
+        field,
+    )
+}
+
+fn admit_label(parent: &Reader<'_>, length: usize, offset: u64, field: &'static str) -> Result<()> {
+    let work = u64::try_from(length)
         .ok()
         .and_then(|length| length.checked_mul(2))
         .and_then(|work| work.checked_add(1))
-        .ok_or_else(|| Error::resource(MemoryError::WorkExceeded, field, element.span().start))?;
-    parent.charge(work).map_err(|error| {
-        Error::new(
-            ErrorCode::Encoding(error.code()),
-            field,
-            element.span().start,
-        )
-    })
+        .ok_or_else(|| Error::resource(MemoryError::WorkExceeded, field, offset))?;
+    parent
+        .charge(work)
+        .map_err(|error| Error::new(ErrorCode::Encoding(error.code()), field, offset))
 }
 
 /// Semantic core for callers that have already admitted their complete scan.
 pub(crate) fn generalized(element: &Element<'_>, field: &'static str) -> Result<Reading> {
-    let fail = |code| Error::new(code, field, element.span().start);
     if element.tag() != Tag::primitive(universal::GENERALIZED_TIME) {
-        return Err(fail(ErrorCode::Encoding(
-            structured_asn1::ErrorCode::UnexpectedTag,
-        )));
+        return Err(Error::new(
+            ErrorCode::Encoding(structured_asn1::ErrorCode::UnexpectedTag),
+            field,
+            element.span().start,
+        ));
     }
-    let (year, rest) =
-        split(element.contents(), 4).ok_or_else(|| fail(ErrorCode::MalformedTime))?;
+    generalized_label(element.contents(), element.span().start, field)
+}
+
+fn generalized_label(contents: &[u8], offset: u64, field: &'static str) -> Result<Reading> {
+    let fail = |code| Error::new(code, field, offset);
+    let (year, rest) = split(contents, 4).ok_or_else(|| fail(ErrorCode::MalformedTime))?;
     let year = number(year).ok_or_else(|| fail(ErrorCode::MalformedTime))?;
     let ([month, day, hour], mut rest) =
         fields_of(rest).ok_or_else(|| fail(ErrorCode::MalformedTime))?;

@@ -74,7 +74,7 @@ struct Frame<'a> {
 /// X.690 §§8.6.4, 8.7.3.2, 8.23.3. Nested final padding propagates outward;
 /// a following empty child does not make earlier padding permissible.
 /// <https://www.itu.int/rec/T-REC-X.690-202102-I/en>
-pub(super) fn walk<'a>(
+pub(crate) fn walk<'a>(
     parent: &Reader<'a>,
     element: &Element<'a>,
     field: &'static str,

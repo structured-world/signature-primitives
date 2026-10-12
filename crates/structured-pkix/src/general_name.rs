@@ -1371,6 +1371,10 @@ pub(crate) fn is_mailbox(text: &str) -> bool {
 /// (RFC 3986 4.3), which belongs to URI references. What follows the scheme
 /// is the scheme's to define, and is never fetched.
 pub(crate) fn is_absolute_uri(text: &str) -> bool {
+    absolute_uri::<true>(text)
+}
+
+fn absolute_uri<const CERTIFICATE_NAME: bool>(text: &str) -> bool {
     let Some((scheme, rest)) = text.split_once(':') else {
         return false;
     };
@@ -1387,7 +1391,7 @@ pub(crate) fn is_absolute_uri(text: &str) -> bool {
     // scheme-specific-part" (RFC 5280 4.2.1.6). A scheme alone names no
     // place, and accepting one would report a location a report cannot
     // explain.
-    if rest.is_empty() {
+    if CERTIFICATE_NAME && rest.is_empty() {
         return false;
     }
 
@@ -1451,7 +1455,7 @@ pub(crate) fn is_absolute_uri(text: &str) -> bool {
             // rather than leaving it short of qualified, so it is read here
             // and kept in the location, which is preserved as written.
             let named = bare_host.strip_suffix('.').unwrap_or(bare_host);
-            if !is_domain(named) && bare_host.parse::<Ipv4Addr>().is_err() {
+            if CERTIFICATE_NAME && !is_domain(named) && bare_host.parse::<Ipv4Addr>().is_err() {
                 return false;
             }
             port
@@ -1509,15 +1513,26 @@ fn uri_alphabet(segment: &str) -> bool {
 /// Whether text is a URI, the production that carries an optional fragment
 /// after the rest of it (RFC 3986 3).
 ///
-/// Certificate names (RFC5280 §4.2.1.6) and practice-statement pointers
-/// (§4.2.1.4) use this production. Both keep the same scheme/authority
-/// checks; a fragment does not make a scheme-bearing URI relative.
+/// Certificate names (RFC5280 §4.2.1.6) additionally require their
+/// scheme-specific part and host shape. A fragment does not make a
+/// scheme-bearing URI relative. CPS pointers use the generic branch below.
 pub(crate) fn is_uri(text: &str) -> bool {
+    uri::<true>(text)
+}
+
+/// `CPSuri` uses RFC3986 URI grammar (RFC5280 §4.2.1.4), independently of
+/// §4.2.1.6's certificate-name host and scheme-specific-part requirements.
+/// <https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.4>
+pub(crate) fn is_cps_uri(text: &str) -> bool {
+    uri::<false>(text)
+}
+
+fn uri<const CERTIFICATE_NAME: bool>(text: &str) -> bool {
     match text.split_once('#') {
         // The fragment is written from the same alphabet, and the delimiter
         // appears once: a second one is inside no production.
-        Some((rest, fragment)) => is_absolute_uri(rest) && uri_alphabet(fragment),
-        None => is_absolute_uri(text),
+        Some((rest, fragment)) => absolute_uri::<CERTIFICATE_NAME>(rest) && uri_alphabet(fragment),
+        None => absolute_uri::<CERTIFICATE_NAME>(text),
     }
 }
 

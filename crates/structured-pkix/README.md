@@ -103,6 +103,17 @@ permissions, key strength or trust-anchor selection. Applications supply these
 decisions and account their injected providers. The API example is included in
 the source documentation for `path::validate`.
 
+## Policy qualifier validation
+
+The source version also exposes `policy::qualifier_understood(&reader, kind,
+&value)` for CPS and UserNotice DER payloads. It shares certificate-policy
+validation, retaining the producing reader's current execution account, local
+work/depth ceilings and document offsets, including inside BER envelopes.
+`false` means unknown or malformed selected syntax; a resource refusal is an
+error. Callers decide independently whether an unknown qualifier is allowed.
+It does not fetch CPS URIs or select application policy. The initial crates.io
+0.1.0 release does not include this API.
+
 ## Distinguished-name selectors
 
 The source version adds `name::Selector`, `Name::rfc4514` and

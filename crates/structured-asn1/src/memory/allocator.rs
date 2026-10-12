@@ -134,12 +134,109 @@ unsafe impl Allocator for AccountAllocator {
     }
 }
 
+// SAFETY: hashbrown 0.17.1's external allocator interface has the same pointer,
+// Layout and lifetime contracts as 0.4. Forward to the implementation above;
+// quota admission, backend calls, rollback and release have one owner. Only
+// the two crates' distinct zero-sized AllocError types are translated.
+unsafe impl allocator_api2_hashbrown::alloc::Allocator for AccountAllocator {
+    fn allocate(
+        &self,
+        layout: Layout,
+    ) -> Result<NonNull<[u8]>, allocator_api2_hashbrown::alloc::AllocError> {
+        <Self as Allocator>::allocate(self, layout)
+            .map_err(|_| allocator_api2_hashbrown::alloc::AllocError)
+    }
+
+    fn allocate_zeroed(
+        &self,
+        layout: Layout,
+    ) -> Result<NonNull<[u8]>, allocator_api2_hashbrown::alloc::AllocError> {
+        <Self as Allocator>::allocate_zeroed(self, layout)
+            .map_err(|_| allocator_api2_hashbrown::alloc::AllocError)
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: the external caller provides the unchanged live block/layout.
+        unsafe {
+            <Self as Allocator>::deallocate(self, ptr, layout);
+        }
+    }
+
+    unsafe fn grow(
+        &self,
+        ptr: NonNull<u8>,
+        old: Layout,
+        new: Layout,
+    ) -> Result<NonNull<[u8]>, allocator_api2_hashbrown::alloc::AllocError> {
+        // SAFETY: both interfaces require the same live block and fitting sizes.
+        unsafe { <Self as Allocator>::grow(self, ptr, old, new) }
+            .map_err(|_| allocator_api2_hashbrown::alloc::AllocError)
+    }
+
+    unsafe fn grow_zeroed(
+        &self,
+        ptr: NonNull<u8>,
+        old: Layout,
+        new: Layout,
+    ) -> Result<NonNull<[u8]>, allocator_api2_hashbrown::alloc::AllocError> {
+        // SAFETY: identical grow contract, including initialization of new bytes.
+        unsafe { <Self as Allocator>::grow_zeroed(self, ptr, old, new) }
+            .map_err(|_| allocator_api2_hashbrown::alloc::AllocError)
+    }
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old: Layout,
+        new: Layout,
+    ) -> Result<NonNull<[u8]>, allocator_api2_hashbrown::alloc::AllocError> {
+        // SAFETY: identical live block, alignment and shrinking-size contract.
+        unsafe { <Self as Allocator>::shrink(self, ptr, old, new) }
+            .map_err(|_| allocator_api2_hashbrown::alloc::AllocError)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
     use core::sync::atomic::Ordering;
 
     use super::super::{Memory, MemoryAccount, MemoryError};
+
+    #[test]
+    fn both_allocator_interfaces_share_live_capacity_and_growth_peak() {
+        // The external hashbrown ABI and current vector ABI must retain the
+        // same charge, reject the same coexistence peak and release on drop.
+        let memory = Memory::new(Arc::new(MemoryAccount::new(24, usize::MAX)));
+        let mut current = memory.vector::<u8>();
+        current.try_extend_from_slice(&[7; 8]).unwrap();
+        let mut table_interface = allocator_api2_hashbrown::vec::Vec::<u8, _>::new_in(
+            super::AccountAllocator::new(memory.clone()),
+        );
+        table_interface.try_reserve_exact(8).unwrap();
+        table_interface.push(42);
+        assert_eq!(memory.used(), 16);
+        let attempts = table_interface.allocator().attempts.load(Ordering::Relaxed);
+        assert!(table_interface.try_reserve_exact(8).is_err());
+        assert_eq!(
+            table_interface.allocator().failure(),
+            MemoryError::LimitExceeded
+        );
+        assert_eq!(
+            table_interface.allocator().attempts.load(Ordering::Relaxed),
+            attempts
+        );
+        assert_eq!(&*table_interface, &[42]);
+        assert_eq!(table_interface.capacity(), 8);
+        assert_eq!(memory.used(), 16);
+        drop(current);
+        assert_eq!(memory.used(), 8);
+        table_interface.try_reserve_exact(8).unwrap();
+        assert_eq!(&*table_interface, &[42]);
+        assert_eq!(memory.used(), table_interface.capacity());
+        drop(table_interface);
+        assert_eq!(memory.used(), 0);
+    }
 
     #[test]
     fn quota_rejection_never_reaches_the_backend() {

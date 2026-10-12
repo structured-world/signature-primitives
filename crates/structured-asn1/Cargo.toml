@@ -18,9 +18,12 @@ alloc = []
 
 [dependencies]
 # The adapter relies on this Global implementation returning exact Layout size.
-allocator-api2 = { version = "=0.2.21", default-features = false, features = ["alloc"] }
+allocator-api2 = { version = "=0.4.0", default-features = false, features = ["alloc"] }
+# hashbrown's published Allocator trait still belongs to the 0.2 API family.
+# Both interfaces forward through one account allocator; no second quota model.
+allocator-api2-hashbrown = { package = "allocator-api2", version = "=0.2.21", default-features = false, features = ["alloc"] }
 # The pre-admission bound is audited against this table's control-group layout.
-hashbrown = { version = "=0.16.1", default-features = false, features = ["default-hasher", "inline-more", "allocator-api2", "raw-entry"] }
+hashbrown = { version = "=0.17.1", default-features = false, features = ["default-hasher", "inline-more", "allocator-api2", "raw-entry"] }
 
 [lints]
 workspace = true

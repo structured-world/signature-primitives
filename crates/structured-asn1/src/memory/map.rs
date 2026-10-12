@@ -128,7 +128,7 @@ impl<K: HashWork, V> OwnedMap<K, V> {
     }
 
     fn buckets(&self) -> Result<u64, MemoryError> {
-        // Pinned hashbrown 0.16.1 raw::bucket_mask_to_capacity: tables with
+        // Pinned hashbrown 0.17.1 raw::bucket_mask_to_capacity: tables with
         // four/eight buckets keep one empty slot; larger tables use 7/8 of
         // the buckets. Maximum capacity records each table immediately after
         // reserve, before tombstones can reduce the public capacity value.

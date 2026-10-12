@@ -174,7 +174,7 @@ impl<'a> WorkingKey<'a> {
     ///
     /// "If the certificate subjectPublicKey algorithm and the
     /// `working_public_key_algorithm` are different, set the
-    /// `working_public_key_parameters` to null" (RFC 5280 6.1.4 (d)). Nothing
+    /// `working_public_key_parameters` to null" (RFC 5280 6.1.4 (e)). Nothing
     /// is carried across a change of algorithm: a curve is not a modulus,
     /// and an authority on one algorithm certifying a key on another says
     /// nothing about how that key is written. Handing them over anyway gives
@@ -327,7 +327,9 @@ pub struct Bounds {
     pub work: u64,
     /// How many paths may be returned.
     pub paths: usize,
-    /// How many policies one path's working out may hold at once.
+    /// How many graph nodes, retained parent edges and expected policy OIDs
+    /// one path's policy processing may hold together. Scratch capacity is
+    /// additionally admitted by the shared execution account.
     pub policies: usize,
 }
 

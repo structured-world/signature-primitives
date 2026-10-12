@@ -18,8 +18,12 @@ fn mapped_policy_output_names_the_authority_policy_across_multiple_mappings() {
     // https://www.rfc-editor.org/rfc/rfc9618.html#section-5.5
     let first = Says::new(Some(&[GOLD]), Some(&[(GOLD, SILVER)]), None, None);
     let second = Says::new(Some(&[SILVER]), Some(&[(SILVER, BRONZE)]), None, None);
-    let settled = walk(&[naming(&[GOLD]), first, second, naming(&[BRONZE])], open(), &[GOLD])
-        .expect("the authority policy survives both mappings");
+    let settled = walk(
+        &[naming(&[GOLD]), first, second, naming(&[BRONZE])],
+        open(),
+        &[GOLD],
+    )
+    .expect("the authority policy survives both mappings");
     assert_eq!(settled, alloc::vec![GOLD]);
 }
 
@@ -29,21 +33,57 @@ fn synthesized_mapping_parent_belongs_to_the_previous_depth() {
     // A same-depth parent would retain a branch that pruning should remove.
     let parser = Parser::der(crate::fixtures::memory());
     let first = naming(&[oid::ANY_POLICY]);
-    let second = Says::new(Some(&[oid::ANY_POLICY]), Some(&[(GOLD, SILVER)]), None, None);
+    let second = Says::new(
+        Some(&[oid::ANY_POLICY]),
+        Some(&[(GOLD, SILVER)]),
+        None,
+        None,
+    );
     let first = Certificate::read(&parser, &first.der, 0).unwrap();
     let second = Certificate::read(&parser, &second.der, 0).unwrap();
     let execution = crate::fixtures::memory();
     let mut processing = Processing::new(3, open(), 64, &execution, 0).unwrap();
-    let first = first.tbs().extensions().certificate_policies(&execution).unwrap().unwrap();
-    assert!(processing.present(Some(&first), false, false, &mut ()).unwrap());
+    let first = first
+        .tbs()
+        .extensions()
+        .certificate_policies(&execution)
+        .unwrap()
+        .unwrap();
+    assert!(
+        processing
+            .present(Some(&first), false, false, &mut ())
+            .unwrap()
+    );
     processing.carry(None, None, None, false, &mut ()).unwrap();
-    let named = second.tbs().extensions().certificate_policies(&execution).unwrap().unwrap();
-    let mapped = second.tbs().extensions().policy_mappings(&execution).unwrap().unwrap();
-    assert!(processing.present(Some(&named), false, false, &mut ()).unwrap());
-    processing.carry(Some(&mapped), None, None, false, &mut ()).unwrap();
+    let named = second
+        .tbs()
+        .extensions()
+        .certificate_policies(&execution)
+        .unwrap()
+        .unwrap();
+    let mapped = second
+        .tbs()
+        .extensions()
+        .policy_mappings(&execution)
+        .unwrap()
+        .unwrap();
+    assert!(
+        processing
+            .present(Some(&named), false, false, &mut ())
+            .unwrap()
+    );
+    processing
+        .carry(Some(&mapped), None, None, false, &mut ())
+        .unwrap();
     let nodes = processing.nodes.as_ref().unwrap();
-    let synthesized = nodes.iter().find(|node| node.live && node.policy == GOLD).unwrap();
-    let parent = synthesized.parent.expect("a synthesized issuer has an anyPolicy parent");
+    let synthesized = nodes
+        .iter()
+        .find(|node| node.live && node.policy == GOLD)
+        .unwrap();
+    let parent = synthesized
+        .parent_indices()
+        .next()
+        .expect("a synthesized issuer has an anyPolicy parent");
     assert_eq!(nodes[parent].depth + 1, synthesized.depth);
 }
 
@@ -431,11 +471,12 @@ fn a_caller_that_does_not_accept_any_policy_is_answered_without_it() {
 #[test]
 fn a_policy_one_authority_maps_to_another_carries_under_the_new_name() {
     // The upper authority calls it gold, the lower one silver, and the
-    // mapping says they are the same thing (RFC 5280 6.1.4 (b)).
+    // mapping says they are the same thing (RFC 5280 6.1.4 (b)). RFC9618
+    // §5.5 returns the authority-domain Gold OID after processing Silver.
     let mapping = Says::new(Some(&[GOLD]), Some(&[(GOLD, SILVER)]), None, None);
     let settled = walk(&[naming(&[GOLD]), mapping, naming(&[SILVER])], open(), &[])
         .expect("a path whose middle authority mapped the policy");
-    assert_eq!(settled, alloc::vec![SILVER]);
+    assert_eq!(settled, alloc::vec![GOLD]);
 }
 
 #[test]
@@ -574,15 +615,21 @@ fn a_caller_asking_about_a_mapped_policy_is_answered_through_the_mapping() {
         ASKED,
     )
     .expect("a path carrying the asked policy under the name it was mapped to");
-    assert_eq!(settled, alloc::vec![SILVER]);
+    // RFC9618 §5.5: the accepted user/authority policy remains Gold.
+    assert_eq!(settled, alloc::vec![GOLD]);
 }
 
 #[test]
-fn a_tree_too_small_to_name_the_asked_policies_says_so() {
-    // The narrowing puts the caller's policies back under the node that
-    // carried them as any policy, and that needs room. Discarding the
-    // refusal leaves the path answered as though it named nothing, which is
-    // a definite wrong answer where the truth is that a bound was reached.
+fn settlement_admits_work_without_growing_the_policy_graph() {
+    // RFC9618 settlement supplies Gold from terminal anyPolicy without adding
+    // graph nodes. Its output traversal still needs prior work admission;
+    // refusal must not become a successfully empty policy result.
+    struct Refuse;
+    impl crate::path::Meter for Refuse {
+        fn spend(&mut self, _work: u64) -> crate::Result<bool> {
+            Ok(false)
+        }
+    }
     const ASKED: &[Oid<'static>] = &[GOLD];
 
     let parser = Parser::der(crate::fixtures::memory());
@@ -595,18 +642,30 @@ fn a_tree_too_small_to_name_the_asked_policies_says_so() {
         .unwrap()
         .unwrap();
 
-    // The root and the one node the certificate adds fill the tree.
-    let mut processing = Processing::new(1, open(), 2, &crate::fixtures::memory(), 0)
-        .expect("room this test allows");
+    // Root, terminal anyPolicy and its edge exactly fill the graph ceiling.
+    let execution = crate::fixtures::memory();
+    let mut processing =
+        Processing::new(1, open(), 3, &execution, 0).expect("room this test allows");
     assert_eq!(
         processing.present(Some(&named), false, true, &mut ()),
         Ok(true)
     );
 
     assert!(matches!(
-        processing.settle(None, ASKED, &mut ()),
+        processing.settle(None, ASKED, &mut Refuse),
         Err(Overflow::Limit)
     ));
+    let mut processing = Processing::new(1, open(), 3, &execution, 0).unwrap();
+    assert!(
+        processing
+            .present(Some(&named), false, true, &mut ())
+            .unwrap()
+    );
+    assert_eq!(processing.nodes(), 2);
+    assert_eq!(
+        processing.settle(None, ASKED, &mut ()).unwrap().policies(),
+        ASKED
+    );
 }
 
 #[test]
@@ -792,10 +851,9 @@ fn a_tree_grown_past_what_its_expectations_leave_room_for_says_so() {
     // room the expectations are still holding, and the path settles as
     // though the bound had been kept.
     //
-    // Two policies, then a mapping that leaves one identifier expected, and
-    // a certificate that continues both branches. Five is room for the
-    // three nodes and the mapping while it is applied, and room for four
-    // nodes beside the identifier that outlives it.
+    // Two policies retain three nodes and two edges. Mapping adds one expected
+    // OID, filling six units. A further node and edge cannot fit while that
+    // expectation is still needed to match the next certificate.
     let parser = Parser::der(crate::fixtures::memory());
     let first = Says::new(Some(&[GOLD, SILVER]), Some(&[(GOLD, BRONZE)]), None, None);
     let second = naming(&[BRONZE, SILVER]);
@@ -821,7 +879,7 @@ fn a_tree_grown_past_what_its_expectations_leave_room_for_says_so() {
         .expect("the extension this test wrote")
         .expect("a value this test wrote");
 
-    let mut processing = Processing::new(2, open(), 5, &crate::fixtures::memory(), 0)
+    let mut processing = Processing::new(2, open(), 6, &crate::fixtures::memory(), 0)
         .expect("room this test allows");
     assert_eq!(
         processing.present(Some(&named), false, false, &mut ()),
@@ -832,9 +890,8 @@ fn a_tree_grown_past_what_its_expectations_leave_room_for_says_so() {
         Ok(())
     );
 
-    // Three nodes and one identifier the mapping left behind: four of the
-    // five. The certificate below continues two branches, and only one of
-    // them fits.
+    // The ceiling must include retained parent edges and expected OIDs,
+    // rather than allowing growth against node count alone.
     assert_eq!(
         processing.present(Some(&carried), false, true, &mut ()),
         Err(Overflow::Limit)
@@ -900,13 +957,13 @@ fn mappings_nobody_will_honour_are_not_charged_for_what_they_would_have_held() {
         .expect("the extension this test wrote")
         .expect("a value this test wrote");
 
-    // Mappings are not honoured from the outset, and the tree is the root
-    // and the two policies named: three of the four the ceiling allows.
+    // Mappings are inhibited from the outset. The three nodes and two edges
+    // exactly fill five units; even one retained mapping OID would overflow.
     let inhibited = Initial {
         policy_mapping: false,
         ..open()
     };
-    let mut processing = Processing::new(2, inhibited, 4, &crate::fixtures::memory(), 0)
+    let mut processing = Processing::new(2, inhibited, 5, &crate::fixtures::memory(), 0)
         .expect("room this test allows");
     assert_eq!(
         processing.present(Some(&named), false, false, &mut ()),

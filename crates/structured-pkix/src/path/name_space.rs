@@ -181,15 +181,27 @@ impl<'a> Presented<'a> {
 
 /// The regions the authorities above a certificate named, one layer each.
 #[derive(Debug)]
-pub(super) struct NameSpace<'a> {
-    layers: OwnedVec<NameConstraints<'a>>,
+pub(super) struct NameSpace<'a, S = ()> {
+    layers: OwnedVec<Layer<'a, S>>,
+}
+
+#[derive(Debug)]
+struct Layer<'a, S> {
+    constraints: NameConstraints<'a>,
+    source: S,
+}
+
+impl<'a, S> core::ops::Deref for Layer<'a, S> {
+    type Target = NameConstraints<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.constraints
+    }
 }
 
 impl<'a> NameSpace<'a> {
     pub(super) fn new(execution: &Memory) -> Self {
-        Self {
-            layers: execution.vector(),
-        }
+        Self::with_sources(execution)
     }
     /// Narrows the space by what one authority said, which applies to every
     /// certificate below it and not to the authority itself.
@@ -197,7 +209,27 @@ impl<'a> NameSpace<'a> {
         &mut self,
         constraints: NameConstraints<'a>,
     ) -> core::result::Result<(), MemoryError> {
-        self.layers.try_push(constraints)
+        self.narrow_from(constraints, ())
+    }
+}
+
+impl<'a, S: Copy> NameSpace<'a, S> {
+    pub(super) fn with_sources(execution: &Memory) -> Self {
+        Self {
+            layers: execution.vector(),
+        }
+    }
+
+    /// Source identity travels with each retained constraint allocation.
+    pub(super) fn narrow_from(
+        &mut self,
+        constraints: NameConstraints<'a>,
+        source: S,
+    ) -> core::result::Result<(), MemoryError> {
+        self.layers.try_push(Layer {
+            constraints,
+            source,
+        })
     }
 
     /// Whether anything constrains the space at all, which is the common
@@ -300,19 +332,31 @@ impl<'a> NameSpace<'a> {
         recognizer: &impl Recognizer<Error = E>,
         execution: &Memory,
     ) -> CallbackResult<Admission, E> {
+        self.admits_located(subject, alternatives, recognizer, execution)
+            .map(|(admission, _)| admission)
+    }
+
+    /// Returns the source of the decisive constraint without cloning its data.
+    pub(super) fn admits_located<E>(
+        &self,
+        subject: &Name<'_>,
+        alternatives: &[GeneralName<'_>],
+        recognizer: &impl Recognizer<Error = E>,
+        execution: &Memory,
+    ) -> CallbackResult<(Admission, Option<S>), E> {
         if self.layers.is_empty() {
-            return Ok(Admission::Admitted);
+            return Ok((Admission::Admitted, None));
         }
 
-        let mut worst = Admission::Admitted;
+        let mut worst = (Admission::Admitted, None);
         for name in presented(subject, alternatives, execution) {
             match self.admits_one(name?, subject, recognizer, execution)? {
                 // Forbidden outright is the answer whatever else was found:
                 // no other region can make a name that was excluded allowed.
-                Admission::Excluded => return Ok(Admission::Excluded),
-                Admission::NotPermitted => worst = Admission::NotPermitted,
-                Admission::Unenforceable if worst == Admission::Admitted => {
-                    worst = Admission::Unenforceable;
+                decision @ (Admission::Excluded, _) => return Ok(decision),
+                decision @ (Admission::NotPermitted, _) => worst = decision,
+                decision @ (Admission::Unenforceable, _) if worst.0 == Admission::Admitted => {
+                    worst = decision;
                 }
                 _ => {}
             }
@@ -327,8 +371,8 @@ impl<'a> NameSpace<'a> {
         origin: &Name<'_>,
         recognizer: &impl Recognizer<Error = E>,
         execution: &Memory,
-    ) -> CallbackResult<Admission, E> {
-        let mut worst = Admission::Admitted;
+    ) -> CallbackResult<(Admission, Option<S>), E> {
+        let mut worst = (Admission::Admitted, None);
         for layer in &self.layers {
             // Forbidden first: a region that excludes a name excludes it
             // however many other regions allow it (RFC 5280 6.1.4 (g)).
@@ -338,7 +382,7 @@ impl<'a> NameSpace<'a> {
                     .charge_work(1)
                     .map_err(|reason| origin.resource(reason))?;
                 match fit(region.base(), name, origin, recognizer, execution)? {
-                    Fit::Inside => return Ok(Admission::Excluded),
+                    Fit::Inside => return Ok((Admission::Excluded, Some(layer.source))),
                     Fit::Unknown => unreadable = true,
                     Fit::Outside | Fit::Elsewhere => {}
                 }
@@ -370,14 +414,20 @@ impl<'a> NameSpace<'a> {
             if !inside && spoken_for {
                 // A region this crate cannot match leaves the question open
                 // rather than answered against the certificate.
-                return Ok(if unreadable {
+                // Keep looking for an explicit exclusion in later layers.
+                // The report gives exclusion precedence over a permitted-set
+                // miss; RFC5280 §6.1.3(b,c) requires both constraints to hold.
+                let admission = if unreadable {
                     Admission::Unenforceable
                 } else {
                     Admission::NotPermitted
-                });
+                };
+                if admission == Admission::NotPermitted || worst.0 == Admission::Admitted {
+                    worst = (admission, Some(layer.source));
+                }
             }
-            if unreadable && worst == Admission::Admitted {
-                worst = Admission::Unenforceable;
+            if unreadable && worst.0 == Admission::Admitted {
+                worst = (Admission::Unenforceable, Some(layer.source));
             }
         }
         Ok(worst)

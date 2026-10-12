@@ -11,9 +11,23 @@ resource budgets and external data acquisition.
 | `structured-asn1` | Borrowed BER/DER values, exact byte ranges and shared parsing budgets |
 | `structured-pkix` | Borrowed X.509 certificates and provider-neutral path validation |
 
-The packages are being extracted and are not yet published. CMS,
+Both packages are published on crates.io with a shared workspace version. CMS,
 timestamp and XML advanced-signature mechanisms will be listed here when their
 standalone contracts and consumer integrations are verified.
+
+## Releases
+
+`structured-asn1` and `structured-pkix` use one release-plz version group.
+Release-plz prepares a version/changelog PR using the organization release bot;
+merging that PR publishes the packages after CI succeeds on its exact main commit.
+Dependencies are published before their dependants. Git tags and release notes
+retain each package's name, even though both packages share their version.
+
+Registry publishing uses OIDC, bound to this repository, `release-plz.yml` and
+the `release` environment. No long-lived crates.io token is stored in GitHub.
+The workflow's manual run verifies token exchange without uploading
+a new version. First-time publication of a new package still requires an owner
+to bootstrap it and register its trusted publisher on crates.io.
 
 ## Development
 
@@ -24,6 +38,11 @@ and the `wasm32-unknown-unknown` and `thumbv7em-none-eabihf` targets.
 Verify distributable archives with `bash scripts/check-packages.sh`; it uses
 fresh temporary package state so earlier same-version workspace archives cannot
 substitute stale source during verification.
+Release-trigger regressions use GitHub's expression evaluator: run
+`npm ci --prefix .github/tests --ignore-scripts` followed by
+`npm run check --prefix .github/tests`. CI runs the same checks before a main
+commit can approve publication, including manual/fork refusals and preservation
+of separate main-push validation runs.
 
 Mechanism processing admits allocation capacity and input-dependent work through
 an explicit shared `Memory`. Owned results retain their storage charge until

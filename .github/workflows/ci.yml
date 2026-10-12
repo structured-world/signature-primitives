@@ -19,7 +19,7 @@ jobs:
   release-gates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: .github/tests
       - run: npm run check
@@ -32,7 +32,7 @@ jobs:
       matrix:
         features: ["", "--all-features"]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Toolchain
         run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
       - name: Test runner
@@ -48,14 +48,14 @@ jobs:
       matrix:
         target: [wasm32-unknown-unknown, thumbv7em-none-eabihf]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
       - run: cargo +stable check --locked --workspace --no-default-features --target ${{ matrix.target }}
 
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install 1.92.0 --profile minimal
       - run: cargo +1.92.0 check --locked --workspace --all-targets
       - name: Test runner
@@ -65,6 +65,6 @@ jobs:
   package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install stable --profile minimal
       - run: bash scripts/check-packages.sh

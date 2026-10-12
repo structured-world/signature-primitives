@@ -1,0 +1,14 @@
+[workspace]
+release_always = false
+git_release_enable = true
+changelog_update = true
+
+[[package]]
+name = "structured-asn1"
+version_group = "primitives"
+changelog_include = ["structured-pkix"]
+
+[[package]]
+name = "structured-pkix"
+version_group = "primitives"
+changelog_include = ["structured-asn1"]

@@ -38,7 +38,7 @@ pub enum DelegationFailure {
     IssuerKeyBinding,
     /// The delegate lacks explicit id-kp-OCSPSigning; anyExtendedKeyUsage is not it.
     SigningPurpose,
-    /// Present keyUsage forbids digital signatures.
+    /// Present keyUsage allows neither applicable object-signing use.
     KeyUsage,
 }
 
@@ -117,10 +117,7 @@ pub fn check_delegate<'a, V: Verify, W: Watch, R: Recognizer>(
     if !purposes.has(oid::OCSP_SIGNING, execution)? {
         return Ok(Delegation::Rejected(DelegationFailure::SigningPurpose));
     }
-    if extensions
-        .key_usage(execution)?
-        .is_some_and(|usage| !usage.digital_signature())
-    {
+    if !super::authority::signing_usage(responder, execution)? {
         return Ok(Delegation::Rejected(DelegationFailure::KeyUsage));
     }
     let revocation = match extensions.get(oid::OCSP_NO_CHECK, execution)? {

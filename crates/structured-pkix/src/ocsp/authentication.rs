@@ -185,7 +185,7 @@ impl<'a> BasicResponse<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures::{CertificateParts, bits, context, octets, seq, tlv};
+    use crate::fixtures::{CertificateParts, bits, context, extension, octets, seq, tlv};
     use core::{cell::Cell, num::NonZeroUsize};
     use structured_asn1::{BitString, Parser};
 
@@ -244,6 +244,78 @@ mod tests {
             assert_eq!(signed.as_ptr(), self.signed.as_ptr());
             assert_eq!(signed, self.signed);
             Ok(self.signature_answer)
+        }
+    }
+
+    #[test]
+    fn issuer_binding_enforces_object_signing_key_usage() {
+        // RFC5280 4.2.1.3: certificate/CRL signing bits cannot authorize an
+        // OCSP object signature; either object-signing bit is sufficient.
+        for (usage, permitted) in [
+            (None, true),
+            (Some([7, 0x80]), true),
+            (Some([6, 0x40]), true),
+            (Some([1, 0x06]), false),
+            (Some([5, 0x20]), false),
+        ] {
+            let certificate_bytes = CertificateParts {
+                extensions: usage
+                    .map(|value| seq(&[extension(crate::oid::KEY_USAGE, true, &tlv(3, &value))])),
+                ..CertificateParts::default()
+            }
+            .build();
+            let execution = crate::fixtures::memory();
+            let parser = Parser::der(execution.clone());
+            let issuer = Certificate::read(&parser, &certificate_bytes, 100).unwrap();
+            let algorithm = issuer.signature_algorithm().as_bytes();
+            let timestamp = tlv(24, b"20261012120000Z");
+            let id = seq(&[
+                algorithm.to_vec(),
+                octets(&[0x11; 20]),
+                octets(&[0x22; 20]),
+                tlv(2, &[1]),
+            ]);
+            let single = seq(&[id, tlv(0x80, &[]), timestamp.clone()]);
+            let data = seq(&[
+                context(2, &[octets(&[0x33; 20])]),
+                timestamp,
+                seq(&[single]),
+            ]);
+            let bytes = seq(&[data, algorithm.to_vec(), bits(&[0xab])]);
+            let mut reader = parser.read(&bytes, 700).unwrap();
+            let root = reader.next_element().unwrap().unwrap();
+            let response = super::super::read_basic(&reader, &root).unwrap();
+            let key = WorkingKey::standing(issuer.tbs().public_key());
+            let provider = Provider {
+                key: issuer.tbs().public_key().key().as_bytes(),
+                signed: response.signed_bytes(),
+                hashes: Cell::new(0),
+                signatures: Cell::new(0),
+                width: 20,
+                digest_answer: Some(true),
+                signature_answer: Verified::Yes,
+                failure: false,
+            };
+            let SignatureAuthentication::Signed(signed) = response
+                .authenticate_signature(&issuer, key, &provider, &provider, &execution)
+                .unwrap()
+            else {
+                panic!("signature fixture rejected");
+            };
+            let result = signed.bind_issuer(&issuer, key, &execution).unwrap();
+            assert_eq!(
+                matches!(result, super::super::AuthorityBinding::Bound(_)),
+                permitted
+            );
+            if !permitted {
+                assert!(matches!(
+                    result,
+                    super::super::AuthorityBinding::Rejected(
+                        super::super::AuthorityFailure::KeyUsage
+                    )
+                ));
+            }
+            assert_eq!(provider.signatures.get(), 1);
         }
     }
 

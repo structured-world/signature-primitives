@@ -73,6 +73,22 @@ fn inspect_extensions(
 }
 
 #[test]
+fn content_commitment_authorizes_delegated_ocsp_signing() {
+    // RFC5280 4.2.1.12 explicitly permits nonRepudiation/contentCommitment
+    // alone with OCSPSigning; rejecting it must not suppress path checking.
+    inspect_extensions(
+        Some(seq(&[
+            purpose(oid::OCSP_SIGNING),
+            extension(oid::KEY_USAGE, true, &tlv(3, &[6, 0x40])),
+        ])),
+        |result, calls| {
+            assert!(matches!(result.unwrap(), Delegation::Accepted(_)));
+            assert_eq!(calls, 1);
+        },
+    );
+}
+
+#[test]
 fn purpose_key_usage_and_unknown_critical_demands_remain_distinct() {
     // Explicit OCSPSigning is required; any-purpose and other EKUs cannot
     // substitute. Critical metadata and purpose failures are distinct facts.

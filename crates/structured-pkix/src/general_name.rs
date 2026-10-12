@@ -301,8 +301,7 @@ pub(crate) fn read_as<'a>(
                     // RFC5280 §4.2.1.13 permits an empty LDAP host and leaves
                     // server selection to the caller. No host is invented.
                     // https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.13
-                    parent.charge(location.len() as u64).field(field)?;
-                    is_cps_uri(location)
+                    location_uri(parent, element, location, field)?
                 }
                 AddressForm::WithMask => {
                     is_domain(location) || location.strip_prefix('.').is_some_and(is_domain)
@@ -1559,6 +1558,64 @@ pub(crate) fn is_uri(text: &str) -> bool {
 /// <https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.4>
 pub(crate) fn is_cps_uri(text: &str) -> bool {
     uri::<false>(text)
+}
+
+fn location_uri(
+    parent: &Reader<'_>,
+    element: &Element<'_>,
+    text: &str,
+    field: &'static str,
+) -> Result<bool> {
+    // Admit generic syntax plus scheme/authority/host scans through both the
+    // producing Reader and aggregate domain before any of those scans.
+    let work = u64::try_from(text.len())
+        .ok()
+        .and_then(|n| n.checked_mul(8))
+        .and_then(|n| n.checked_add(32))
+        .ok_or_else(|| {
+            Error::resource(
+                structured_asn1::memory::MemoryError::WorkExceeded,
+                field,
+                element.span().start,
+            )
+        })?;
+    parent.charge(work).field(field)?;
+    Ok(is_location_uri(text))
+}
+
+fn is_location_uri(text: &str) -> bool {
+    if !is_cps_uri(text) {
+        return false;
+    }
+    let (scheme, rest) = text.split_once(':').expect("URI syntax checked");
+    let ftp = scheme.eq_ignore_ascii_case("ftp");
+    if !ftp && !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return true;
+    }
+    // HTTP(S) requires //authority and forbids empty hosts; FTP uses the
+    // mandatory Internet host syntax. LDAP's empty host is a separate contract.
+    // RFC9110 §§4.2.1/4.2.2; RFC1738 §§3.1/3.2.
+    // <https://www.rfc-editor.org/rfc/rfc9110#section-4.2.1>
+    // <https://www.rfc-editor.org/rfc/rfc1738#section-3.1>
+    let Some(after) = rest.strip_prefix("//") else {
+        return false;
+    };
+    let end = after.find(['/', '?', '#']).unwrap_or(after.len());
+    let authority = &after[..end];
+    let host_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if host_port.starts_with('[') {
+        // The shared grammar already checked the literal and following port.
+        return true;
+    }
+    let host = host_port
+        .split_once(':')
+        .map_or(host_port, |(host, _)| host);
+    if host.is_empty() {
+        return false;
+    }
+    !ftp || is_domain(host.strip_suffix('.').unwrap_or(host)) || host.parse::<Ipv4Addr>().is_ok()
 }
 
 fn uri<const CERTIFICATE_NAME: bool>(text: &str) -> bool {

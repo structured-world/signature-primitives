@@ -204,7 +204,7 @@ fn point_scope(
                 Error::resource(reason, "certificateList.scope", target.span().start)
             })?;
             if let GeneralName::Directory(name) = name
-                && issuer.matches(name, execution)?
+                && issuer_encoding_matches(issuer, name, execution)?
             {
                 matches = true;
                 break;
@@ -249,6 +249,27 @@ fn point_scope(
         return Ok(ScopeOutcome::NotApplicable(ScopeFailure::NoReasons));
     }
     Ok(ScopeOutcome::Applicable(reasons))
+}
+
+fn issuer_encoding_matches(
+    issuer: &Name<'_>,
+    named: &Name<'_>,
+    execution: &Memory,
+) -> Result<bool> {
+    // RFC5280 §4.2.1.13 requires exactly the same encoding for explicit
+    // cRLIssuer; ordinary DN equality remains applicable to the default issuer.
+    // <https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.13>
+    let left = issuer.as_bytes();
+    let right = named.as_bytes();
+    let work = u64::try_from(left.len().max(right.len()))
+        .ok()
+        .and_then(|n| n.checked_mul(2))
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(|| named.resource(structured_asn1::memory::MemoryError::WorkExceeded))?;
+    execution
+        .charge_work(work)
+        .map_err(|reason| named.resource(reason))?;
+    Ok(left == right)
 }
 
 fn point_name_matches_directory(

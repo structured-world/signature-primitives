@@ -153,6 +153,75 @@ fn complete_crl_number_requires_noncriticality_and_valid_nonnegative_syntax() {
 }
 
 #[test]
+fn explicit_crl_issuer_requires_original_name_encoding() {
+    // RFC5280 4.2.1.13 mandates identical cRLIssuer DER, even where ordinary
+    // Name matching equates PrintableString and UTF8String. An indirect source
+    // cannot gain coverage through a different target issuer's fallback.
+    use structured_pkix::crl::{ScopeFailure, ScopeOutcome};
+    let alternate = tlv(
+        48,
+        &tlv(
+            49,
+            &tlv(48, &[tlv(6, &[0x55, 4, 3]), tlv(19, b"A")].concat()),
+        ),
+    );
+    let other_issuer = tlv(
+        48,
+        &tlv(
+            49,
+            &tlv(48, &[tlv(6, &[0x55, 4, 3]), tlv(12, b"B")].concat()),
+        ),
+    );
+    let idp_extension = tlv(
+        48,
+        &[
+            tlv(6, &[0x55, 0x1d, 0x1c]),
+            tlv(1, &[0xff]),
+            tlv(4, &tlv(48, &tlv(0x84, &[0xff]))),
+        ]
+        .concat(),
+    );
+    let bytes = crl(&tbs(Some(1), &tlv(0xa0, &tlv(48, &idp_extension))));
+    let issuer_bytes = certificate(false, None, 7);
+    let execution = memory(128 * 1024, 1_000_000);
+    let parser = Parser::der(execution.clone());
+    let signer = structured_pkix::Certificate::read(&parser, &issuer_bytes, 100).unwrap();
+    let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
+    let proof = authenticated(&parsed, &signer, &execution);
+    for (named_issuer, exact) in [(issuer(), true), (alternate, false)] {
+        let point = tlv(48, &tlv(0xa2, &tlv(0xa4, &named_issuer)));
+        let dp_extension = tlv(
+            48,
+            &[tlv(6, &[0x55, 0x1d, 0x1f]), tlv(4, &tlv(48, &point))].concat(),
+        );
+        let target_body = tlv(
+            48,
+            &[
+                tlv(0xa0, &[2, 1, 2]),
+                tlv(2, &[1]),
+                algorithm(),
+                other_issuer.clone(),
+                tlv(48, &[date(), date()].concat()),
+                issuer(),
+                tlv(48, &[algorithm(), tlv(3, &[0, 7])].concat()),
+                tlv(0xa3, &tlv(48, &dp_extension)),
+            ]
+            .concat(),
+        );
+        let target_bytes = crl(&target_body);
+        let target = structured_pkix::Certificate::read(&parser, &target_bytes, 300).unwrap();
+        assert_eq!(
+            proof.scope(&target, &execution).unwrap(),
+            if exact {
+                ScopeOutcome::Applicable(structured_pkix::crl::Reasons::ALL)
+            } else {
+                ScopeOutcome::NotApplicable(ScopeFailure::Issuer)
+            }
+        );
+    }
+}
+
+#[test]
 fn direct_entry_issuer_uses_dn_equality_instead_of_certificate_issuer_encoding_rule() {
     // RFC5280 §7.1 compares UTF8String and PrintableString with the common DN
     // rules. §5.3.3's original encoding rule belongs to certificateIssuer,
@@ -471,6 +540,76 @@ fn freshness_preserves_deadlines_missing_fields_and_utc_uncertainty() {
             .unwrap(),
         Freshness::InvalidUpdateOrder
     );
+}
+
+#[test]
+fn distribution_point_locations_preserve_required_scheme_authorities() {
+    // The LDAP empty-host exception must not admit malformed HTTP/HTTPS/FTP
+    // locations. Both certificate DP and CRL IDP readers use this same grammar.
+    for (location, valid) in [
+        ("http:", false),
+        ("http:crl", false),
+        ("http:///crl", false),
+        ("HTTPS://:443/crl", false),
+        ("https://user@/crl", false),
+        ("ftp:", false),
+        ("ftp:/crl", false),
+        ("ftp:///crl", false),
+        ("http://crl.example/a", true),
+        ("https://[2001:db8::1]:443/a?q=1#id", true),
+        ("ftp://user@crl.example/a;type=i", true),
+        ("ldap:///cn=CA,dc=example,dc=com", true),
+        ("urn:example:crl", true),
+    ] {
+        let name = tlv(0xa0, &tlv(0xa0, &tlv(0x86, location.as_bytes())));
+        let idp_extension = tlv(
+            48,
+            &[
+                tlv(6, &[0x55, 0x1d, 0x1c]),
+                tlv(1, &[0xff]),
+                tlv(4, &tlv(48, &name)),
+            ]
+            .concat(),
+        );
+        let dp_extension = tlv(
+            48,
+            &[
+                tlv(6, &[0x55, 0x1d, 0x1f]),
+                tlv(4, &tlv(48, &tlv(48, &name))),
+            ]
+            .concat(),
+        );
+        let bytes = crl(&tbs(
+            Some(1),
+            &tlv(0xa0, &tlv(48, &[idp_extension, dp_extension].concat())),
+        ));
+        let execution = memory(128 * 1024, 1_000_000);
+        let parser = Parser::der(execution.clone());
+        let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
+        let extension = parsed
+            .tbs()
+            .extensions()
+            .get(structured_pkix::oid::ISSUING_DISTRIBUTION_POINT, &execution)
+            .unwrap()
+            .unwrap();
+        let result = structured_pkix::crl::IssuingDistributionPoint::read(extension, &execution);
+        assert_eq!(result.is_ok(), valid, "IDP: {location}");
+        if !valid {
+            assert_eq!(result.unwrap_err().code(), ErrorCode::MalformedValue);
+        }
+
+        let extension = parsed
+            .tbs()
+            .extensions()
+            .get(structured_pkix::oid::CRL_DISTRIBUTION_POINTS, &execution)
+            .unwrap()
+            .unwrap();
+        let result = structured_pkix::access::DistributionPoints::read(extension, &execution);
+        assert_eq!(result.is_ok(), valid, "DP: {location}");
+        if !valid {
+            assert_eq!(result.unwrap_err().code(), ErrorCode::MalformedValue);
+        }
+    }
 }
 
 #[test]

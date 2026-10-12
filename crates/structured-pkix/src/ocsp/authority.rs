@@ -30,6 +30,8 @@ pub enum AuthorityFailure {
     Signer,
     /// Signature was checked with a different effective parameter state.
     EffectiveKey,
+    /// Present keyUsage allows neither applicable object-signing use.
+    KeyUsage,
 }
 
 /// Signature and issuer-scope facts. Caller trust provenance, intended recipient,
@@ -105,6 +107,17 @@ fn equal_key(
     }
 }
 
+pub(super) fn signing_usage(certificate: &Certificate<'_>, execution: &Memory) -> Result<bool> {
+    // RFC5280 §§4.2.1.3/4.2.1.12: OCSP is neither a certificate nor a CRL
+    // signature; digitalSignature and/or contentCommitment are applicable.
+    // <https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.12>
+    Ok(certificate
+        .tbs()
+        .extensions()
+        .key_usage(execution)?
+        .is_none_or(|usage| usage.digital_signature() || usage.content_commitment()))
+}
+
 impl<'r, 'a> SignedResponse<'r, 'a> {
     /// Bind issuer-signed response to the actual authenticated target issuing
     /// key, including inherited parameters. Caller supplies issuer trust and
@@ -142,6 +155,9 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
         }
         if !equal_key(self.key(), issuing_key, execution, at)? {
             return Ok(AuthorityBinding::Rejected(AuthorityFailure::EffectiveKey));
+        }
+        if !signing_usage(issuer, execution)? {
+            return Ok(AuthorityBinding::Rejected(AuthorityFailure::KeyUsage));
         }
         Ok(AuthorityBinding::Bound(ScopedResponse {
             signed: self,

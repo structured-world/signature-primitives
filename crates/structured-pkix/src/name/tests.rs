@@ -162,18 +162,18 @@ fn attribute_search_refuses_once_in_the_current_domain() {
 }
 
 #[test]
-fn every_named_attribute_kind_folds_inside_its_syntax() {
-    // Every kind this crate names sits in the syntax table: one left out
-    // would compare by bytes, and two spellings of one name would fail to
-    // match, reporting a genuine path as unproven.
+fn every_named_attribute_uses_its_equality_rule() {
+    // Every named kind has a syntax and equality rule. Initials and
+    // generationQualifier ignore case; pseudonym uses caseExactMatch.
     for kind in [oid::INITIALS, oid::GENERATION_QUALIFIER, oid::PSEUDONYM] {
         let one = seq(&[part(kind, printable("AB"))]);
         let other = seq(&[part(kind, utf8("ab"))]);
         let parser = Parser::der(crate::fixtures::memory());
         let one = parse(&parser, &one).unwrap();
         let other = parse(&parser, &other).unwrap();
-        assert!(
+        assert_eq!(
             one.matches(&other, &crate::fixtures::memory()).unwrap(),
+            kind != oid::PSEUDONYM,
             "{kind:?}"
         );
     }
@@ -720,8 +720,9 @@ fn an_oversized_personal_name_attribute_never_folds() {
     let right = parse(&parser, &genuine).unwrap();
     let folded = parse(&parser, &folded).unwrap();
 
-    // At the bound the case still folds; past it only bytes equal bytes.
-    assert!(right.matches(&folded, &crate::fixtures::memory()).unwrap());
+    // Pseudonym's caseExactMatch (RFC2985 §5.2.9) preserves case even at
+    // the bound; exceeding the bound still prevents space preparation.
+    assert!(!right.matches(&folded, &crate::fixtures::memory()).unwrap());
     assert!(!left.matches(&right, &crate::fixtures::memory()).unwrap());
 }
 

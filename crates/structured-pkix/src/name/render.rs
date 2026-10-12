@@ -43,7 +43,7 @@ fn render(name: &Name<'_>, execution: &Memory, readable: bool) -> Result<OwnedSt
             execution
                 .charge_work(
                     (attribute.kind.as_bytes().len() as u64)
-                        .checked_mul(9)
+                        .checked_mul(super::selector::REGISTERED_DESCRIPTORS as u64)
                         .ok_or_else(|| fail(structured_asn1::memory::MemoryError::WorkExceeded))?,
                 )
                 .map_err(fail)?;
@@ -139,6 +139,66 @@ mod tests {
     use crate::name::Selector;
     use crate::{fixtures, name, oid};
     use structured_asn1::Parser;
+
+    #[test]
+    fn additional_registered_descriptors_render_complete_text() {
+        // RFC4514 §2.3 uses known registered names, not only its mandatory
+        // nine. Numeric/unregistered types must retain #BER under §2.4.
+        let memory = fixtures::memory();
+        let parser = Parser::der(memory.clone());
+        for (kind, label, tag, value) in [
+            (oid::SERIAL_NUMBER, "serialNumber", 0x13, "ABC"),
+            (oid::SURNAME, "surname", 0x0c, "Doe"),
+            (oid::GIVEN_NAME, "givenName", 0x0c, "Alice"),
+            (oid::INITIALS, "initials", 0x0c, "AB"),
+            (
+                oid::GENERATION_QUALIFIER,
+                "generationQualifier",
+                0x0c,
+                "III",
+            ),
+            (oid::TITLE, "title", 0x0c, "Engineer"),
+            (oid::DN_QUALIFIER, "dnQualifier", 0x13, "ABC"),
+            (
+                oid::EMAIL_ADDRESS,
+                "emailAddress",
+                0x16,
+                "alice@example.com",
+            ),
+            (oid::PSEUDONYM, "pseudonym", 0x0c, "Alice"),
+        ] {
+            let bytes = fixtures::seq(&[fixtures::set(&[fixtures::seq(&[
+                fixtures::oid(kind),
+                fixtures::tlv(tag, value.as_bytes()),
+            ])])]);
+            let mut reader = parser.read(&bytes, 0).unwrap();
+            let element = reader.next_element().unwrap().unwrap();
+            let name = name::read(&reader, &element, "name").unwrap();
+            let output = name.rfc4514_readable(&memory).unwrap();
+            let rendered = output.as_str(&memory).unwrap();
+            assert_eq!(rendered, alloc::format!("{label}={value}"));
+            assert!(
+                Selector::parse(rendered, &memory)
+                    .unwrap()
+                    .matches_name(&name, &memory)
+                    .unwrap()
+            );
+        }
+        let bytes = fixtures::seq(&[fixtures::set(&[fixtures::seq(&[
+            fixtures::oid(oid::ORGANIZATION_IDENTIFIER),
+            fixtures::utf8("ABC"),
+        ])])]);
+        let mut reader = parser.read(&bytes, 0).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let name = name::read(&reader, &element, "name").unwrap();
+        assert_eq!(
+            name.rfc4514_readable(&memory)
+                .unwrap()
+                .as_str(&memory)
+                .unwrap(),
+            "2.5.4.97=#0C03414243"
+        );
+    }
 
     #[test]
     fn reversible_and_readable_names_match_without_changing_original_tags() {

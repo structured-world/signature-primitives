@@ -229,7 +229,11 @@ fn ber(bytes: &[u8], kind: Oid<'_>, parser: &Parser, execution: &Memory) -> Resu
     if !reader.is_empty() {
         return Err(malformed(element.span().end()));
     }
-    super::walk_der(&reader, &element, FIELD, Strings::Checked)?;
+    // RFC4514 §2.4's reversible #BER form preserves the original value,
+    // including string payloads Name retained for opaque wire identity.
+    // Structural BER remains checked; textual assertions are validated in project.
+    // https://www.rfc-editor.org/rfc/rfc4514.html#section-2.4
+    super::walk_der(&reader, &element, FIELD, Strings::AsWritten)?;
     let tag = element.tag();
     let start = element.as_bytes().len()
         - element.contents().len()
@@ -493,16 +497,23 @@ const DESCRIPTORS: &[(&str, Oid<'static>)] = &[
     ("organizationIdentifier", oid::ORGANIZATION_IDENTIFIER),
 ];
 
-/// RFC 4514 §3's mandatory registered names. Input aliases do not imply
-/// that an arbitrary short name is registered for serialization (§2.3).
+/// RFC4514 §2.3 requires every registered descriptor known here, including
+/// RFC4519 names beyond §3's mandatory nine and emailAddress/pseudonym.
+/// organizationIdentifier is an input alias, absent from this IANA registry.
+/// <https://www.iana.org/assignments/ldap-parameters/ldap-parameters.xhtml>
+pub(super) const REGISTERED_DESCRIPTORS: usize = 18;
+
 pub(super) fn registered_name(kind: Oid<'_>) -> Option<&'static str> {
-    DESCRIPTORS[..9]
+    DESCRIPTORS[..REGISTERED_DESCRIPTORS]
         .iter()
         .find(|(_, oid)| *oid == kind)
         .map(|(name, _)| *name)
 }
 
 fn descriptor(text: &str) -> Option<Oid<'static>> {
+    if text.eq_ignore_ascii_case("sn") {
+        return Some(oid::SURNAME);
+    }
     DESCRIPTORS
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(text))

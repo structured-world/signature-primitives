@@ -83,6 +83,7 @@ enum Canonical<'a> {
     // ASCII NFKC is identity; folding and whitespace handling stream without
     // a canonical copy, which avoids per-attribute allocations on this path.
     Ascii(&'a str),
+    CaseExactAscii(&'a str),
     // DN IA5 identities have exact ASCII case-insensitive rules, without
     // DirectoryString's whitespace mapping/compression or Unicode preparation.
     ExactAscii(&'a str),
@@ -136,7 +137,9 @@ impl<'a> Prepared<'a> {
 impl Canonical<'_> {
     fn work(&self) -> u64 {
         match self {
-            Self::Ascii(text) | Self::ExactAscii(text) => text.len() as u64,
+            Self::Ascii(text) | Self::CaseExactAscii(text) | Self::ExactAscii(text) => {
+                text.len() as u64
+            }
             Self::Unicode(characters) => characters.len() as u64,
         }
     }
@@ -144,6 +147,9 @@ impl Canonical<'_> {
     fn characters(&self) -> Characters<'_> {
         match self {
             Self::Ascii(text) => Characters::Ascii(Spaced::over(Mapped::over(text.chars()))),
+            Self::CaseExactAscii(text) => {
+                Characters::CaseExactAscii(Spaced::over(Mapped::over(text.chars())))
+            }
             Self::ExactAscii(text) => Characters::ExactAscii(text.bytes()),
             Self::Unicode(characters) => Characters::Unicode(characters.iter().copied()),
         }
@@ -152,6 +158,7 @@ impl Canonical<'_> {
 
 enum Characters<'a> {
     Ascii(Spaced<Mapped<core::str::Chars<'a>>>),
+    CaseExactAscii(Spaced<Mapped<core::str::Chars<'a>, false>>),
     ExactAscii(core::str::Bytes<'a>),
     Unicode(core::iter::Copied<core::slice::Iter<'a, char>>),
 }
@@ -161,6 +168,7 @@ impl Iterator for Characters<'_> {
     fn next(&mut self) -> Option<char> {
         match self {
             Self::Ascii(characters) => characters.next(),
+            Self::CaseExactAscii(characters) => characters.next(),
             Self::ExactAscii(bytes) => Some(char::from(bytes.next()?.to_ascii_lowercase())),
             Self::Unicode(characters) => characters.next(),
         }
@@ -286,9 +294,32 @@ fn canonical_primitive<'a>(
     ) && attribute.value.contents.is_ascii()
     {
         let text = core::str::from_utf8(attribute.value.contents).expect("ASCII is valid UTF-8");
-        return Ok(Some(Canonical::Ascii(text)));
+        return Ok(Some(if attribute.kind == crate::oid::PSEUDONYM {
+            Canonical::CaseExactAscii(text)
+        } else {
+            Canonical::Ascii(text)
+        }));
     }
-    let normalized = super::normalize::nfkc(memory, Mapped::over(attribute.value.decoded_chars()))?;
+    // RFC2985 §5.2.9 assigns caseExactMatch to pseudonym (2.5.4.65).
+    // RFC4517 §4.2.4 keeps mapping, NFKC and space handling but omits case
+    // folding. Both rules use the same preparation kernel, specialized here.
+    // https://www.rfc-editor.org/rfc/rfc2985.html#section-5.2.9
+    // https://www.rfc-editor.org/rfc/rfc4517.html#section-4.2.4
+    if attribute.kind == crate::oid::PSEUDONYM {
+        unicode::<false>(attribute, memory)
+    } else {
+        unicode::<true>(attribute, memory)
+    }
+}
+
+fn unicode<const FOLD_CASE: bool>(
+    attribute: Attribute<'_>,
+    memory: &Memory,
+) -> Result<Option<Canonical<'static>>, MemoryError> {
+    let normalized = super::normalize::nfkc(
+        memory,
+        Mapped::<_, FOLD_CASE>::over(attribute.value.decoded_chars()),
+    )?;
     memory.charge_work(normalized.len() as u64)?;
     let mut direction = Direction::default();
     for &character in &normalized {
@@ -299,7 +330,7 @@ fn canonical_primitive<'a>(
     }
     memory.charge_work(normalized.len() as u64)?;
     let mut canonical = memory.vector();
-    for character in Spaced::over(Mapped::over(normalized.iter().copied())) {
+    for character in Spaced::over(Mapped::<_, FOLD_CASE>::over(normalized.iter().copied())) {
         canonical.try_push(character)?;
     }
     Ok(Some(Canonical::Unicode(canonical)))

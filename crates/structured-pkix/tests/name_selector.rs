@@ -42,6 +42,7 @@ fn escaped_octets_are_decoded_once_and_rdn_order_is_preserved() {
         ("CN=A\\2CB\\+C=D", "cn=A\\,B\\2BC\\=D"),
         ("CN=\\C3\\A9", "CN=é"),
         ("CN=Straße", "CN=STRASSE"),
+        ("SN=Doe", "surname=doe"),
         ("CN=A+OU=B,C=UA", "OU=b+CN=a,C=ua"),
         ("CN=\\\\2C", "CN=\\5C2C"),
         ("", ""),
@@ -77,8 +78,6 @@ fn complete_ber_segments_reassemble_before_character_validation() {
         "CN=#2C030C0141",
         "CN=#2C80040141000000",
         "CN=#2C80040141",
-        "CN=#3E03040100",
-        "CN=#2C030401FF",
         "CN=#2200",
     ] {
         assert!(Selector::parse(text, &execution).is_err(), "{text}");
@@ -101,6 +100,41 @@ fn reversible_ber_certificate_name_uses_the_same_segmented_identity() {
     assert_eq!(text.as_str(&execution).unwrap(), "CN=#2C800401C30401A90000");
     let selected = Selector::parse(text.as_str(&execution).unwrap(), &execution).unwrap();
     assert!(selected.matches_name(&name, &execution).unwrap());
+}
+
+#[test]
+fn reversible_codec_retains_malformed_string_octets() {
+    // Name retains malformed string payloads for opaque wire identity. The
+    // reversible codec must preserve those bytes without accepting them as text.
+    let execution = memory(64 * 1024, 1_000_000);
+    for value in [
+        &[0x0c, 1, 0xff][..],
+        &[0x2c, 3, 4, 1, 0xff][..],
+        &[0x3e, 3, 4, 1, 0][..],
+    ] {
+        // Outer lengths include the OID TLV and the original value TLV.
+        let mut bytes = vec![
+            0x30,
+            u8::try_from(9 + value.len()).unwrap(),
+            0x31,
+            u8::try_from(7 + value.len()).unwrap(),
+            0x30,
+            u8::try_from(5 + value.len()).unwrap(),
+            6,
+            3,
+            0x55,
+            4,
+            3,
+        ];
+        bytes.extend_from_slice(value);
+        let parser = Parser::ber(execution.clone());
+        let mut reader = parser.read(&bytes, 41).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let name = name::read(&reader, &element, "name").unwrap();
+        let text = name.rfc4514(&execution).unwrap();
+        let selected = Selector::parse(text.as_str(&execution).unwrap(), &execution).unwrap();
+        assert!(selected.matches_name(&name, &execution).unwrap());
+    }
 }
 
 #[test]
@@ -136,6 +170,59 @@ fn unknown_assertion_semantics_are_distinct_from_opaque_identity() {
             .unwrap_err()
             .code(),
         ErrorCode::MalformedValue
+    );
+}
+
+#[test]
+fn pseudonym_preparation_preserves_case() {
+    // RFC2985 §5.2.9 assigns caseExactMatch to 2.5.4.65. Whitespace/NFKC
+    // preparation still applies, but neither ASCII nor Unicode case may fold.
+    let execution = memory(64 * 1024, 2_000_000);
+    for (left, right, equal) in [
+        ("pseudonym=Alice", "pseudonym=alice", false),
+        ("pseudonym=Straße", "pseudonym=STRASSE", false),
+        ("pseudonym=\\ Alice\\ ", "pseudonym=Alice", true),
+        ("pseudonym=Ａlice", "pseudonym=Alice", true),
+        ("pseudonym=É", "pseudonym=E\\CC\\81", true),
+        ("pseudonym=É", "pseudonym=é", false),
+    ] {
+        let left = Selector::parse(left, &execution).unwrap();
+        let right = Selector::parse(right, &execution).unwrap();
+        assert_eq!(left.matches(&right, &execution).unwrap(), equal);
+    }
+    let bytes = [
+        0x30, 16, 0x31, 14, 0x30, 12, 6, 3, 0x55, 4, 65, 12, 5, b'A', b'l', b'i', b'c', b'e',
+    ];
+    let parser = Parser::der(execution.clone());
+    let mut reader = parser.read(&bytes, 0).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let name = name::read(&reader, &element, "name").unwrap();
+    let same = Selector::parse("pseudonym=Alice", &execution).unwrap();
+    let different = Selector::parse("pseudonym=alice", &execution).unwrap();
+    let mut lower_bytes = bytes;
+    lower_bytes[13] = b'a';
+    let mut lower_reader = parser.read(&lower_bytes, 31).unwrap();
+    let lower_element = lower_reader.next_element().unwrap().unwrap();
+    let lower_name = name::read(&lower_reader, &lower_element, "name").unwrap();
+    let comparison = memory(0, 100_000);
+    assert!(same.matches_name(&name, &comparison).unwrap());
+    assert!(!different.matches_name(&name, &comparison).unwrap());
+    assert!(!name.matches(&lower_name, &comparison).unwrap());
+    assert_eq!(
+        name.order(&lower_name, &comparison).unwrap(),
+        core::cmp::Ordering::Less
+    );
+    assert_eq!(comparison.used(), 0);
+    assert!(
+        same.matches_name(&name, &memory(0, 0))
+            .unwrap_err()
+            .is_resource()
+    );
+    let ordered = name.ordered(&execution).unwrap();
+    let lower_ordered = lower_name.ordered(&execution).unwrap();
+    assert_eq!(
+        ordered.order(&lower_ordered, &comparison).unwrap(),
+        core::cmp::Ordering::Less
     );
 }
 

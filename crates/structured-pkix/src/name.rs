@@ -186,7 +186,7 @@ impl<'a> Name<'a> {
 
     /// Whether two names are the same name, by the profile's rule: the same
     /// parts in the same order, each holding the same attributes, with strings
-    /// compared ignoring case and runs of whitespace.
+    /// compared under their declared equality rule.
     ///
     /// Directory strings are compared after the preparation the profile requires
     /// (RFC 5280 7.1, over RFC 4518): the characters that carry no meaning
@@ -199,6 +199,8 @@ impl<'a> Name<'a> {
     /// IA5 emailAddress and domainComponent values instead use their exact
     /// ASCII case-insensitive rules without whitespace compression; the DN
     /// emailAddress rule covers the whole value, unlike rfc822Name mailboxes.
+    /// Pseudonym uses caseExactMatch (RFC2985 §5.2.9): the same preparation
+    /// and insignificant-space handling, with case preserved.
     ///
     /// # Errors
     /// Returns a located resource error before unfunded comparison work.
@@ -827,7 +829,7 @@ fn normalized<I: Iterator<Item = char>>(inner: I) -> Recomposed<Mapped<I>> {
 /// The characters mapped to a space are exactly the ones RFC 4518 names: tab,
 /// line feed, vertical tab, form feed, carriage return and next line, plus
 /// the separator code points, which is what `is_whitespace` names.
-struct Mapped<I> {
+struct Mapped<I, const FOLD_CASE: bool = true> {
     inner: I,
     /// What one folded character expands to, which is at most a few.
     folded: Option<Folded>,
@@ -851,7 +853,7 @@ impl Iterator for Folded {
     }
 }
 
-impl<I: Iterator<Item = char>> Mapped<I> {
+impl<I: Iterator<Item = char>, const FOLD_CASE: bool> Mapped<I, FOLD_CASE> {
     fn over(inner: I) -> Self {
         Self {
             inner,
@@ -889,7 +891,7 @@ impl<I: Iterator<Item = char>> Mapped<I> {
     }
 }
 
-impl<I: Iterator<Item = char>> Iterator for Mapped<I> {
+impl<I: Iterator<Item = char>, const FOLD_CASE: bool> Iterator for Mapped<I, FOLD_CASE> {
     type Item = char;
 
     fn next(&mut self) -> Option<char> {
@@ -908,7 +910,7 @@ impl<I: Iterator<Item = char>> Iterator for Mapped<I> {
             if c.is_whitespace() {
                 return Some(' ');
             }
-            return self.fold(c);
+            return if FOLD_CASE { self.fold(c) } else { Some(c) };
         }
         None
     }

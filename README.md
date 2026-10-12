@@ -8,6 +8,11 @@ Read ASN.1 BER/DER and X.509 certificates in Rust while preserving the original
 signed bytes. Build certification paths using your own cryptographic provider,
 trust inputs and resource budgets. Both libraries support **`no_std + alloc`**.
 
+The source version also checks an already supplied leaf-first certificate chain
+through `structured_pkix::path::validate`, returning typed static facts or
+located rejections. That API is pending a release after the initial crates.io
+0.1.0 packages; see the [supplied-chain contract](crates/structured-pkix/README.md#check-an-already-supplied-chain).
+
 ## Choose a crate
 
 | Crate | Use it for | crates.io | API docs |

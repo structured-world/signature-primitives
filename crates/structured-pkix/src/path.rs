@@ -25,18 +25,20 @@
 mod error;
 mod name_space;
 mod policy;
+mod validation;
 
 pub use error::{BuildError, BuildResult};
+pub use validation::{
+    ConstraintSource, NameConstraintFailure, Rejection, RejectionReason, Validation,
+    ValidationBounds, ValidationContext, ValidationFacts, validate,
+};
 
 use crate::algorithm::AlgorithmIdentifier;
 use crate::certificate::{Certificate, Validity};
-use crate::constraints::CertificateCount;
-use crate::error::{Result, gate};
+use crate::error::Result;
 use crate::extension::Recognizer;
-use crate::general_name::GeneralName;
 use crate::key::PublicKeyInfo;
 use crate::name::Name;
-use name_space::{Admission, NameSpace};
 use structured_asn1::memory::{Memory, OwnedMap, OwnedVec};
 use structured_asn1::{BitString, Oid};
 
@@ -134,7 +136,7 @@ pub enum Verified {
 ///
 /// "If the public key algorithm parameters are absent, the working public key
 /// parameters are inherited" from the certificate above (RFC 5280 6.1.2 (c)
-/// and 6.1.4 (c)). A key written without them is not a key anything can be
+/// and 6.1.4 (e)). A key written without them is not a key anything can be
 /// checked with on its own: the curve or the group it belongs to is written
 /// once, in an authority above it, and every key below stands in that same
 /// one. A verifier handed the encoding alone would have to answer that it
@@ -146,9 +148,9 @@ pub enum Verified {
 #[derive(Debug, Clone, Copy)]
 pub struct WorkingKey<'a> {
     key: PublicKeyInfo<'a>,
-    /// The parameters carried down, and the algorithm they belong to: they
-    /// stand only for a key of that same algorithm.
-    inherited: Option<(Oid<'a>, &'a [u8])>,
+    /// Parameters whose algorithm compatibility was admitted and established
+    /// during the transition. Getters never defer an untrusted OID comparison.
+    inherited: Option<&'a [u8]>,
 }
 
 impl<'a> WorkingKey<'a> {
@@ -174,7 +176,7 @@ impl<'a> WorkingKey<'a> {
     ///
     /// "If the certificate subjectPublicKey algorithm and the
     /// `working_public_key_algorithm` are different, set the
-    /// `working_public_key_parameters` to null" (RFC 5280 6.1.4 (d)). Nothing
+    /// `working_public_key_parameters` to null" (RFC 5280 6.1.4 (e)). Nothing
     /// is carried across a change of algorithm: a curve is not a modulus,
     /// and an authority on one algorithm certifying a key on another says
     /// nothing about how that key is written. Handing them over anyway gives
@@ -197,8 +199,7 @@ impl<'a> WorkingKey<'a> {
         if !self.key.algorithm().has_no_parameters() {
             return self.key.algorithm().parameters();
         }
-        let (algorithm, inherited) = self.inherited?;
-        (algorithm == self.key.algorithm().algorithm()).then_some(inherited)
+        self.inherited
     }
 
     /// The working key one certificate further down: this certificate's own
@@ -206,13 +207,42 @@ impl<'a> WorkingKey<'a> {
     ///
     /// The algorithm those parameters belong to travels with them, since a
     /// key further down inherits only from a key of its own algorithm.
-    #[must_use]
-    fn below(self, key: PublicKeyInfo<'a>) -> Self {
-        let algorithm = self.key.algorithm().algorithm();
-        Self {
-            key,
-            inherited: self.parameters().map(|held| (algorithm, held)),
+    fn below(
+        self,
+        certificate: &'a Certificate<'a>,
+        execution: &Memory,
+        meter: &mut impl Meter,
+    ) -> Result<Option<Self>> {
+        let key = certificate.tbs().public_key();
+        let mut inherited = None;
+        if key.algorithm().has_no_parameters()
+            && let Some(parameters) = self.parameters()
+        {
+            let previous = self.key.algorithm().algorithm().as_bytes();
+            let current = key.algorithm().algorithm().as_bytes();
+            if previous.len() == current.len() {
+                if core::ptr::eq(previous, current) {
+                    inherited = Some(parameters);
+                } else {
+                    let reads = (current.len() as u64).checked_mul(2).ok_or_else(|| {
+                        certificate
+                            .tbs()
+                            .subject()
+                            .resource(structured_asn1::memory::MemoryError::WorkExceeded)
+                    })?;
+                    if !meter.spend(reads / cost::COMPARED)? {
+                        return Ok(None);
+                    }
+                    execution
+                        .charge_work(reads)
+                        .map_err(|reason| certificate.tbs().subject().resource(reason))?;
+                    if previous == current {
+                        inherited = Some(parameters);
+                    }
+                }
+            }
         }
+        Ok(Some(Self { key, inherited }))
     }
 }
 
@@ -327,7 +357,9 @@ pub struct Bounds {
     pub work: u64,
     /// How many paths may be returned.
     pub paths: usize,
-    /// How many policies one path's working out may hold at once.
+    /// How many graph nodes, retained parent edges and expected policy OIDs
+    /// one path's policy processing may hold together. Scratch capacity is
+    /// additionally admitted by the shared execution account.
     pub policies: usize,
 }
 
@@ -539,7 +571,7 @@ impl<'a> Outcome<'a> {
     }
 }
 
-/// The interval the path is built for, in seconds from the epoch.
+/// The UTC-label interval the path is built for, retaining leap/fractional labels.
 ///
 /// A signature is placed in an interval rather than at an instant, because
 /// what a timestamp proves is an upper bound and the lower one is usually
@@ -547,12 +579,13 @@ impl<'a> Outcome<'a> {
 /// across the whole of it: resolving at one end would let a signature made
 /// before a certificate existed pass on the strength of a later moment.
 ///
-/// Seconds rather than a `Time`, because a `Time` is how a certificate wrote
-/// a moment, and this interval is not something a certificate wrote.
+/// Ordinary whole-second constructors remain available. Use the `Instant`
+/// constructors for fractional or inserted-second endpoints; caller-supplied
+/// leap facts authenticate their occurrence separately from this comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Interval {
-    from: i64,
-    to: i64,
+    from: crate::temporal::Instant,
+    to: crate::temporal::Instant,
 }
 
 impl Interval {
@@ -560,41 +593,67 @@ impl Interval {
     /// hands them: an interval is a pair of bounds, not an ordering.
     #[must_use]
     pub fn between(first: i64, second: i64) -> Self {
-        Self {
-            from: first.min(second),
-            to: first.max(second),
-        }
+        Self::between_instants(
+            crate::temporal::Instant::whole(first),
+            crate::temporal::Instant::whole(second),
+        )
     }
 
     /// The interval that is one moment, which is what a caller has when the
     /// signing time is known exactly and nothing wider has to be covered.
     #[must_use]
     pub fn at(moment: i64) -> Self {
+        Self::at_instant(crate::temporal::Instant::whole(moment))
+    }
+
+    /// The interval between two lossless labels, in either input order.
+    #[must_use]
+    pub fn between_instants(
+        first: crate::temporal::Instant,
+        second: crate::temporal::Instant,
+    ) -> Self {
+        Self {
+            from: first.min(second),
+            to: first.max(second),
+        }
+    }
+
+    /// A point interval retaining the supplied leap flag and nanoseconds.
+    #[must_use]
+    pub fn at_instant(moment: crate::temporal::Instant) -> Self {
         Self {
             from: moment,
             to: moment,
         }
     }
 
-    /// The earlier bound.
+    /// The earlier bound's lossy POSIX projection, without fractional precision.
     #[must_use]
     pub fn from(self) -> i64 {
+        self.from.seconds()
+    }
+
+    /// The later bound's lossy POSIX projection, without fractional precision.
+    #[must_use]
+    pub fn to(self) -> i64 {
+        self.to.seconds()
+    }
+
+    /// The earlier lossless UTC label.
+    #[must_use]
+    pub fn from_instant(self) -> crate::temporal::Instant {
         self.from
     }
 
-    /// The later bound.
+    /// The later lossless UTC label.
     #[must_use]
-    pub fn to(self) -> i64 {
+    pub fn to_instant(self) -> crate::temporal::Instant {
         self.to
     }
 
     /// Whether a validity interval holds the whole of this one.
     fn inside(self, validity: Validity) -> bool {
-        // These endpoints are ordinary POSIX labels. Zero nanoseconds always
-        // fits Instant; compare lossless labels so :60 cannot alias :59.
-        let from = crate::temporal::Instant::new(self.from, 0).expect("zero nanoseconds fits");
-        let to = crate::temporal::Instant::new(self.to, 0).expect("zero nanoseconds fits");
-        validity.not_before().instant() <= from && to <= validity.not_after().instant()
+        validity.not_before().instant() <= self.from && self.to <= validity.not_after().instant()
     }
 }
 
@@ -651,8 +710,6 @@ mod cost {
     pub(super) const SIGNATURE: u64 = 1_024;
     /// Holding one certificate to the constraints above it.
     pub(super) const CHECK: u64 = 32;
-    /// One node of a path's working out of what it was issued under.
-    pub(super) const POLICY: u64 = 4;
     /// Looking at one entry of a list a document decides the length of: a
     /// policy a certificate names, a mapping it declares, a region an
     /// authority wrote, a node of the working out being indexed.
@@ -740,20 +797,20 @@ struct Search<'a, 'p, V: Verify, W: Watch, R: Recognizer> {
     /// certificate at many depths and on many chains, and reading its
     /// extensions again each time would charge a caller once per visit for
     /// an answer that cannot have changed.
-    properties: OwnedMap<usize, Properties>,
+    properties: OwnedMap<usize, Properties<'a>>,
 }
 
 /// What one certificate says about itself, worked out once.
 #[derive(Debug, Clone, Copy)]
-struct Properties {
+struct Properties<'a> {
+    /// Common facts, or no facts when the local operation could not finish.
+    facts: Option<validation::CertificateFacts<'a>>,
     /// Whether it can stand in a path at all: valid across the interval, and
     /// carrying no critical extension nobody understood.
     usable: bool,
     /// What it says about issuing certificates, or `None` where it says it
     /// issues none.
     issues: Option<crate::constraints::BasicConstraints>,
-    /// Whether it was issued to the name that issued it.
-    self_issued: bool,
     /// Whether it is an anchor's own certificate: it carries the name and
     /// key of one, and signs itself. Both, because a certificate carrying an
     /// anchor's identity under somebody else's signature is a link to that
@@ -764,6 +821,26 @@ struct Properties {
 impl<V: Verify, W: Watch, R: Recognizer> Meter for Search<'_, '_, V, W, R> {
     fn spend(&mut self, work: u64) -> Result<bool> {
         Self::spend(self, work)
+    }
+}
+
+impl<'a, V: Verify, W: Watch, R: Recognizer> validation::Driver<'a, R> for Search<'a, '_, V, W, R> {
+    type VerificationError = V::Error;
+
+    fn verified(
+        &mut self,
+        certificate: &'a Certificate<'a>,
+        key: WorkingKey<'a>,
+    ) -> BuildResult<Option<Verified>, V::Error, R::Error> {
+        Self::verified(self, certificate, key)
+    }
+
+    fn facts(
+        &mut self,
+        certificate: &'a Certificate<'a>,
+        _settings: &validation::Settings<'a, '_, R>,
+    ) -> BuildResult<Option<validation::CertificateFacts<'a>>, V::Error, R::Error> {
+        Ok(properties(self, certificate)?.facts)
     }
 }
 
@@ -792,34 +869,7 @@ impl<V: Verify, W: Watch, R: Recognizer> Search<'_, '_, V, W, R> {
     /// once the work is done is a bound the last comparison was never held
     /// to, and a pool of long names is a set of last comparisons.
     fn spend_names(&mut self, left: &Name<'_>, right: &Name<'_>) -> Result<bool> {
-        // Admit the metadata scan before finding the widest RDN. Both counts
-        // are bounded by their borrowed encodings; their sum fits u64.
-        let parts = left.parts().len() as u64 + right.parts().len() as u64;
-        if !self.spend(parts)? {
-            return Ok(false);
-        }
-        let bytes = left.as_bytes().len() as u64 + right.as_bytes().len() as u64;
-        let rounds = sorting_rounds(left).max(sorting_rounds(right));
-        let work = rounds
-            .checked_mul(bytes / cost::COMPARED)
-            .and_then(|work| work.checked_add(cost::NAME))
-            .ok_or_else(|| left.resource(structured_asn1::memory::MemoryError::WorkExceeded))?;
-        self.spend(work)
-    }
-
-    /// Local policy-tree bounds truncate; aggregate resource failures abort.
-    fn policy<T>(
-        &mut self,
-        result: core::result::Result<T, policy::Overflow>,
-    ) -> Result<Option<T>> {
-        match result {
-            Ok(value) => Ok(Some(value)),
-            Err(policy::Overflow::Limit) => {
-                self.stop(Truncation::Policies);
-                Ok(None)
-            }
-            Err(policy::Overflow::Resource(error)) => Err(error),
-        }
+        validation::spend_names(self, left, right)
     }
 
     /// Records which bound stopped the search, keeping the first one: it is
@@ -1330,7 +1380,7 @@ fn settle<'a, V: Verify, W: Watch, R: Recognizer>(
         // down, since that is where the parameters a key may stand in are
         // known. Nothing is lost by not asking here: this is the last edge
         // of the path, so the check is one step away either way.
-        let Some(policies) = validate(search, chain, anchor)? else {
+        let Some(policies) = validate_candidate(search, chain, anchor)? else {
             continue;
         };
         keep(search, chain, anchor, policies)?;
@@ -1769,7 +1819,7 @@ fn publishes_anchor<V: Verify, W: Watch, R: Recognizer>(
 fn properties<'a, V: Verify, W: Watch, R: Recognizer>(
     search: &mut Search<'a, '_, V, W, R>,
     certificate: &'a Certificate<'a>,
-) -> BuildResult<Properties, V::Error, R::Error> {
+) -> BuildResult<Properties<'a>, V::Error, R::Error> {
     let at = certificate.as_bytes().as_ptr() as usize;
     if let Some(known) = search
         .properties
@@ -1778,85 +1828,36 @@ fn properties<'a, V: Verify, W: Watch, R: Recognizer>(
     {
         return Ok(*known);
     }
-    // Whether it names itself as its own issuer, which is two names of the
-    // certificate compared, and comparing them reads both: a document
-    // decides how long they are, so the charge is the size of what is read
-    // and it is taken before the reading. Where there is nothing left to
-    // spend the answer is no, which is safe for the same reason it is below:
-    // a certificate not known to be self-issued is an ordinary link, and the
-    // search that could not afford the question is one nothing will now be
-    // built through.
-    let self_issued = search
-        .spend_names(certificate.tbs().subject(), certificate.tbs().issuer())?
-        && self_issued(certificate, search.execution)?;
-    let publishes_anchor = publishes_anchor(search, certificate)?;
-    let issuing = issues(search, certificate)?;
-    // "If the subject is a CA ... then the subject field MUST be populated
-    // with a non-empty distinguished name matching the contents of the
-    // issuer field ... in all certificates issued by the subject CA"
-    // (RFC 5280 4.1.2.6). A certificate may carry its identity in the
-    // alternative names and leave the subject empty, but not while claiming
-    // to be an authority: there is then no name for anything below it to be
-    // issued under, and nothing for a report to say a path leads to.
-    //
-    // On the asserted bit rather than on whether it may issue. Those are two
-    // questions, and a certificate that asserts being an authority while
-    // naming a key that may not sign certificates has still asserted it:
-    // reading one from the other would let that spelling name nobody.
-    //
-    // Asked here rather than where a path holds each certificate to what it
-    // says about issuing, because that is asked only of the certificates a
-    // path is built through. The one the question is about is not among
-    // them, since it need not be an authority at all, and this is a
-    // certificate that says it is one.
-    //
-    // A certificate whose basic constraints did not read has not answered
-    // whether it is one, so there is no answer for this to be held to and
-    // the certificate stands nowhere.
-    let named =
-        issuing.is_some_and(|issuing| !issuing.asserted || !certificate.tbs().subject().is_empty());
-    let usable = named && usable(search, certificate)?;
-
-    // Whether it signs itself, which is asked only of the certificates that
-    // could be an anchor's own: it is the one question here that costs a
-    // signature check, and the answer matters for nothing else.
-    //
-    // Asked last, and only of a certificate that could stand in a path at
-    // all. A pool can put any number of expired copies of an anchor's own
-    // certificate in front of the issuer that leads somewhere, and what
-    // rules each of them out is what it says about itself, which costs
-    // nothing to read. Asking the expensive question first would spend the
-    // search on candidates already refused.
-    //
-    // Naming itself as its issuer is not the same as signing itself. An
-    // authority rolling its key over certifies the new key with the old one,
-    // and that certificate carries one name on both sides while being signed
-    // by somebody else. It is the only route from the new key to the old
-    // anchor, so reading the names alone would lose it.
-    //
-    // Charged like every other signature, because it is one: a pool can hold
-    // any number of certificates that copy an anchor's name and key, and
-    // asking the verifier about each of them for free would run the most
-    // expensive check here as often as somebody else likes while the meter
-    // recorded only the name comparisons. Where there is nothing left to
-    // spend the answer is no, which is safe: the search has halted, and a
-    // certificate not known to sign itself is treated as an ordinary link
-    // that nothing will now be built through.
+    let settings = validation::Settings {
+        execution: search.execution,
+        interval: search.interval,
+        policy: search.policy,
+        policies: search.bounds.policies,
+        recognizer: search.recognizer,
+    };
+    let facts = validation::certificate_facts(certificate, &settings, search)?;
+    let usable = facts.is_some_and(|facts| facts.rejected.is_none());
+    let self_issued = facts.is_some_and(|facts| facts.self_issued);
+    let issuing = facts.and_then(|facts| {
+        if facts.issuing.is_none() {
+            facts.basic
+        } else {
+            None
+        }
+    });
+    // Anchor publication identity is search metadata, not a certificate-path
+    // acceptance rule. Ask the expensive self-signature only after cheap facts.
     let publishes_itself = usable
-        && publishes_anchor
         && self_issued
+        && publishes_anchor(search, certificate)?
         && search.verified(
             certificate,
-            // Its own key and nothing above it: a certificate that signs
-            // itself stands in whatever it wrote, and a key that omits its
-            // parameters has nowhere to inherit them from here.
             WorkingKey::standing(certificate.tbs().public_key()),
         )? == Some(Verified::Yes);
-
     let known = Properties {
+        facts,
         usable,
-        issues: issuing.and_then(|issuing| issuing.constraints),
-        self_issued,
+        issues: issuing,
         publishes_itself,
     };
     search
@@ -1864,137 +1865,6 @@ fn properties<'a, V: Verify, W: Watch, R: Recognizer>(
         .try_insert(at, known)
         .map_err(|reason| certificate.tbs().subject().resource(reason))?;
     Ok(known)
-}
-
-/// Whether a certificate can stand in a path at all: valid across the
-/// interval, and carrying no critical extension nobody understood.
-///
-/// A malformed extension is not an error of this run, so the answer is no
-/// rather than a refusal: another path may not go through this certificate.
-fn usable<'a, V: Verify, W: Watch, R: Recognizer>(
-    search: &mut Search<'a, '_, V, W, R>,
-    certificate: &'a Certificate<'a>,
-) -> BuildResult<bool, V::Error, R::Error> {
-    if !search.spend(cost::CHECK)? {
-        return Ok(false);
-    }
-    if !search.interval.inside(certificate.tbs().validity()) {
-        return Ok(false);
-    }
-    // The critical extensions one at a time, charged before each is read
-    // and stopping at the first demand nobody understood. Working out one
-    // entry decodes its value, and how many entries there are and how much
-    // each holds is a certificate's to decide: gathering them all first
-    // reads the whole list at a fixed charge, and goes on reading it after
-    // the answer is already no.
-    //
-    // The charge comes before the question, and the list is walked without
-    // asking it, so that a budget already spent refuses the reading rather
-    // than being told about it afterwards.
-    let extensions = certificate.tbs().extensions();
-    for demand in extensions.criticals(search.execution) {
-        let demand = demand?;
-        if !search.spend(cost::EXTENSION)? {
-            return Ok(false);
-        }
-        if extensions.understands(demand, search.recognizer, search.execution)? {
-            continue;
-        }
-        // One of those demands is this function's own subject. A critical
-        // name-constraints extension counts as not understood where it
-        // constrains a form nothing here matches names against, and that
-        // reading is right for a reader that will not look at the names:
-        // for one that will, the profile asks for the certificate to be
-        // refused only where "an instance of that name form appears"
-        // below it (RFC 5280 4.2.1.10), which is a question the search
-        // answers per certificate rather than here. What it cannot do is
-        // go on when the value did not parse at all, since then there is
-        // no constraint to hold anything to.
-        if demand.kind() == crate::oid::NAME_CONSTRAINTS {
-            if !search.spend(cost::EXTENSION)? {
-                return Ok(false);
-            }
-            if gate(crate::constraints::NameConstraints::read(
-                demand,
-                search.execution,
-            ))?
-            .is_some()
-            {
-                continue;
-            }
-        }
-        return Ok(false);
-    }
-    Ok(true)
-}
-
-/// What a certificate says about issuing certificates, both facts read from
-/// the one extension.
-///
-/// The answer carries the constraints rather than a yes, because the same
-/// extension holds how far below the authority a path may go and reading it
-/// twice would charge a caller twice for one value.
-#[derive(Debug, Clone, Copy, Default)]
-struct Issuing {
-    /// Whether the certificate asserts being an authority: the basic
-    /// constraints are there and say so, whatever its key may be used for.
-    ///
-    /// Kept apart from the constraints below because the profile hangs a
-    /// different rule on it. The requirement that an authority name
-    /// somebody is tied to this bit (RFC 5280 4.1.2.6), and a certificate
-    /// that asserts it while naming a key that may not sign certificates
-    /// has still asserted it.
-    asserted: bool,
-    /// The constraints where the certificate may issue, and `None` where it
-    /// says it does not, does not say, or names a key that is not for
-    /// signing certificates (RFC 5280 6.1.4 (k) and (n)).
-    constraints: Option<crate::constraints::BasicConstraints>,
-}
-
-/// Reads both, charging the extensions once.
-///
-/// `None` where the certificate carries basic constraints this run could not
-/// read: whether the subject is an authority is then unanswered, and the
-/// requirement that an authority name somebody (RFC 5280 4.1.2.6) is hung on
-/// that answer. Reading it as though the extension were absent answers no,
-/// so a certificate with an empty subject passes a requirement its own
-/// extension may have been asserting. The extension need not be critical for
-/// this to matter, and a critical one is refused elsewhere, so this is where
-/// the difference is kept.
-fn issues<'a, V: Verify, W: Watch, R: Recognizer>(
-    search: &mut Search<'a, '_, V, W, R>,
-    certificate: &'a Certificate<'a>,
-) -> BuildResult<Option<Issuing>, V::Error, R::Error> {
-    let extensions = certificate.tbs().extensions();
-    let Ok(carried) = read(search, |execution| extensions.basic_constraints(execution))?.enforced()
-    else {
-        return Ok(None);
-    };
-    let Some(basic) = carried else {
-        return Ok(Some(Issuing::default()));
-    };
-    if !basic.is_authority() {
-        return Ok(Some(Issuing::default()));
-    }
-    let asserted = Issuing {
-        asserted: true,
-        constraints: None,
-    };
-    if extensions
-        .get(crate::oid::KEY_USAGE, search.execution)?
-        .is_some()
-    {
-        let Some(usage) = read(search, |execution| extensions.key_usage(execution))?.value() else {
-            return Ok(Some(asserted));
-        };
-        if !usage.key_cert_sign() {
-            return Ok(Some(asserted));
-        }
-    }
-    Ok(Some(Issuing {
-        constraints: Some(basic),
-        ..asserted
-    }))
 }
 
 /// Whether the chain, read down from the anchor, is a path: every
@@ -2008,476 +1878,35 @@ fn issues<'a, V: Verify, W: Watch, R: Recognizer>(
 ///
 /// The chain is held with the target first, so it is read backwards: the
 /// certificate the anchor issued is where the path starts.
-fn validate<'a, V: Verify, W: Watch, R: Recognizer>(
+fn validate_candidate<'a, V: Verify, W: Watch, R: Recognizer>(
     search: &mut Search<'a, '_, V, W, R>,
     chain: &[&'a Certificate<'a>],
     anchor: Anchor<'a>,
 ) -> BuildResult<Option<OwnedVec<Oid<'a>>>, V::Error, R::Error> {
-    let length = chain.len();
-    let mut space = NameSpace::new(search.execution);
-    let Some(mut policies) = initial_policies(search, length)? else {
-        // A caller who allowed the working out nothing at all has not asked
-        // for a path settled without it.
-        return Ok(None);
+    let settings = validation::Settings {
+        execution: search.execution,
+        interval: search.interval,
+        policy: search.policy,
+        policies: search.bounds.policies,
+        recognizer: search.recognizer,
     };
-
-    // What the anchor says about the names below it. The anchor itself is
-    // not a certificate of the path, but a trust context that published a
-    // constrained root published the constraint with it, and a path that
-    // ignored it would be a path the trust context did not allow.
-    if let Some(certificate) = anchor.certificate()
-        && !narrow_published(search, &mut space, certificate.tbs().extensions())?
-    {
-        return Ok(None);
-    }
-
-    // "n", the number of certificates in the path (6.1.2 (k)): a path can
-    // never spend more than it holds.
-    let mut allowed = u32::try_from(length).unwrap_or(u32::MAX);
-    let mut last_constraints = None;
-
-    // The key each certificate is checked with, carried down from the anchor
-    // (RFC 5280 6.1.2 (c)). The anchor's own key stands on its own: there is
-    // nothing above a trust anchor to inherit from.
-    let mut working = WorkingKey::standing(anchor.key());
-
-    for (position, certificate) in chain.iter().rev().enumerate() {
-        if !search.spend(cost::CHECK)? {
-            return Ok(None);
-        }
-        let last = position + 1 == length;
-
-        // (6.1.3 (a) (1)) The certificate is the one the key above signed.
-        // Asked here rather than where the edge was found, because a key
-        // that omits its parameters is only usable once the path above it
-        // is known, and here it is. A key that stands on its own was asked
-        // about at the edge and the answer is remembered, so this costs a
-        // lookup for it.
-        let Some(answer) = search.verified(certificate, working)? else {
-            return Ok(None);
-        };
-        if answer != Verified::Yes {
-            return Ok(None);
-        }
-        working = working.below(certificate.tbs().public_key());
-        let known = properties(search, certificate)?;
-        let self_issued = known.self_issued;
-        let extensions = certificate.tbs().extensions();
-
-        // (6.1.3 (b) and (c)) The names have to be where the authorities
-        // above allowed them. A self-issued certificate that is not the one
-        // at the end is a key rollover rather than a name being certified,
-        // and is not held to the space it is itself narrowing.
-        if !space.is_open() && (last || !self_issued) && !within(search, &space, certificate)? {
-            return Ok(None);
-        }
-
-        // (6.1.3 (d) to (f)) What this certificate says about policies. A
-        // list that is present and does not read is not a certificate that
-        // named no policy: that reading would carry the agreement past a
-        // certificate whose part in it nobody could see.
-        let Ok(named) = read(search, |execution| {
-            extensions.certificate_policies(execution)
-        })?
-        .enforced() else {
-            return Ok(None);
-        };
-        let presented = policies.present(named.as_ref(), self_issued, last, search);
-        let Some(satisfied) = search.policy(presented)? else {
-            return Ok(None);
-        };
-        if !satisfied {
-            return Ok(None);
-        }
-
-        // (6.1.4 (g)) What this certificate says about the names below it,
-        // which is read before the path ends because the profile allows the
-        // extension only in a certificate that issues others: one at the end
-        // of a path carries it only where the path is to an authority.
-        if !narrow(search, &mut space, extensions)? {
-            return Ok(None);
-        }
-
-        if last {
-            // Nothing reads the mappings of the certificate at the end of a
-            // path, and nothing should. The mapping step is 6.1.4, which
-            // runs for certificates 1 to n-1; 6.1.5 defines no processing of
-            // mappings for certificate n, because there is no certificate
-            // below for a mapped policy to be named in.
-            //
-            // Nor is carrying them a reason to refuse it. The profile says
-            // the extension "is used in CA certificates" (RFC 5280 4.2.1.5),
-            // which is a description of where it belongs, not a prohibition:
-            // where it does mean to forbid an extension outside a
-            // certification authority it says so, as it does for the name
-            // constraints that "MUST be used only in a CA certificate"
-            // (4.2.1.10), and that one is enforced above. Reading the weaker
-            // sentence as the stronger one would refuse a certificate over a
-            // rule the profile does not state.
-            let Ok(constraints) =
-                read(search, |execution| extensions.policy_constraints(execution))?.enforced()
-            else {
-                return Ok(None);
-            };
-            last_constraints = constraints;
-            break;
-        }
-
-        // (6.1.4 (b) and (h) to (j)) What it says about the ones below it.
-        let Some(restrictions) = restrictions(search, extensions)? else {
-            return Ok(None);
-        };
-        let carried = policies.carry(
-            restrictions.mappings.as_ref(),
-            restrictions.constraints,
-            restrictions.inhibit,
-            self_issued,
-            search,
-        );
-        if search.policy(carried)?.is_none() {
-            return Ok(None);
-        }
-
-        // (6.1.4 (k)) A certificate that issues certificates says so, and
-        // (n) where it says what its key is for, signing certificates is
-        // among it. Both were asked of this certificate before the search
-        // walked into it, and both are asked again here because a path is
-        // read on what it holds rather than on how it was found.
-        let Some(basic) = known.issues else {
-            return Ok(None);
-        };
-
-        // (6.1.4 (l)) A certificate issued to somebody else spends one of
-        // the certificates the path is allowed. One issued to the same name
-        // spends nothing: a key rollover is not a longer chain of authority.
-        if !self_issued {
-            if allowed == 0 {
-                return Ok(None);
+    // Every adjacent issuer and this terminal anchor were matched before
+    // settle selected the chain. Preserve that construction witness rather
+    // than normalizing all the same names a second time during processing.
+    match validation::process(
+        validation::Chain::Constructed(chain),
+        anchor,
+        &settings,
+        search,
+    )? {
+        Validation::Accepted(facts) => Ok(Some(facts.into_policies())),
+        Validation::Rejected(_) => Ok(None),
+        Validation::Incomplete(reason) => {
+            if !search.stopped() {
+                search.stop(reason);
             }
-            allowed -= 1;
+            Ok(None)
         }
-
-        // (6.1.4 (m)) And an authority may allow fewer than it was given. A
-        // limit wider than the counter holds is no limit: the path this
-        // browser will ever walk is shorter than that by every other bound.
-        if let Some(limit) = basic.path_length().and_then(CertificateCount::certificates) {
-            allowed = allowed.min(limit);
-        }
-    }
-
-    // (6.1.5) What is left is what the authorities agreed the target was
-    // issued under.
-    if !spend_policies(search, policies.nodes())? {
-        return Ok(None);
-    }
-    let settled = policies.settle(last_constraints, search.policy.wanted, search);
-    let Some(settled) = search.policy(settled)? else {
-        return Ok(None);
-    };
-    if !settled.is_satisfied() {
-        return Ok(None);
-    }
-    Ok(Some(settled.into_policies()))
-}
-
-/// Admits the terminal tree pass before settlement performs it.
-fn spend_policies(
-    search: &mut Search<'_, '_, impl Verify, impl Watch, impl Recognizer>,
-    nodes: usize,
-) -> Result<bool> {
-    let work = cost::POLICY.checked_mul(nodes as u64).ok_or_else(|| {
-        search
-            .target
-            .tbs()
-            .subject()
-            .resource(structured_asn1::memory::MemoryError::WorkExceeded)
-    })?;
-    search.spend(work)
-}
-
-/// Creates the accounted policy root at the original target's location.
-fn initial_policies<'a, V: Verify, W: Watch, R: Recognizer>(
-    search: &mut Search<'a, '_, V, W, R>,
-    length: usize,
-) -> Result<Option<policy::Processing<'a>>> {
-    let origin = search
-        .target
-        .tbs()
-        .subject()
-        .resource(structured_asn1::memory::MemoryError::CapacityOverflow);
-    let length = u32::try_from(length).map_err(|_| origin.clone())?;
-    let initial = policy::Processing::new(
-        length,
-        policy::Initial {
-            explicit_policy: search.policy.explicit,
-            policy_mapping: search.policy.mapping,
-            any_policy: search.policy.any,
-        },
-        search.bounds.policies,
-        search.execution,
-        origin.offset(),
-    );
-    search.policy(initial)
-}
-
-/// Keeps the settled identifiers in the returned path's resource domain.
-/// Narrows the name space by what one certificate says, answering whether
-/// the certificate may be in a path at all.
-///
-/// Two ways it may not. A constraint this run could not read is one nothing
-/// below can be shown to obey, and treating an unreadable one as absent
-/// would let a certificate through the space its authority narrowed by
-/// writing a value nobody can parse. And "the name constraints extension
-/// ... MUST be used only in a CA certificate" (RFC 5280 4.2.1.10): carried
-/// by a certificate that issues nothing, it constrains a space that does not
-/// exist, and the profile says such a certificate is not one to build a path
-/// through.
-fn narrow<'a, V: Verify, W: Watch, R: Recognizer>(
-    search: &mut Search<'a, '_, V, W, R>,
-    space: &mut NameSpace<'a>,
-    extensions: &'a crate::extension::Extensions<'a>,
-) -> BuildResult<bool, V::Error, R::Error> {
-    if extensions
-        .get(crate::oid::NAME_CONSTRAINTS, search.execution)?
-        .is_none()
-    {
-        return Ok(true);
-    }
-    let authority = read(search, |execution| extensions.basic_constraints(execution))?
-        .value()
-        .is_some_and(crate::constraints::BasicConstraints::is_authority);
-    if !authority {
-        return Ok(false);
-    }
-    narrowed(search, space, extensions)
-}
-
-/// The same, for the certificate a trust context published an anchor in.
-///
-/// Without the question about issuing. That question is asked of a
-/// certificate of the path, where the profile allows the extension "only
-/// within a CA certificate" and one carrying it while claiming to be
-/// anything else is refused. An anchor is not a certificate of the path
-/// (RFC 5280 6.1), it is the statement of trust the caller made, and this
-/// crate's way of making that statement carry regions is to hand over a
-/// certificate holding them. Reading them only where it also asserts being
-/// an authority would throw away a path the caller trusts, to a target
-/// inside the very subtree the caller allowed, and report it as no path at
-/// all.
-///
-/// What is not waived is reading them: regions that do not read are regions
-/// nothing was held to, and that refuses here as everywhere.
-fn narrow_published<'a, V: Verify, W: Watch, R: Recognizer>(
-    search: &mut Search<'a, '_, V, W, R>,
-    space: &mut NameSpace<'a>,
-    extensions: &'a crate::extension::Extensions<'a>,
-) -> BuildResult<bool, V::Error, R::Error> {
-    if extensions
-        .get(crate::oid::NAME_CONSTRAINTS, search.execution)?
-        .is_none()
-    {
-        return Ok(true);
-    }
-    narrowed(search, space, extensions)
-}
-
-/// Reads the regions and narrows the space by them, which is what both of
-/// the above do once they have decided the extension is theirs to honour.
-fn narrowed<'a, V: Verify, W: Watch, R: Recognizer>(
-    search: &mut Search<'a, '_, V, W, R>,
-    space: &mut NameSpace<'a>,
-    extensions: &'a crate::extension::Extensions<'a>,
-) -> BuildResult<bool, V::Error, R::Error> {
-    let Some(constraints) =
-        read(search, |execution| extensions.name_constraints(execution))?.value()
-    else {
-        return Ok(false);
-    };
-    let origin = extensions
-        .get(crate::oid::NAME_CONSTRAINTS, search.execution)?
-        .expect("the decoded name constraints extension")
-        .span()
-        .start;
-    space
-        .narrow(constraints)
-        .map_err(|reason| crate::Error::resource(reason, "nameConstraints", origin))?;
-    Ok(true)
-}
-
-/// Whether the names one certificate carries are where the authorities above
-/// it allowed them to be (RFC 5280 6.1.3 (b) and (c)).
-///
-/// Names this run could not read are names it cannot show to be where they
-/// were allowed. A certificate carrying an alternative name extension that
-/// does not parse is not a certificate with no alternative names: reading it
-/// as one would hold a shorter list to the space than the certificate
-/// carries.
-fn within<'a, V: Verify, W: Watch, R: Recognizer>(
-    search: &mut Search<'a, '_, V, W, R>,
-    space: &NameSpace<'a>,
-    certificate: &'a Certificate<'a>,
-) -> BuildResult<bool, V::Error, R::Error> {
-    // Through the same gate as every other extension, so that reading the
-    // list happens after the charge. Reaching for it here rather than
-    // handing it over is what keeps that true: an argument is worked out
-    // before the call it is passed to, and how many names this holds is a
-    // certificate's to decide.
-    let subject = certificate.tbs().subject();
-    let Ok(carried) = read(search, |execution| {
-        certificate.tbs().extensions().subject_alt_name(execution)
-    })?
-    .enforced() else {
-        return Ok(false);
-    };
-    // Absent subjectAltName has no names; borrow the optional collection rather
-    // than fabricate a new account or an uncharged growable container.
-    let alternatives = carried.as_deref().unwrap_or(&[]);
-    if !charge_names(search, space, subject, alternatives)? {
-        return Ok(false);
-    }
-    Ok(
-        space.admits(subject, alternatives, search.recognizer, search.execution)?
-            == Admission::Admitted,
-    )
-}
-
-/// Charges for holding one certificate's names to the space above it, before
-/// the comparison runs: both the number of names and the number of regions
-/// come from certificates somebody else wrote.
-///
-/// Every name that will be compared is counted, the legacy mailboxes among
-/// them. A subject may carry as many of those as the parse budget allowed,
-/// and each is held against every region: charging for one would let a
-/// certificate buy the comparisons of thousands without the meter that
-/// stops them ever moving.
-fn charge_names<V: Verify, W: Watch, R: Recognizer>(
-    search: &mut Search<'_, '_, V, W, R>,
-    space: &NameSpace<'_>,
-    subject: &Name<'_>,
-    alternatives: &[GeneralName<'_>],
-) -> Result<bool> {
-    // What the space says it will compare, which is the pairs of a name and
-    // a region of one form rather than every name against every region. A
-    // comparison that does not part early reads the whole of the name: two
-    // distinguished names are ordered and compared attribute by attribute,
-    // a domain and a mailbox are folded to the end. How long the names are
-    // and how many regions there are is decided by a certificate and an
-    // extension somebody else wrote, so the charge is their product rather
-    // than a fixed amount, which one long name and a handful of regions
-    // would otherwise buy while the bound barely moved.
-    //
-    // Charged where it is counted rather than counted here and charged
-    // afterwards: forming a name reads it, and a list priced in full before
-    // the meter is consulted has been read in full whatever the budget
-    // said.
-    space.charge(subject, alternatives, search, search.execution)
-}
-
-/// Whether a certificate was issued to the name that issued it, which is how
-/// an authority rolls its key over without lengthening the chain of
-/// authority under it (RFC 5280 6.1).
-fn self_issued(certificate: &Certificate<'_>, execution: &Memory) -> Result<bool> {
-    certificate
-        .tbs()
-        .subject()
-        .matches(certificate.tbs().issuer(), execution)
-}
-
-/// What one extension of a certificate turned out to be.
-///
-/// Absent and unreadable are kept apart, because they are different facts
-/// and the difference decides a path. A certificate that does not carry a
-/// restriction is not restricted; one that carries a restriction nothing
-/// here could read is a certificate whose restriction was not enforced, and
-/// reading the second as the first lets it into a path on the strength of a
-/// value nobody understood. Only the extensions marked critical are refused
-/// when they are read, so this is the whole of what protects the rest.
-enum Read<T> {
-    /// The certificate does not carry it.
-    Absent,
-    /// It carries it, and this is what it says.
-    Value(T),
-    /// It carries it, and this run could not read it.
-    Unreadable,
-}
-
-impl<T> Read<T> {
-    /// What the extension says, where it says anything, with unreadable and
-    /// absent alike answering nothing. For the extensions whose absence and
-    /// whose unreadability lead to the same refusal anyway.
-    fn value(self) -> Option<T> {
-        match self {
-            Self::Value(value) => Some(value),
-            Self::Absent | Self::Unreadable => None,
-        }
-    }
-
-    /// What the extension says, for a restriction where absent and
-    /// unreadable are different answers: a certificate that carries no
-    /// restriction restricts nothing, and one carrying a restriction this
-    /// run could not read is a certificate whose restriction was never
-    /// enforced.
-    fn enforced(self) -> core::result::Result<Option<T>, Unreadable> {
-        match self {
-            Self::Absent => Ok(None),
-            Self::Value(value) => Ok(Some(value)),
-            Self::Unreadable => Err(Unreadable),
-        }
-    }
-}
-
-/// A restriction that is there and could not be read, which is not the same
-/// as a restriction that is not there.
-struct Unreadable;
-
-/// What one certificate says about how policies are processed below it.
-struct Restrictions<'a> {
-    mappings: Option<crate::policy::PolicyMappings<'a>>,
-    constraints: Option<crate::constraints::PolicyConstraints>,
-    inhibit: Option<crate::constraints::InhibitAnyPolicy>,
-}
-
-/// Reads all three, or refuses where any of them is present and does not
-/// read: each restricts what may be agreed below, and reading an unreadable
-/// one as absent carries the agreement past a restriction nobody saw.
-fn restrictions<'a, V: Verify, W: Watch, R: Recognizer>(
-    search: &mut Search<'a, '_, V, W, R>,
-    extensions: &'a crate::extension::Extensions<'a>,
-) -> BuildResult<Option<Restrictions<'a>>, V::Error, R::Error> {
-    let mappings = read(search, |execution| extensions.policy_mappings(execution))?.enforced();
-    let constraints =
-        read(search, |execution| extensions.policy_constraints(execution))?.enforced();
-    let inhibit = read(search, |execution| extensions.inhibit_any_policy(execution))?.enforced();
-    let (Ok(mappings), Ok(constraints), Ok(inhibit)) = (mappings, constraints, inhibit) else {
-        return Ok(None);
-    };
-    Ok(Some(Restrictions {
-        mappings,
-        constraints,
-        inhibit,
-    }))
-}
-
-/// One extension of a certificate the search is holding to its constraints,
-/// with a spent budget kept as the error it is: that says this run gave up
-/// rather than anything about the document.
-///
-/// The extension is reached for rather than handed over, so that reading its
-/// value happens after the charge and not before it. An argument is worked
-/// out before the call it is passed to, and reading an extension decodes
-/// everything it holds, which is a document's to decide: handed over, the
-/// whole of it is read even where the budget was already spent.
-fn read<T>(
-    search: &mut Search<'_, '_, impl Verify, impl Watch, impl Recognizer>,
-    outcome: impl FnOnce(&Memory) -> Result<Option<T>>,
-) -> Result<Read<T>> {
-    if !search.spend(cost::EXTENSION)? {
-        return Ok(Read::Unreadable);
-    }
-    match gate(outcome(search.execution))? {
-        Some(Some(value)) => Ok(Read::Value(value)),
-        Some(None) => Ok(Read::Absent),
-        None => Ok(Read::Unreadable),
     }
 }
 

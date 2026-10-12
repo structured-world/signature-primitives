@@ -7,6 +7,62 @@ use crate::{Certificate, oid};
 use alloc::vec::Vec;
 use structured_asn1::Parser;
 
+#[test]
+fn located_exclusion_identifies_the_authority_that_forbade_the_name() {
+    // A permitted-set miss at an earlier authority must not hide a later
+    // explicit exclusion. Report the actual constraining source to the caller.
+    // RFC5280 §6.1.3(b,c)/§6.1.4(g): all accumulated constraints apply.
+    let first_der = CertificateParts {
+        extensions: Some(seq(&[extension(
+            oid::NAME_CONSTRAINTS,
+            true,
+            &constraints(&[subtree(dns("allowed.example"))], &[]),
+        )])),
+        ..CertificateParts::default()
+    }
+    .build();
+    let second_der = CertificateParts {
+        extensions: Some(seq(&[extension(
+            oid::NAME_CONSTRAINTS,
+            true,
+            &constraints(&[], &[subtree(dns("forbidden.example"))]),
+        )])),
+        ..CertificateParts::default()
+    }
+    .build();
+    let target_der = CertificateParts {
+        subject: seq(&[]),
+        extensions: Some(seq(&[extension(
+            oid::SUBJECT_ALT_NAME,
+            true,
+            &seq(&[dns("forbidden.example")]),
+        )])),
+        ..CertificateParts::default()
+    }
+    .build();
+    let parser = Parser::der(crate::fixtures::memory());
+    let first = Certificate::read(&parser, &first_der, 0).unwrap();
+    let second = Certificate::read(&parser, &second_der, 0).unwrap();
+    let target = Certificate::read(&parser, &target_der, 0).unwrap();
+    let alternatives = target
+        .tbs()
+        .extensions()
+        .subject_alt_name(parser.memory())
+        .unwrap()
+        .unwrap();
+    let permitted_source = "permitting authority";
+    let excluded_source = "excluding authority";
+    let mut space = NameSpace::with_sources(parser.memory());
+    space.narrow_from(of(&first), permitted_source).unwrap();
+    space.narrow_from(of(&second), excluded_source).unwrap();
+    assert_eq!(
+        space
+            .admits_located(target.tbs().subject(), &alternatives, &(), parser.memory())
+            .unwrap(),
+        (Admission::Excluded, Some(excluded_source))
+    );
+}
+
 /// A distinguished name of one common name.
 fn named(common: &str) -> Vec<u8> {
     seq(&[set(&[seq(&[oid_of(oid::COMMON_NAME), printable(common)])])])

@@ -246,10 +246,11 @@ impl<'a> WorkingKey<'a> {
             // RFC4055 §§3.1,3.3 case2 overrides generic parameter inheritance
             // for a PSS SPKI with absent parameters: no key restrictions.
             // https://www.rfc-editor.org/rfc/rfc4055#section-3.3
-            // NULL is not the absent spelling and remains available to the
-            // provider's algorithm-specific syntax validation.
+            // NULL is invalid PSS syntax (§3.1), not an inherited-parameter
+            // placeholder. Keep it in the original SPKI and supply no parent
+            // parameters that an adapter could use to repair its spelling.
             let pss = crate::oid::RSASSA_PSS.as_bytes();
-            if key.algorithm().parameters().is_none() && current.len() == pss.len() {
+            if current.len() == pss.len() {
                 let reads = (pss.len() as u64) * 2;
                 if !meter.spend(reads / cost::COMPARED)? {
                     return Ok(None);

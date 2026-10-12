@@ -5351,6 +5351,37 @@ fn unrestricted_pss_subject_does_not_inherit_parent_restrictions() {
     );
 }
 
+#[test]
+fn null_pss_subject_keeps_invalid_original_parameters_for_provider_refusal() {
+    // RFC4055 §3.1 permits absent or PSS SEQUENCE parameters, not NULL.
+    // Projection must not replace invalid NULL with valid parent restrictions.
+    let root_bytes = CertificateParts {
+        key: seq(&[seq(&[oid_of(oid::RSASSA_PSS), seq(&[])]), bits(&[1, 2, 3])]),
+        ..CertificateParts::default()
+    }
+    .build();
+    let child_bytes = CertificateParts {
+        key: seq(&[
+            seq(&[oid_of(oid::RSASSA_PSS), crate::fixtures::null()]),
+            bits(&[4, 5, 6]),
+        ]),
+        ..CertificateParts::default()
+    }
+    .build();
+    let execution = crate::fixtures::memory();
+    let parser = Parser::der(execution.clone());
+    let root = Certificate::read(&parser, &root_bytes, 100).unwrap();
+    let child = Certificate::read(&parser, &child_bytes, 500).unwrap();
+    let projected = super::WorkingKey::standing(root.tbs().public_key())
+        .subject(&child, &execution)
+        .unwrap();
+    assert_eq!(projected.parameters(), None);
+    assert_eq!(
+        projected.key().algorithm().parameters(),
+        Some([5, 0].as_slice())
+    );
+}
+
 /// A verifier that answers yes to everything and writes down what the key it
 /// was handed said its parameters were, in the order it was asked.
 ///

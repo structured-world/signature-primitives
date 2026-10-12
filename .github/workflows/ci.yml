@@ -10,10 +10,22 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Every main push must reach a terminal result: a later push cannot discard
+  # validation of the exact commit which approves a release.
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  release-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: .github/tests
+      - run: npm run check
+        working-directory: .github/tests
+      - run: python3 -m unittest discover -s .github/tests -p '*_test.py'
+
   test:
     runs-on: ubuntu-latest
     strategy:

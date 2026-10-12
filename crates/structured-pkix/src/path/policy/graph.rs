@@ -793,19 +793,21 @@ mod tests {
         // A resource error must retain its location and release all scratch.
         use alloc::sync::Arc;
         use structured_asn1::memory::MemoryAccount;
+        const WORK: usize = 1_000_000;
         let steps = [certificate(&[GOLD], &[])];
         let parser = Parser::der(crate::fixtures::memory());
         let read = steps
             .iter()
             .map(|der| Certificate::read(&parser, der, 0).unwrap())
             .collect::<Vec<_>>();
-        let reference = crate::fixtures::memory();
-        let graph = process(&read, &reference);
-        let consumed = reference.work_used();
-        drop(graph);
-        let execution = Memory::new(Arc::new(MemoryAccount::new(1024 * 1024, consumed)));
+        // Hash tables have independent seeds, so setup work cannot be
+        // calibrated with a different graph's collision comparisons.
+        let execution = Memory::new(Arc::new(MemoryAccount::new(1024 * 1024, WORK)));
         let graph = process(&read, &execution);
-        assert_eq!(execution.work_used(), consumed);
+        execution
+            .charge_work(u64::try_from(WORK - execution.work_used()).unwrap())
+            .unwrap();
+        assert_eq!(execution.work_used(), WORK);
         let error = graph.settle(None, &[], &mut ()).unwrap_err();
         let Overflow::Resource(error) = error else {
             panic!("shared exhaustion must remain a resource error")

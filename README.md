@@ -34,14 +34,15 @@ to bootstrap it and register its trusted publisher on crates.io.
 All seven CI checks and CLA are required for `main`. Trusted default-branch
 automation merges repository-local Dependabot PRs after mandatory CI and a
 fresh positive review, with no unresolved threads or active changes requested.
-Codex's positive verdict must follow the current head's recorded push; a trusted
-collaborator approval must identify that exact commit. Missing review evidence
+Codex's positive verdict must strictly follow the current head's recorded push;
+a collaborator approval must identify that exact commit and the reviewer must
+currently have write or admin access. Missing review evidence
 keeps the PR waiting. The merge operation also binds the inspected SHA.
 
 `hashbrown` and `allocator-api2` changes require manual contract review, including
 grouped updates and manifest/lockfile changes. Their audited capacity/layout
 contracts cannot be qualified by CI alone. Other updates are checked on PR/CI
-events, with an hourly backstop for verdict reactions that emit no Actions event.
+and review events, with an hourly backstop for verdict reactions that emit no Actions event.
 The merge App token is scoped to this repository and created only when a
 qualified update is ready; the automation never executes PR code with it.
 

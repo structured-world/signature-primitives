@@ -3,6 +3,7 @@
 import importlib.util
 import pathlib
 import unittest
+from unittest.mock import patch
 
 SCRIPT = pathlib.Path(__file__).parents[1] / "scripts" / "dependabot_merge.py"
 SPEC = importlib.util.spec_from_file_location("dependabot_merge", SCRIPT)
@@ -19,7 +20,7 @@ class ReviewTests(unittest.TestCase):
 
     def clear(self, reactions=None, reviews=None, unresolved=False):
         return POLICY.review_clear(self.sha, self.push, reactions or [],
-                                   reviews or [], unresolved)
+                                   reviews or [], unresolved, lambda login: login == "maintainer")
 
     def test_absence_and_stale_or_unlocatable_push_refuse(self):
         # Neither absence of findings nor an old thumbs-up is a clean review.
@@ -27,7 +28,13 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(self.clear([self.thumb]))
         old = dict(self.thumb, created_at="2026-10-12T09:59:59Z")
         self.assertFalse(self.clear([old]))
-        self.assertFalse(POLICY.review_clear(self.sha, None, [self.thumb], [], False))
+        self.assertFalse(POLICY.review_clear(self.sha, None, [self.thumb], [], False,
+                                            lambda login: False))
+
+    def test_same_second_reaction_does_not_prove_freshness(self):
+        # GitHub timestamps cannot order a review and later push in the same second.
+        tied = dict(self.thumb, created_at=self.push)
+        self.assertFalse(self.clear([tied]))
 
     def test_spoofed_reviewer_and_unresolved_threads_refuse(self):
         # Login substring matching would let an ordinary user fake a bot verdict.
@@ -51,6 +58,34 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(self.clear(reviews=[approved]))
         self.assertFalse(self.clear(reviews=[dict(approved, commit_id="b" * 40)]))
         self.assertFalse(self.clear(reviews=[dict(approved, author_association="NONE")]))
+
+    def test_membership_without_write_permission_cannot_authorize_merge(self):
+        # Read/triage collaborators can review but cannot authorize a privileged merge.
+        approved = {"user": {"login": "reader"}, "state": "APPROVED",
+                    "submitted_at": self.push, "commit_id": self.sha,
+                    "author_association": "MEMBER"}
+        self.assertFalse(POLICY.review_clear(self.sha, self.push, [], [approved], False,
+                                            lambda login: False))
+
+    def test_stale_positive_does_not_hide_current_writer_approval(self):
+        # Old bot reactions persist across pushes; the current exact-head approval counts.
+        old = dict(self.thumb, created_at="2026-10-12T09:59:59Z")
+        approved = {"user": {"login": "maintainer"}, "state": "APPROVED",
+                    "submitted_at": self.push, "commit_id": self.sha,
+                    "author_association": "COLLABORATOR"}
+        self.assertTrue(self.clear([old], [approved]))
+
+    def test_comment_only_review_preserves_the_existing_decision(self):
+        # Comment feedback neither revokes approval nor clears requested changes.
+        approved = {"user": {"login": "maintainer"}, "state": "APPROVED",
+                    "submitted_at": self.push, "commit_id": self.sha,
+                    "author_association": "COLLABORATOR"}
+        comment = dict(approved, state="COMMENTED", submitted_at=self.thumb["created_at"])
+        self.assertTrue(self.clear(reviews=[approved, comment]))
+        requested = dict(approved, state="CHANGES_REQUESTED")
+        self.assertFalse(self.clear([self.thumb], [requested, comment]))
+        dismissed = dict(comment, state="DISMISSED")
+        self.assertFalse(self.clear(reviews=[approved, dismissed]))
 
 
 class ContractTests(unittest.TestCase):
@@ -76,6 +111,16 @@ class ContractTests(unittest.TestCase):
 
 
 class NativeBoundaryTests(unittest.TestCase):
+    def test_pagination_follows_native_link_cursors(self):
+        # The activity endpoint uses Link cursors, not numbered page parameters.
+        api = POLICY.GitHub("structured-world/signature-primitives", "read-credential")
+        response = POLICY.subprocess.CompletedProcess([], 0, '[[{"after":"old"}],[{"after":"new"}]]', '')
+        with patch.object(POLICY.subprocess, "run", return_value=response) as run:
+            self.assertEqual(list(api.pages("repos/example/activity?ref=branch")),
+                             [{"after": "old"}, {"after": "new"}])
+            self.assertIn("--paginate", run.call_args.args[0])
+            self.assertIn("--slurp", run.call_args.args[0])
+
     def test_merge_binds_the_inspected_head_and_uses_only_the_merge_token(self):
         # A push between inspection and merge must be rejected by GitHub's sha guard.
         api = POLICY.GitHub("structured-world/signature-primitives", "read-credential")

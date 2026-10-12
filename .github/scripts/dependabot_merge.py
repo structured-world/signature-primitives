@@ -17,12 +17,13 @@ class GitHubError(RuntimeError):
     pass
 
 
-def review_clear(sha, pushed, reactions, reviews, unresolved):
+def review_clear(sha, pushed, reactions, reviews, unresolved, writable):
     if unresolved:
         return False
     latest = {}
     for review in sorted(reviews, key=lambda r: r.get("submitted_at") or ""):
-        latest[review["user"]["login"]] = review
+        if review["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            latest[review["user"]["login"]] = review
     if any(r["state"] == "CHANGES_REQUESTED" for r in latest.values()):
         return False
     signals = [r for r in reactions if r["user"]["login"] == CODEX
@@ -30,9 +31,13 @@ def review_clear(sha, pushed, reactions, reviews, unresolved):
     if signals:
         last = max(signals, key=lambda r: r["created_at"])
         # Missing push evidence fails closed; author timestamps are not push times.
-        return bool(pushed and last["content"] == "+1" and last["created_at"] >= pushed)
+        if last["content"] == "eyes":
+            return False
+        if pushed and last["created_at"] > pushed:
+            return True
     return any(r["state"] == "APPROVED" and r["commit_id"] == sha
                and r.get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR")
+               and writable(r["user"]["login"])
                for r in latest.values())
 
 
@@ -61,12 +66,14 @@ class GitHub:
         self.repository = repository
         self.token = token
 
-    def request(self, path, method="GET", body=None, token=None):
+    def request(self, path, method="GET", body=None, token=None, paginate=False):
         # gh owns authentication, TLS and API transport; no credential enters argv.
         command = ["gh", "api", path, "--method", method,
                    "-H", "X-GitHub-Api-Version: 2022-11-28"]
         if body is not None:
             command.extend(["--input", "-"])
+        if paginate:
+            command.extend(["--paginate", "--slurp"])
         environment = os.environ.copy()
         environment["GH_TOKEN"] = self.token if token is None else token
         result = subprocess.run(command, input=None if body is None else json.dumps(body),
@@ -79,14 +86,10 @@ class GitHub:
         return f"repos/{self.repository}/{path}"
 
     def pages(self, path):
-        page = 1
-        while True:
-            separator = "&" if "?" in path else "?"
-            values = self.request(f"{path}{separator}per_page=100&page={page}")
+        separator = "&" if "?" in path else "?"
+        # gh follows server Link URLs, including activity's before/after cursors.
+        for values in self.request(f"{path}{separator}per_page=100", paginate=True):
             yield from values
-            if len(values) < 100:
-                break
-            page += 1
 
     def content(self, path, sha):
         encoded = urllib.parse.quote(path, safe="/")
@@ -114,6 +117,12 @@ class GitHub:
                 return False
             cursor = threads["pageInfo"]["endCursor"]
 
+    def writable(self, login):
+        user = urllib.parse.quote(login, safe="")
+        permission = self.request(self.repo(f"collaborators/{user}/permission"))
+        # The API maps maintain to write and triage to read, including custom roles.
+        return permission["permission"] in ("admin", "write")
+
     def inspect(self, number):
         pr = self.request(self.repo(f"pulls/{number}"))
         if (pr["user"]["login"] != "dependabot[bot]" or pr["state"] != "open"
@@ -139,7 +148,8 @@ class GitHub:
                        if a["after"] == pr["head"]["sha"]), None)
         reactions = list(self.pages(self.repo(f"issues/{number}/reactions")))
         reviews = list(self.pages(self.repo(f"pulls/{number}/reviews")))
-        if not review_clear(pr["head"]["sha"], pushed, reactions, reviews, self.unresolved(number)):
+        if not review_clear(pr["head"]["sha"], pushed, reactions, reviews,
+                            self.unresolved(number), self.writable):
             return pr, "waiting for fresh clean review"
         return pr, "ready"
 

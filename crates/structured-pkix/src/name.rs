@@ -23,7 +23,7 @@ mod fold;
 mod normalize;
 mod prepared;
 mod render;
-mod segments;
+pub(crate) mod segments;
 mod selector;
 pub use selector::Selector;
 mod unassigned;

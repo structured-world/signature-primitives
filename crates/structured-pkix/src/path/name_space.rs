@@ -199,6 +199,7 @@ impl<'a, S> core::ops::Deref for Layer<'a, S> {
     }
 }
 
+#[cfg(test)]
 impl<'a> NameSpace<'a> {
     pub(super) fn new(execution: &Memory) -> Self {
         Self::with_sources(execution)
@@ -325,6 +326,7 @@ impl<'a, S: Copy> NameSpace<'a, S> {
     /// A mailbox written into the subject as the legacy attribute is checked
     /// against the mail constraints, because that is where such a
     /// certificate's mail identity is (RFC 5280 4.2.1.10).
+    #[cfg(test)]
     pub(super) fn admits<E>(
         &self,
         subject: &Name<'_>,

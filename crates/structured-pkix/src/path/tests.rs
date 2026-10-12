@@ -29,6 +29,33 @@ fn ordinary_interval_does_not_alias_validity_leap_label() {
     assert!(Interval::at(1_483_228_800).inside(validity));
 }
 
+#[test]
+fn lossless_interval_preserves_inserted_second_and_fractional_endpoints() {
+    // A supplied timestamp interval must keep its label instead of rounding
+    // through :60 or projecting it onto the preceding ordinary second.
+    let der = CertificateParts {
+        validity: seq(&[
+            crate::fixtures::generalized_time("20161231235960Z"),
+            crate::fixtures::generalized_time("20170101000000Z"),
+        ]),
+        ..CertificateParts::default()
+    }
+    .build();
+    let parser = Parser::der(crate::fixtures::memory());
+    let certificate = Certificate::read(&parser, &der, 0).unwrap();
+    let validity = certificate.tbs().validity();
+    let leap = validity.not_before().instant();
+    let after = crate::temporal::Instant::leap_after(leap.seconds(), 123).unwrap();
+    let interval = Interval::between_instants(after, leap);
+    assert_eq!(interval.from_instant(), leap);
+    assert_eq!(interval.to_instant(), after);
+    assert!(interval.inside(validity));
+    assert!(Interval::at_instant(leap).inside(validity));
+    assert!(!Interval::at(leap.seconds()).inside(validity));
+    let after_end = crate::temporal::Instant::new(validity.not_after().seconds(), 1).unwrap();
+    assert!(!Interval::at_instant(after_end).inside(validity));
+}
+
 /// `ecdsa-with-SHA256`, which the test chains are signed with. The registry
 /// that says which algorithms verify what is another crate's; this is the
 /// one identifier these certificates carry.
@@ -529,6 +556,492 @@ fn parse<'a>(parser: &'a Parser, ders: &'a [Vec<u8>]) -> Vec<Certificate<'a>> {
     ders.iter()
         .map(|der| Certificate::read(parser, der, 0).expect("a certificate this test wrote"))
         .collect()
+}
+
+#[test]
+fn supplied_path_and_search_verify_the_same_original_chain() {
+    // Real ECDSA verification exercises the same processor from both public
+    // entry points; the supplied operation must retain original key/TBS views.
+    let ders = chain(Authority::Unlimited, Some(0x04));
+    let parser = Parser::der(crate::fixtures::memory());
+    let read = parse(&parser, &ders);
+    let anchor = Anchor::from_certificate(&read[2]);
+    let execution = crate::fixtures::memory();
+    let context = super::ValidationContext {
+        execution: &execution,
+        interval: moment(),
+        policy: Policy::default(),
+        bounds: super::ValidationBounds::default(),
+        verifier: &Ecdsa,
+        watch: &(),
+        recognizer: &(),
+    };
+    let super::Validation::Accepted(facts) =
+        super::validate(&[&read[0], &read[1]], anchor, &context).unwrap()
+    else {
+        panic!("the original signed chain is accepted")
+    };
+    assert_eq!(
+        facts.key.key().as_bytes().as_ptr(),
+        read[0].tbs().public_key().as_bytes().as_ptr()
+    );
+    let anchors = [anchor];
+    let search_context = super::Context {
+        execution: &execution,
+        anchors: &anchors,
+        interval: moment(),
+        bounds: Bounds::default(),
+        policy: Policy::default(),
+        verifier: &Ecdsa,
+        watch: &(),
+        recognizer: &(),
+    };
+    let outcome = build(&read[0], &[&read[1]], &search_context).unwrap();
+    assert_eq!(outcome.paths().len(), 1);
+    assert_eq!(outcome.paths()[0].policies(), facts.policies());
+    assert_eq!(outcome.paths()[0].len(), 2);
+    assert_eq!(facts.non_self_issued_intermediates, 1);
+    drop(outcome);
+    drop(facts);
+    assert_eq!(execution.used(), 0);
+}
+
+#[test]
+fn supplied_intermediate_role_and_issuer_failures_are_located() {
+    // Completed CA/KU/issuer failures retain the exact supplied position;
+    // they never become provider errors or an apparently absent certificate.
+    for (authority, usage, expected) in [
+        (
+            Authority::Absent,
+            None,
+            super::RejectionReason::NotAuthority,
+        ),
+        (
+            Authority::Unlimited,
+            Some(0x80),
+            super::RejectionReason::KeyCertSign,
+        ),
+    ] {
+        let ders = chain(authority, usage);
+        let parser = Parser::der(crate::fixtures::memory());
+        let read = parse(&parser, &ders);
+        let execution = crate::fixtures::memory();
+        let context = super::ValidationContext {
+            execution: &execution,
+            interval: moment(),
+            policy: Policy::default(),
+            bounds: super::ValidationBounds::default(),
+            verifier: &Ecdsa,
+            watch: &(),
+            recognizer: &(),
+        };
+        let super::Validation::Rejected(rejected) = super::validate(
+            &[&read[0], &read[1]],
+            Anchor::from_certificate(&read[2]),
+            &context,
+        )
+        .unwrap() else {
+            panic!("an unauthorized issuer is rejected")
+        };
+        assert_eq!(rejected.at, Some(super::ConstraintSource::Certificate(1)));
+        assert_eq!(rejected.reason, expected);
+        let super::Validation::Rejected(rejected) =
+            super::validate(&[&read[0]], Anchor::from_certificate(&read[2]), &context).unwrap()
+        else {
+            panic!("the root did not name itself as this leaf's issuer")
+        };
+        assert_eq!(rejected.at, Some(super::ConstraintSource::Certificate(0)));
+        assert_eq!(rejected.reason, super::RejectionReason::Issuer);
+        assert_eq!(execution.used(), 0);
+    }
+}
+
+#[test]
+fn supplied_path_length_reports_the_constraining_ca_and_original_limit() {
+    // RFC5280 §6.1.4(l,m): the upper CA's zero allowance is exhausted by
+    // the lower non-self-issued CA, not by the final target certificate.
+    let ders = [
+        Mint {
+            subject: "Leaf",
+            issuer: "Lower",
+            key: 1,
+            signer: 2,
+            ..Mint::default()
+        }
+        .build(),
+        Mint {
+            subject: "Lower",
+            issuer: "Upper",
+            key: 2,
+            signer: 3,
+            authority: Authority::Unlimited,
+            ..Mint::default()
+        }
+        .build(),
+        Mint {
+            subject: "Upper",
+            issuer: "Root",
+            key: 3,
+            signer: 4,
+            authority: Authority::Below(0),
+            ..Mint::default()
+        }
+        .build(),
+        Mint {
+            subject: "Root",
+            issuer: "Root",
+            key: 4,
+            signer: 4,
+            authority: Authority::Unlimited,
+            ..Mint::default()
+        }
+        .build(),
+    ];
+    let parser = Parser::der(crate::fixtures::memory());
+    let read = parse(&parser, &ders);
+    let execution = crate::fixtures::memory();
+    let context = super::ValidationContext {
+        execution: &execution,
+        interval: moment(),
+        policy: Policy::default(),
+        bounds: super::ValidationBounds::default(),
+        verifier: &Ecdsa,
+        watch: &(),
+        recognizer: &(),
+    };
+    let super::Validation::Rejected(rejected) = super::validate(
+        &[&read[0], &read[1], &read[2]],
+        Anchor::from_certificate(&read[3]),
+        &context,
+    )
+    .unwrap() else {
+        panic!("the upper CA allows no intermediate below it")
+    };
+    assert_eq!(rejected.at, Some(super::ConstraintSource::Certificate(1)));
+    assert_eq!(
+        rejected.reason,
+        super::RejectionReason::PathLength {
+            source: super::ConstraintSource::Certificate(2),
+            limit: 0
+        }
+    );
+    assert_eq!(execution.used(), 0);
+}
+
+#[test]
+fn supplied_effective_target_key_retains_inherited_parameters() {
+    // Actual ECDSA checks need the root's curve for both parameterless keys.
+    // Returned target facts must preserve that same borrowed parameter view.
+    let mut ders = inheriting();
+    ders[0] = Mint {
+        subject: "Leaf",
+        issuer: "Intermediate",
+        key: 1,
+        signer: 2,
+        inherits: true,
+        ..Mint::default()
+    }
+    .build();
+    let parser = Parser::der(crate::fixtures::memory());
+    let read = parse(&parser, &ders);
+    let execution = crate::fixtures::memory();
+    let context = super::ValidationContext {
+        execution: &execution,
+        interval: moment(),
+        policy: Policy::default(),
+        bounds: super::ValidationBounds::default(),
+        verifier: &Curved,
+        watch: &(),
+        recognizer: &(),
+    };
+    let super::Validation::Accepted(facts) = super::validate(
+        &[&read[0], &read[1]],
+        Anchor::from_certificate(&read[2]),
+        &context,
+    )
+    .unwrap() else {
+        panic!("inherited curve supports both original signatures")
+    };
+    assert_eq!(read[0].tbs().public_key().algorithm().parameters(), None);
+    let parameters = facts.key.parameters().unwrap();
+    let root_parameters = read[2].tbs().public_key().algorithm().parameters().unwrap();
+    assert_eq!(parameters, root_parameters);
+    assert_eq!(parameters.as_ptr(), root_parameters.as_ptr());
+    assert_eq!(
+        facts.key.key().as_bytes().as_ptr(),
+        read[0].tbs().public_key().as_bytes().as_ptr()
+    );
+    drop(facts);
+    assert_eq!(execution.used(), 0);
+}
+
+#[test]
+fn inherited_algorithm_matching_is_admitted_at_the_current_certificate() {
+    // A parameterless key needs a data-dependent algorithm comparison before
+    // inheriting. Exhausting the shared domain inside the provider must refuse
+    // that transition at the intermediate, not defer a hidden getter scan.
+    struct Exhaust(usize);
+    impl Verify for Exhaust {
+        type Error = core::convert::Infallible;
+        fn verify(
+            &self,
+            _algorithm: &crate::AlgorithmIdentifier<'_>,
+            _key: super::WorkingKey<'_>,
+            _signed: &[u8],
+            _signature: structured_asn1::BitString<'_>,
+            execution: &structured_asn1::memory::Memory,
+        ) -> Result<Verified, Self::Error> {
+            execution
+                .charge_work((self.0 - execution.work_used()) as u64)
+                .unwrap();
+            Ok(Verified::Yes)
+        }
+    }
+    let ders = inheriting();
+    let parser = Parser::der(crate::fixtures::memory());
+    let read = parse(&parser, &ders);
+    let work_limit = 1_000_000;
+    let execution = structured_asn1::memory::Memory::new(alloc::sync::Arc::new(
+        structured_asn1::memory::MemoryAccount::new(1_000_000, work_limit),
+    ));
+    let context = super::ValidationContext {
+        execution: &execution,
+        interval: moment(),
+        policy: Policy::default(),
+        bounds: super::ValidationBounds::default(),
+        verifier: &Exhaust(work_limit),
+        watch: &(),
+        recognizer: &(),
+    };
+    let super::BuildError::Processing(error) = super::validate(
+        &[&read[0], &read[1]],
+        Anchor::from_certificate(&read[2]),
+        &context,
+    )
+    .unwrap_err();
+    let at = read[1].tbs().subject().as_bytes().as_ptr() as usize - ders[1].as_ptr() as usize;
+    assert_eq!(error.offset(), at as u64);
+    assert_eq!(
+        error.code(),
+        crate::ErrorCode::Encoding(structured_asn1::ErrorCode::LimitExceeded(
+            structured_asn1::Limit::Work
+        ))
+    );
+    assert_eq!(execution.work_used(), work_limit);
+    assert_eq!(execution.used(), 0);
+}
+
+#[test]
+fn supplied_name_constraint_failure_names_anchor_or_ca_source() {
+    // The same excluded DNS name must identify the actual constraining source
+    // without a consumer re-decoding constraints or repeating the state machine.
+    let excluded = extension(
+        oid::NAME_CONSTRAINTS,
+        true,
+        &seq(&[tlv(0xa1, &seq(&[tlv(0x82, b"blocked.example")]))]),
+    );
+    for in_anchor in [false, true] {
+        let ders = [
+            Mint {
+                subject: "Leaf",
+                issuer: "Intermediate",
+                key: 1,
+                signer: 2,
+                extra: vec![also_known_as("blocked.example")],
+                ..Mint::default()
+            }
+            .build(),
+            Mint {
+                subject: "Intermediate",
+                issuer: "Root",
+                key: 2,
+                signer: 3,
+                authority: Authority::Unlimited,
+                extra: if in_anchor {
+                    Vec::new()
+                } else {
+                    vec![excluded.clone()]
+                },
+                ..Mint::default()
+            }
+            .build(),
+            Mint {
+                subject: "Root",
+                issuer: "Root",
+                key: 3,
+                signer: 3,
+                authority: Authority::Unlimited,
+                extra: if in_anchor {
+                    vec![excluded.clone()]
+                } else {
+                    Vec::new()
+                },
+                ..Mint::default()
+            }
+            .build(),
+        ];
+        let parser = Parser::der(crate::fixtures::memory());
+        let read = parse(&parser, &ders);
+        let execution = crate::fixtures::memory();
+        let context = super::ValidationContext {
+            execution: &execution,
+            interval: moment(),
+            policy: Policy::default(),
+            bounds: super::ValidationBounds::default(),
+            verifier: &Ecdsa,
+            watch: &(),
+            recognizer: &(),
+        };
+        let super::Validation::Rejected(rejected) = super::validate(
+            &[&read[0], &read[1]],
+            Anchor::from_certificate(&read[2]),
+            &context,
+        )
+        .unwrap() else {
+            panic!("explicit DNS exclusion")
+        };
+        assert_eq!(rejected.at, Some(super::ConstraintSource::Certificate(0)));
+        let source = if in_anchor {
+            super::ConstraintSource::Anchor
+        } else {
+            super::ConstraintSource::Certificate(1)
+        };
+        assert_eq!(
+            rejected.reason,
+            super::RejectionReason::NameConstraints {
+                source,
+                failure: super::NameConstraintFailure::Excluded
+            }
+        );
+        let anchors = [Anchor::from_certificate(&read[2])];
+        let search = build(
+            &read[0],
+            &[&read[1]],
+            &self::context(&anchors, Bounds::default(), &execution),
+        )
+        .unwrap();
+        assert_eq!(search.paths().len(), 0);
+        assert_eq!(search.truncated(), None);
+        drop(search);
+        assert_eq!(execution.used(), 0);
+    }
+}
+
+#[test]
+fn supplied_policies_keep_owned_capacity_after_processing_returns() {
+    // The graph and indexes drop at return, but policy-set capacity remains
+    // owned by the result until explicitly moved/dropped, with no new charge.
+    const POLICY: Oid<'static> = Oid::from_bytes(&[0x2a, 3, 4, 5]);
+    let ders = [
+        Mint {
+            subject: "Leaf",
+            issuer: "Root",
+            key: 1,
+            signer: 3,
+            extra: vec![issued_under(POLICY)],
+            ..Mint::default()
+        }
+        .build(),
+        Mint {
+            subject: "Root",
+            issuer: "Root",
+            key: 3,
+            signer: 3,
+            authority: Authority::Unlimited,
+            ..Mint::default()
+        }
+        .build(),
+    ];
+    let parser = Parser::der(crate::fixtures::memory());
+    let read = parse(&parser, &ders);
+    let execution = crate::fixtures::memory();
+    let context = super::ValidationContext {
+        execution: &execution,
+        interval: moment(),
+        policy: Policy::default(),
+        bounds: super::ValidationBounds::default(),
+        verifier: &Ecdsa,
+        watch: &(),
+        recognizer: &(),
+    };
+    let super::Validation::Accepted(facts) =
+        super::validate(&[&read[0]], Anchor::from_certificate(&read[1]), &context).unwrap()
+    else {
+        panic!("named policy")
+    };
+    assert_eq!(facts.policies(), &[POLICY]);
+    let retained = execution.used();
+    assert!(retained > 0);
+    let work = execution.work_used();
+    let policies = facts.into_policies();
+    assert_eq!(&*policies, &[POLICY]);
+    assert_eq!(execution.used(), retained);
+    assert_eq!(execution.work_used(), work);
+    assert_eq!(
+        retained,
+        policies.capacity() * core::mem::size_of::<Oid<'_>>()
+    );
+    drop(policies);
+    assert_eq!(execution.used(), 0);
+}
+
+#[test]
+fn supplied_malformed_constraints_keep_original_decode_location() {
+    // Relevant malformed data is a located semantic refusal, distinct from
+    // resource exhaustion. It must not disappear as an absent extension.
+    let ders = [
+        Mint {
+            subject: "Leaf",
+            issuer: "Root",
+            key: 1,
+            signer: 3,
+            extra: vec![extension(oid::NAME_CONSTRAINTS, true, &tlv(0x01, &[0xff]))],
+            ..Mint::default()
+        }
+        .build(),
+        Mint {
+            subject: "Root",
+            issuer: "Root",
+            key: 3,
+            signer: 3,
+            authority: Authority::Unlimited,
+            ..Mint::default()
+        }
+        .build(),
+    ];
+    let parser = Parser::der(crate::fixtures::memory());
+    let read = parse(&parser, &ders);
+    let execution = crate::fixtures::memory();
+    let expected = read[0]
+        .tbs()
+        .extensions()
+        .name_constraints(&execution)
+        .unwrap_err();
+    let context = super::ValidationContext {
+        execution: &execution,
+        interval: moment(),
+        policy: Policy::default(),
+        bounds: super::ValidationBounds::default(),
+        verifier: &Ecdsa,
+        watch: &(),
+        recognizer: &(),
+    };
+    let super::Validation::Rejected(rejected) =
+        super::validate(&[&read[0]], Anchor::from_certificate(&read[1]), &context).unwrap()
+    else {
+        panic!("malformed constraints")
+    };
+    assert_eq!(rejected.at, Some(super::ConstraintSource::Certificate(0)));
+    assert_eq!(
+        rejected.reason,
+        super::RejectionReason::MalformedExtension {
+            extension: oid::NAME_CONSTRAINTS,
+            code: expected.code(),
+            field: expected.field(),
+            offset: expected.offset()
+        }
+    );
+    assert_eq!(execution.used(), 0);
 }
 
 #[test]
@@ -1581,6 +2094,25 @@ fn a_rollover_link_between_two_keys_of_one_name_is_a_path() {
     let mut lengths: Vec<usize> = outcome.paths().iter().map(Path::len).collect();
     lengths.sort_unstable();
     assert_eq!(lengths, alloc::vec![1, 2]);
+
+    // RFC 5280 §6.1.4(l): the self-issued rollover consumes no intermediate
+    // allowance. Expose the count for caller-owned anchor constraints too.
+    let execution = crate::fixtures::memory();
+    let validation = super::ValidationContext {
+        execution: &execution,
+        interval: moment(),
+        policy: Policy::default(),
+        bounds: super::ValidationBounds::default(),
+        verifier: &Ecdsa,
+        watch: &(),
+        recognizer: &(),
+    };
+    let super::Validation::Accepted(facts) =
+        super::validate(&[&read[0], &read[1]], anchors[1], &validation).unwrap()
+    else {
+        panic!("the rollover is accepted against the old anchor")
+    };
+    assert_eq!(facts.non_self_issued_intermediates, 0);
 }
 
 #[test]
@@ -2990,7 +3522,9 @@ fn asking_whether_a_certificate_issued_itself_costs_what_it_reads() {
     assert_eq!(outcome.paths().len(), 1);
     assert_eq!(outcome.truncated(), None);
 
-    let long = issued_to_names_of(20_000);
+    // One required comparison alone exceeds the budget. This does not rely
+    // on repeating an anchor-identity comparison for a non-self-issued target.
+    let long = issued_to_names_of(100_000);
     let parser = Parser::der(crate::fixtures::memory());
     let read = parse(&parser, &long);
     let anchors = alloc::vec![Anchor::from_certificate(&read[1])];

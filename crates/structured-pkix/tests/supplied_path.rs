@@ -340,6 +340,77 @@ fn critical_uri_san_with_fragment_identifies_an_empty_subject() {
 }
 
 #[test]
+fn critical_policy_qualifiers_require_interpretation() {
+    // RFC5280 §4.2.1.4: a decoded critical policy still requires every
+    // qualifier to be interpretable. Noncritical opaque qualifiers remain
+    // retained data and must not invent a trust restriction.
+    for (qualifier, value, interpreted) in [
+        (Oid::from_bytes(&[0x2a, 3, 5]), tlv(0x05, &[]), false),
+        (oid::CPS_QUALIFIER, tlv(0x05, &[]), false),
+        (oid::USER_NOTICE_QUALIFIER, tlv(0x05, &[]), false),
+        (
+            oid::CPS_QUALIFIER,
+            tlv(0x16, b"https://example.test/policy#section"),
+            true,
+        ),
+    ] {
+        for critical in [false, true] {
+            let information = seq(&[
+                tlv(0x06, &[0x2a, 3, 4]),
+                seq(&[seq(&[tlv(0x06, qualifier.as_bytes()), value.clone()])]),
+            ]);
+            let mut parts = vec![tlv(0x06, oid::CERTIFICATE_POLICIES.as_bytes())];
+            if critical {
+                parts.push(tlv(0x01, &[0xff]));
+            }
+            parts.push(tlv(0x04, &seq(&[information])));
+            let root_der = certificate("Root", false);
+            let leaf_der = certificate_with_extensions("Leaf", &[seq(&parts)]);
+            let parser = Parser::der(memory(1_000_000, 1_000_000));
+            let root = Certificate::read(&parser, &root_der, 0).unwrap();
+            let leaf = Certificate::read(&parser, &leaf_der, 700).unwrap();
+            let execution = memory(1_000_000, 1_000_000);
+            let provider = Provider {
+                signed: leaf.signed_bytes(),
+                calls: Cell::new(0),
+                error: false,
+            };
+            let context = ValidationContext {
+                execution: &execution,
+                interval: Interval::at_instant(leaf.tbs().validity().not_before().instant()),
+                policy: Policy::default(),
+                bounds: ValidationBounds::default(),
+                verifier: &provider,
+                watch: &(),
+                recognizer: &(),
+            };
+            let outcome = path::validate(
+                &[&leaf],
+                Anchor::new(root.tbs().subject(), root.tbs().public_key()),
+                &context,
+            )
+            .unwrap();
+            if critical && !interpreted {
+                let Validation::Rejected(rejected) = &outcome else {
+                    panic!("uninterpreted critical qualifier: {outcome:?}")
+                };
+                assert_eq!(rejected.at, Some(ConstraintSource::Certificate(0)));
+                assert_eq!(
+                    rejected.reason,
+                    RejectionReason::CriticalExtension(oid::CERTIFICATE_POLICIES)
+                );
+                assert_eq!(provider.calls.get(), 0);
+            } else {
+                assert!(matches!(outcome, Validation::Accepted(_)), "{outcome:?}");
+                assert_eq!(provider.calls.get(), 1);
+            }
+            drop(outcome);
+            assert_eq!(execution.used(), 0);
+        }
+    }
+}
+
+#[test]
 fn malformed_critical_policy_extensions_keep_decoder_details() {
     // Criticality cannot replace a relevant decoder's code/field/offset
     // with the unknown-critical-extension verdict. Leaf-only mappings and

@@ -445,7 +445,8 @@ impl<'a> Processing<'a> {
 
         // Group once and move each set into the unique issuer node. The public
         // PolicyMappings decoder has already rejected anyPolicy and deduplicated pairs.
-        self.room(mappings.mappings().len())?;
+        // Grouping is accounted scratch. Only expectations or nodes actually
+        // attached below consume the retained graph ceiling.
         let mut grouped: OwnedMap<Oid<'a>, OwnedVec<Oid<'a>>> = self.execution.map();
         let mut order = self.execution.vector();
         for mapping in mappings.mappings() {
@@ -640,6 +641,49 @@ mod tests {
             }
         }
         graph
+    }
+
+    #[test]
+    fn unattached_mappings_do_not_spend_the_retained_graph_ceiling() {
+        // With no issuer frontier node and no anyPolicy node, a mapping
+        // retains nothing. Input/grouping scratch belongs to Memory, while
+        // the local ceiling exactly holds root + Gold + its single edge;
+        // the unchanged expected OID is the node's inline policy itself.
+        let der = certificate(&[GOLD], &[(BRONZE, SILVER)]);
+        let parser = Parser::der(crate::fixtures::memory());
+        let certificate = Certificate::read(&parser, &der, 0).unwrap();
+        let execution = crate::fixtures::memory();
+        let extensions = certificate.tbs().extensions();
+        let named = extensions
+            .certificate_policies(&execution)
+            .unwrap()
+            .unwrap();
+        let maps = extensions.policy_mappings(&execution).unwrap().unwrap();
+        let mut graph = Processing::new(
+            1,
+            Initial {
+                explicit_policy: false,
+                policy_mapping: true,
+                any_policy: true,
+            },
+            3,
+            &execution,
+            719,
+        )
+        .unwrap();
+        assert!(graph.present(Some(&named), false, false, &mut ()).unwrap());
+        assert_eq!(graph.nodes(), 2);
+        graph
+            .carry(Some(&maps), None, None, false, &mut ())
+            .unwrap();
+        assert_eq!(graph.nodes(), 2);
+        assert_eq!(
+            graph.settle(None, &[], &mut ()).unwrap().policies(),
+            &[GOLD]
+        );
+        drop(named);
+        drop(maps);
+        assert_eq!(execution.used(), 0);
     }
 
     #[test]

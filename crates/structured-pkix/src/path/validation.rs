@@ -7,7 +7,7 @@ use super::{
     WorkingKey, cost, sorting_rounds,
 };
 use crate::constraints::BasicConstraints;
-use crate::extension::{Extensions, Recognizer};
+use crate::extension::{Extension, Recognizer};
 use crate::{Certificate, ErrorCode, Name, oid};
 use structured_asn1::Oid;
 use structured_asn1::memory::{Memory, MemoryError, OwnedVec};
@@ -278,30 +278,34 @@ pub(super) fn spend_names(
 }
 
 fn critical_policy(
-    kind: Oid<'_>,
-    extensions: &Extensions<'_>,
+    item: &Extension<'_>,
     execution: &Memory,
-) -> Option<(Oid<'static>, crate::Result<()>)> {
+) -> Option<(Oid<'static>, crate::Result<bool>)> {
     // Known path extensions retain decoder failures even when critical.
+    let kind = item.kind();
     if kind == oid::CERTIFICATE_POLICIES {
         Some((
             oid::CERTIFICATE_POLICIES,
-            extensions.certificate_policies(execution).map(|_| ()),
+            // RFC5280 §4.2.1.4 requires interpretation of all qualifiers
+            // when critical. Reuse the ordinary qualifier semantic core on
+            // this decoded value rather than treating shape as understanding.
+            crate::policy::CertificatePolicies::read(item, execution)
+                .and_then(|policies| policies.understood(item.parser(), execution)),
         ))
     } else if kind == oid::POLICY_CONSTRAINTS {
         Some((
             oid::POLICY_CONSTRAINTS,
-            extensions.policy_constraints(execution).map(|_| ()),
+            crate::constraints::PolicyConstraints::read(item, execution).map(|_| true),
         ))
     } else if kind == oid::POLICY_MAPPINGS {
         Some((
             oid::POLICY_MAPPINGS,
-            extensions.policy_mappings(execution).map(|_| ()),
+            crate::policy::PolicyMappings::read(item, execution).map(|_| true),
         ))
     } else if kind == oid::INHIBIT_ANY_POLICY {
         Some((
             oid::INHIBIT_ANY_POLICY,
-            extensions.inhibit_any_policy(execution).map(|_| ()),
+            crate::constraints::InhibitAnyPolicy::read(item, execution).map(|_| true),
         ))
     } else {
         None
@@ -392,12 +396,14 @@ pub(super) fn certificate_facts<'a, E, R: Recognizer, M: Meter>(
         // critical; it is not an unrecognized extension. Critical mappings
         // and inhibitAnyPolicy must decode even on the final certificate,
         // where their intermediate-only state transitions do not apply.
-        if let Some((kind, result)) = critical_policy(demand.kind(), extensions, execution) {
-            if let Err(reason) = decoded(kind, result)? {
-                facts.rejected = Some(reason);
-                return Ok(Some(facts));
-            }
-            continue;
+        if let Some((kind, result)) = critical_policy(demand, execution) {
+            let reason = match decoded(kind, result)? {
+                Ok(true) => continue,
+                Ok(false) => RejectionReason::CriticalExtension(kind),
+                Err(reason) => reason,
+            };
+            facts.rejected = Some(reason);
+            return Ok(Some(facts));
         }
         if extensions.understands(demand, settings.recognizer, execution)? {
             continue;

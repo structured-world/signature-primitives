@@ -1,0 +1,58 @@
+name: Dependabot merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, review_requested, review_request_removed]
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+  schedule:
+    # Codex verdict reactions do not emit an Actions event; this is the backstop.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: dependabot-merge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: >-
+      github.repository == 'structured-world/signature-primitives' &&
+      (github.event_name != 'pull_request_target' ||
+       (github.event.pull_request.user.login == 'dependabot[bot]' &&
+        github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted default-branch automation only
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Inspect current CI, contracts and reviews
+        id: inspect
+        run: python3 .github/scripts/dependabot_merge.py --dry-run --github-output
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate repository-scoped merge token
+        if: steps.inspect.outputs.eligible_count != '0'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.RELEASER_APP_ID }}
+          private-key: ${{ secrets.RELEASER_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Revalidate and merge the exact reviewed head
+        if: steps.inspect.outputs.eligible_count != '0'
+        run: python3 .github/scripts/dependabot_merge.py
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_TOKEN: ${{ steps.app-token.outputs.token }}

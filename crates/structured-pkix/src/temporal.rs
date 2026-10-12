@@ -58,6 +58,15 @@ pub struct Instant {
 }
 
 impl Instant {
+    /// Internal infallible construction of an ordinary whole-second label.
+    pub(crate) const fn whole(seconds: i64) -> Self {
+        Self {
+            seconds,
+            leap: false,
+            nanos: 0,
+        }
+    }
+
     /// An ordinary POSIX-labelled second and its fractional nanoseconds.
     #[must_use]
     pub const fn new(seconds: i64, nanos: u32) -> Option<Self> {

@@ -60,6 +60,13 @@ capacity admission. Returned text retains its storage charge until released;
 OID and arc values do not implement `Display`. Borrowed arc iteration leaves
 its traversal admission to the caller.
 
+The source version also adds `OwnedOid::parse(text, &Memory)` for strict
+dotted-decimal identifiers with arbitrary-width arcs, and
+`OwnedOid::from_oid(oid, &Memory)` for fallible retained copies. Its validated
+immutable `as_oid()` view is constant-time and does not rescan the encoding.
+The independent result keeps its capacity charge; these additions are not
+available in the initial crates.io 0.1.0 release.
+
 Owned vectors, maps and strings retain allocated capacity on their original
 resource account. Container construction, growth and copies operate in that
 declared domain. Map lookup/removal and `try_iter(&Memory)` may instead use a

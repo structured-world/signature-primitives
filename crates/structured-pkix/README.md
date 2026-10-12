@@ -103,6 +103,37 @@ permissions, key strength or trust-anchor selection. Applications supply these
 decisions and account their injected providers. The API example is included in
 the source documentation for `path::validate`.
 
+## Distinguished-name selectors
+
+The source version adds `name::Selector`, `Name::rfc4514` and
+`Name::rfc4514_readable`; these APIs are not in the initial crates.io 0.1.0
+release. `Selector::parse(text, &memory)` accepts strict RFC 4514 syntax and
+owns its accounted storage. `matches_name(&name, &execution)` compares directly
+with a borrowed certificate Name; `matches(&other, &execution)` compares two
+selectors using the same identity rules. RDN sequence order matters; attribute
+order within an RDN does not. Escapes decode once, without implicit whitespace
+trimming or a whole-Name encode/reparse bridge.
+Pseudonym follows its case-exact equality rule: normalization and insignificant
+space handling still apply, while `Alice` and `alice` remain different.
+
+`rfc4514` uses registered descriptors or exact numeric OIDs and complete
+original `#BER` values for reversibility. The readable formatter emits full
+text for registered standard descriptors with RFC 4514
+escaping and retains BER for unknown/nontext values. It never calls the bounded
+display helpers. Readable output is metadata, not a canonical identity string;
+the ASN.1 string tag may change when interpreting that text.
+Malformed string payloads retained by Name also round-trip through `#BER`;
+that preservation does not make them valid textual assertions.
+
+Unknown numeric attribute types are preserved. A textual assertion requiring
+unavailable equality semantics returns `UnsupportedNameSyntax`, separately from
+malformed syntax, a completed mismatch or resource refusal. Numeric OIDs have
+arbitrary-width arcs. Constructed/indefinite BER values retain their original
+encoding; string segments are interpreted through the common iterative walker.
+ASCII singleton comparisons need no projection allocation; Unicode preparation
+and multivalued sorting use accounted execution scratch. Owned selectors and
+formatted strings keep their capacity charge independently of the input/parser.
+
 ## UTC time and leap seconds
 
 UTC arithmetic uses `temporal::LeapTable`, a borrowed application-supplied table

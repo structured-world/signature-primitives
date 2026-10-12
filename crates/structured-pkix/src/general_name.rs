@@ -255,12 +255,21 @@ pub(crate) fn read_as<'a>(
         }
         (6, false) => {
             let location = text(parent, element.contents(), field, element)?;
-            // A name holds an absolute URI, with the scheme required and a
-            // relative reference forbidden (RFC 5280 4.2.1.6); a constraint
+            // RFC5280 §4.2.1.6 requires a scheme and forbids relative URIs.
+            // RFC3986 §3's URI includes a fragment; §4.3 absolute-URI is a
+            // distinct, fragment-free production, not the SAN grammar.
+            // https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.6
+            // https://www.rfc-editor.org/rfc/rfc3986.html#section-3
+            // A constraint
             // applies to the host and is written as a host or a domain
             // (4.2.1.10).
             let fits = match address_form {
-                AddressForm::Single => is_absolute_uri(location),
+                AddressForm::Single => {
+                    // Admit the additional fragment-delimiter scan before
+                    // selecting the existing scheme/authority semantic core.
+                    parent.charge(location.len() as u64).field(field)?;
+                    is_uri(location)
+                }
                 AddressForm::WithMask => {
                     is_domain(location) || location.strip_prefix('.').is_some_and(is_domain)
                 }
@@ -1500,11 +1509,9 @@ fn uri_alphabet(segment: &str) -> bool {
 /// Whether text is a URI, the production that carries an optional fragment
 /// after the rest of it (RFC 3986 3).
 ///
-/// A name in a certificate is the fragment-free form, because the profile
-/// says a location there must not be relative and gives it the absolute
-/// production (RFC 5280 4.2.1.6). A pointer to a practice statement is only
-/// said to be "in the form of a URI" (4.2.1.4), and a statement pointing at
-/// the section that applies is what a fragment is for.
+/// Certificate names (RFC5280 §4.2.1.6) and practice-statement pointers
+/// (§4.2.1.4) use this production. Both keep the same scheme/authority
+/// checks; a fragment does not make a scheme-bearing URI relative.
 pub(crate) fn is_uri(text: &str) -> bool {
     match text.split_once('#') {
         // The fragment is written from the same alphabet, and the delimiter

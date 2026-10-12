@@ -34,6 +34,8 @@ pub enum ErrorCode {
     TimeOutOfRange,
     /// A version number this crate does not know.
     UnsupportedVersion,
+    /// An RFC 4514 attribute requires unavailable syntax or equality semantics.
+    UnsupportedNameSyntax,
     /// The algorithm named outside the signed bytes is not the one named
     /// inside them.
     AlgorithmMismatch,
@@ -55,6 +57,7 @@ impl fmt::Display for ErrorCode {
             Self::MalformedTime => f.write_str("malformed time"),
             Self::TimeOutOfRange => f.write_str("time names a moment that does not exist"),
             Self::UnsupportedVersion => f.write_str("unknown version"),
+            Self::UnsupportedNameSyntax => f.write_str("unsupported distinguished-name syntax"),
             Self::AlgorithmMismatch => {
                 f.write_str("signed and unsigned algorithm identifiers differ")
             }

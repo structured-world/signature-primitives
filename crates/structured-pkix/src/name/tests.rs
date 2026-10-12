@@ -13,6 +13,53 @@ fn parse<'a>(parser: &'a Parser, der: &'a [u8]) -> Result<Name<'a>> {
 }
 
 #[test]
+fn ia5_name_attributes_use_their_exact_case_insensitive_rules() {
+    // DN emailAddress is whole-value case-insensitive (RFC2985 §§5.2.1,
+    // 6.1), unlike GeneralName.rfc822Name. Neither that rule nor RFC5280
+    // §7.3's exact DC comparison compresses DirectoryString whitespace.
+    for (kind, left, right, matches) in [
+        (
+            oid::EMAIL_ADDRESS,
+            "USER@EXAMPLE.COM",
+            "user@example.com",
+            true,
+        ),
+        (
+            oid::EMAIL_ADDRESS,
+            " user@example.com",
+            "user@example.com",
+            false,
+        ),
+        (
+            oid::EMAIL_ADDRESS,
+            "user@ example.com",
+            "user@  example.com",
+            false,
+        ),
+        (oid::DOMAIN_COMPONENT, "EXAMPLE", "example", true),
+        (oid::DOMAIN_COMPONENT, "example ", "example", false),
+    ] {
+        let left_der = seq(&[part(kind, ia5(left))]);
+        let right_der = seq(&[part(kind, ia5(right))]);
+        let parser = Parser::der(crate::fixtures::memory());
+        let left = parse(&parser, &left_der).unwrap();
+        let right = parse(&parser, &right_der).unwrap();
+        let execution = crate::fixtures::memory();
+        assert_eq!(left.matches(&right, &execution).unwrap(), matches);
+        assert_eq!(left.order(&right, &execution).unwrap().is_eq(), matches);
+        assert_eq!(
+            left.ordered(&execution)
+                .unwrap()
+                .order(&right.ordered(&execution).unwrap(), &execution)
+                .unwrap()
+                .is_eq(),
+            matches
+        );
+        assert_eq!(execution.used(), 0);
+    }
+}
+
+#[test]
 fn opaque_der_walk_admits_its_stack_before_allocating() {
     // The entered Reader's one path index fits, but the explicit traversal
     // stack does not. Empty constructed input must still refuse that storage.
@@ -115,18 +162,18 @@ fn attribute_search_refuses_once_in_the_current_domain() {
 }
 
 #[test]
-fn every_named_attribute_kind_folds_inside_its_syntax() {
-    // Every kind this crate names sits in the syntax table: one left out
-    // would compare by bytes, and two spellings of one name would fail to
-    // match, reporting a genuine path as unproven.
+fn every_named_attribute_uses_its_equality_rule() {
+    // Every named kind has a syntax and equality rule. Initials and
+    // generationQualifier ignore case; pseudonym uses caseExactMatch.
     for kind in [oid::INITIALS, oid::GENERATION_QUALIFIER, oid::PSEUDONYM] {
         let one = seq(&[part(kind, printable("AB"))]);
         let other = seq(&[part(kind, utf8("ab"))]);
         let parser = Parser::der(crate::fixtures::memory());
         let one = parse(&parser, &one).unwrap();
         let other = parse(&parser, &other).unwrap();
-        assert!(
+        assert_eq!(
             one.matches(&other, &crate::fixtures::memory()).unwrap(),
+            kind != oid::PSEUDONYM,
             "{kind:?}"
         );
     }
@@ -673,8 +720,9 @@ fn an_oversized_personal_name_attribute_never_folds() {
     let right = parse(&parser, &genuine).unwrap();
     let folded = parse(&parser, &folded).unwrap();
 
-    // At the bound the case still folds; past it only bytes equal bytes.
-    assert!(right.matches(&folded, &crate::fixtures::memory()).unwrap());
+    // Pseudonym's caseExactMatch (RFC2985 §5.2.9) preserves case even at
+    // the bound; exceeding the bound still prevents space preparation.
+    assert!(!right.matches(&folded, &crate::fixtures::memory()).unwrap());
     assert!(!left.matches(&right, &crate::fixtures::memory()).unwrap());
 }
 
@@ -731,6 +779,134 @@ fn a_constructed_universal_attribute_value_is_refused_under_der() {
         let parser = Parser::der(crate::fixtures::memory());
         assert!(parse(&parser, &der).is_ok());
     }
+}
+
+#[test]
+fn ber_does_not_make_primitive_only_types_constructible() {
+    // X.690 §§8.2–8.5, 8.8, 8.19–8.22 and 8.26 require primitive
+    // form for these types even under BER. Opaque preservation must reject
+    // a container falsely claiming an INTEGER, OID, or newer time type.
+    let unknown = Oid::from_bytes(&[0x2a, 3]);
+    for tag in [1, 2, 5, 6, 9, 10, 13, 14, 31, 32, 33, 34, 35, 36] {
+        let value = if tag < 31 {
+            tlv(0x20 | tag, &[])
+        } else {
+            alloc::vec![0x3f, tag, 0]
+        };
+        let bytes = seq(&[part(unknown, value)]);
+        let parser = Parser::ber(crate::fixtures::memory());
+        assert!(parse(&parser, &bytes).is_err(), "universal tag {tag}");
+    }
+}
+
+#[test]
+fn ber_string_segments_use_the_base_string_tag() {
+    // X.690 §8.23.3 encodes constructed restricted strings as implicitly
+    // tagged OCTET STRINGs. UTF8String children with the outer tag repeated
+    // are not valid segments, even though each child alone is a valid value.
+    let unknown = Oid::from_bytes(&[0x2a, 3]);
+    let parser = Parser::ber(crate::fixtures::memory());
+    let valid = seq(&[part(unknown, tlv(0x2c, &tlv(4, b"A")))]);
+    assert!(parse(&parser, &valid).is_ok());
+    for child in [utf8("A"), int(1), tlv(0x84, b"A")] {
+        let invalid = seq(&[part(unknown, tlv(0x2c, &child))]);
+        assert!(parse(&parser, &invalid).is_err());
+    }
+}
+
+#[test]
+fn ber_partial_bit_segments_must_be_last_at_every_depth() {
+    // X.690 §8.6.4 allows padding only in the last segment. A nested
+    // partial segment followed by even an empty sibling is still nonfinal.
+    let unknown = Oid::from_bytes(&[0x2a, 3]);
+    let parser = Parser::ber(crate::fixtures::memory());
+    let partial = tlv(3, &[7, 0x80]);
+    let empty = tlv(3, &[0]);
+    for value in [
+        tlv(0x23, &[partial.clone(), empty.clone()].concat()),
+        tlv(0x23, &[tlv(0x23, &partial), empty].concat()),
+    ] {
+        let invalid = seq(&[part(unknown, value)]);
+        assert!(parse(&parser, &invalid).is_err());
+    }
+    let valid = seq(&[part(unknown, tlv(0x23, &tlv(0x23, &partial)))]);
+    assert!(parse(&parser, &valid).is_ok());
+}
+
+#[test]
+fn opaque_ber_times_keep_the_useful_types_broader_grammar() {
+    // X.680 §§46.2–46.3 and 47.3 permit BER spellings that DER §§11.7–11.8
+    // narrow. A preserved #BER value is not a PKIX validity timestamp.
+    let unknown = Oid::from_bytes(&[0x2a, 3]);
+    let parser = Parser::ber(crate::fixtures::memory());
+    for text in [
+        "1985110621",
+        "1985110621Z",
+        "1985110621.1415900",
+        "198511062106,456Z",
+        "19851106210627.000-0500",
+        "1985110621+05",
+    ] {
+        let value = seq(&[part(unknown, tlv(0x18, text.as_bytes()))]);
+        assert!(parse(&parser, &value).is_ok(), "{text}");
+    }
+    for text in ["8201021200Z", "8201020700-0500"] {
+        let value = seq(&[part(unknown, tlv(0x17, text.as_bytes()))]);
+        assert!(parse(&parser, &value).is_ok(), "{text}");
+    }
+    for (tag, text) in [
+        (0x18, "19851106240000Z"),
+        (0x18, "1985110621.Z"),
+        (0x17, "82010212Z"),
+        (0x17, "8201021200"),
+        (0x17, "8201021200+05"),
+        (0x17, "820102120060Z"),
+    ] {
+        let value = seq(&[part(unknown, tlv(tag, text.as_bytes()))]);
+        assert!(parse(&parser, &value).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn ber_associated_sequence_strings_validate_their_implicit_segments() {
+    // EXTERNAL's octet-aligned/arbitrary alternatives and CHARACTER STRING's
+    // string-value keep their implicit type semantics under context tags.
+    // Accepting an INTEGER child would retain an invalid BER string.
+    let unknown = Oid::from_bytes(&[0x2a, 3]);
+    let parser = Parser::ber(crate::fixtures::memory());
+    for value in [
+        tlv(0x28, &tlv(0xa1, &int(1))),
+        tlv(
+            0x3d,
+            &[tlv(0xa0, &tlv(0x85, &[])), tlv(0xa2, &int(1))].concat(),
+        ),
+    ] {
+        let invalid = seq(&[part(unknown, value)]);
+        assert!(parse(&parser, &invalid).is_err());
+    }
+    let valid = seq(&[part(unknown, tlv(0x28, &tlv(0xa2, &tlv(3, &[7, 0x80]))))]);
+    assert!(parse(&parser, &valid).is_ok());
+}
+
+#[test]
+fn preparation_admits_the_complete_fixed_schema_lookup_bound() {
+    // Preparation asks for syntax twice, size bounds once and identity-specific
+    // rules. Their full fixed table bound is 64 kind-byte passes, not 40.
+    // With one unit missing, admission must refuse before scanning any value.
+    use alloc::sync::Arc;
+    use structured_asn1::memory::{Memory, MemoryAccount};
+    let parser = Parser::der(crate::fixtures::memory());
+    let bytes = seq(&[part(oid::ORGANIZATION_IDENTIFIER, utf8("A"))]);
+    let name = parse(&parser, &bytes).unwrap();
+    let attribute = *name.attributes().next().unwrap();
+    let bound = 64 * attribute.kind().as_bytes().len() + 4;
+    let refused = Memory::new(Arc::new(MemoryAccount::new(0, bound - 1)));
+    assert!(attribute.folds(&refused).unwrap_err().is_resource());
+    assert_eq!(refused.work_used(), 0);
+    let exact = Memory::new(Arc::new(MemoryAccount::new(0, bound)));
+    assert!(attribute.folds(&exact).unwrap());
+    assert_eq!(exact.work_used(), bound);
+    assert_eq!(exact.used(), 0);
 }
 
 #[test]
@@ -1559,13 +1735,10 @@ fn a_value_wider_than_a_person_reads_is_shown_up_to_the_bound() {
 }
 
 #[test]
-fn a_value_wider_than_preparation_bounds_is_compared_as_bytes() {
-    // Some attribute types have no upper bound in the schema, and the
-    // preparation is not free: normalizing holds a run of combining
-    // characters until a starter ends it. A value with no starter is held
-    // whole, and an element may be four gibibytes. Past the widest bound the
-    // profile itself names for a name component, the value takes part in
-    // identity as bytes.
+fn funded_wide_values_keep_the_same_preparation_rule() {
+    // RFC5280 §7.1 requires StringPrep, including beyond display's bound.
+    // The iterative, accounted normalizer handles a long combining sequence;
+    // width changes neither caseIgnoreMatch nor composition semantics.
     let wide = "\u{0301}".repeat(32_769);
     let upper = seq(&[part(
         oid::ORGANIZATION_IDENTIFIER,
@@ -1578,14 +1751,13 @@ fn a_value_wider_than_preparation_bounds_is_compared_as_bytes() {
     let one = Parser::der(crate::fixtures::memory());
     let other = Parser::der(crate::fixtures::memory());
     assert!(
-        !parse(&one, &upper)
+        parse(&one, &upper)
             .unwrap()
             .matches(&parse(&other, &lower).unwrap(), &crate::fixtures::memory())
             .unwrap()
     );
 
-    // Inside the bound the same pair is one name, so what changed is the
-    // width and not the rule.
+    // A short sequence follows the identical rule.
     let narrow = "\u{0301}".repeat(64);
     let upper = seq(&[part(
         oid::ORGANIZATION_IDENTIFIER,

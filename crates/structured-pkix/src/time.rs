@@ -226,6 +226,88 @@ pub(crate) fn read_as(
     Ok(Time { instant, form })
 }
 
+/// Useful time syntax under BER, independently of a PKIX validity field.
+/// X.680 (2021) §§46.2–46.3, 47.3; X.690 §8.25. CER/DER §§11.7–11.8
+/// narrow this syntax and are deliberately applied only by the DER reader.
+/// <https://www.itu.int/rec/T-REC-X.680-202102-I/en>
+pub(crate) fn ber_fits(contents: &[u8], generalized: bool) -> bool {
+    let year_width = if generalized { 4 } else { 2 };
+    let Some((year, rest)) = split(contents, year_width) else {
+        return false;
+    };
+    let Some(year) = number(year) else {
+        return false;
+    };
+    let (clock, zone) = match rest
+        .iter()
+        .position(|byte| matches!(byte, b'Z' | b'+' | b'-'))
+    {
+        Some(at) => rest.split_at(at),
+        None => (rest, &[][..]),
+    };
+    if !ber_zone(zone, generalized) {
+        return false;
+    }
+    let digits = match clock.iter().position(|byte| matches!(byte, b'.' | b',')) {
+        Some(at) if generalized => {
+            let (digits, fraction) = clock.split_at(at);
+            if fraction.len() < 2 || !fraction[1..].iter().all(u8::is_ascii_digit) {
+                return false;
+            }
+            digits
+        }
+        Some(_) => return false,
+        None => clock,
+    };
+    let Some(([month, day, hour], tail)) = fields_of(digits) else {
+        return false;
+    };
+    if month == 0 || month > 12 || day == 0 || day > days_in_month(year, month) || hour > 23 {
+        return false;
+    }
+    // UTCTime gives only the low two year digits, not a century pivot. The
+    // cycle check allows February 29 for yy=00 (some possible centuries are
+    // leap years); selecting a century belongs to the interpreting schema.
+    if tail.is_empty() {
+        return generalized;
+    }
+    let Some(([minute], tail)) = fields_of(tail) else {
+        return false;
+    };
+    if minute > 59 {
+        return false;
+    }
+    if tail.is_empty() {
+        return true;
+    }
+    let Some(([second], [])) = fields_of(tail) else {
+        return false;
+    };
+    second <= if generalized { 60 } else { 59 }
+}
+
+fn ber_zone(zone: &[u8], generalized: bool) -> bool {
+    if zone.is_empty() {
+        return generalized;
+    }
+    if zone == b"Z" {
+        return true;
+    }
+    let Some((b'+' | b'-', digits)) = zone.split_first() else {
+        return false;
+    };
+    let Some(([hour], tail)) = fields_of(digits) else {
+        return false;
+    };
+    if hour > 23 {
+        return false;
+    }
+    if tail.is_empty() {
+        return generalized;
+    }
+    matches!(fields_of(tail), Some(([minute], [])) if minute <= 59)
+}
+
 /// Splits off `count` bytes, which must all be digits.
 pub(super) fn split(contents: &[u8], count: usize) -> Option<(&[u8], &[u8])> {
     let (digits, rest) = contents.split_at_checked(count)?;

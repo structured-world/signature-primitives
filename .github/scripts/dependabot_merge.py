@@ -144,6 +144,9 @@ class GitHub:
         if pr["mergeable_state"] != "clean":
             return pr, "waiting for mandatory CI/base qualification"
         ref = urllib.parse.quote("refs/heads/" + pr["head"]["ref"], safe="")
+        # Live responses for our pinned 2022-11-28 API expose timestamp here.
+        # The docs' pushed_at example differs; the positive activity regression
+        # preserves the observed wire contract rather than commit-author dates.
         pushed = next((a["timestamp"] for a in self.pages(self.repo(f"activity?ref={ref}"))
                        if a["after"] == pr["head"]["sha"]), None)
         reactions = list(self.pages(self.repo(f"issues/{number}/reactions")))

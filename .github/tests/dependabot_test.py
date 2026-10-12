@@ -125,6 +125,29 @@ class ContractTests(unittest.TestCase):
 
 
 class NativeBoundaryTests(unittest.TestCase):
+    def test_current_head_activity_uses_the_observed_timestamp_field(self):
+        # Live 2022-11-28 responses have timestamp, despite the docs' pushed_at example.
+        api = POLICY.GitHub("structured-world/signature-primitives", "read-credential")
+        sha = "a" * 40
+        pr = {"number": 42, "user": {"login": "dependabot[bot]"}, "state": "open",
+              "draft": False, "title": "bump checkout", "mergeable_state": "clean",
+              "base": {"ref": "main", "sha": "b" * 40},
+              "head": {"repo": {"full_name": api.repository}, "ref": "dependabot/example", "sha": sha}}
+        api.request = lambda *_: pr
+        activity = {"activity_type": "push", "after": sha, "ref": "refs/heads/dependabot/example",
+                    "timestamp": "2026-10-12T10:00:00Z"}
+        reaction = {"user": {"login": POLICY.CODEX}, "content": "+1",
+                    "created_at": "2026-10-12T10:01:00Z"}
+        def records(path):
+            if "/activity?" in path:
+                return [activity]
+            if path.endswith("/reactions"):
+                return [reaction]
+            return []
+        api.pages = records
+        api.unresolved = lambda _: False
+        self.assertEqual(api.inspect(42)[1], "ready")
+
     def test_pagination_follows_native_link_cursors(self):
         # The activity endpoint uses Link cursors, not numbered page parameters.
         api = POLICY.GitHub("structured-world/signature-primitives", "read-credential")

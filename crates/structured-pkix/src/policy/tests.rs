@@ -9,6 +9,30 @@ const ISSUER_POLICY: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x24, 0x01, 0x
 const OTHER_POLICY: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x24, 0x01, 0x03]);
 
 #[test]
+fn cps_pointer_does_not_inherit_certificate_name_host_requirements() {
+    // RFC5280 §4.2.1.4 specifies a URI, without §4.2.1.6's certificate-name
+    // host requirement. RFC3986 permits empty and percent-encoded reg-names.
+    let parser = structured_asn1::Parser::der(crate::fixtures::memory());
+    for uri in [
+        "file:///tmp/cps",
+        "https://local_host/cps",
+        "https://%41.example/cps#part",
+    ] {
+        let value = ia5(uri);
+        let qualifier = super::PolicyQualifier {
+            kind: oid::CPS_QUALIFIER,
+            value: &value,
+            at: 101,
+            outer: 0,
+        };
+        assert!(
+            super::retained_qualifier_understood(&parser, qualifier, parser.memory()).unwrap(),
+            "{uri}"
+        );
+    }
+}
+
+#[test]
 fn lazy_policy_qualifier_keeps_its_document_depth() {
     // Isolate the lazy decoder with a tighter parser: a saved qualifier must
     // not become a root value and evade its original container depth.
@@ -30,7 +54,8 @@ fn lazy_policy_qualifier_keeps_its_document_depth() {
             },
             crate::fixtures::memory(),
         );
-        let error = super::qualifier_understood(&limited, qualifier, limited.memory()).unwrap_err();
+        let error = super::retained_qualifier_understood(&limited, qualifier, limited.memory())
+            .unwrap_err();
         assert_eq!(
             error.code(),
             ErrorCode::Encoding(structured_asn1::ErrorCode::LimitExceeded(

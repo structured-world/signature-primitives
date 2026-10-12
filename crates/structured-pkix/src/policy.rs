@@ -296,7 +296,7 @@ impl CertificatePolicies<'_> {
             execution
                 .charge_work(1)
                 .map_err(|reason| Error::resource(reason, QUALIFIER_FIELD, qualifier.at))?;
-            if !qualifier_understood(parser, *qualifier, execution)? {
+            if !retained_qualifier_understood(parser, *qualifier, execution)? {
                 return Ok(false);
             }
         }
@@ -307,7 +307,7 @@ impl CertificatePolicies<'_> {
 /// The field the qualifier gates below report a spent budget in.
 const QUALIFIER_FIELD: &str = "extensions.certificatePolicies";
 
-fn qualifier_understood(
+fn retained_qualifier_understood(
     parser: &Parser,
     qualifier: PolicyQualifier<'_>,
     execution: &Memory,
@@ -336,22 +336,118 @@ fn qualifier_understood(
         return Ok(false);
     }
 
-    Ok(if qualifier.kind == crate::oid::CPS_QUALIFIER {
-        // A pointer to the practice statement: one IA5String holding a URI
-        // (RFC 5280 4.2.1.4, CPSuri). Text that is not a URI points at
-        // nothing while wearing the qualifier. Read, never fetched. The
-        // scans below touch every content byte and CPSuri has no local size
-        // ceiling, so the length is charged to the shared work budget first.
-        reader
-            .charge(value.contents().len() as u64)
-            .field(QUALIFIER_FIELD)?;
-        value.tag() == Tag::primitive(universal::IA5_STRING)
-            && crate::name::is_ia5(value.contents())
-            && core::str::from_utf8(value.contents()).is_ok_and(crate::general_name::is_uri)
-    } else if qualifier.kind == crate::oid::USER_NOTICE_QUALIFIER {
-        user_notice_understood(&reader, &value)?
+    qualifier_understood(&reader, qualifier.kind, &value)
+}
+
+#[derive(Clone, Copy)]
+enum QualifierKind {
+    Cps,
+    Notice,
+}
+
+/// Checks a DER policy qualifier's selected schema (RFC5280 §4.2.1.4).
+///
+/// `parent` is the producing reader, with the current execution account and
+/// original parser-local cumulative work/depth ceilings. A known value from
+/// a BER envelope is reread under DER with those same ceilings and offsets.
+/// No value bytes are copied, no URI is fetched and no application policy is selected.
+/// Unknown kinds and malformed known payloads return `false`; callers decide
+/// independently whether an unknown qualifier is permitted or preserved.
+///
+/// # Errors
+/// Resource refusals remain located errors, separately from `false`.
+pub fn qualifier_understood<'a>(
+    parent: &structured_asn1::Reader<'a>,
+    kind: Oid<'_>,
+    value: &structured_asn1::Element<'a>,
+) -> Result<bool> {
+    let work = (kind
+        .as_bytes()
+        .len()
+        .max(crate::oid::CPS_QUALIFIER.as_bytes().len()) as u64)
+        .checked_mul(2)
+        .and_then(|cost| cost.checked_add(1))
+        .ok_or_else(|| {
+            Error::resource(
+                structured_asn1::memory::MemoryError::WorkExceeded,
+                QUALIFIER_FIELD,
+                value.span().start,
+            )
+        })?;
+    qualifier_charge(parent, value, work)?;
+    let kind = if kind == crate::oid::CPS_QUALIFIER {
+        QualifierKind::Cps
+    } else if kind == crate::oid::USER_NOTICE_QUALIFIER {
+        QualifierKind::Notice
     } else {
-        false
+        return Ok(false);
+    };
+    if parent.encoding().is_der() {
+        return qualifier_schema(parent, kind, value);
+    }
+    let Some(mut reader) = gate(
+        parent
+            .reread(value, structured_asn1::Encoding::Der)
+            .field(QUALIFIER_FIELD),
+    )?
+    else {
+        return Ok(false);
+    };
+    let Some(Some(value)) = gate(reader.next_element().field(QUALIFIER_FIELD))? else {
+        return Ok(false);
+    };
+    if !reader.is_empty() {
+        return Ok(false);
+    }
+    qualifier_schema(&reader, kind, &value)
+}
+
+fn qualifier_charge(
+    reader: &structured_asn1::Reader<'_>,
+    value: &structured_asn1::Element<'_>,
+    work: u64,
+) -> Result<()> {
+    reader.charge(work).map_err(|error| {
+        Error::new(
+            ErrorCode::Encoding(error.code()),
+            QUALIFIER_FIELD,
+            value.span().start,
+        )
+    })
+}
+
+fn qualifier_schema(
+    reader: &structured_asn1::Reader<'_>,
+    kind: QualifierKind,
+    value: &structured_asn1::Element<'_>,
+) -> Result<bool> {
+    Ok(match kind {
+        QualifierKind::Cps => {
+            // A pointer to the practice statement: one IA5String holding a URI
+            // (RFC 5280 4.2.1.4, CPSuri). Text that is not a URI points at
+            // nothing while wearing the qualifier. Read, never fetched. The
+            // scans below touch every content byte and CPSuri has no local size
+            // ceiling, so the length is charged to the shared work budget first.
+            if value.tag() != Tag::primitive(universal::IA5_STRING) {
+                return Ok(false);
+            }
+            // ASCII/UTF8 checks and all URI component/authority scans are linear;
+            // admit their complete possible passes before examining the contents.
+            let work = (value.contents().len() as u64)
+                .checked_mul(12)
+                .and_then(|cost| cost.checked_add(1))
+                .ok_or_else(|| {
+                    Error::resource(
+                        structured_asn1::memory::MemoryError::WorkExceeded,
+                        QUALIFIER_FIELD,
+                        value.span().start,
+                    )
+                })?;
+            qualifier_charge(reader, value, work)?;
+            crate::name::is_ia5(value.contents())
+                && core::str::from_utf8(value.contents()).is_ok_and(crate::general_name::is_cps_uri)
+        }
+        QualifierKind::Notice => user_notice_understood(reader, value)?,
     })
 }
 
@@ -392,7 +488,7 @@ fn user_notice_understood(
 }
 
 /// The reference half of a user notice: the organization's display text,
-/// then a non-empty sequence of notice numbers.
+/// then a sequence of notice numbers (which may be empty).
 fn notice_reference_understood(
     parent: &structured_asn1::Reader<'_>,
     reference: &structured_asn1::Element<'_>,
@@ -456,9 +552,9 @@ fn is_display_text(
     // The per-value ceiling does not bound the aggregate: a policy may carry
     // as many notices as the document has room for, so each scan is charged
     // to the shared work budget before it runs.
-    reader
-        .charge(contents.len() as u64)
-        .field(QUALIFIER_FIELD)?;
+    // UTF8 validation and scalar counting are separate passes. The other
+    // choices fit this same bound without constructing decoded text.
+    qualifier_charge(reader, element, (contents.len() as u64) * 2 + 1)?;
     let characters = if tag == Tag::primitive(universal::IA5_STRING) {
         // The 128-character IRV (X.680, 41.4).
         contents.iter().all(u8::is_ascii).then_some(contents.len())

@@ -13,6 +13,41 @@ const SILVER: Oid<'static> = Oid::from_bytes(&[0x2a, 0x03, 0x04, 0x02]);
 const BRONZE: Oid<'static> = Oid::from_bytes(&[0x2a, 0x03, 0x04, 0x03]);
 
 #[test]
+fn mapped_policy_output_names_the_authority_policy_across_multiple_mappings() {
+    // RFC9618 §5.5(4–6)/§5.6 reports the authority/user OID, not the leaf's mapped OID.
+    // https://www.rfc-editor.org/rfc/rfc9618.html#section-5.5
+    let first = Says::new(Some(&[GOLD]), Some(&[(GOLD, SILVER)]), None, None);
+    let second = Says::new(Some(&[SILVER]), Some(&[(SILVER, BRONZE)]), None, None);
+    let settled = walk(&[naming(&[GOLD]), first, second, naming(&[BRONZE])], open(), &[GOLD])
+        .expect("the authority policy survives both mappings");
+    assert_eq!(settled, alloc::vec![GOLD]);
+}
+
+#[test]
+fn synthesized_mapping_parent_belongs_to_the_previous_depth() {
+    // RFC9618 §5.4(2) synthesizes below previous-depth anyPolicy, not current anyPolicy.
+    // A same-depth parent would retain a branch that pruning should remove.
+    let parser = Parser::der(crate::fixtures::memory());
+    let first = naming(&[oid::ANY_POLICY]);
+    let second = Says::new(Some(&[oid::ANY_POLICY]), Some(&[(GOLD, SILVER)]), None, None);
+    let first = Certificate::read(&parser, &first.der, 0).unwrap();
+    let second = Certificate::read(&parser, &second.der, 0).unwrap();
+    let execution = crate::fixtures::memory();
+    let mut processing = Processing::new(3, open(), 64, &execution, 0).unwrap();
+    let first = first.tbs().extensions().certificate_policies(&execution).unwrap().unwrap();
+    assert!(processing.present(Some(&first), false, false, &mut ()).unwrap());
+    processing.carry(None, None, None, false, &mut ()).unwrap();
+    let named = second.tbs().extensions().certificate_policies(&execution).unwrap().unwrap();
+    let mapped = second.tbs().extensions().policy_mappings(&execution).unwrap().unwrap();
+    assert!(processing.present(Some(&named), false, false, &mut ()).unwrap());
+    processing.carry(Some(&mapped), None, None, false, &mut ()).unwrap();
+    let nodes = processing.nodes.as_ref().unwrap();
+    let synthesized = nodes.iter().find(|node| node.live && node.policy == GOLD).unwrap();
+    let parent = synthesized.parent.expect("a synthesized issuer has an anyPolicy parent");
+    assert_eq!(nodes[parent].depth + 1, synthesized.depth);
+}
+
+#[test]
 fn an_unrepresentable_policy_counter_is_refused_before_allocation() {
     // RFC 5280's initial counters sit one certificate beyond the path.
     // Saturating at the path length would give a different processing model.

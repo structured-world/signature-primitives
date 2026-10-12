@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features: ["", "--all-features"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - name: Test runner
+        run: cargo +stable install cargo-nextest --locked --version 0.9.146
+      - run: cargo +stable fmt --all -- --check
+      - run: cargo +stable clippy --locked --workspace --all-targets ${{ matrix.features }} -- -D warnings
+      - run: cargo +stable nextest run --locked --workspace ${{ matrix.features }}
+      - run: cargo +stable test --locked --workspace --doc ${{ matrix.features }}
+
+  alloc:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [wasm32-unknown-unknown, thumbv7em-none-eabihf]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+      - run: cargo +stable check --locked --workspace --no-default-features --target ${{ matrix.target }}
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - run: rustup toolchain install 1.92.0 --profile minimal
+      - run: cargo +1.92.0 check --locked --workspace --all-targets
+      - name: Test runner
+        run: cargo +stable install cargo-nextest --locked --version 0.9.146
+      - run: cargo +1.92.0 nextest run --locked --workspace --all-features
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - run: rustup toolchain install stable --profile minimal
+      - run: bash scripts/check-packages.sh

@@ -30,22 +30,29 @@ function canPublish({ event = "workflow_run", source = "push", outcome = "succes
     },
     inputs: { verify_only: verifyOnly },
   };
-  return evaluate(publish.if, values) && evaluate(release.if, values);
+  return evaluate(publish.if, values);
 }
 
-// A dispatch must never bypass the CI trigger, even with explicitly false input.
-assert.equal(canPublish({ event: "workflow_dispatch", verifyOnly: false }), false);
-assert.equal(canPublish({ event: "workflow_dispatch", verifyOnly: true }), false);
-assert.equal(canPublish(), true);
-assert.equal(canPublish({ outcome: "failure" }), false);
-assert.equal(canPublish({ outcome: "cancelled" }), false);
-assert.equal(canPublish({ source: "pull_request" }), false);
-assert.equal(canPublish({ headRepository: "attacker/signature-primitives" }), false);
-assert.equal(canPublish({ repository: "attacker/signature-primitives" }), false);
+// OIDC refuses workflow_run. Both supported triggers must pass the exact-SHA
+// CI gate before authentication; a dispatch is no CI bypass.
+assert.equal(canPublish(), false);
+assert.equal(canPublish({ event: "push" }), true);
+assert.equal(canPublish({ event: "workflow_dispatch" }), true);
+assert.equal(canPublish({ event: "pull_request" }), false);
+assert.equal(canPublish({ event: "push", branch: "feature" }), false);
+assert.equal(canPublish({ event: "workflow_dispatch", branch: "feature" }), false);
+assert.equal(canPublish({ event: "push", repository: "attacker/signature-primitives" }), false);
 assert.deepEqual(workflow.on.workflow_run.branches, ["main"]);
 assert.equal(publish.environment, "release");
 assert.equal(publish.permissions["id-token"], "write");
-console.log("PASS: only a successful CI push from the repository can publish; manual, failed and fork paths refuse.");
+const gate = publish.steps.findIndex(step => step.run?.includes("release_ci.py"));
+assert.ok(gate >= 0 && gate < publish.steps.indexOf(release));
+assert.equal(publish.steps[0].with.ref, "${{ github.sha }}");
+assert.equal(publish.permissions.actions, "read");
+assert.equal(publish.concurrency["cancel-in-progress"], false);
+assert.ok(workflow.on.push.branches.includes("main"));
+assert.equal(release.if, undefined);
+console.log("PASS: supported main triggers require exact-SHA CI before OIDC publication.");
 
 const ci = parse(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"));
 function ciGroup(event, sha, ref = "refs/heads/main") {

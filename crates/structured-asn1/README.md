@@ -1,8 +1,58 @@
-# structured-asn1
+# structured-asn1 — borrowed ASN.1 BER/DER parsing in Rust
 
-A BER/DER reader that borrows encoded values and retains their original byte
-ranges. Nested readers share depth, element, length and work limits. Resource
-exhaustion is distinct from malformed input.
+[![crates.io](https://img.shields.io/crates/v/structured-asn1)](https://crates.io/crates/structured-asn1)
+[![downloads](https://img.shields.io/crates/d/structured-asn1)](https://crates.io/crates/structured-asn1)
+[![docs.rs](https://img.shields.io/docsrs/structured-asn1)](https://docs.rs/structured-asn1)
+[![CI](https://github.com/structured-world/signature-primitives/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/structured-world/signature-primitives/actions/workflows/ci.yml)
+[![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/structured-world/signature-primitives/blob/main/LICENSE)
+
+A Rust ASN.1 reader for BER and DER that borrows encoded values and preserves
+their exact byte ranges. Useful for format parsers that must verify digital
+signatures over the bytes received. Nested readers share depth, element, length
+and work limits; resource exhaustion is distinct from malformed input.
+
+**`no_std + alloc` by default · Rust 1.92+ · No cryptographic backend or I/O**
+
+## Install
+
+```toml
+[dependencies]
+structured-asn1 = "0.1"
+```
+
+Enable the optional `std` feature for a standard-library integration, or name
+`alloc` explicitly for an alloc-only feature graph. See the
+[API reference](https://docs.rs/structured-asn1) for parser limits and value types.
+
+## Quick start
+
+```rust
+use std::sync::Arc;
+use structured_asn1::{Parser, Tag, universal};
+use structured_asn1::memory::{Memory, MemoryAccount};
+
+fn main() -> Result<(), structured_asn1::Error> {
+    // SEQUENCE { INTEGER 1 }; shared limits: storage bytes and work units.
+    let bytes = [0x30, 0x03, 0x02, 0x01, 0x01];
+    let memory = Memory::new(Arc::new(MemoryAccount::new(1024, 1024)));
+    let parser = Parser::der(memory);
+    let mut reader = parser.read(&bytes, 0)?;
+    let sequence = reader.expect(Tag::constructed(universal::SEQUENCE))?;
+    let mut inside = reader.enter(&sequence)?;
+    let integer = inside.expect(Tag::primitive(universal::INTEGER))?;
+
+    assert_eq!(integer.contents(), &[1]);
+    assert_eq!(integer.span().start, 2);
+    assert_eq!(integer.span().length, 3);
+    Ok(())
+}
+```
+
+The value is a view into `bytes`. Choose `Parser::ber` for BER input, or use
+`Parser::new` to supply encoding and parser-local `Limits` explicitly. Borrowed
+values require the document to remain alive.
+
+## OIDs and retained memory
 
 OID identity uses its encoded bytes. `Oid::text(&Memory)` and
 `Arc::text(&Memory)` materialize exact decimal text with fallible work and
@@ -17,24 +67,17 @@ current execution account; iteration prepays control buckets, including sparse
 holes. Rebuilding a collection in another domain requires an explicit fallible
 copy; retained allocations are never silently rebound.
 
-This crate reads encoding structure, not certificate trust or signature validity.
-It uses `no_std + alloc` by default and has no cryptographic backend or I/O.
+Raw byte views and ordinary formatting/equality traits leave application-owned
+traversal and output storage to the caller. An explicit budget bounds admitted
+mechanism work; it does not automatically account arbitrary caller code.
 
-```rust
-extern crate alloc;
-use alloc::sync::Arc;
-use structured_asn1::{Parser, Tag, universal};
-use structured_asn1::memory::{Memory, MemoryAccount};
+## Related crate
 
-let bytes = [0x30, 0x03, 0x02, 0x01, 0x01];
-let memory = Memory::new(Arc::new(MemoryAccount::new(1024, 1024)));
-let parser = Parser::der(memory);
-let mut reader = parser.read(&bytes, 0)?;
-let sequence = reader.expect(Tag::constructed(universal::SEQUENCE))?;
-let mut inside = reader.enter(&sequence)?;
-let integer = inside.expect(Tag::primitive(universal::INTEGER))?;
-assert_eq!(integer.contents(), &[1]);
-# Ok::<(), structured_asn1::Error>(())
-```
+For X.509 certificate parsing and provider-neutral path validation, use
+[structured-pkix](https://crates.io/crates/structured-pkix). This crate reads
+encoding structure; it does not decide certificate trust or signature validity.
 
-Licensed under Apache-2.0.
+## License and source
+
+Licensed under Apache-2.0. Source, issues and contribution instructions are in
+[signature-primitives](https://github.com/structured-world/signature-primitives).

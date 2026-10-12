@@ -24,6 +24,7 @@ jobs:
         working-directory: .github/tests
       - run: npm run check
         working-directory: .github/tests
+      - run: python3 -m unittest discover -s .github/tests -p '*_test.py'
 
   test:
     runs-on: ubuntu-latest

@@ -1,0 +1,17 @@
+name: Dependabot review wake
+
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+
+# Review events use the PR workflow; this signal has no privileged credentials.
+# The workflow_run receiver checks out trusted main and revalidates API metadata.
+permissions: {}
+
+jobs:
+  signal:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo 'Review changed; trusted merge automation will revalidate.'

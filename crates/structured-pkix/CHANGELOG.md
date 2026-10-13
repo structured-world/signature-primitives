@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.1.3...structured-pkix-v0.1.5) - 2026-10-13
+
+### Other
+
+- release v0.1.4 ([#33](https://github.com/structured-world/signature-primitives/pull/33))
+
 ## [0.1.4](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.1.3...structured-pkix-v0.1.4) - 2026-10-13
 
 ### Added

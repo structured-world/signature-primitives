@@ -39,6 +39,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}
+      - name: Attach preparation to the published revision
+        # release-plz requires a branch (0.3.171 release_pr/mod.rs). Only the
+        # disposable checkout's local ref moves; retain the published SHA,
+        # even if remote main has advanced while CI/publication was running.
+        run: git switch -C main "$GITHUB_SHA"
       - run: rustup toolchain install stable --profile minimal
       - name: Prepare coordinated release PR
         uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141

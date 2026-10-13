@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Parser, Lexer, Evaluator, data } from "@actions/expressions";
 import { parse } from "yaml";
 
@@ -72,6 +75,33 @@ for (const event of ["workflow_run", "pull_request"]) assert.equal(canPrepare("s
 assert.equal(canPrepare("success", "push", "feature"), false);
 assert.equal(canPrepare("success", "push", "main", "attacker/signature-primitives"), false);
 console.log("PASS: preparation follows successful publication of the same main revision.");
+
+// release-plz 0.3.171 refuses detached HEAD. Execute the actual workflow step:
+// an existing local main must not move preparation away from the published SHA.
+const branchStep = preparation.steps.find(step => step.name === "Attach preparation to the published revision");
+assert.ok(branchStep, "a SHA checkout must be attached before invoking release-pr");
+assert.ok(preparation.steps.indexOf(branchStep) < preparation.steps.findIndex(step => step.with?.command === "release-pr"));
+const checkout = mkdtempSync(join(tmpdir(), "signature-primitives-release-branch-"));
+try {
+  const git = (...args) => execFileSync("git", args, { cwd: checkout, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  git("init", "--initial-branch=main");
+  writeFileSync(join(checkout, "source"), "published");
+  git("add", "source");
+  git("-c", "user.name=Release test", "-c", "user.email=release-test@example.invalid", "commit", "-m", "published");
+  const published = git("rev-parse", "HEAD");
+  writeFileSync(join(checkout, "source"), "later main");
+  git("add", "source");
+  git("-c", "user.name=Release test", "-c", "user.email=release-test@example.invalid", "commit", "-m", "later main");
+  git("checkout", "--detach", published);
+  assert.equal(git("branch", "--show-current"), "");
+  execFileSync("bash", ["-eu", "-c", branchStep.run], { cwd: checkout, env: { ...process.env, GITHUB_SHA: published }, stdio: "pipe" });
+  assert.equal(git("branch", "--show-current"), "main");
+  assert.equal(git("rev-parse", "HEAD"), published);
+  assert.equal(readFileSync(join(checkout, "source"), "utf8"), "published");
+} finally {
+  rmSync(checkout, { recursive: true, force: true });
+}
+console.log("PASS: actual preparation step attaches main without substituting a later revision.");
 
 const ci = parse(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"));
 function ciGroup(event, sha, ref = "refs/heads/main") {

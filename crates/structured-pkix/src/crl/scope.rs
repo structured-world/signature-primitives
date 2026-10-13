@@ -107,35 +107,9 @@ impl super::Authenticated<'_, '_> {
                 CertificateKind::All => (),
             }
         }
-        let mut coverage = Reasons::NONE;
-        let mut specified = false;
-        if let Some(points) = target
-            .tbs()
-            .extensions()
-            .crl_distribution_points(execution)?
+        if let Some(outcome) = specified_scope(crl.tbs().issuer(), idp.as_ref(), target, execution)?
         {
-            for point in points.points() {
-                execution
-                    .charge_work(1)
-                    .map_err(|reason| Error::resource(reason, FIELD, target.span().start))?;
-                match point_scope(crl.tbs().issuer(), idp.as_ref(), target, point, execution)? {
-                    ScopeOutcome::Applicable(reasons) => {
-                        specified = true;
-                        coverage = coverage.union(reasons);
-                    }
-                    ScopeOutcome::NotApplicable(ScopeFailure::NoReasons) => specified = true,
-                    ScopeOutcome::NotApplicable(_) => (),
-                }
-            }
-        }
-        if !coverage.is_empty() {
-            return Ok(ScopeOutcome::Applicable(coverage));
-        }
-        // The fallback only covers CRLs not specified in a DP. A matching
-        // explicit issuer/name with disjoint reasons cannot acquire coverage
-        // by forgetting that DP's restriction (RFC 5280 §6.3.3).
-        if specified {
-            return Ok(ScopeOutcome::NotApplicable(ScopeFailure::NoReasons));
+            return Ok(outcome);
         }
         // RFC 5280 §6.3.3 final paragraph: synthetic DP names comprise the
         // target issuer DN and issuerAltName, with no cRLIssuer or reasons.
@@ -157,7 +131,8 @@ impl super::Authenticated<'_, '_> {
                 execution,
             )?;
             if !matched && let Some(names) = target.tbs().extensions().issuer_alt_name(execution)? {
-                matched = point_name_matches_names(idp, crl.tbs().issuer(), &names, execution)?;
+                matched =
+                    point_name_matches_names::<false>(idp, crl.tbs().issuer(), &names, execution)?;
             }
             if !matched {
                 return Ok(ScopeOutcome::NotApplicable(ScopeFailure::DistributionName));
@@ -169,6 +144,49 @@ impl super::Authenticated<'_, '_> {
             crl.span().start,
         )?))
     }
+}
+
+fn specified_scope(
+    issuer: &Name<'_>,
+    idp: Option<&IssuingDistributionPoint<'_>>,
+    target: &Certificate<'_>,
+    execution: &Memory,
+) -> Result<Option<ScopeOutcome>> {
+    let mut coverage = Reasons::NONE;
+    let mut failure = None;
+    if let Some(points) = target
+        .tbs()
+        .extensions()
+        .crl_distribution_points(execution)?
+    {
+        for point in points.points() {
+            execution.charge_work(1).map_err(|reason| {
+                Error::resource(reason, "certificateList.scope", target.span().start)
+            })?;
+            match point_scope(issuer, idp, target, point, execution)? {
+                ScopeOutcome::Applicable(reasons) => coverage = coverage.union(reasons),
+                ScopeOutcome::NotApplicable(ScopeFailure::NoReasons) => {
+                    failure = Some(ScopeFailure::NoReasons);
+                }
+                ScopeOutcome::NotApplicable(ScopeFailure::DistributionName)
+                    if failure.is_none()
+                        && idp.is_some_and(|idp| idp.name.is_some())
+                        && (!point.full_name().is_empty()
+                            || point.name_relative_to_issuer().is_some()) =>
+                {
+                    // Both fields are present: §5.2.5 requires an identical
+                    // selected name. The §6.3.3 synthetic fallback cannot
+                    // discard this explicit field or its reason restriction.
+                    failure = Some(ScopeFailure::DistributionName);
+                }
+                ScopeOutcome::NotApplicable(_) => (),
+            }
+        }
+    }
+    if !coverage.is_empty() {
+        return Ok(Some(ScopeOutcome::Applicable(coverage)));
+    }
+    Ok(failure.map(ScopeOutcome::NotApplicable))
 }
 
 fn reason_mask(flags: Option<BitString<'_>>, execution: &Memory, at: u64) -> Result<Reasons> {
@@ -228,11 +246,15 @@ fn point_scope(
                     _ => unreachable!("DP reader requires directory issuers"),
                 }
             };
-            point_name_matches_composed(idp, issuer, base, Some(relative), execution)?
+            point_name_matches_composed::<true>(idp, issuer, base, Some(relative), execution)?
         } else if !point.full_name().is_empty() {
-            point_name_matches_names(idp, issuer, point.full_name(), execution)?
+            // RFC5280 5.2.5 requires identical selected name encoding when
+            // both DP fields are present; semantic name equality is used only
+            // for issuer-only/synthetic fields in 6.3.3(b)(2)(i).
+            // <https://www.rfc-editor.org/rfc/rfc5280#section-5.2.5>
+            point_name_matches_names::<true>(idp, issuer, point.full_name(), execution)?
         } else {
-            point_name_matches_names(idp, issuer, point.issuer(), execution)?
+            point_name_matches_names::<false>(idp, issuer, point.issuer(), execution)?
         };
         if !matched {
             return Ok(ScopeOutcome::NotApplicable(ScopeFailure::DistributionName));
@@ -278,10 +300,10 @@ fn point_name_matches_directory(
     directory: &Name<'_>,
     execution: &Memory,
 ) -> Result<bool> {
-    point_name_matches_composed(idp, issuer, directory, None, execution)
+    point_name_matches_composed::<false>(idp, issuer, directory, None, execution)
 }
 
-fn point_name_matches_composed(
+fn point_name_matches_composed<const ENCODED: bool>(
     idp: &IssuingDistributionPoint<'_>,
     issuer: &Name<'_>,
     base: &Name<'_>,
@@ -290,15 +312,23 @@ fn point_name_matches_composed(
 ) -> Result<bool> {
     match &idp.name {
         Some(PointName::Relative(suffix)) => {
-            name::matches_composed(issuer, Some(suffix), base, relative, execution)
+            if ENCODED && relative.is_none() {
+                return Ok(false);
+            }
+            name::matches_composed::<ENCODED>(issuer, Some(suffix), base, relative, execution)
         }
         Some(PointName::Full(names)) => {
+            if ENCODED && relative.is_some() {
+                return Ok(false);
+            }
             for name in names {
                 execution
                     .charge_work(1)
                     .map_err(|reason| base.resource(reason))?;
                 if let GeneralName::Directory(directory) = name
-                    && name::matches_composed(directory, None, base, relative, execution)?
+                    && name::matches_composed::<ENCODED>(
+                        directory, None, base, relative, execution,
+                    )?
                 {
                     return Ok(true);
                 }
@@ -309,7 +339,7 @@ fn point_name_matches_composed(
     }
 }
 
-fn point_name_matches_names(
+fn point_name_matches_names<const ENCODED: bool>(
     idp: &IssuingDistributionPoint<'_>,
     issuer: &Name<'_>,
     names: &[GeneralName<'_>],
@@ -321,8 +351,17 @@ fn point_name_matches_names(
             .map_err(|reason| issuer.resource(reason))?;
         match &idp.name {
             Some(PointName::Relative(relative)) => {
+                if ENCODED {
+                    return Ok(false);
+                }
                 if let GeneralName::Directory(directory) = right
-                    && name::matches_composed(issuer, Some(relative), directory, None, execution)?
+                    && name::matches_composed::<ENCODED>(
+                        issuer,
+                        Some(relative),
+                        directory,
+                        None,
+                        execution,
+                    )?
                 {
                     return Ok(true);
                 }
@@ -332,7 +371,7 @@ fn point_name_matches_names(
                     execution
                         .charge_work(1)
                         .map_err(|reason| issuer.resource(reason))?;
-                    if names_match(left, right, issuer, execution)? {
+                    if names_match::<ENCODED>(left, right, issuer, execution)? {
                         return Ok(true);
                     }
                 }
@@ -343,7 +382,7 @@ fn point_name_matches_names(
     Ok(false)
 }
 
-fn names_match(
+fn names_match<const ENCODED: bool>(
     left: &GeneralName<'_>,
     right: &GeneralName<'_>,
     source: &Name<'_>,
@@ -351,19 +390,19 @@ fn names_match(
 ) -> Result<bool> {
     let (left, right) = match (left, right) {
         (GeneralName::Directory(left), GeneralName::Directory(right)) => {
-            return left.matches(right, execution);
+            return name::matches_composed::<ENCODED>(left, None, right, None, execution);
         }
-        (GeneralName::Uri(left), GeneralName::Uri(right)) => {
+        (GeneralName::Uri(left), GeneralName::Uri(right)) if !ENCODED => {
             return super::uri::matches(left, right, execution, source.offset());
         }
-        (GeneralName::Dns(left), GeneralName::Dns(right)) => {
+        (GeneralName::Dns(left), GeneralName::Dns(right)) if !ENCODED => {
             admit_text(left, right, source, execution)?;
             // RFC5280 §7.2 requires whole-DNS-name ASCII case-insensitive
             // exact comparison; no trailing-dot or suffix identity is added.
             // https://www.rfc-editor.org/rfc/rfc5280#section-7.2
             return Ok(left.eq_ignore_ascii_case(right));
         }
-        (GeneralName::Email(left), GeneralName::Email(right)) => {
+        (GeneralName::Email(left), GeneralName::Email(right)) if !ENCODED => {
             admit_text(left, right, source, execution)?;
             // RFC5280 §7.5: local-part exact, host ASCII case-insensitive.
             // Quotes can contain @; the separator is outside quoted local-part.
@@ -374,6 +413,11 @@ fn names_match(
                 return Ok(false);
             };
             return Ok(left_local == right_local && left_host.eq_ignore_ascii_case(right_host));
+        }
+        (GeneralName::Uri(left), GeneralName::Uri(right))
+        | (GeneralName::Dns(left), GeneralName::Dns(right))
+        | (GeneralName::Email(left), GeneralName::Email(right)) => {
+            (left.as_bytes(), right.as_bytes())
         }
         (GeneralName::X400(left), GeneralName::X400(right))
         | (GeneralName::EdiParty(left), GeneralName::EdiParty(right))
@@ -597,7 +641,8 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                super::names_match(&left, &right, source.tbs().issuer(), &execution).unwrap(),
+                super::names_match::<false>(&left, &right, source.tbs().issuer(), &execution)
+                    .unwrap(),
                 expected
             );
         }
@@ -643,7 +688,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                super::names_match(
+                super::names_match::<false>(
                     &crate::general_name::GeneralName::Uri(left),
                     &crate::general_name::GeneralName::Uri(right),
                     source.tbs().issuer(),

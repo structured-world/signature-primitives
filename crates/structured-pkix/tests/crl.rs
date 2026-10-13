@@ -153,6 +153,180 @@ fn complete_crl_number_requires_noncriticality_and_valid_nonnegative_syntax() {
 }
 
 #[test]
+fn identical_relative_distribution_fields_keep_default_issuer_dn_equality() {
+    // 5.2.5 requires the original relative fields to have identical encoding;
+    // 6.3.3(b)(1) still compares the issuer bases as names, not as DER aliases.
+    use structured_pkix::crl::{Reasons, ScopeOutcome};
+    let relative = tlv(
+        0xa1,
+        &tlv(48, &[tlv(6, &[0x55, 4, 3]), tlv(12, b"Point")].concat()),
+    );
+    let point_name = tlv(0xa0, &relative);
+    let dp = tlv(
+        48,
+        &[
+            tlv(6, &[0x55, 0x1d, 0x1f]),
+            tlv(4, &tlv(48, &tlv(48, &point_name))),
+        ]
+        .concat(),
+    );
+    let target_body = tlv(
+        48,
+        &[
+            tlv(0xa0, &[2, 1, 2]),
+            tlv(2, &[1]),
+            algorithm(),
+            issuer(),
+            tlv(48, &[date(), date()].concat()),
+            issuer(),
+            tlv(48, &[algorithm(), tlv(3, &[0, 7])].concat()),
+            tlv(0xa3, &tlv(48, &dp)),
+        ]
+        .concat(),
+    );
+    let target_bytes = crl(&target_body);
+    let idp = tlv(
+        48,
+        &[
+            tlv(6, &[0x55, 0x1d, 0x1c]),
+            tlv(1, &[0xff]),
+            tlv(4, &tlv(48, &point_name)),
+        ]
+        .concat(),
+    );
+    let alternate = tlv(
+        48,
+        &tlv(
+            49,
+            &tlv(48, &[tlv(6, &[0x55, 4, 3]), tlv(19, b"A")].concat()),
+        ),
+    );
+    let crl_body = tlv(
+        48,
+        &[
+            tlv(2, &[1]),
+            algorithm(),
+            alternate,
+            date(),
+            tlv(0xa0, &tlv(48, &idp)),
+        ]
+        .concat(),
+    );
+    let bytes = crl(&crl_body);
+    let issuer_bytes = certificate(false, None, 7);
+    let execution = memory(128 * 1024, 1_000_000);
+    let parser = Parser::der(execution.clone());
+    let signer = structured_pkix::Certificate::read(&parser, &issuer_bytes, 100).unwrap();
+    let target = structured_pkix::Certificate::read(&parser, &target_bytes, 300).unwrap();
+    let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
+    assert_eq!(
+        authenticated(&parsed, &signer, &execution)
+            .scope(&target, &execution)
+            .unwrap(),
+        ScopeOutcome::Applicable(Reasons::ALL)
+    );
+}
+
+#[test]
+fn distribution_names_require_exact_selected_encoding_without_synthetic_broadening() {
+    // RFC5280 5.2.5 requires identical selected name encodings, while 6.3.3
+    // permits intersecting GeneralNames lists. Semantic aliases cannot acquire
+    // coverage by falling back to a synthetic issuer-name distribution point.
+    use structured_pkix::crl::{Reasons, ScopeFailure, ScopeOutcome};
+    let full = |names: Vec<Vec<u8>>| tlv(0xa0, &names.concat());
+    let rdn = |tag| {
+        tlv(
+            0xa1,
+            &tlv(48, &[tlv(6, &[0x55, 4, 3]), tlv(tag, b"A")].concat()),
+        )
+    };
+    let alternate_dn = tlv(
+        48,
+        &tlv(
+            49,
+            &tlv(48, &[tlv(6, &[0x55, 4, 3]), tlv(19, b"A")].concat()),
+        ),
+    );
+    for (dp_name, idp_name, exact) in [
+        (
+            full(vec![tlv(0x86, b"HTTP://crl.example:80/a")]),
+            full(vec![tlv(0x86, b"http://crl.example/a")]),
+            false,
+        ),
+        (
+            full(vec![tlv(0x82, b"CRL.example")]),
+            full(vec![tlv(0x82, b"crl.example")]),
+            false,
+        ),
+        (
+            full(vec![tlv(0xa4, &alternate_dn)]),
+            full(vec![tlv(0xa4, &issuer())]),
+            false,
+        ),
+        (rdn(19), rdn(12), false),
+        (rdn(12), rdn(12), true),
+        (
+            full(vec![
+                tlv(0x86, b"http://other.example/a"),
+                tlv(0x86, b"http://crl.example/a"),
+            ]),
+            full(vec![tlv(0x86, b"http://crl.example/a")]),
+            true,
+        ),
+    ] {
+        let dp_extension = tlv(
+            48,
+            &[
+                tlv(6, &[0x55, 0x1d, 0x1f]),
+                tlv(4, &tlv(48, &tlv(48, &tlv(0xa0, &dp_name)))),
+            ]
+            .concat(),
+        );
+        let target_body = tlv(
+            48,
+            &[
+                tlv(0xa0, &[2, 1, 2]),
+                tlv(2, &[1]),
+                algorithm(),
+                issuer(),
+                tlv(48, &[date(), date()].concat()),
+                issuer(),
+                tlv(48, &[algorithm(), tlv(3, &[0, 7])].concat()),
+                tlv(0xa3, &tlv(48, &dp_extension)),
+            ]
+            .concat(),
+        );
+        let target_bytes = crl(&target_body);
+        let idp_extension = tlv(
+            48,
+            &[
+                tlv(6, &[0x55, 0x1d, 0x1c]),
+                tlv(1, &[0xff]),
+                tlv(4, &tlv(48, &tlv(0xa0, &idp_name))),
+            ]
+            .concat(),
+        );
+        let bytes = crl(&tbs(Some(1), &tlv(0xa0, &tlv(48, &idp_extension))));
+        let issuer_bytes = certificate(false, None, 7);
+        let execution = memory(128 * 1024, 1_000_000);
+        let parser = Parser::der(execution.clone());
+        let signer = structured_pkix::Certificate::read(&parser, &issuer_bytes, 100).unwrap();
+        let target = structured_pkix::Certificate::read(&parser, &target_bytes, 300).unwrap();
+        let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
+        assert_eq!(
+            authenticated(&parsed, &signer, &execution)
+                .scope(&target, &execution)
+                .unwrap(),
+            if exact {
+                ScopeOutcome::Applicable(Reasons::ALL)
+            } else {
+                ScopeOutcome::NotApplicable(ScopeFailure::DistributionName)
+            }
+        );
+    }
+}
+
+#[test]
 fn explicit_crl_issuer_requires_original_name_encoding() {
     // RFC5280 4.2.1.13 mandates identical cRLIssuer DER, even where ordinary
     // Name matching equates PrintableString and UTF8String. An indirect source
@@ -543,6 +717,80 @@ fn freshness_preserves_deadlines_missing_fields_and_utc_uncertainty() {
 }
 
 #[test]
+fn ldap_crl_locations_require_a_dn_and_one_binary_crl_attribute() {
+    // RFC5280 4.2.1.13 selects an entry and exactly one RFC4523 CRL
+    // attribute; generic LDAP defaults must not select all attributes.
+    for (location, valid) in [
+        ("ldap:", false),
+        ("ldap:///", false),
+        ("ldap:///cn=CA", false),
+        ("ldap:///cn=CA?certificateRevocationList", false),
+        (
+            "ldap:///cn=CA?certificateRevocationList;binary,authorityRevocationList;binary",
+            false,
+        ),
+        ("ldap:///cn=CA?*", false),
+        ("ldap:///broken?certificateRevocationList;binary", false),
+        ("ldap:///cn=CA%5C?certificateRevocationList;binary", false),
+        (
+            "ldap:///cn=CA?certificateRevocationList;binary?children",
+            false,
+        ),
+        (
+            "ldap:///cn=CA?certificateRevocationList;binary?base?(broken)",
+            false,
+        ),
+        (
+            "ldap://user@host/cn=CA?certificateRevocationList;binary",
+            false,
+        ),
+        (
+            "ldap:///cn=CA?certificateRevocationList;binary#fragment",
+            false,
+        ),
+        ("ldap:///cn=CA?certificateRevocationList;binary", true),
+        (
+            "LDAP://ldap.example/cn=CA%2Cdc=example?AuthorityRevocationList;BINARY",
+            true,
+        ),
+        (
+            "ldap:///telephoneNumber=123?2.5.4.39;binary?base?(&(objectClass=*)(cn=CA))",
+            true,
+        ),
+        (
+            "ldap:///cn=CA?deltaRevocationList;binary?sub?(cn=CA)?!1.2.3=value",
+            true,
+        ),
+    ] {
+        let name = tlv(0xa0, &tlv(0xa0, &tlv(0x86, location.as_bytes())));
+        let ext = tlv(
+            48,
+            &[
+                tlv(6, &[0x55, 0x1d, 0x1c]),
+                tlv(1, &[0xff]),
+                tlv(4, &tlv(48, &name)),
+            ]
+            .concat(),
+        );
+        let bytes = crl(&tbs(Some(1), &tlv(0xa0, &tlv(48, &ext))));
+        let execution = memory(128 * 1024, 1_000_000);
+        let parser = Parser::der(execution.clone());
+        let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
+        let extension = parsed
+            .tbs()
+            .extensions()
+            .get(structured_pkix::oid::ISSUING_DISTRIBUTION_POINT, &execution)
+            .unwrap()
+            .unwrap();
+        let result = structured_pkix::crl::IssuingDistributionPoint::read(extension, &execution);
+        assert_eq!(result.is_ok(), valid, "{location}");
+        if !valid {
+            assert_eq!(result.unwrap_err().code(), ErrorCode::MalformedValue);
+        }
+    }
+}
+
+#[test]
 fn distribution_point_locations_preserve_required_scheme_authorities() {
     // The LDAP empty-host exception must not admit malformed HTTP/HTTPS/FTP
     // locations. Both certificate DP and CRL IDP readers use this same grammar.
@@ -558,7 +806,10 @@ fn distribution_point_locations_preserve_required_scheme_authorities() {
         ("http://crl.example/a", true),
         ("https://[2001:db8::1]:443/a?q=1#id", true),
         ("ftp://user@crl.example/a;type=i", true),
-        ("ldap:///cn=CA,dc=example,dc=com", true),
+        (
+            "ldap:///cn=CA,dc=example,dc=com?certificateRevocationList;binary",
+            true,
+        ),
         ("urn:example:crl", true),
     ] {
         let name = tlv(0xa0, &tlv(0xa0, &tlv(0x86, location.as_bytes())));
@@ -616,7 +867,7 @@ fn distribution_point_locations_preserve_required_scheme_authorities() {
 fn distribution_point_ldap_uri_preserves_an_unspecified_server() {
     // RFC5280 §4.2.1.13 permits ldap:/// pointers that rely on caller server
     // knowledge. SAN host requirements cannot be applied to a DP location.
-    let location = b"ldap:///cn=CA,dc=example,dc=com";
+    let location = b"ldap:///cn=CA,dc=example,dc=com?certificateRevocationList;binary";
     let name = tlv(0xa0, &tlv(0xa0, &tlv(0x86, location)));
     let idp = tlv(48, &name);
     let extension = tlv(

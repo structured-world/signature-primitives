@@ -63,7 +63,7 @@ fn location_scheme_validation_admits_work_in_both_domains_before_scanning() {
     use structured_asn1::{Encoding, Limits};
     let location = "http:///crl";
     let bytes = implicit(6, location.as_bytes());
-    let work = location.len() * 8 + 32;
+    let work = location.len() * 32 + 256;
     for (local, aggregate) in [(u64::MAX, work - 1), (2, work)] {
         let original = crate::fixtures::memory();
         let parser = Parser::new(

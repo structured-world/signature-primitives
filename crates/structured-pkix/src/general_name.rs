@@ -13,6 +13,8 @@ use core::net::{Ipv4Addr, Ipv6Addr};
 use structured_asn1::memory::{Memory, OwnedVec};
 use structured_asn1::{Class, Element, Oid, Reader, Tag, universal};
 
+mod ldap;
+
 /// One name, in whichever of the forms the schema allows.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -1570,8 +1572,8 @@ fn location_uri(
     // producing Reader and aggregate domain before any of those scans.
     let work = u64::try_from(text.len())
         .ok()
-        .and_then(|n| n.checked_mul(8))
-        .and_then(|n| n.checked_add(32))
+        .and_then(|n| n.checked_mul(32))
+        .and_then(|n| n.checked_add(256))
         .ok_or_else(|| {
             Error::resource(
                 structured_asn1::memory::MemoryError::WorkExceeded,
@@ -1580,13 +1582,19 @@ fn location_uri(
             )
         })?;
     parent.charge(work).field(field)?;
-    Ok(is_location_uri(text))
+    if !is_cps_uri(text) {
+        return Ok(false);
+    }
+    if text
+        .split_once(':')
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("ldap"))
+    {
+        return ldap::valid(parent, element, text, field);
+    }
+    Ok(location_authority(text))
 }
 
-fn is_location_uri(text: &str) -> bool {
-    if !is_cps_uri(text) {
-        return false;
-    }
+fn location_authority(text: &str) -> bool {
     let (scheme, rest) = text.split_once(':').expect("URI syntax checked");
     let ftp = scheme.eq_ignore_ascii_case("ftp");
     if !ftp && !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {

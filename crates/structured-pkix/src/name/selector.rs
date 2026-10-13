@@ -83,11 +83,11 @@ impl Selector {
         execution
             .charge_work(work)
             .map_err(|reason| Error::resource(reason, FIELD, 0))?;
-        scan(text, |_, _, _, _| Ok(()))?;
+        scan::<true>(text, |_, _, _, _| Ok(()))?;
         let parser = Parser::ber(execution.clone());
         let mut parts = execution.vector();
         let mut current = execution.vector();
-        scan(text, |label, value, offset, last| {
+        scan::<true>(text, |label, value, offset, last| {
             current
                 .try_push(selected(label, value, offset, &parser, execution)?)
                 .map_err(|reason| Error::resource(reason, FIELD, offset))?;
@@ -366,7 +366,7 @@ fn digit(byte: u8) -> Option<u8> {
     }
 }
 
-fn label_fits(label: &str, offset: u64) -> Result<()> {
+fn label_fits<const REGISTERED: bool>(label: &str, offset: u64) -> Result<()> {
     let Some(first) = label.as_bytes().first() else {
         return Err(malformed(offset));
     };
@@ -390,7 +390,7 @@ fn label_fits(label: &str, offset: u64) -> Result<()> {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
         return Err(malformed(offset));
-    } else if descriptor(label).is_none() {
+    } else if REGISTERED && descriptor(label).is_none() {
         return Err(Error::new(ErrorCode::UnsupportedNameSyntax, FIELD, offset));
     }
     Ok(())
@@ -398,7 +398,10 @@ fn label_fits(label: &str, offset: u64) -> Result<()> {
 
 // RFC 4514 §3. Decode escaped octets only after finding delimiters; an
 // escaped comma is part of one value, not a separator to scan a second time.
-fn scan(text: &str, mut visit: impl FnMut(&str, &str, u64, bool) -> Result<()>) -> Result<()> {
+fn scan<const REGISTERED: bool>(
+    text: &str,
+    mut visit: impl FnMut(&str, &str, u64, bool) -> Result<()>,
+) -> Result<()> {
     if text.is_empty() {
         return Ok(());
     }
@@ -413,7 +416,7 @@ fn scan(text: &str, mut visit: impl FnMut(&str, &str, u64, bool) -> Result<()>) 
             return Err(malformed(start as u64));
         }
         let label = &text[start..at];
-        label_fits(label, start as u64)?;
+        label_fits::<REGISTERED>(label, start as u64)?;
         at += 1;
         let value = at;
         if bytes.get(at) == Some(&b'#') {
@@ -473,6 +476,18 @@ fn scan(text: &str, mut visit: impl FnMut(&str, &str, u64, bool) -> Result<()>) 
             return Err(malformed(at as u64));
         }
     }
+}
+
+/// RFC4514 lexical grammar only: unknown descriptors do not require local
+/// equality semantics when preserving an unresolved LDAP location. The caller
+/// admits the scan; no storage, schema lookup or identity assertion is made.
+pub(crate) fn syntax_fits(text: &str) -> bool {
+    scan::<false>(text, |_, _, _, _| Ok(())).is_ok()
+}
+
+/// Shared RFC4512 type/matching-rule token grammar, without schema lookup.
+pub(crate) fn attribute_type_syntax_fits(text: &str) -> bool {
+    label_fits::<false>(text, 0).is_ok()
 }
 
 const DESCRIPTORS: &[(&str, Oid<'static>)] = &[

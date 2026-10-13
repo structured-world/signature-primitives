@@ -26,6 +26,8 @@ mod render;
 pub(crate) mod segments;
 mod selector;
 pub use selector::Selector;
+pub(crate) use selector::attribute_type_syntax_fits;
+pub(crate) use selector::syntax_fits as dn_syntax_fits;
 mod unassigned;
 
 /// A distinguished name, as the sequence of parts the certificate holds.
@@ -221,6 +223,10 @@ impl<'a> Name<'a> {
         Ok(self.order(other, execution)? == core::cmp::Ordering::Equal)
     }
 
+    pub(crate) fn offset(&self) -> u64 {
+        self.offset
+    }
+
     pub(crate) fn resource(&self, reason: structured_asn1::memory::MemoryError) -> Error {
         Error::resource(reason, self.field, self.offset)
     }
@@ -323,6 +329,116 @@ impl Ordered<'_> {
             .order(&other.prepared, execution)
             .map_err(|reason| Error::resource(reason, "name", self.offset))
     }
+}
+
+/// Match virtual names without inventing an encoding for the appended RDN.
+/// CRL distribution names append relative fragments to their own issuer bases.
+/// The existing prepared-part core owns all attribute and SET semantics.
+pub(crate) fn matches_composed<const ENCODED: bool>(
+    left: &Name<'_>,
+    left_suffix: Option<&RelativeName<'_>>,
+    right: &Name<'_>,
+    right_suffix: Option<&RelativeName<'_>>,
+    execution: &Memory,
+) -> Result<bool> {
+    if left_suffix.is_none() && right_suffix.is_none() {
+        if ENCODED {
+            return encoded_bytes_match(left.der, right.der, left, execution);
+        }
+        return left.matches(right, execution);
+    }
+    if ENCODED && let (Some(left_part), Some(right_part)) = (left_suffix, right_suffix) {
+        // The original DP fields encode the relative RDN, not their issuer
+        // bases. RFC5280 §5.2.5 fixes that RDN encoding; §6.3.3(b)(1) retains
+        // ordinary issuer-name equality for the separately encoded bases.
+        if !left.matches(right, execution)? {
+            return Ok(false);
+        }
+        return encoded_parts_match(left_part, right_part, left, execution);
+    }
+    let left_len = left
+        .parts
+        .len()
+        .checked_add(usize::from(left_suffix.is_some()))
+        .ok_or_else(|| left.resource(structured_asn1::memory::MemoryError::WorkExceeded))?;
+    let right_len = right
+        .parts
+        .len()
+        .checked_add(usize::from(right_suffix.is_some()))
+        .ok_or_else(|| right.resource(structured_asn1::memory::MemoryError::WorkExceeded))?;
+    if left_len != right_len {
+        return Ok(false);
+    }
+    for index in 0..left_len {
+        execution
+            .charge_work(1)
+            .map_err(|reason| left.resource(reason))?;
+        let left_part = if index < left.parts.len() {
+            &left.parts[index]
+        } else {
+            left_suffix.expect("suffix was counted")
+        };
+        let right_part = if index < right.parts.len() {
+            &right.parts[index]
+        } else {
+            right_suffix.expect("suffix was counted")
+        };
+        let matches = if ENCODED {
+            encoded_parts_match(left_part, right_part, left, execution)?
+        } else {
+            prepared::compare_parts(left_part, right_part, execution)? == core::cmp::Ordering::Equal
+        };
+        if !matches {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn encoded_bytes_match(
+    left: &[u8],
+    right: &[u8],
+    source: &Name<'_>,
+    execution: &Memory,
+) -> Result<bool> {
+    let work = u64::try_from(left.len().max(right.len()))
+        .ok()
+        .and_then(|n| n.checked_mul(2))
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(|| source.resource(structured_asn1::memory::MemoryError::WorkExceeded))?;
+    execution
+        .charge_work(work)
+        .map_err(|reason| source.resource(reason))?;
+    Ok(left == right)
+}
+
+fn encoded_parts_match(
+    left: &RelativeName<'_>,
+    right: &RelativeName<'_>,
+    source: &Name<'_>,
+    execution: &Memory,
+) -> Result<bool> {
+    if left.attributes.len() != right.attributes.len() {
+        return Ok(false);
+    }
+    // Original DER SET order and canonical tag/length encoding make exact OID
+    // plus complete value TLVs sufficient for exact RDN encoding, without an
+    // encode/reparse bridge. No attribute preparation or reordering occurs.
+    for (left, right) in left.attributes.iter().zip(right.attributes.iter()) {
+        execution
+            .charge_work(1)
+            .map_err(|reason| source.resource(reason))?;
+        if !encoded_bytes_match(
+            left.kind.as_bytes(),
+            right.kind.as_bytes(),
+            source,
+            execution,
+        )? || !encoded_bytes_match(left.value.der, right.value.der, source, execution)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 impl<'a> RelativeName<'a> {

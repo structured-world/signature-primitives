@@ -428,6 +428,8 @@ impl<'a> Extensions<'a> {
                 })?,
                 None => false,
             }
+        } else if kind == oid::OCSP_NO_CHECK {
+            gate(crate::ocsp::read_no_check(item, execution))?.is_some()
         } else if kind == oid::QC_STATEMENTS {
             // The outer list parsing is not understanding: the statement
             // payloads decode lazily, and a critical list whose statement
@@ -735,6 +737,7 @@ pub fn is_known(kind: Oid<'_>) -> bool {
         oid::CRL_DISTRIBUTION_POINTS,
         oid::FRESHEST_CRL,
         oid::QC_STATEMENTS,
+        oid::OCSP_NO_CHECK,
     ]
     .contains(&kind)
 }

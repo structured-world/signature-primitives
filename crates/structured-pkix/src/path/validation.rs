@@ -14,6 +14,60 @@ use structured_asn1::memory::{Memory, MemoryError, OwnedVec};
 
 mod processing;
 
+/// Explicit local trust anchor with an effective, possibly inherited key.
+/// Binding proves original SPKI identity, not trust or a continuation of an
+/// earlier path's accumulated constraints. The caller selects this boundary.
+#[derive(Debug, Clone, Copy)]
+pub struct EffectiveAnchor<'a> {
+    anchor: Anchor<'a>,
+    key: WorkingKey<'a>,
+}
+
+impl<'a> EffectiveAnchor<'a> {
+    /// Bind a previously projected effective key to this anchor's original
+    /// SPKI. `None` denotes completed source mismatch; resource errors remain
+    /// errors. Inherited parameter bytes continue borrowing their source.
+    pub fn bind(
+        anchor: Anchor<'a>,
+        key: WorkingKey<'a>,
+        execution: &Memory,
+    ) -> crate::Result<Option<Self>> {
+        let left = anchor.key().as_bytes();
+        let right = key.key().as_bytes();
+        let work = u64::try_from(left.len().max(right.len()))
+            .ok()
+            .and_then(|n| n.checked_mul(2))
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(|| anchor.name().resource(MemoryError::WorkExceeded))?;
+        execution
+            .charge_work(work)
+            .map_err(|reason| anchor.name().resource(reason))?;
+        if left != right {
+            return Ok(None);
+        }
+        Ok(Some(Self { anchor, key }))
+    }
+
+    /// Caller-selected local anchor, retaining its certificate constraints.
+    #[must_use]
+    pub fn anchor(self) -> Anchor<'a> {
+        self.anchor
+    }
+
+    /// Effective key bound to the anchor's original SPKI.
+    #[must_use]
+    pub fn key(self) -> WorkingKey<'a> {
+        self.key
+    }
+
+    fn standing(anchor: Anchor<'a>) -> Self {
+        Self {
+            anchor,
+            key: WorkingKey::standing(anchor.key()),
+        }
+    }
+}
+
 /// The source of a path fact; certificate positions are leaf-first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConstraintSource {
@@ -427,7 +481,7 @@ pub(super) fn process<'a, R: Recognizer, D: Driver<'a, R>>(
     settings: &Settings<'a, '_, R>,
     driver: &mut D,
 ) -> BuildResult<Validation<'a>, D::VerificationError, R::Error> {
-    processing::process(input, anchor, settings, driver)
+    processing::process(input, EffectiveAnchor::standing(anchor), settings, driver)
 }
 
 struct Supplied<'a, 'p, V: Verify, W: Watch, R: Recognizer> {
@@ -532,6 +586,20 @@ pub fn validate<'a, V: Verify, W: Watch, R: Recognizer>(
     anchor: Anchor<'a>,
     context: &ValidationContext<'a, '_, V, W, R>,
 ) -> BuildResult<Validation<'a>, V::Error, R::Error> {
+    validate_effective(chain, EffectiveAnchor::standing(anchor), context)
+}
+
+/// Check the supplied local path with an explicitly bound effective anchor key.
+/// This shares every static check with [`validate`], including the local anchor
+/// certificate's name constraints. It does not resume constraints or policy
+/// state inherited from a previously validated ancestor path. For original-root
+/// validation, pass that complete path and its original anchor instead.
+pub fn validate_effective<'a, V: Verify, W: Watch, R: Recognizer>(
+    chain: &[&'a Certificate<'a>],
+    effective: EffectiveAnchor<'a>,
+    context: &ValidationContext<'a, '_, V, W, R>,
+) -> BuildResult<Validation<'a>, V::Error, R::Error> {
+    let anchor = effective.anchor;
     let Some(target) = chain.first() else {
         return Ok(Validation::Rejected(Rejection {
             at: None,
@@ -600,7 +668,7 @@ pub fn validate<'a, V: Verify, W: Watch, R: Recognizer>(
         policies: context.bounds.policies,
         recognizer: context.recognizer,
     };
-    let outcome = process(Chain::Supplied(chain), anchor, &settings, &mut driver)?;
+    let outcome = processing::process(Chain::Supplied(chain), effective, &settings, &mut driver)?;
     if let Some(halted) = driver.halted {
         return Ok(Validation::Incomplete(halted));
     }

@@ -8,10 +8,14 @@ Read ASN.1 BER/DER and X.509 certificates in Rust while preserving the original
 signed bytes. Build certification paths using your own cryptographic provider,
 trust inputs and resource budgets. Both libraries support **`no_std + alloc`**.
 
-The source version also checks an already supplied leaf-first certificate chain
+Since version 0.1.1, PKIX also checks an already supplied leaf-first certificate chain
 through `structured_pkix::path::validate`, returning typed static facts or
-located rejections. That API is pending a release after the initial crates.io
-0.1.0 packages; see the [supplied-chain contract](crates/structured-pkix/README.md#check-an-already-supplied-chain).
+located rejections; see the [supplied-chain contract](crates/structured-pkix/README.md#check-an-already-supplied-chain).
+
+The source version adds caller-supplied CRL, delta-CRL and OCSP evidence
+processing, with exact signature provenance and explicit issuer, request and
+time facts. These modules are not in registry version 0.1.2; see the
+[revocation contract](crates/structured-pkix/README.md#crl-delta-crl-and-ocsp-evidence).
 
 ## Choose a crate
 

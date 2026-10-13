@@ -55,6 +55,82 @@ fn each_form_of_name_is_read_as_the_tag_says() {
 }
 
 #[test]
+fn plain_ldap_crl_components_validate_as_borrowed_views() {
+    // Plain URI components need no materialization. Percent decoding still
+    // reserves before copying and reports refusal at the original URI field.
+    use alloc::sync::Arc;
+    use structured_asn1::memory::{Memory, MemoryAccount};
+    for (location, encoded) in [
+        ("ldap:///cn=CA?certificateRevocationList;binary", false),
+        ("ldap:///cn=CA%20x?certificateRevocationList;binary", true),
+    ] {
+        let bytes = implicit(6, location.as_bytes());
+        let source = crate::fixtures::memory();
+        let parser = Parser::der(source.clone());
+        let mut reader = parser.read(&bytes, 801).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let retained = source.used();
+        let before = source.work_used();
+        let execution = Memory::new(Arc::new(MemoryAccount::new(0, 1_000_000)));
+        let reader = reader.with_execution(&execution);
+        let result = super::location_uri(&reader, &element, location, "dp");
+        if encoded {
+            let error = result.unwrap_err();
+            assert!(error.is_resource());
+            assert_eq!(error.offset(), 801);
+            assert_eq!(error.field(), "dp");
+        } else {
+            assert!(result.unwrap());
+        }
+        assert_eq!(execution.used(), 0);
+        assert_eq!(source.used(), retained);
+        assert_eq!(source.work_used(), before);
+    }
+}
+
+#[test]
+fn location_scheme_validation_admits_work_in_both_domains_before_scanning() {
+    // Retained source rebinding cannot refill parser-local work. Aggregate
+    // refusal must remain a resource error, never malformed URI or absence.
+    use alloc::sync::Arc;
+    use structured_asn1::memory::{Memory, MemoryAccount};
+    use structured_asn1::{Encoding, Limits};
+    let location = "http:///crl";
+    let bytes = implicit(6, location.as_bytes());
+    let work = location.len() * 32 + 256;
+    for (local, aggregate) in [(u64::MAX, work - 1), (2, work)] {
+        let original = crate::fixtures::memory();
+        let parser = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: local,
+                ..Limits::default()
+            },
+            original.clone(),
+        );
+        let mut reader = parser.read(&bytes, 801).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let before = original.work_used();
+        let execution = Memory::new(Arc::new(MemoryAccount::new(0, aggregate)));
+        let reader = reader.with_execution(&execution);
+        let error = super::location_uri(&reader, &element, location, "dp").unwrap_err();
+        assert!(error.is_resource());
+        assert_eq!(error.field(), "dp");
+        assert_eq!(error.offset(), 801 + bytes.len() as u64);
+        assert_eq!(execution.work_used(), 0);
+        assert_eq!(execution.used(), 0);
+        assert_eq!(original.work_used(), before);
+    }
+    let execution = crate::fixtures::memory();
+    let parser = Parser::der(execution.clone());
+    let mut reader = parser.read(&bytes, 801).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let before = execution.work_used();
+    assert!(!super::location_uri(&reader, &element, location, "dp").unwrap());
+    assert_eq!(execution.work_used() - before, work);
+}
+
+#[test]
 fn a_location_is_read_as_text_and_left_alone() {
     // Nothing here resolves it. A parser that fetched a location a document
     // named would ask a server chosen by whoever wrote the document to

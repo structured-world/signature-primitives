@@ -804,6 +804,34 @@ fn inheritance_local_refusal_precedes_shared_work_admission() {
 }
 
 #[test]
+fn public_subject_projection_borrows_effective_parameters_without_key_catalogue() {
+    // The intermediate's inherited parameters remain accessible outside a
+    // verifier callback. Projection establishes no trust and allocates nothing.
+    let ders = inheriting();
+    let parser = Parser::der(crate::fixtures::memory());
+    let read = parse(&parser, &ders);
+    let execution = structured_asn1::memory::Memory::new(alloc::sync::Arc::new(
+        structured_asn1::memory::MemoryAccount::new(0, 1_000_000),
+    ));
+    let root = super::WorkingKey::standing(read[2].tbs().public_key());
+    let projected = root.subject(&read[1], &execution).unwrap();
+    assert_eq!(
+        projected.key().as_bytes().as_ptr(),
+        read[1].tbs().public_key().as_bytes().as_ptr()
+    );
+    assert_eq!(
+        projected.parameters().unwrap().as_ptr(),
+        root.parameters().unwrap().as_ptr()
+    );
+    assert_eq!(execution.used(), 0);
+    let stopped = structured_asn1::memory::Memory::new(alloc::sync::Arc::new(
+        structured_asn1::memory::MemoryAccount::new(0, 0),
+    ));
+    assert!(root.subject(&read[1], &stopped).unwrap_err().is_resource());
+    assert_eq!(stopped.work_used(), 0);
+}
+
+#[test]
 fn inherited_algorithm_matching_is_admitted_at_the_current_certificate() {
     // A parameterless key needs a data-dependent algorithm comparison before
     // inheriting. Exhausting the shared domain inside the provider must refuse
@@ -5229,6 +5257,129 @@ fn a_key_written_without_parameters_stands_in_the_ones_above_it() {
     .expect("a budget this test does not spend");
     assert_eq!(outcome.truncated(), None);
     assert_eq!(outcome.paths().len(), 1);
+}
+
+#[test]
+fn effective_local_anchor_preserves_inherited_parameters() {
+    // A caller-authenticated issuer may inherit its curve parameters. A local
+    // responder chain must preserve them rather than recreate a standing key.
+    let ders = inheriting();
+    let execution = crate::fixtures::memory();
+    let parser = Parser::der(execution.clone());
+    let read = parse(&parser, &ders);
+    let key = super::WorkingKey::standing(read[2].tbs().public_key())
+        .subject(&read[1], &execution)
+        .unwrap();
+    assert!(key.parameters().is_some());
+    let storage_free = structured_asn1::memory::Memory::new(alloc::sync::Arc::new(
+        structured_asn1::memory::MemoryAccount::new(0, 100_000),
+    ));
+    assert!(
+        super::EffectiveAnchor::bind(Anchor::from_certificate(&read[2]), key, &storage_free)
+            .unwrap()
+            .is_none()
+    );
+    let anchor =
+        super::EffectiveAnchor::bind(Anchor::from_certificate(&read[1]), key, &storage_free)
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        anchor.key().parameters().unwrap().as_ptr(),
+        key.parameters().unwrap().as_ptr()
+    );
+    assert_eq!(storage_free.used(), 0);
+    let unfunded = structured_asn1::memory::Memory::new(alloc::sync::Arc::new(
+        structured_asn1::memory::MemoryAccount::new(0, 0),
+    ));
+    assert!(
+        super::EffectiveAnchor::bind(Anchor::from_certificate(&read[1]), key, &unfunded)
+            .unwrap_err()
+            .is_resource()
+    );
+    let context = super::ValidationContext {
+        execution: &execution,
+        interval: moment(),
+        policy: Policy::default(),
+        bounds: super::ValidationBounds::default(),
+        verifier: &Curved,
+        watch: &(),
+        recognizer: &(),
+    };
+    let result = super::validate_effective(&[&read[0]], anchor, &context).unwrap();
+    assert!(
+        matches!(result, super::Validation::Accepted(_)),
+        "{result:?}"
+    );
+    assert!(matches!(
+        super::validate(&[&read[0]], anchor.anchor(), &context).unwrap(),
+        super::Validation::Rejected(super::Rejection {
+            reason: super::RejectionReason::UnsupportedSignature,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn unrestricted_pss_subject_does_not_inherit_parent_restrictions() {
+    // RFC4055 §3.3 case2: absent PSS SPKI parameters impose no restrictions.
+    // The generic same-OID transition cannot import a parent's restriction.
+    use crate::fixtures::{CertificateParts, bits, oid as encoded_oid, seq};
+    let root_bytes = CertificateParts {
+        key: seq(&[
+            seq(&[encoded_oid(oid::RSASSA_PSS), seq(&[])]),
+            bits(&[1, 2, 3]),
+        ]),
+        ..CertificateParts::default()
+    }
+    .build();
+    let child_bytes = CertificateParts {
+        key: seq(&[seq(&[encoded_oid(oid::RSASSA_PSS)]), bits(&[4, 5, 6])]),
+        ..CertificateParts::default()
+    }
+    .build();
+    let execution = crate::fixtures::memory();
+    let parser = Parser::der(execution.clone());
+    let root = Certificate::read(&parser, &root_bytes, 100).unwrap();
+    let child = Certificate::read(&parser, &child_bytes, 500).unwrap();
+    let prior = super::WorkingKey::standing(root.tbs().public_key());
+    assert_eq!(prior.parameters(), Some([48, 0].as_slice()));
+    let projected = prior.subject(&child, &execution).unwrap();
+    assert_eq!(projected.parameters(), None);
+    assert_eq!(
+        projected.key().as_bytes().as_ptr(),
+        child.tbs().public_key().as_bytes().as_ptr()
+    );
+}
+
+#[test]
+fn null_pss_subject_keeps_invalid_original_parameters_for_provider_refusal() {
+    // RFC4055 §3.1 permits absent or PSS SEQUENCE parameters, not NULL.
+    // Projection must not replace invalid NULL with valid parent restrictions.
+    let root_bytes = CertificateParts {
+        key: seq(&[seq(&[oid_of(oid::RSASSA_PSS), seq(&[])]), bits(&[1, 2, 3])]),
+        ..CertificateParts::default()
+    }
+    .build();
+    let child_bytes = CertificateParts {
+        key: seq(&[
+            seq(&[oid_of(oid::RSASSA_PSS), crate::fixtures::null()]),
+            bits(&[4, 5, 6]),
+        ]),
+        ..CertificateParts::default()
+    }
+    .build();
+    let execution = crate::fixtures::memory();
+    let parser = Parser::der(execution.clone());
+    let root = Certificate::read(&parser, &root_bytes, 100).unwrap();
+    let child = Certificate::read(&parser, &child_bytes, 500).unwrap();
+    let projected = super::WorkingKey::standing(root.tbs().public_key())
+        .subject(&child, &execution)
+        .unwrap();
+    assert_eq!(projected.parameters(), None);
+    assert_eq!(
+        projected.key().algorithm().parameters(),
+        Some([5, 0].as_slice())
+    );
 }
 
 /// A verifier that answers yes to everything and writes down what the key it

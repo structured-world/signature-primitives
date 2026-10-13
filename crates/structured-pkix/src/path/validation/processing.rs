@@ -2,11 +2,12 @@
 
 use super::super::name_space::{Admission, NameSpace};
 use super::super::{
-    Anchor, BuildError, BuildResult, Meter, Truncation, Verified, WorkingKey, cost, policy,
+    BuildError, BuildResult, Meter, Truncation, Verified, WorkingKey, cost, policy,
 };
 use super::{
-    CertificateFacts, Chain, ConstraintSource, Decoded, Driver, NameConstraintFailure, Rejection,
-    RejectionReason, Settings, Validation, ValidationFacts, decode, spend_names,
+    CertificateFacts, Chain, ConstraintSource, Decoded, Driver, EffectiveAnchor,
+    NameConstraintFailure, Rejection, RejectionReason, Settings, Validation, ValidationFacts,
+    decode, spend_names,
 };
 use crate::constraints::{BasicConstraints, CertificateCount, PolicyConstraints};
 use crate::error::CallbackError;
@@ -84,10 +85,11 @@ struct Processing<'a> {
 impl<'a> Processing<'a> {
     fn new<R: Recognizer, D: Driver<'a, R>>(
         chain: &[&'a Certificate<'a>],
-        anchor: Anchor<'a>,
+        effective: EffectiveAnchor<'a>,
         settings: &Settings<'a, '_, R>,
         driver: &mut D,
     ) -> Result<'a, Self, D::VerificationError, R::Error> {
+        let anchor = effective.anchor();
         let Some(target) = chain.first() else {
             return Err(Stop::Rejected(Rejection {
                 at: None,
@@ -137,7 +139,7 @@ impl<'a> Processing<'a> {
         Ok(Self {
             policies,
             space,
-            working: WorkingKey::standing(anchor.key()),
+            working: effective.key(),
             issuer: anchor.name(),
             allowed: length,
             path_length_source: None,
@@ -402,7 +404,7 @@ impl<'a> Processing<'a> {
 
 fn inner<'a, R: Recognizer, D: Driver<'a, R>>(
     input: Chain<'a, '_>,
-    anchor: Anchor<'a>,
+    anchor: EffectiveAnchor<'a>,
     settings: &Settings<'a, '_, R>,
     driver: &mut D,
 ) -> Result<'a, ValidationFacts<'a>, D::VerificationError, R::Error> {
@@ -419,7 +421,7 @@ fn inner<'a, R: Recognizer, D: Driver<'a, R>>(
 
 pub(super) fn process<'a, R: Recognizer, D: Driver<'a, R>>(
     input: Chain<'a, '_>,
-    anchor: Anchor<'a>,
+    anchor: EffectiveAnchor<'a>,
     settings: &Settings<'a, '_, R>,
     driver: &mut D,
 ) -> BuildResult<Validation<'a>, D::VerificationError, R::Error> {

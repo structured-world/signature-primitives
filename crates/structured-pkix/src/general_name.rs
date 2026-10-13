@@ -13,6 +13,8 @@ use core::net::{Ipv4Addr, Ipv6Addr};
 use structured_asn1::memory::{Memory, OwnedVec};
 use structured_asn1::{Class, Element, Oid, Reader, Tag, universal};
 
+mod ldap;
+
 /// One name, in whichever of the forms the schema allows.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -59,10 +61,36 @@ pub(crate) fn read_list<'a>(
     field: &'static str,
     offset: u64,
 ) -> Result<OwnedVec<GeneralName<'a>>> {
+    read_list_as(inside, field, offset, AddressForm::Single)
+}
+
+/// Distribution locations use URI grammar, rather than SAN host identity
+/// rules. RFC5280 §4.2.1.13 permits hostless LDAP URLs with the required DN
+/// and CRL attribute, e.g. `ldap:///cn=CA?certificateRevocationList;binary`.
+pub(crate) fn read_locations<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    field: &'static str,
+) -> Result<OwnedVec<GeneralName<'a>>> {
+    let mut inside = parent.enter(element).field(field)?;
+    read_list_as(
+        &mut inside,
+        field,
+        element.span().start,
+        AddressForm::Location,
+    )
+}
+
+fn read_list_as<'a>(
+    inside: &mut Reader<'a>,
+    field: &'static str,
+    offset: u64,
+    form: AddressForm,
+) -> Result<OwnedVec<GeneralName<'a>>> {
     let mut names = inside.memory().vector();
     while let Some(entry) = inside.next_element().field(field)? {
         names
-            .try_push(read(inside, &entry, field)?)
+            .try_push(read_as(inside, &entry, field, form)?)
             .map_err(|reason| Error::resource(reason, field, entry.span().start))?;
     }
 
@@ -100,6 +128,8 @@ pub fn read_alternative<'a>(
 pub(crate) enum AddressForm {
     /// A name in a list of names: a bare address, a mailbox, a URI.
     Single,
+    /// Distribution location: general URI, not a certificate SAN host.
+    Location,
     /// The base of a name-constraint subtree: an address with its mask, and
     /// the host and domain forms of a mail or location constraint.
     WithMask,
@@ -108,7 +138,7 @@ pub(crate) enum AddressForm {
 impl AddressForm {
     fn permits(self, length: usize) -> bool {
         match self {
-            Self::Single => length == 4 || length == 16,
+            Self::Single | Self::Location => length == 4 || length == 16,
             Self::WithMask => length == 8 || length == 32,
         }
     }
@@ -139,7 +169,7 @@ pub fn read<'a>(
 /// (4.2.1.10).
 fn mailbox_fits(text: &str, address_form: AddressForm) -> bool {
     match address_form {
-        AddressForm::Single => is_mailbox(text),
+        AddressForm::Single | AddressForm::Location => is_mailbox(text),
         AddressForm::WithMask => {
             is_mailbox(text) || is_domain(text) || text.strip_prefix('.').is_some_and(is_domain)
         }
@@ -164,7 +194,7 @@ fn mailbox_fits(text: &str, address_form: AddressForm) -> bool {
 /// is preserved as written.
 fn domain_fits(text: &str, address_form: AddressForm) -> bool {
     match address_form {
-        AddressForm::Single => is_domain(text),
+        AddressForm::Single | AddressForm::Location => is_domain(text),
         AddressForm::WithMask => is_domain(text) || text.strip_prefix('.').is_some_and(is_domain),
     }
 }
@@ -236,7 +266,7 @@ pub(crate) fn read_as<'a>(
             // The walk touches every attribute's contents, and a kind whose
             // schema leaves the size unbounded has no local ceiling, so the
             // lengths are charged to the shared work budget before it runs.
-            if address_form == AddressForm::Single && name.is_empty() {
+            if address_form != AddressForm::WithMask && name.is_empty() {
                 return Err(fail(ErrorCode::MalformedValue));
             }
             for attribute in name.attributes() {
@@ -269,6 +299,12 @@ pub(crate) fn read_as<'a>(
                     // selecting the existing scheme/authority semantic core.
                     parent.charge(location.len() as u64).field(field)?;
                     is_uri(location)
+                }
+                AddressForm::Location => {
+                    // RFC5280 §4.2.1.13 permits an empty LDAP host and leaves
+                    // server selection to the caller. No host is invented.
+                    // https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.13
+                    location_uri(parent, element, location, field)?
                 }
                 AddressForm::WithMask => {
                     is_domain(location) || location.strip_prefix('.').is_some_and(is_domain)
@@ -1525,6 +1561,75 @@ pub(crate) fn is_uri(text: &str) -> bool {
 /// <https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.4>
 pub(crate) fn is_cps_uri(text: &str) -> bool {
     uri::<false>(text)
+}
+
+fn location_uri(
+    parent: &Reader<'_>,
+    element: &Element<'_>,
+    text: &str,
+    field: &'static str,
+) -> Result<bool> {
+    // Admit generic syntax plus scheme/authority/host scans through both the
+    // producing Reader and aggregate domain before any of those scans.
+    let work = u64::try_from(text.len())
+        .ok()
+        .and_then(|n| n.checked_mul(32))
+        .and_then(|n| n.checked_add(256))
+        .ok_or_else(|| {
+            Error::resource(
+                structured_asn1::memory::MemoryError::WorkExceeded,
+                field,
+                element.span().start,
+            )
+        })?;
+    parent.charge(work).field(field)?;
+    if !is_cps_uri(text) {
+        return Ok(false);
+    }
+    if text
+        .split_once(':')
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("ldap"))
+    {
+        return ldap::valid(parent, element, text, field);
+    }
+    Ok(known_location_authority_fits(text))
+}
+
+fn known_location_authority_fits(text: &str) -> bool {
+    let (scheme, rest) = text.split_once(':').expect("URI syntax checked");
+    let ftp = scheme.eq_ignore_ascii_case("ftp");
+    if !ftp && !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        // RFC5280 §4.2.1.13 defines CRL locations separately from SAN §4.2.1.6.
+        // Unknown schemes retain the validated RFC3986 §3 URI grammar, whose
+        // hier-part admits path-empty (Appendix D.1 explicitly permits just
+        // "scheme:"). We cannot impose another scheme's retrieval semantics.
+        // <https://www.rfc-editor.org/rfc/rfc3986#section-3>
+        return true;
+    }
+    // HTTP(S) requires //authority and forbids empty hosts; FTP uses the
+    // mandatory Internet host syntax. LDAP's empty host is a separate contract.
+    // RFC9110 §§4.2.1/4.2.2; RFC1738 §§3.1/3.2.
+    // <https://www.rfc-editor.org/rfc/rfc9110#section-4.2.1>
+    // <https://www.rfc-editor.org/rfc/rfc1738#section-3.1>
+    let Some(after) = rest.strip_prefix("//") else {
+        return false;
+    };
+    let end = after.find(['/', '?', '#']).unwrap_or(after.len());
+    let authority = &after[..end];
+    let host_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if host_port.starts_with('[') {
+        // The shared grammar already checked the literal and following port.
+        return true;
+    }
+    let host = host_port
+        .split_once(':')
+        .map_or(host_port, |(host, _)| host);
+    if host.is_empty() {
+        return false;
+    }
+    !ftp || is_domain(host.strip_suffix('.').unwrap_or(host)) || host.parse::<Ipv4Addr>().is_ok()
 }
 
 fn uri<const CERTIFICATE_NAME: bool>(text: &str) -> bool {

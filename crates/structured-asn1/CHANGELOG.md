@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.1.2...structured-asn1-v0.1.3) - 2026-10-13
+
+### Added
+
+- *(pkix)* add CRL and OCSP evidence ([#30](https://github.com/structured-world/signature-primitives/pull/30))
+
+### Other
+
+- update audited allocation dependencies ([#32](https://github.com/structured-world/signature-primitives/pull/32))
+
 ## [0.1.2](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.1.1...structured-asn1-v0.1.2) - 2026-10-12
 
 ### Fixed

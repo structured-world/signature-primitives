@@ -436,15 +436,34 @@ pub(crate) fn oid(contents: &[u8]) -> Result<Oid<'_>, ErrorCode> {
 
 /// Reads an integer's contents.
 pub(crate) fn integer(contents: &[u8]) -> Result<Integer<'_>, ErrorCode> {
-    match contents {
-        [] => Err(ErrorCode::IntegerEmpty),
-        // Both spellings write a value that one fewer byte already writes, and
-        // a signature computed over the bytes makes two spellings of one number
-        // into two documents.
-        [0x00, second, ..] if second & 0x80 == 0 => Err(ErrorCode::IntegerNotMinimal),
-        [0xff, second, ..] if second & 0x80 != 0 => Err(ErrorCode::IntegerNotMinimal),
-        _ => Ok(Integer(contents)),
+    if contents.is_empty() {
+        return Err(ErrorCode::IntegerEmpty);
     }
+    if redundant_sign_byte(contents) {
+        return Err(ErrorCode::IntegerNotMinimal);
+    }
+    Ok(Integer(contents))
+}
+
+// X.690 §8.3.2 applies already to BER: only sign octets whose removal
+// preserves the next octet's sign are redundant. Strict and recovery paths
+// share this predicate; a required sign byte must never be stripped.
+// <https://www.itu.int/rec/T-REC-X.690-202102-I/en>
+fn redundant_sign_byte(contents: &[u8]) -> bool {
+    match contents {
+        [0x00, second, ..] => second & 0x80 == 0,
+        [0xff, second, ..] => second & 0x80 != 0,
+        _ => false,
+    }
+}
+
+/// The numeric view of a nonminimal primitive INTEGER, after scan admission.
+pub(crate) fn recovered_integer(mut contents: &[u8]) -> Integer<'_> {
+    debug_assert!(contents.len() >= 2);
+    while redundant_sign_byte(contents) {
+        contents = &contents[1..];
+    }
+    Integer(contents)
 }
 
 /// Reads a bit string's contents.

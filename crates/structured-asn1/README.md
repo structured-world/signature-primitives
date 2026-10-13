@@ -52,6 +52,24 @@ The value is a view into `bytes`. Choose `Parser::ber` for BER input, or use
 `Parser::new` to supply encoding and parser-local `Limits` explicitly. Borrowed
 values require the document to remain alive.
 
+## Explicit INTEGER recovery
+
+`Reader::integer` and `read_integer` are strict: X.690 §8.3.2 requires minimal
+sign octets already under BER. The source version adds
+`Reader::integer_reading(&Element)` for schema readers that retain a uniquely
+readable value together with its nonminimal-encoding fault. This addition is
+not in crates.io 0.1.3.
+
+`IntegerReading::as_bytes()` keeps the original contents; `value()` borrows a
+minimal suffix for bounded numeric conversion. `fault()` retains the original
+located `IntegerNotMinimal`, and `into_parts()` moves that diagnostic without
+an allocating clone. Recovery never repairs the received signed bytes or claims
+BER/DER conformance. Primitive implicit tags remain supported; empty and
+constructed contents remain errors. The producing Reader admits padding work
+through both local and current aggregate ceilings before scanning, and diagnostic
+storage remains charged until drop. Resource refusal never becomes a recovered
+value without its fault.
+
 ## OIDs and retained memory
 
 OID identity uses its encoded bytes. `Oid::text(&Memory)` and

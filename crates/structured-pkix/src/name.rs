@@ -1781,7 +1781,7 @@ pub(crate) fn walk_der<'a>(
     // machine stack frame per element would turn a limit into a crash for
     // whoever raised it. On this stack the same input is the refusal the
     // limit describes.
-    let mut open = parent.memory().vector::<Open<'a>>();
+    let mut open = parent.execution().vector::<Open<'a>>();
     open.try_push(Open::of(parent.enter(element).field(field)?, element.tag()))
         .map_err(|reason| Error::resource(reason, field, element.span().start))?;
     while let Some(level) = open.last_mut() {
@@ -2172,10 +2172,14 @@ fn display_text(
 /// that against a certificate requires both to have been read by the same
 /// rules. A second reader would be a second answer to which encodings of a
 /// name are the same name.
+/// Catalogue allocation and copying use the producing reader's local work
+/// ceiling and current aggregate account. A successful result retains its
+/// capacity charge until it is dropped; the borrowed input lifetime is unchanged.
 ///
 /// # Errors
 ///
-/// Reports the encoding fault and the field it was in.
+/// Reports encoding faults or resource refusals with the original field and
+/// source position.
 pub fn read<'a>(
     parent: &Reader<'a>,
     element: &Element<'a>,
@@ -2190,7 +2194,7 @@ pub fn read<'a>(
     }
 
     let mut sequence = parent.enter(element).field(field)?;
-    let mut parts = parent.memory().vector();
+    let mut parts = parent.execution().vector();
 
     while let Some(part) = sequence.next_element().field(field)? {
         if part.tag() != Tag::constructed(universal::SET) {
@@ -2207,7 +2211,7 @@ pub fn read<'a>(
 
     Ok(Name {
         der: element.as_bytes(),
-        parts,
+        parts: parts.into_owned(),
         offset: element.span().start,
         field,
     })
@@ -2225,7 +2229,7 @@ pub(crate) fn read_relative<'a>(
     let fail = |code| Error::new(code, field, element.span().start);
 
     let mut inside = parent.enter(element).field(field)?;
-    let mut attributes = parent.memory().vector();
+    let mut attributes = parent.execution().vector();
     let mut previous: Option<&[u8]> = None;
     while let Some(pair) = inside.next_element().field(field)? {
         // DER orders the members of a set by their encodings, ascending, and
@@ -2262,7 +2266,9 @@ pub(crate) fn read_relative<'a>(
         return Err(fail(ErrorCode::EmptySequence));
     }
 
-    Ok(RelativeName { attributes })
+    Ok(RelativeName {
+        attributes: attributes.into_owned(),
+    })
 }
 
 fn read_attribute<'a>(

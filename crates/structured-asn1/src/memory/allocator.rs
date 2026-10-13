@@ -1,4 +1,4 @@
-//! The only unsafe boundary: forwarding valid allocation layouts and pointers.
+//! The only unsafe boundary: preserving allocation layouts and pointer ownership.
 
 #![allow(unsafe_code)]
 
@@ -9,12 +9,28 @@ use allocator_api2::alloc::{AllocError, Allocator, Global, Layout};
 
 use super::{Memory, MemoryError, Work};
 
+/// Transfers storage from sealed work to its existing account owner.
+pub(super) fn retain<T, W: Work>(
+    values: allocator_api2::vec::Vec<T, AccountAllocator<W>>,
+) -> allocator_api2::vec::Vec<T, AccountAllocator> {
+    let (pointer, length, capacity, allocator) = values.into_raw_parts_with_alloc();
+    let memory = allocator.execution.into_storage_owner(allocator.storage);
+    let allocator = AccountAllocator::new(memory);
+    // SAFETY: the consumed Vec supplied this pointer, initialized length and
+    // capacity for the unchanged T. Both allocator types forward to Global
+    // with identical Layout rules and the same account; no block is allocated,
+    // released, resized or exposed during transfer. The old Vec cannot drop
+    // elements/storage, and the new allocator owns the keeper before any later
+    // drop/reallocation. This also preserves empty and zero-sized Vec layouts.
+    unsafe { allocator_api2::vec::Vec::from_raw_parts_in(pointer, length, capacity, allocator) }
+}
+
 #[derive(Debug)]
 pub(super) struct AccountAllocator<W: Work = Memory> {
     execution: W,
     // Budget borrows may end after mem::forget; leaked capacity must still
     // retain the account. Memory already owns it, so its extra keeper is ().
-    _retained: W::Retained,
+    storage: W::Retained,
     denied: AtomicU8,
     #[cfg(test)]
     attempts: core::sync::atomic::AtomicUsize,
@@ -27,7 +43,7 @@ impl<W: Work> AccountAllocator<W> {
         let retained = execution.retain_storage();
         Self {
             execution,
-            _retained: retained,
+            storage: retained,
             denied: AtomicU8::new(0),
             #[cfg(test)]
             attempts: core::sync::atomic::AtomicUsize::new(0),

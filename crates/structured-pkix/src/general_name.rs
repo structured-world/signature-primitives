@@ -1592,13 +1592,18 @@ fn location_uri(
     {
         return ldap::valid(parent, element, text, field);
     }
-    Ok(location_authority(text))
+    Ok(known_location_authority_fits(text))
 }
 
-fn location_authority(text: &str) -> bool {
+fn known_location_authority_fits(text: &str) -> bool {
     let (scheme, rest) = text.split_once(':').expect("URI syntax checked");
     let ftp = scheme.eq_ignore_ascii_case("ftp");
     if !ftp && !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        // RFC5280 §4.2.1.13 defines CRL locations separately from SAN §4.2.1.6.
+        // Unknown schemes retain the validated RFC3986 §3 URI grammar, whose
+        // hier-part admits path-empty (Appendix D.1 explicitly permits just
+        // "scheme:"). We cannot impose another scheme's retrieval semantics.
+        // <https://www.rfc-editor.org/rfc/rfc3986#section-3>
         return true;
     }
     // HTTP(S) requires //authority and forbids empty hosts; FTP uses the

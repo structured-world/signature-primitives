@@ -119,6 +119,76 @@ fn authenticated<'r, 'a>(
 }
 
 #[test]
+fn restricted_crls_exclude_legacy_versions_in_both_certificate_categories() {
+    // RFC5280 §5.2.5 excludes v1/v2 for either IDP category flag. The cA
+    // checks in §6.3.3 do not override that rule; unrestricted CRLs can apply.
+    use structured_pkix::crl::{Reasons, ScopeFailure, ScopeOutcome};
+    let execution = memory(128 * 1024, 1_000_000);
+    let parser = Parser::der(execution.clone());
+    let v1 = certificate(false, None, 7);
+    let issuer_cert = structured_pkix::Certificate::read(&parser, &v1, 100).unwrap();
+    let mut reader = parser.read(&v1, 0).unwrap();
+    let root = reader.next_element().unwrap().unwrap();
+    let mut fields = reader.enter(&root).unwrap();
+    let signed = fields.next_element().unwrap().unwrap();
+    let v2 = crl(&tlv(
+        48,
+        &[tlv(0xa0, &[2, 1, 1]), signed.contents().to_vec()].concat(),
+    ));
+    let v3 = certificate(true, None, 7);
+    let ca_extension = tlv(
+        48,
+        &[tlv(6, &[0x55, 0x1d, 0x13]), tlv(4, &tlv(48, &[1, 1, 0xff]))].concat(),
+    );
+    let v3_ca = crl(&tlv(
+        48,
+        &[
+            tlv(0xa0, &[2, 1, 2]),
+            signed.contents().to_vec(),
+            tlv(0xa3, &tlv(48, &ca_extension)),
+        ]
+        .concat(),
+    ));
+    let applicable = ScopeOutcome::Applicable(Reasons::ALL);
+    let version = ScopeOutcome::NotApplicable(ScopeFailure::CertificateVersion);
+    let kind = ScopeOutcome::NotApplicable(ScopeFailure::CertificateKind);
+    for (target_bytes, user_expected, ca_expected) in [
+        (&v1, version, version),
+        (&v2, version, version),
+        (&v3, applicable, kind),
+        (&v3_ca, kind, applicable),
+    ] {
+        let target = structured_pkix::Certificate::read(&parser, target_bytes, 300).unwrap();
+        for (flag, expected) in [
+            (None, applicable),
+            (Some(0x81), user_expected),
+            (Some(0x82), ca_expected),
+        ] {
+            let tail = flag.map_or_else(Vec::new, |flag| {
+                let extension = tlv(
+                    48,
+                    &[
+                        tlv(6, &[0x55, 0x1d, 0x1c]),
+                        tlv(1, &[0xff]),
+                        tlv(4, &tlv(48, &[flag, 1, 0xff])),
+                    ]
+                    .concat(),
+                );
+                tlv(0xa0, &tlv(48, &extension))
+            });
+            let bytes = crl(&tbs(Some(1), &tail));
+            let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
+            assert_eq!(
+                authenticated(&parsed, &issuer_cert, &execution)
+                    .scope(&target, &execution)
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
 fn complete_crl_number_requires_noncriticality_and_valid_nonnegative_syntax() {
     // RFC5280 §5.2.3 forbids critical cRLNumber. Known noncritical metadata
     // must not bypass validation merely because no delta was selected.
@@ -813,6 +883,9 @@ fn distribution_point_locations_preserve_required_scheme_authorities() {
             true,
         ),
         ("urn:example:crl", true),
+        // Unknown schemes follow generic URI grammar, not SAN restrictions.
+        ("custom:", true),
+        ("custom:crl", true),
     ] {
         let name = tlv(0xa0, &tlv(0xa0, &tlv(0x86, location.as_bytes())));
         let idp_extension = tlv(

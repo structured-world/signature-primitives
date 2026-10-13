@@ -90,6 +90,10 @@ impl super::Authenticated<'_, '_> {
                     return Ok(ScopeOutcome::NotApplicable(ScopeFailure::CertificateKind));
                 }
                 CertificateKind::EndEntity | CertificateKind::Authority => {
+                    // RFC5280 §5.2.5 excludes v1/v2 for BOTH user-only and
+                    // CA-only CRLs. The cA tests in §6.3.3(b)(2)(ii–iii) are
+                    // additional conditions, not an exception to that scope.
+                    // <https://www.rfc-editor.org/rfc/rfc5280#section-5.2.5>
                     if target.tbs().version() != Version::V3 {
                         return Ok(ScopeOutcome::NotApplicable(
                             ScopeFailure::CertificateVersion,

@@ -12,6 +12,9 @@ use crate::memory::Memory;
 use crate::tag::{self, Tag, universal};
 use crate::value::{self, BitString, Integer, Oid};
 
+mod integer;
+pub use integer::IntegerReading;
+
 /// Holds the budget for one parse and hands out readers that share it.
 #[derive(Debug)]
 pub struct Parser {

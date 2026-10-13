@@ -60,7 +60,7 @@ pub mod value;
 pub use error::{Error, ErrorCode, Limit, Path, Result};
 pub use length::{Encoding, Length};
 pub use limits::Limits;
-pub use reader::{Element, Parser, Reader, Span};
+pub use reader::{Element, IntegerReading, Parser, Reader, Span};
 pub use tag::{Class, Tag, universal};
 pub use value::{Arcs, BitString, Integer, Oid, OwnedOid};
 

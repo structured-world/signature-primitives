@@ -13,7 +13,9 @@ use core::net::{Ipv4Addr, Ipv6Addr};
 use structured_asn1::memory::{Memory, OwnedVec};
 use structured_asn1::{Class, Element, Oid, Reader, Tag, universal};
 
+mod equality;
 mod ldap;
+mod uri;
 
 /// One name, in whichever of the forms the schema allows.
 #[derive(Debug)]
@@ -43,6 +45,85 @@ pub enum GeneralName<'a> {
     IpAddress(&'a [u8]),
     /// A name that is itself an identifier.
     RegisteredId(Oid<'a>),
+}
+
+impl GeneralName<'_> {
+    /// Compares retained names in the current request's execution account.
+    ///
+    /// DNS and ASCII mailbox identities use RFC5280 §§7.2/7.5 as updated by
+    /// RFC9549; Directory names use [`Name::matches`], and URIs use §7.4
+    /// normalization. Other, X.400 and EDI values have encoded identity only;
+    /// their type-specific semantic matching rules are not implemented here.
+    /// IP addresses and masks compare exactly, without subnet containment.
+    /// This query does not establish that a caller-constructed value was decoded
+    /// successfully. Decode untrusted names with [`read`] first.
+    ///
+    /// # Errors
+    /// Resource refusal remains an error, rather than a mismatch. A retained
+    /// value carries no universal document span, so this query returns an
+    /// unlocated error code. Producing reads use [`matches`] for location.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::sync::Arc;
+    /// use structured_asn1::memory::{Memory, MemoryAccount};
+    /// use structured_pkix::general_name::GeneralName;
+    /// let execution = Memory::new(Arc::new(MemoryAccount::new(1024, 4096)));
+    /// assert!(GeneralName::Dns("EXAMPLE.COM").matches(&GeneralName::Dns("example.com"), &execution)?);
+    /// # Ok::<(), structured_pkix::ErrorCode>(())
+    /// ```
+    pub fn matches(
+        &self,
+        other: &GeneralName<'_>,
+        execution: &Memory,
+    ) -> core::result::Result<bool, ErrorCode> {
+        equality::matches(self, other, execution, None, 0, "generalName")
+            .map_err(|error| error.code())
+    }
+}
+
+/// Compares decoded names as part of their producing parser session.
+///
+/// The same semantic core as [`GeneralName::matches`] admits scratch allocation,
+/// sorting, normalization and comparison against both the original parser-local
+/// work ceiling and current aggregate account. Deferred BER values retain their
+/// original depth. `at` and `field` locate this comparison in the caller's source;
+/// names contain borrowed values rather than a universal outer source span.
+/// No malformed-input recovery or duplicate diagnostics are performed here.
+///
+/// # Errors
+/// Reports resource refusal separately from `Ok(false)`, preserving the supplied
+/// comparison location. Decode both untrusted names successfully with [`read`]
+/// before invoking this comparison.
+///
+/// # Examples
+/// ```
+/// use std::sync::Arc;
+/// use structured_asn1::{Parser, memory::{Memory, MemoryAccount}};
+/// use structured_pkix::general_name::{self, GeneralName};
+/// let parser = Parser::ber(Memory::new(Arc::new(MemoryAccount::new(1024, 4096))));
+/// let reader = parser.read(&[], 400).unwrap();
+/// assert!(general_name::matches(&reader, &GeneralName::Dns("EXAMPLE.COM"), &GeneralName::Dns("example.com"), 777, "tsa")?);
+/// # Ok::<(), structured_pkix::Error>(())
+/// ```
+pub fn matches(
+    parent: &Reader<'_>,
+    left: &GeneralName<'_>,
+    right: &GeneralName<'_>,
+    at: u64,
+    field: &'static str,
+) -> Result<bool> {
+    equality::matches(left, right, &parent.execution(), Some(parent), at, field)
+}
+
+pub(crate) fn matches_at(
+    left: &GeneralName<'_>,
+    right: &GeneralName<'_>,
+    execution: &Memory,
+    at: u64,
+    field: &'static str,
+) -> Result<bool> {
+    equality::matches(left, right, execution, None, at, field)
 }
 
 /// Reads a sequence of names.

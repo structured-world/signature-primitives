@@ -17,9 +17,11 @@ mod allocator;
 mod map;
 mod sort;
 mod string;
+mod work;
 pub use map::{HashWork, OwnedMap};
 pub use sort::SortError;
 pub use string::OwnedString;
+pub use work::{Execution, Work};
 
 /// A failed storage operation, distinct from malformed input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +32,7 @@ pub enum MemoryError {
     OutOfMemory,
     /// The requested capacity cannot be represented by an allocation layout.
     CapacityOverflow,
-    /// The shared cumulative work allowance cannot cover this operation.
+    /// An aggregate or borrowed parser-session work allowance is exhausted.
     WorkExceeded,
 }
 
@@ -158,6 +160,16 @@ impl Memory {
         self.account.work.load(Ordering::Relaxed)
     }
 
+    /// Currently available aggregate work units, without reserving them.
+    /// Concurrent consumption can reduce this observation; every operation
+    /// must still use [`Self::charge_work`] before execution.
+    #[must_use]
+    pub fn work_remaining(&self) -> usize {
+        let spent = self.account.work.load(Ordering::Relaxed);
+        debug_assert!(spent <= self.account.work_limit);
+        self.account.work_limit - spent
+    }
+
     /// Charges work before performing it; storage release never refunds work.
     ///
     /// An amount unrepresentable on this target is refused before any work,
@@ -199,9 +211,7 @@ impl Memory {
     /// An empty owned collection sharing this domain, without allocating storage.
     #[must_use]
     pub fn vector<T>(&self) -> OwnedVec<T> {
-        OwnedVec {
-            values: Vec::new_in(allocator::AccountAllocator::new(self.clone())),
-        }
+        Work::vector(self)
     }
 
     /// An empty accounted hash map, without allocating storage.
@@ -239,31 +249,33 @@ impl Drop for MemoryReservation {
 /// It exposes slices rather than the underlying growable container, so callers
 /// cannot bypass fallible growth. Moving it retains accounting; copying values
 /// requires a fresh reservation. Clearing values does not release capacity.
-pub struct OwnedVec<T> {
-    values: Vec<T, allocator::AccountAllocator>,
+/// The default [`Memory`] execution owner is independent of parser lifetime;
+/// a collection using [`Execution`] borrows its parser's work ceiling too.
+pub struct OwnedVec<T, W: Work = Memory> {
+    values: Vec<T, allocator::AccountAllocator<W>>,
 }
 
-impl<T: fmt::Debug> fmt::Debug for OwnedVec<T> {
+impl<T: fmt::Debug, W: Work> fmt::Debug for OwnedVec<T, W> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.values.fmt(f)
     }
 }
 
-impl<T: PartialEq> PartialEq for OwnedVec<T> {
+impl<T: PartialEq, W: Work> PartialEq for OwnedVec<T, W> {
     fn eq(&self, other: &Self) -> bool {
         **self == **other
     }
 }
 
-impl<T: Eq> Eq for OwnedVec<T> {}
+impl<T: Eq, W: Work> Eq for OwnedVec<T, W> {}
 
-impl<T: PartialEq, const N: usize> PartialEq<[T; N]> for OwnedVec<T> {
+impl<T: PartialEq, W: Work, const N: usize> PartialEq<[T; N]> for OwnedVec<T, W> {
     fn eq(&self, other: &[T; N]) -> bool {
         &**self == other
     }
 }
 
-impl<T> OwnedVec<T> {
+impl<T, W: Work> OwnedVec<T, W> {
     /// The account retained by this collection, for related adapter operations.
     #[must_use]
     pub fn memory(&self) -> &Memory {
@@ -302,7 +314,7 @@ impl<T> OwnedVec<T> {
 
     /// Appends one value, acquiring any required storage before moving it.
     pub fn try_push(&mut self, value: T) -> core::result::Result<(), MemoryError> {
-        self.values.allocator().memory().charge_work(1)?;
+        self.values.allocator().work().charge_work(1)?;
         if self.values.len() == self.values.capacity() {
             self.try_reserve(1)?;
         }
@@ -330,16 +342,16 @@ impl<T> OwnedVec<T> {
         &mut self,
         compare: impl FnMut(&T, &T) -> core::result::Result<core::cmp::Ordering, E>,
     ) -> core::result::Result<(), SortError<E>> {
-        let memory = self.memory().clone();
-        sort::sort(&mut self.values, &memory, compare)
+        let work = self.values.allocator().work().clone();
+        sort::sort(&mut self.values, &work, compare)
     }
 }
 
-impl<T: Copy> OwnedVec<T> {
+impl<T: Copy, W: Work> OwnedVec<T, W> {
     /// Copies a slice after reserving storage and cumulative work in this domain.
     pub fn try_extend_from_slice(&mut self, values: &[T]) -> core::result::Result<(), MemoryError> {
         let work = values.len().max(core::mem::size_of_val(values));
-        self.memory().charge_work(work as u64)?;
+        self.values.allocator().work().charge_work(work as u64)?;
         if self.values.capacity() == 0 {
             self.try_reserve_exact(values.len())?;
         } else {
@@ -350,9 +362,9 @@ impl<T: Copy> OwnedVec<T> {
     }
     /// Copies values into independently charged storage in the same domain.
     pub fn try_copy(&self) -> core::result::Result<Self, MemoryError> {
-        let mut copy = self.values.allocator().memory().vector();
+        let mut copy = self.values.allocator().work().vector();
         let work = self.values.len().max(core::mem::size_of_val(&**self));
-        self.values.allocator().memory().charge_work(work as u64)?;
+        self.values.allocator().work().charge_work(work as u64)?;
         copy.try_reserve_exact(self.values.len())?;
         // Reservation above guarantees the Copy specialization cannot allocate.
         copy.values.extend_from_slice(&self.values);
@@ -360,20 +372,20 @@ impl<T: Copy> OwnedVec<T> {
     }
 }
 
-impl<T> Deref for OwnedVec<T> {
+impl<T, W: Work> Deref for OwnedVec<T, W> {
     type Target = [T];
     fn deref(&self) -> &[T] {
         &self.values
     }
 }
 
-impl<T> DerefMut for OwnedVec<T> {
+impl<T, W: Work> DerefMut for OwnedVec<T, W> {
     fn deref_mut(&mut self) -> &mut [T] {
         &mut self.values
     }
 }
 
-impl<'a, T> IntoIterator for &'a OwnedVec<T> {
+impl<'a, T, W: Work> IntoIterator for &'a OwnedVec<T, W> {
     type Item = &'a T;
     type IntoIter = core::slice::Iter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
@@ -381,7 +393,7 @@ impl<'a, T> IntoIterator for &'a OwnedVec<T> {
     }
 }
 
-impl<'a, T> IntoIterator for &'a mut OwnedVec<T> {
+impl<'a, T, W: Work> IntoIterator for &'a mut OwnedVec<T, W> {
     type Item = &'a mut T;
     type IntoIter = core::slice::IterMut<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
@@ -390,11 +402,11 @@ impl<'a, T> IntoIterator for &'a mut OwnedVec<T> {
 }
 
 /// An owning iterator that retains capacity accounting until storage is freed.
-pub struct OwnedIter<T> {
-    values: allocator_api2::vec::IntoIter<T, allocator::AccountAllocator>,
+pub struct OwnedIter<T, W: Work = Memory> {
+    values: allocator_api2::vec::IntoIter<T, allocator::AccountAllocator<W>>,
 }
 
-impl<T> Iterator for OwnedIter<T> {
+impl<T, W: Work> Iterator for OwnedIter<T, W> {
     type Item = T;
     fn next(&mut self) -> Option<T> {
         self.values.next()
@@ -404,18 +416,18 @@ impl<T> Iterator for OwnedIter<T> {
     }
 }
 
-impl<T> DoubleEndedIterator for OwnedIter<T> {
+impl<T, W: Work> DoubleEndedIterator for OwnedIter<T, W> {
     fn next_back(&mut self) -> Option<T> {
         self.values.next_back()
     }
 }
 
-impl<T> ExactSizeIterator for OwnedIter<T> {}
-impl<T> core::iter::FusedIterator for OwnedIter<T> {}
+impl<T, W: Work> ExactSizeIterator for OwnedIter<T, W> {}
+impl<T, W: Work> core::iter::FusedIterator for OwnedIter<T, W> {}
 
-impl<T> IntoIterator for OwnedVec<T> {
+impl<T, W: Work> IntoIterator for OwnedVec<T, W> {
     type Item = T;
-    type IntoIter = OwnedIter<T>;
+    type IntoIter = OwnedIter<T, W>;
     fn into_iter(self) -> Self::IntoIter {
         OwnedIter {
             values: self.values.into_iter(),

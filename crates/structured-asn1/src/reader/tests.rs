@@ -48,7 +48,8 @@ fn execution_rebinding_preserves_session_work_ceiling() {
     let parser = Parser::new(
         Encoding::Der,
         Limits {
-            max_work: 2,
+            // Two header octets plus the retained root path's 17 work units.
+            max_work: 19,
             ..Limits::default()
         },
         original.clone(),
@@ -61,10 +62,14 @@ fn execution_rebinding_preserves_session_work_ceiling() {
     let error = inside.next_element().unwrap_err();
     assert_eq!(error.code(), ErrorCode::LimitExceeded(Limit::Work));
     assert_eq!(error.offset(), 404);
-    // A paid the original header and retained path; diagnostic copying
-    // spends B's work without increasing A's cumulative consumption.
+    // A paid the original header and retained path. The exhausted local
+    // ceiling also refuses diagnostic copying before allocating in B.
     assert_eq!(original.work_used(), before);
-    assert!(execution.used() > 0);
+    assert_eq!(execution.used(), 0);
+    assert_eq!(
+        error.path().unavailable(),
+        Some(crate::memory::MemoryError::WorkExceeded)
+    );
 }
 
 #[test]

@@ -1,15 +1,15 @@
 //! NFKC using allocation-free Unicode table APIs and accounted buffers.
 
-use structured_asn1::memory::{Memory, MemoryError, OwnedVec};
+use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 use unicode_normalization::char::{canonical_combining_class, compose, decompose_compatible};
 
 /// UAX #15 §§1.3, 3: fully decompose, stably order each combining sequence,
 /// then canonically compose unblocked pairs (including adjacent Hangul Jamo).
 /// <https://www.unicode.org/reports/tr15/#Description_Norm>
-pub(super) fn nfkc(
-    memory: &Memory,
+pub(super) fn nfkc<W: Work>(
+    memory: &W,
     mut characters: impl Iterator<Item = char>,
-) -> Result<OwnedVec<char>, MemoryError> {
+) -> Result<OwnedVec<char, W>, MemoryError> {
     let mut output = memory.vector();
     let mut pending = memory.vector();
     let mut state = Composition::default();
@@ -52,10 +52,10 @@ pub(super) fn nfkc(
     Ok(output)
 }
 
-fn flush(
-    memory: &Memory,
-    pending: &mut OwnedVec<(u8, usize, char)>,
-    output: &mut OwnedVec<char>,
+fn flush<W: Work>(
+    memory: &W,
+    pending: &mut OwnedVec<(u8, usize, char), W>,
+    output: &mut OwnedVec<char, W>,
     state: &mut Composition,
 ) -> Result<(), MemoryError> {
     pending
@@ -77,10 +77,10 @@ struct Composition {
 }
 
 impl Composition {
-    fn push(
+    fn push<W: Work>(
         &mut self,
-        memory: &Memory,
-        output: &mut OwnedVec<char>,
+        memory: &W,
+        output: &mut OwnedVec<char, W>,
         character: char,
         class: u8,
     ) -> Result<(), MemoryError> {

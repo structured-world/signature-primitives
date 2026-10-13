@@ -26,7 +26,6 @@ pub use delta::{
 mod freshness;
 pub use freshness::Freshness;
 pub(crate) use freshness::update_window;
-mod uri;
 
 mod evidence;
 pub use evidence::{

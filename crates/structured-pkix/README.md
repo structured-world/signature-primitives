@@ -69,6 +69,28 @@ Applications own trust decisions, external data acquisition and the accounting
 of work inside their injected verification and recognizer callbacks. Merely
 passing an execution account does not bound arbitrary external callback code.
 
+## GeneralName identity
+
+The source API adds `GeneralName::matches(other, &Memory)` for retained queries
+and `general_name::matches(&Reader, left, right, offset, field)` for producing
+parses. Both share DNS, SMTP mailbox, Directory Name and URI comparison rules.
+DNS compares the whole name without ASCII case; mailbox local parts preserve
+case and decode equivalent SMTP quoting, while hosts ignore ASCII case.
+Directory strings use the existing Name preparation; URI comparison uses shared
+syntax and recognized-scheme normalization. Original values are never rewritten.
+
+The producing variant retains cumulative local and aggregate work limits through
+Unicode preparation, sorting, deferred BER traversal and scratch allocations.
+Its error preserves the supplied source location. Retained queries return an
+unlocated `ErrorCode` because a borrowed GeneralName has no universal source span.
+Resource refusal is never a mismatch. Decode untrusted values successfully before
+comparison; duplicate reporting and malformed recovery belong to the caller.
+
+Other, X.400 and EDI values support encoded identity only, rather than their
+type-specific semantic rules. IP addresses/masks compare exactly, without subnet
+containment. Exact CRL distribution-point/issuer comparisons remain exact; semantic
+CRL queries reuse the GeneralName core. These additions are not in crates.io 0.1.4.
+
 ### Check an already supplied chain
 
 The source version adds `path::validate` and `ValidationContext`; these APIs are

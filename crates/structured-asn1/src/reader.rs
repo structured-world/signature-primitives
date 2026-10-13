@@ -8,7 +8,7 @@
 use crate::error::{Error, ErrorCode, Limit, Path, Result};
 use crate::length::{self, Encoding, Length};
 use crate::limits::{Budget, Limits};
-use crate::memory::Memory;
+use crate::memory::{Memory, Work};
 use crate::tag::{self, Tag, universal};
 use crate::value::{self, BitString, Integer, Oid};
 
@@ -280,6 +280,30 @@ impl<'a> Reader<'a> {
         &self.execution
     }
 
+    /// Borrows both the current account and original cumulative work ceiling.
+    ///
+    /// Schema scratch must use this boundary when work belongs to the parse:
+    /// allocator growth, copying and sorting then retain the session ceiling
+    /// as well as the aggregate account. Independently retained results use
+    /// [`Self::memory`] instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use structured_asn1::{Parser, memory::{Memory, MemoryAccount, Work}};
+    /// let parser = Parser::ber(Memory::new(Arc::new(MemoryAccount::new(1024, 1024))));
+    /// let reader = parser.read(&[], 900).unwrap();
+    /// let mut scratch = reader.execution().vector();
+    /// scratch.try_push(7_u8)?;
+    /// assert_eq!(&*scratch, &[7]);
+    /// # Ok::<(), structured_asn1::memory::MemoryError>(())
+    /// ```
+    #[must_use]
+    pub fn execution(&self) -> crate::memory::Execution<'_> {
+        crate::memory::Execution::new(self.memory(), self.budget())
+    }
+
     /// Selects the domain for subsequent execution without moving existing
     /// storage charges. Offsets, depth and parser-session cumulative limits
     /// remain unchanged; a new domain does not reset that session ceiling.
@@ -291,6 +315,8 @@ impl<'a> Reader<'a> {
 
     /// Copies the reader position and diagnostic path fallibly in the same domain.
     pub fn try_clone(&self) -> Result<Self> {
+        self.admit_path(0)
+            .map_err(|reason| Error::resource(reason, self.offset()))?;
         Ok(Self {
             data: self.data,
             pos: self.pos,
@@ -384,6 +410,8 @@ impl<'a> Reader<'a> {
     /// only the lenient encoding accepts is refused too. Offsets stay offsets
     /// in the document and the budget stays the shared one.
     pub fn reread(&self, element: &Element<'a>, encoding: Encoding) -> Result<Reader<'a>> {
+        self.admit_path(0)
+            .map_err(|reason| Error::resource(reason, element.whole.start))?;
         Ok(Reader {
             data: element.bytes,
             pos: 0,
@@ -468,6 +496,8 @@ impl<'a> Reader<'a> {
                 element.contents_span.start,
             )
         })?;
+        self.admit_path(1)
+            .map_err(|reason| Error::resource(reason, element.contents_span.start))?;
         let mut path = self
             .path
             .try_copy_in(self.memory())
@@ -593,6 +623,9 @@ impl<'a> Reader<'a> {
     }
 
     fn fail_at(&self, code: ErrorCode, offset: u64) -> Error {
+        if let Err(reason) = self.admit_path(0) {
+            return Error::resource(reason, offset);
+        }
         match self.path.try_copy_in(self.memory()) {
             Ok(path) => Error::new(code, offset, path),
             Err(reason) => Error::resource(reason, offset),
@@ -704,7 +737,7 @@ impl<'a> Reader<'a> {
         // The index of the next element at each level entered so far, so an
         // error inside nested contents names where it is rather than naming the
         // container the scan started from.
-        let mut trail = self.memory().vector::<u32>();
+        let mut trail = self.execution().vector::<u32>();
         let mut index: u32 = 0;
 
         // Assembled only where an error is returned: building it per header is
@@ -809,12 +842,27 @@ impl<'a> Reader<'a> {
         own_index: u32,
         trail: &[u32],
     ) -> core::result::Result<Path, crate::memory::MemoryError> {
+        let additional = trail
+            .len()
+            .checked_add(1)
+            .ok_or(crate::memory::MemoryError::WorkExceeded)?;
+        self.admit_path(additional)?;
         let mut path = self.path.try_copy_in(self.memory())?;
         path.push(self.memory(), own_index)?;
         for index in trail {
             path.push(self.memory(), *index)?;
         }
         Ok(path)
+    }
+
+    fn admit_path(
+        &self,
+        additional: usize,
+    ) -> core::result::Result<(), crate::memory::MemoryError> {
+        let work = self.path.copy_work(additional)?;
+        self.budget()
+            .local_work(work)
+            .map_err(|_| crate::memory::MemoryError::WorkExceeded)
     }
 }
 

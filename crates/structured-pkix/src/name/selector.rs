@@ -254,6 +254,7 @@ fn ber(bytes: &[u8], kind: Oid<'_>, parser: &Parser, execution: &Memory) -> Resu
             contents: &[],
             der: &[],
             offset: 0,
+            depth: 0,
         }
         .encoding(),
         None => super::Encoding::Other,
@@ -301,6 +302,7 @@ fn project<'a>(item: &'a Selected, execution: &Memory) -> Result<prepared::Prepa
                 contents: &item.bytes,
                 der: &[],
                 offset: item.offset,
+                depth: 0,
             }
         }
         Value::Ber {
@@ -316,6 +318,7 @@ fn project<'a>(item: &'a Selected, execution: &Memory) -> Result<prepared::Prepa
             contents: joined.as_deref().unwrap_or(&item.bytes[contents.clone()]),
             der: &item.bytes,
             offset: item.offset,
+            depth: 0,
         },
     };
     let attribute = Attribute { kind, value };

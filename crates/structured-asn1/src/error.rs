@@ -177,6 +177,39 @@ impl Path {
         })
     }
 
+    /// Pre-admission for copying this path and appending scalar indices.
+    /// `OwnedVec`'s allocator charges the aggregate account itself; its parser
+    /// caller separately reserves this exact local share before any allocation.
+    pub(crate) fn copy_work(&self, additional: usize) -> core::result::Result<u64, MemoryError> {
+        let length = self.indices().len() as u64;
+        let additional = additional as u64;
+        let target = length
+            .checked_add(additional)
+            .ok_or(MemoryError::WorkExceeded)?;
+        // Copy plus exact allocation: two passes of four bytes per u32.
+        let mut work = length
+            .checked_mul(8)
+            .and_then(|work| work.checked_add(additional))
+            .ok_or(MemoryError::WorkExceeded)?;
+        let mut capacity = length;
+        // Audited allocator-api2 0.4 RawVec<u32>: minimum four elements,
+        // then doubling. At most u64::BITS growth steps, independent of input
+        // traversal. Include old/new layouts before each replacement allocation.
+        while capacity < target {
+            let next = capacity
+                .checked_mul(2)
+                .ok_or(MemoryError::WorkExceeded)?
+                .max(4);
+            work = next
+                .checked_add(capacity)
+                .and_then(|bytes| bytes.checked_mul(4))
+                .and_then(|bytes| work.checked_add(bytes))
+                .ok_or(MemoryError::WorkExceeded)?;
+            capacity = next;
+        }
+        Ok(work)
+    }
+
     pub(crate) fn push(
         &mut self,
         memory: &Memory,

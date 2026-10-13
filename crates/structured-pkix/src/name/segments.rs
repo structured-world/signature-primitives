@@ -1,6 +1,7 @@
 //! The one iterative BER base-string walker used by validation and codecs.
 
 use super::{AttributeValue, Encoding, Error, ErrorCode, Located, OwnedVec, Result, Strings};
+use structured_asn1::memory::Work;
 use structured_asn1::{Class, Element, Reader, Tag, universal};
 
 pub(super) fn implicit<'a>(
@@ -44,6 +45,7 @@ pub(super) fn validate<'a>(
             contents: &contents,
             der: element.as_bytes(),
             offset: element.span().start,
+            depth: parent.depth(),
         };
         let valid = if time {
             crate::time::ber_fits(&contents, number == universal::GENERALIZED_TIME)
@@ -79,9 +81,22 @@ pub(crate) fn walk<'a>(
     element: &Element<'a>,
     field: &'static str,
     bits: bool,
-    mut output: Option<&mut OwnedVec<u8>>,
+    output: Option<&mut OwnedVec<u8>>,
 ) -> Result<()> {
-    let mut frames = parent.memory().vector();
+    walk_in(parent, element, field, bits, output, parent.memory())
+}
+
+/// Uses the same walker with parser-bound scratch admission when preparation
+/// belongs to the producing parse, rather than an independent retained query.
+pub(super) fn walk_in<'a, W: Work>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    field: &'static str,
+    bits: bool,
+    mut output: Option<&mut OwnedVec<u8, W>>,
+    execution: &W,
+) -> Result<()> {
+    let mut frames = execution.vector();
     frames
         .try_push(Frame {
             reader: parent.enter(element).field(field)?,

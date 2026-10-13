@@ -2,26 +2,26 @@
 
 use crate::error::{Error, Located};
 use core::cmp::Ordering;
-use structured_asn1::memory::{Memory, MemoryError, OwnedVec};
+use structured_asn1::memory::{Memory, MemoryError, OwnedVec, Work};
 
 use super::{
     Asking, Attribute, Direction, Mapped, RelativeName, Spaced, inside_syntax, prohibited,
 };
 
 #[derive(Debug)]
-pub(super) struct Prepared<'a> {
+pub(super) struct Prepared<'a, W: Work = Memory> {
     attribute: Attribute<'a>,
-    canonical: Option<Canonical<'a>>,
+    canonical: Option<Canonical<'a, W>>,
 }
 
 #[derive(Debug)]
-pub(super) struct PreparedName<'a> {
-    attributes: OwnedVec<Prepared<'a>>,
-    lengths: OwnedVec<usize>,
+pub(super) struct PreparedName<'a, W: Work = Memory> {
+    attributes: OwnedVec<Prepared<'a, W>, W>,
+    lengths: OwnedVec<usize, W>,
 }
 
-impl<'a> PreparedName<'a> {
-    pub(super) fn of(parts: &[RelativeName<'a>], memory: &Memory) -> Result<Self, Error> {
+impl<'a, W: Work> PreparedName<'a, W> {
+    pub(super) fn of(parts: &[RelativeName<'a>], memory: &W) -> Result<Self, Error> {
         let mut attributes = memory.vector();
         let mut lengths = memory.vector();
         if parts.is_empty() {
@@ -48,8 +48,8 @@ impl<'a> PreparedName<'a> {
 
     pub(super) fn order(
         &self,
-        other: &PreparedName<'_>,
-        memory: &Memory,
+        other: &PreparedName<'_, W>,
+        memory: &W,
     ) -> Result<Ordering, MemoryError> {
         let parts = self.lengths.len().cmp(&other.lengths.len());
         if parts != Ordering::Equal {
@@ -79,7 +79,7 @@ impl<'a> PreparedName<'a> {
 }
 
 #[derive(Debug)]
-enum Canonical<'a> {
+enum Canonical<'a, W: Work> {
     // ASCII NFKC is identity; folding and whitespace handling stream without
     // a canonical copy, which avoids per-attribute allocations on this path.
     Ascii(&'a str),
@@ -87,24 +87,32 @@ enum Canonical<'a> {
     // DN IA5 identities have exact ASCII case-insensitive rules, without
     // DirectoryString's whitespace mapping/compression or Unicode preparation.
     ExactAscii(&'a str),
-    Unicode(OwnedVec<char>),
+    Unicode(OwnedVec<char, W>),
 }
 
-impl<'a> Prepared<'a> {
+impl<'a, W: Work> Prepared<'a, W> {
     pub(super) fn is_prepared(&self) -> bool {
         self.canonical.is_some()
     }
-    pub(super) fn of(attribute: Attribute<'a>, memory: &Memory) -> Result<Self, Error> {
+    pub(super) fn of(attribute: Attribute<'a>, memory: &W) -> Result<Self, Error> {
+        Self::of_in(attribute, memory, None)
+    }
+
+    fn of_in(
+        attribute: Attribute<'a>,
+        memory: &W,
+        parent: Option<&structured_asn1::Reader<'_>>,
+    ) -> Result<Self, Error> {
         Ok(Self {
             attribute,
-            canonical: canonical(attribute, memory)?,
+            canonical: canonical(attribute, memory, parent)?,
         })
     }
 
     pub(super) fn order(
         &self,
-        other: &Prepared<'_>,
-        memory: &Memory,
+        other: &Prepared<'_, W>,
+        memory: &W,
     ) -> Result<Ordering, MemoryError> {
         let left = self.attribute.kind.as_bytes();
         let right = other.attribute.kind.as_bytes();
@@ -134,7 +142,7 @@ impl<'a> Prepared<'a> {
     }
 }
 
-impl Canonical<'_> {
+impl<W: Work> Canonical<'_, W> {
     fn work(&self) -> u64 {
         match self {
             Self::Ascii(text) | Self::CaseExactAscii(text) | Self::ExactAscii(text) => {
@@ -176,13 +184,14 @@ impl Iterator for Characters<'_> {
 }
 
 pub(super) fn folds(attribute: Attribute<'_>, memory: &Memory) -> Result<bool, Error> {
-    Ok(canonical(attribute, memory)?.is_some())
+    Ok(canonical(attribute, memory, None)?.is_some())
 }
 
-fn canonical<'a>(
+fn canonical<'a, W: Work>(
     attribute: Attribute<'a>,
-    memory: &Memory,
-) -> Result<Option<Canonical<'a>>, Error> {
+    memory: &W,
+    parent: Option<&structured_asn1::Reader<'_>>,
+) -> Result<Option<Canonical<'a, W>>, Error> {
     let value = attribute.value;
     let fail = |reason| Error::resource(reason, "name.attribute", value.offset);
     if value.tag.is_constructed()
@@ -205,53 +214,99 @@ fn canonical<'a>(
         if !super::permits(attribute.kind, encoding) {
             return Ok(None);
         }
-        let parser = structured_asn1::Parser::ber(memory.clone());
-        let mut reader = parser
+        if let Some(parent) = parent {
+            // Name attributes are read inside SEQUENCE/RDN/attribute frames.
+            // Re-enter at the retained original depth, using the same parser
+            // session and current account before any deferred BER scanning.
+            debug_assert!(value.depth > 0);
+            let reader = parent
+                .parser()
+                .read_nested_in(
+                    value.der,
+                    value.offset,
+                    structured_asn1::Encoding::Ber,
+                    value.depth - 1,
+                    memory.memory(),
+                )
+                .field("name.attribute")?;
+            return canonical_segmented(attribute, memory, reader);
+        }
+        // A retained query has no producing parser ceiling. Physical input
+        // size bounds possible headers/nesting; current aggregate availability
+        // bounds all work. No default parser profile may silently reject a
+        // previously accepted deep value, and the account is never reset.
+        let length = u64::try_from(value.der.len()).map_err(|_| fail(MemoryError::WorkExceeded))?;
+        let max_work = u64::try_from(memory.memory().work_remaining())
+            .map_err(|_| fail(MemoryError::WorkExceeded))?;
+        let depth = (length / 2).min(u64::from(u32::MAX));
+        let parser = structured_asn1::Parser::new(
+            structured_asn1::Encoding::Ber,
+            structured_asn1::Limits {
+                max_depth: u32::try_from(depth).expect("bounded by depth counter representation"),
+                max_elements: length / 2,
+                max_element_length: length,
+                max_work,
+            },
+            memory.memory().clone(),
+        );
+        let reader = parser
             .read(value.der, value.offset)
             .field("name.attribute")?;
-        let element = reader
-            .next_element()
-            .field("name.attribute")?
-            .expect("validated attribute contains one value");
-        let mut contents = memory.vector();
-        super::segments::walk(
-            &reader,
-            &element,
-            "name.attribute",
-            false,
-            Some(&mut contents),
-        )?;
-        let logical = Attribute {
-            kind: attribute.kind,
-            value: super::AttributeValue {
-                tag: structured_asn1::Tag::primitive(value.tag.number().expect("universal string")),
-                contents: &contents,
-                der: value.der,
-                offset: value.offset,
-            },
-        };
-        let Some(prepared) = canonical_primitive(logical, memory).map_err(fail)? else {
-            return Ok(None);
-        };
-        // The flattened bytes are scratch. Canonical characters own their
-        // storage, avoiding references into an allocation that will move/drop.
-        if let Canonical::Unicode(characters) = prepared {
-            return Ok(Some(Canonical::Unicode(characters)));
-        }
-        memory.charge_work(prepared.work()).map_err(fail)?;
-        let mut characters = memory.vector();
-        for character in prepared.characters() {
-            characters.try_push(character).map_err(fail)?;
-        }
-        return Ok(Some(Canonical::Unicode(characters)));
+        return canonical_segmented(attribute, memory, reader);
     }
     canonical_primitive(attribute, memory).map_err(fail)
 }
 
-fn canonical_primitive<'a>(
+fn canonical_segmented<'a, W: Work>(
     attribute: Attribute<'a>,
-    memory: &Memory,
-) -> Result<Option<Canonical<'a>>, MemoryError> {
+    memory: &W,
+    mut reader: structured_asn1::Reader<'_>,
+) -> Result<Option<Canonical<'a, W>>, Error> {
+    let value = attribute.value;
+    let fail = |reason| Error::resource(reason, "name.attribute", value.offset);
+    let element = reader
+        .next_element()
+        .field("name.attribute")?
+        .expect("validated attribute contains one value");
+    let mut contents = memory.vector();
+    super::segments::walk_in(
+        &reader,
+        &element,
+        "name.attribute",
+        false,
+        Some(&mut contents),
+        memory,
+    )?;
+    let logical = Attribute {
+        kind: attribute.kind,
+        value: super::AttributeValue {
+            tag: structured_asn1::Tag::primitive(value.tag.number().expect("universal string")),
+            contents: &contents,
+            der: value.der,
+            offset: value.offset,
+            depth: value.depth,
+        },
+    };
+    let Some(prepared) = canonical_primitive(logical, memory).map_err(fail)? else {
+        return Ok(None);
+    };
+    // The flattened bytes are scratch. Canonical characters own their
+    // storage, avoiding references into an allocation that will move/drop.
+    if let Canonical::Unicode(characters) = prepared {
+        return Ok(Some(Canonical::Unicode(characters)));
+    }
+    memory.charge_work(prepared.work()).map_err(fail)?;
+    let mut characters = memory.vector();
+    for character in prepared.characters() {
+        characters.try_push(character).map_err(fail)?;
+    }
+    Ok(Some(Canonical::Unicode(characters)))
+}
+
+fn canonical_primitive<'a, W: Work>(
+    attribute: Attribute<'a>,
+    memory: &W,
+) -> Result<Option<Canonical<'a, W>>, MemoryError> {
     // Syntax, size and identity rules examine at most 64 kind-byte passes.
     // UTF-8 validation, alphabet/count validation, ASCII detection and decoding
     // each visit the value once. Admit these before any of those scans.
@@ -306,16 +361,16 @@ fn canonical_primitive<'a>(
     // https://www.rfc-editor.org/rfc/rfc2985.html#section-5.2.9
     // https://www.rfc-editor.org/rfc/rfc4517.html#section-4.2.4
     if attribute.kind == crate::oid::PSEUDONYM {
-        unicode::<false>(attribute, memory)
+        unicode::<false, W>(attribute, memory)
     } else {
-        unicode::<true>(attribute, memory)
+        unicode::<true, W>(attribute, memory)
     }
 }
 
-fn unicode<const FOLD_CASE: bool>(
+fn unicode<const FOLD_CASE: bool, W: Work>(
     attribute: Attribute<'_>,
-    memory: &Memory,
-) -> Result<Option<Canonical<'static>>, MemoryError> {
+    memory: &W,
+) -> Result<Option<Canonical<'static, W>>, MemoryError> {
     let normalized = super::normalize::nfkc(
         memory,
         Mapped::<_, FOLD_CASE>::over(attribute.value.decoded_chars()),
@@ -336,10 +391,10 @@ fn unicode<const FOLD_CASE: bool>(
     Ok(Some(Canonical::Unicode(canonical)))
 }
 
-pub(super) fn part<'a>(
+pub(super) fn part<'a, W: Work>(
     part: &RelativeName<'a>,
-    memory: &Memory,
-) -> Result<OwnedVec<Prepared<'a>>, Error> {
+    memory: &W,
+) -> Result<OwnedVec<Prepared<'a, W>, W>, Error> {
     let mut attributes = memory.vector();
     let fail = |reason| Error::resource(reason, "name.attribute", part.attributes[0].value.offset);
     for &attribute in part.attributes() {
@@ -353,21 +408,30 @@ pub(super) fn part<'a>(
     Ok(attributes)
 }
 
-pub(super) fn compare_parts(
+pub(super) fn compare_parts<W: Work>(
     left: &RelativeName<'_>,
     right: &RelativeName<'_>,
-    execution: &Memory,
+    execution: &W,
+) -> Result<Ordering, Error> {
+    compare_parts_in(left, right, execution, None)
+}
+
+pub(super) fn compare_parts_in<W: Work>(
+    left: &RelativeName<'_>,
+    right: &RelativeName<'_>,
+    execution: &W,
+    parent: Option<&structured_asn1::Reader<'_>>,
 ) -> Result<Ordering, Error> {
     compare_views(
         left.attributes
             .iter()
             .copied()
-            .map(|attribute| Prepared::of(attribute, execution)),
+            .map(|attribute| Prepared::of_in(attribute, execution, parent)),
         right
             .attributes
             .iter()
             .copied()
-            .map(|attribute| Prepared::of(attribute, execution)),
+            .map(|attribute| Prepared::of_in(attribute, execution, parent)),
         execution,
         |reason| Error::resource(reason, "name.attribute", left.attributes[0].value.offset),
     )
@@ -376,10 +440,10 @@ pub(super) fn compare_parts(
 /// Borrowed projections are evaluated only as preparation requires them.
 /// Singleton RDNs allocate no catalogue; multi-valued RDNs allocate only
 /// the prepared sorting scratch shared with certificate Name comparison.
-pub(super) fn compare_views<'a, 'b, E>(
-    mut left: impl ExactSizeIterator<Item = Result<Prepared<'a>, E>>,
-    mut right: impl ExactSizeIterator<Item = Result<Prepared<'b>, E>>,
-    execution: &Memory,
+pub(super) fn compare_views<'a, 'b, E, W: Work>(
+    mut left: impl ExactSizeIterator<Item = Result<Prepared<'a, W>, E>>,
+    mut right: impl ExactSizeIterator<Item = Result<Prepared<'b, W>, E>>,
+    execution: &W,
     fail: impl Fn(MemoryError) -> E + Copy,
 ) -> Result<Ordering, E> {
     let length = left.len().cmp(&right.len());
@@ -404,11 +468,11 @@ pub(super) fn compare_views<'a, 'b, E>(
     Ok(Ordering::Equal)
 }
 
-fn prepare_view<'a, E>(
-    attributes: impl ExactSizeIterator<Item = Result<Prepared<'a>, E>>,
-    execution: &Memory,
+fn prepare_view<'a, E, W: Work>(
+    attributes: impl ExactSizeIterator<Item = Result<Prepared<'a, W>, E>>,
+    execution: &W,
     fail: impl Fn(MemoryError) -> E + Copy,
-) -> Result<OwnedVec<Prepared<'a>>, E> {
+) -> Result<OwnedVec<Prepared<'a, W>, W>, E> {
     execution
         .charge_work(attributes.len() as u64)
         .map_err(fail)?;

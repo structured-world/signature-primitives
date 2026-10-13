@@ -28,12 +28,13 @@ pub struct Limits {
     /// How long a single element's contents may be.
     pub max_element_length: u64,
 
-    /// How many bytes of header and structure may be examined.
+    /// Cumulative parser and explicitly attached schema work units.
     ///
-    /// Content bytes are not counted against this: reading a large certificate
-    /// is not the thing worth stopping. What this bounds is the number of
-    /// elements-worth of parsing a document can ask for, which is what a deeply
-    /// or densely nested input inflates.
+    /// Header scanning, nested-reader paths and diagnostic copying share this
+    /// ceiling. Borrowed payload views do not scan their contents. Explicit
+    /// [`crate::Reader::charge`] and [`crate::Reader::execution`] additionally
+    /// attach schema scans and scratch to the same cumulative session; rebinding
+    /// the aggregate account does not reset it.
     pub max_work: u64,
 }
 
@@ -122,6 +123,18 @@ impl Budget {
             return Err(Limit::Work);
         }
         execution.charge_work(amount).map_err(|_| Limit::Work)?;
+        self.work.set(spent + amount);
+        Ok(())
+    }
+
+    /// Reserves the session share of an operation whose owned storage methods
+    /// already charge the aggregate account. Never charge that account twice.
+    pub(crate) fn local_work(&self, amount: u64) -> Result<(), Limit> {
+        let spent = self.work.get();
+        debug_assert!(spent <= self.limits.max_work);
+        if amount > self.limits.max_work - spent {
+            return Err(Limit::Work);
+        }
         self.work.set(spent + amount);
         Ok(())
     }

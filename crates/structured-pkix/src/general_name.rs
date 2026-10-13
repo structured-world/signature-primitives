@@ -65,7 +65,8 @@ pub(crate) fn read_list<'a>(
 }
 
 /// Distribution locations use URI grammar, rather than SAN host identity
-/// rules. RFC5280 §4.2.1.13 explicitly permits ldap:/// with no host.
+/// rules. RFC5280 §4.2.1.13 permits hostless LDAP URLs with the required DN
+/// and CRL attribute, e.g. `ldap:///cn=CA?certificateRevocationList;binary`.
 pub(crate) fn read_locations<'a>(
     parent: &Reader<'a>,
     element: &Element<'a>,

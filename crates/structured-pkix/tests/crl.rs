@@ -723,6 +723,8 @@ fn ldap_crl_locations_require_a_dn_and_one_binary_crl_attribute() {
     for (location, valid) in [
         ("ldap:", false),
         ("ldap:///", false),
+        ("ldap:///?certificateRevocationList;binary", false),
+        ("ldap://ldap.example/?authorityRevocationList;binary", false),
         ("ldap:///cn=CA", false),
         ("ldap:///cn=CA?certificateRevocationList", false),
         (

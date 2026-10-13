@@ -39,51 +39,64 @@ pub(super) fn valid(
         fields[count] = part;
         count += 1;
     }
-    if count < 2 || fields[1].is_empty() {
+    // An empty DN selects server-specific root DSE metadata (RFC4512 §5.1),
+    // not the named CRL-holding entry required by RFC5280 §4.2.1.13. Refuse
+    // that missing selection here, before copying; generic RFC4514 still
+    // permits an empty DN in its other contexts.
+    // <https://www.rfc-editor.org/rfc/rfc4512#section-5.1>
+    if count < 2 || fields[0].is_empty() || fields[1].is_empty() {
         return Ok(false);
     }
     let execution = parent.memory();
     let at = element.span().start;
-    let dn = decode(fields[0], execution, field, at)?;
-    let Ok(dn) = core::str::from_utf8(&dn) else {
-        return Ok(false);
-    };
-    let work = u64::try_from(dn.len())
-        .ok()
-        .and_then(|n| n.checked_mul(64))
-        .and_then(|n| n.checked_add(1))
-        .ok_or_else(|| {
-            Error::resource(
-                structured_asn1::memory::MemoryError::WorkExceeded,
-                field,
-                at,
-            )
-        })?;
-    parent.charge(work).field(field)?;
-    if !crate::name::dn_syntax_fits(dn) {
-        return Ok(false);
-    }
-    let attribute = decode(fields[1], execution, field, at)?;
-    let Ok(attribute) = core::str::from_utf8(&attribute) else {
-        return Ok(false);
-    };
-    if !crl_attribute(attribute) {
-        return Ok(false);
-    }
-    let scope = decode(fields[2], execution, field, at)?;
-    if !scope.is_empty()
-        && ![b"base".as_slice(), b"one", b"sub"]
-            .iter()
-            .any(|name| scope.eq_ignore_ascii_case(name))
     {
-        return Ok(false);
+        let dn = decode(fields[0], execution, field, at)?;
+        let Ok(dn) = core::str::from_utf8(&dn) else {
+            return Ok(false);
+        };
+        let work = u64::try_from(dn.len())
+            .ok()
+            .and_then(|n| n.checked_mul(64))
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(|| {
+                Error::resource(
+                    structured_asn1::memory::MemoryError::WorkExceeded,
+                    field,
+                    at,
+                )
+            })?;
+        parent.charge(work).field(field)?;
+        if !crate::name::dn_syntax_fits(dn) {
+            return Ok(false);
+        }
     }
-    let filter = decode(fields[3], execution, field, at)?;
-    let Ok(filter) = core::str::from_utf8(&filter) else {
-        return Ok(false);
-    };
-    if !filter.is_empty() && !filter_valid(filter, execution, field, at)? {
-        return Ok(false);
+    {
+        let attribute = decode(fields[1], execution, field, at)?;
+        let Ok(attribute) = core::str::from_utf8(&attribute) else {
+            return Ok(false);
+        };
+        if !crl_attribute(attribute) {
+            return Ok(false);
+        }
+    }
+    {
+        let scope = decode(fields[2], execution, field, at)?;
+        if !scope.is_empty()
+            && ![b"base".as_slice(), b"one", b"sub"]
+                .iter()
+                .any(|name| scope.eq_ignore_ascii_case(name))
+        {
+            return Ok(false);
+        }
+    }
+    {
+        let filter = decode(fields[3], execution, field, at)?;
+        let Ok(filter) = core::str::from_utf8(&filter) else {
+            return Ok(false);
+        };
+        if !filter.is_empty() && !filter_valid(filter, execution, field, at)? {
+            return Ok(false);
+        }
     }
     if !fields[4].is_empty() {
         for part in fields[4].split(',') {
@@ -101,12 +114,41 @@ pub(super) fn valid(
     Ok(true)
 }
 
-fn decode(text: &str, execution: &Memory, field: &'static str, at: u64) -> Result<OwnedVec<u8>> {
+enum Decoded<'a> {
+    Borrowed(&'a [u8]),
+    Owned(OwnedVec<u8>),
+}
+
+impl core::ops::Deref for Decoded<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Owned(bytes) => bytes,
+        }
+    }
+}
+
+fn decode<'a>(
+    text: &'a str,
+    execution: &Memory,
+    field: &'static str,
+    at: u64,
+) -> Result<Decoded<'a>> {
     // Generic URI validation already checked percent pairs. Reserve once before
     // copying; decoded commas/questions cannot change URL component boundaries.
+    // Components without escapes retain the original borrowed view, including
+    // absent optional fields; they neither copy nor acquire an account handle.
+    let escapes = text.bytes().filter(|byte| *byte == b'%').count();
+    if escapes == 0 {
+        return Ok(Decoded::Borrowed(text.as_bytes()));
+    }
     let fail = |reason| Error::resource(reason, field, at);
     let mut output = execution.vector();
-    output.try_reserve_exact(text.len()).map_err(fail)?;
+    // Each validated escape consumes three source bytes and emits one byte.
+    debug_assert!(escapes <= text.len() / 3);
+    let decoded_len = text.len() - 2 * escapes;
+    output.try_reserve_exact(decoded_len).map_err(fail)?;
     let mut bytes = text.as_bytes();
     while let Some((&byte, rest)) = bytes.split_first() {
         if byte == b'%' {
@@ -119,7 +161,7 @@ fn decode(text: &str, execution: &Memory, field: &'static str, at: u64) -> Resul
             bytes = rest;
         }
     }
-    Ok(output)
+    Ok(Decoded::Owned(output))
 }
 
 fn hex(byte: u8) -> u8 {
@@ -172,6 +214,14 @@ fn filter_valid(text: &str, execution: &Memory, field: &'static str, offset: u64
     // Iterative prefix grammar: each byte is visited a constant number of times,
     // and every nesting frame is admitted and retains its own capacity charge.
     let bytes = text.as_bytes();
+    if bytes.first() != Some(&b'(') {
+        return Ok(false);
+    }
+    if !matches!(bytes.get(1), Some(b'&' | b'|' | b'!')) {
+        // A leaf uses the same assertion grammar without acquiring a frame
+        // account. Raw inner parentheses are rejected by that grammar.
+        return Ok(text[1..].strip_suffix(')').is_some_and(item));
+    }
     let mut frames: OwnedVec<Frame> = execution.vector();
     let mut at = 0;
     loop {

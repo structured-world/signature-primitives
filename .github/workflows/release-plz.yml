@@ -3,10 +3,6 @@ name: Release
 on:
   push:
     branches: [main]
-  workflow_run:
-    workflows: [ci]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,12 +10,15 @@ permissions:
 
 jobs:
   release-pr:
+    # Preparing before publication sees a partially updated registry and can
+    # turn a version-only merge into another release. The publisher already
+    # waits for successful CI on this exact SHA; do not race its completion.
+    needs: publish
     if: >-
       github.repository == 'structured-world/signature-primitives' &&
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.workflow_run.conclusion == 'success'
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.publish.result == 'success'
     runs-on: ubuntu-latest
     concurrency:
       group: release-pr
@@ -36,7 +35,7 @@ jobs:
           permission-pull-requests: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}

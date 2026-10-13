@@ -16,7 +16,7 @@ function context(value) {
 
 function evaluate(expression, values) {
   const tokens = new Lexer(expression).lex().tokens;
-  const expr = new Parser(tokens, ["github", "inputs"], []).parse();
+  const expr = new Parser(tokens, ["github", "inputs", "needs"], []).parse();
   const result = new Evaluator(expr, context(values)).evaluate();
   assert.ok(result instanceof data.BooleanData);
   return result.value;
@@ -42,7 +42,7 @@ assert.equal(canPublish({ event: "pull_request" }), false);
 assert.equal(canPublish({ event: "push", branch: "feature" }), false);
 assert.equal(canPublish({ event: "workflow_dispatch", branch: "feature" }), false);
 assert.equal(canPublish({ event: "push", repository: "attacker/signature-primitives" }), false);
-assert.deepEqual(workflow.on.workflow_run.branches, ["main"]);
+assert.equal(workflow.on.workflow_run, undefined, "CI completion must not start a parallel preparation run");
 assert.equal(publish.environment, "release");
 assert.equal(publish.permissions["id-token"], "write");
 const gate = publish.steps.findIndex(step => step.run?.includes("release_ci.py"));
@@ -53,6 +53,25 @@ assert.equal(publish.concurrency["cancel-in-progress"], false);
 assert.ok(workflow.on.push.branches.includes("main"));
 assert.equal(release.if, undefined);
 console.log("PASS: supported main triggers require exact-SHA CI before OIDC publication.");
+
+// CI completion used to prepare the next release while the second package was
+// still publishing, yielding a spurious version-only 0.1.5 after 0.1.4.
+const preparation = workflow.jobs["release-pr"];
+assert.equal(preparation.needs, "publish", "preparation must await the actual publisher");
+assert.equal(preparation.steps.find(step => step.uses?.startsWith("actions/checkout@")).with.ref, "${{ github.sha }}");
+function canPrepare(result, event = "push", branch = "main", repository = "structured-world/signature-primitives") {
+  return evaluate(preparation.if, {
+    github: { repository, event_name: event, ref: `refs/heads/${branch}` },
+    needs: { publish: { result } },
+  });
+}
+assert.equal(canPrepare("success"), true);
+assert.equal(canPrepare("success", "workflow_dispatch"), true);
+for (const result of ["failure", "cancelled", "skipped", ""]) assert.equal(canPrepare(result), false);
+for (const event of ["workflow_run", "pull_request"]) assert.equal(canPrepare("success", event), false);
+assert.equal(canPrepare("success", "push", "feature"), false);
+assert.equal(canPrepare("success", "push", "main", "attacker/signature-primitives"), false);
+console.log("PASS: preparation follows successful publication of the same main revision.");
 
 const ci = parse(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"));
 function ciGroup(event, sha, ref = "refs/heads/main") {

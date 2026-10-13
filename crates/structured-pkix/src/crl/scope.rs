@@ -392,31 +392,18 @@ fn names_match<const ENCODED: bool>(
     source: &Name<'_>,
     execution: &Memory,
 ) -> Result<bool> {
+    if !ENCODED {
+        return crate::general_name::matches_at(
+            left,
+            right,
+            execution,
+            source.offset(),
+            source.field(),
+        );
+    }
     let (left, right) = match (left, right) {
         (GeneralName::Directory(left), GeneralName::Directory(right)) => {
             return name::matches_composed::<ENCODED>(left, None, right, None, execution);
-        }
-        (GeneralName::Uri(left), GeneralName::Uri(right)) if !ENCODED => {
-            return super::uri::matches(left, right, execution, source.offset());
-        }
-        (GeneralName::Dns(left), GeneralName::Dns(right)) if !ENCODED => {
-            admit_text(left, right, source, execution)?;
-            // RFC5280 §7.2 requires whole-DNS-name ASCII case-insensitive
-            // exact comparison; no trailing-dot or suffix identity is added.
-            // https://www.rfc-editor.org/rfc/rfc5280#section-7.2
-            return Ok(left.eq_ignore_ascii_case(right));
-        }
-        (GeneralName::Email(left), GeneralName::Email(right)) if !ENCODED => {
-            admit_text(left, right, source, execution)?;
-            // RFC5280 §7.5: local-part exact, host ASCII case-insensitive.
-            // Quotes can contain @; the separator is outside quoted local-part.
-            // https://www.rfc-editor.org/rfc/rfc5280#section-7.5
-            let (Some((left_local, left_host)), Some((right_local, right_host))) =
-                (mail_parts(left), mail_parts(right))
-            else {
-                return Ok(false);
-            };
-            return Ok(left_local == right_local && left_host.eq_ignore_ascii_case(right_host));
         }
         (GeneralName::Uri(left), GeneralName::Uri(right))
         | (GeneralName::Dns(left), GeneralName::Dns(right))
@@ -462,35 +449,6 @@ fn names_match<const ENCODED: bool>(
         .charge_work(work)
         .map_err(|reason| source.resource(reason))?;
     Ok(left == right)
-}
-
-fn admit_text(left: &str, right: &str, source: &Name<'_>, execution: &Memory) -> Result<()> {
-    let work = u64::try_from(left.len().max(right.len()))
-        .ok()
-        .and_then(|length| length.checked_mul(4))
-        .and_then(|work| work.checked_add(1))
-        .ok_or_else(|| source.resource(structured_asn1::memory::MemoryError::WorkExceeded))?;
-    execution
-        .charge_work(work)
-        .map_err(|reason| source.resource(reason))
-}
-
-fn mail_parts(text: &str) -> Option<(&str, &str)> {
-    let (mut quoted, mut escaped) = (false, false);
-    for (index, byte) in text.bytes().enumerate() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if quoted && byte == b'\\' {
-            escaped = true;
-        } else if byte == b'"' {
-            quoted = !quoted;
-        } else if !quoted && byte == b'@' {
-            return Some((&text[..index], &text[index + 1..]));
-        }
-    }
-    None
 }
 
 /// Which certificate category an issuing distribution point covers.

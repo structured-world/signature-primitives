@@ -2,7 +2,7 @@
 
 use core::cmp::Ordering;
 
-use super::{Memory, MemoryError};
+use super::{MemoryError, Work};
 
 /// A refused sort, preserving the comparator's own error and provenance.
 #[derive(Debug, PartialEq, Eq)]
@@ -21,9 +21,9 @@ impl From<SortError<MemoryError>> for MemoryError {
     }
 }
 
-pub(super) fn sort<T, E>(
+pub(super) fn sort<T, E, W: Work>(
     values: &mut [T],
-    memory: &Memory,
+    memory: &W,
     mut compare: impl FnMut(&T, &T) -> Result<Ordering, E>,
 ) -> Result<(), SortError<E>> {
     for root in (0..values.len() / 2).rev() {
@@ -36,11 +36,11 @@ pub(super) fn sort<T, E>(
     Ok(())
 }
 
-fn sift<T, E>(
+fn sift<T, E, W: Work>(
     values: &mut [T],
     mut root: usize,
     end: usize,
-    memory: &Memory,
+    memory: &W,
     compare: &mut impl FnMut(&T, &T) -> Result<Ordering, E>,
 ) -> Result<(), SortError<E>> {
     while root < end / 2 {
@@ -66,11 +66,11 @@ fn sift<T, E>(
     Ok(())
 }
 
-fn exchange<T>(
+fn exchange<T, W: Work>(
     values: &mut [T],
     left: usize,
     right: usize,
-    memory: &Memory,
+    memory: &W,
 ) -> Result<(), MemoryError> {
     let cost = (core::mem::size_of::<T>() as u64)
         .checked_mul(2)

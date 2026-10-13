@@ -52,6 +52,21 @@ The value is a view into `bytes`. Choose `Parser::ber` for BER input, or use
 `Parser::new` to supply encoding and parser-local `Limits` explicitly. Borrowed
 values require the document to remain alive.
 
+## Scratch belonging to a parse
+
+The source API adds `Reader::execution()` and the sealed `memory::Work` contract.
+Use `reader.execution().vector()` (with `Work` imported) when temporary schema
+processing belongs to the original parser session. Allocator growth, copies,
+sorting and explicit `charge_work` then admit both the parser-local and current
+aggregate work limits before execution. The borrowed scratch cannot outlive the
+reader/account. Reader paths and diagnostic copies also reserve their local work
+before allocation, while their containers charge aggregate work once.
+
+`Memory::vector()` remains the independently owned result boundary. Its capacity
+charge survives the parser; moving it does not reserve again. The default
+`OwnedVec<T>` still uses this owner, while parser-bound scratch uses the additional
+execution type parameter. These additions are not in crates.io 0.1.4.
+
 ## Explicit INTEGER recovery
 
 `Reader::integer` and `read_integer` are strict: X.690 §8.3.2 requires minimal

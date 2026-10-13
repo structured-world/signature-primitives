@@ -153,14 +153,15 @@ fn constructed_generalized_time_keeps_current_storage_work_and_original_depth_li
 
 #[test]
 fn constructed_generalized_time_cannot_reset_local_work_with_a_new_execution_domain() {
-    // The original parser has enough work to read the outer header and first
-    // child header, but not to copy that child. Rebinding cannot refill it.
+    // The original parser pays the outer header, retained reader path (17
+    // units), and first child header, but cannot copy that child. Rebinding
+    // cannot refill it or move this refusal to a synthetic joined offset.
     let bytes = b"\x38\x13\x04\x0820260101\x04\x07000000Z";
     let original = memory();
     let parser = Parser::new(
         Encoding::Ber,
         Limits {
-            max_work: 6,
+            max_work: 23,
             ..Limits::default()
         },
         original.clone(),

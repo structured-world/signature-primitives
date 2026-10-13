@@ -7,11 +7,14 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use allocator_api2::alloc::{AllocError, Allocator, Global, Layout};
 
-use super::{Memory, MemoryError};
+use super::{Memory, MemoryError, Work};
 
 #[derive(Debug)]
-pub(super) struct AccountAllocator {
-    memory: Memory,
+pub(super) struct AccountAllocator<W: Work = Memory> {
+    execution: W,
+    // Budget borrows may end after mem::forget; leaked capacity must still
+    // retain the account. Memory already owns it, so its extra keeper is ().
+    _retained: W::Retained,
     denied: AtomicU8,
     #[cfg(test)]
     attempts: core::sync::atomic::AtomicUsize,
@@ -19,10 +22,12 @@ pub(super) struct AccountAllocator {
     fail_backend: core::sync::atomic::AtomicBool,
 }
 
-impl AccountAllocator {
-    pub(super) fn new(memory: Memory) -> Self {
+impl<W: Work> AccountAllocator<W> {
+    pub(super) fn new(execution: W) -> Self {
+        let retained = execution.retain_storage();
         Self {
-            memory,
+            execution,
+            _retained: retained,
             denied: AtomicU8::new(0),
             #[cfg(test)]
             attempts: core::sync::atomic::AtomicUsize::new(0),
@@ -31,7 +36,10 @@ impl AccountAllocator {
         }
     }
     pub(super) fn memory(&self) -> &Memory {
-        &self.memory
+        self.execution.memory()
+    }
+    pub(super) fn work(&self) -> &W {
+        &self.execution
     }
     pub(super) fn clear_failure(&self) {
         self.denied.store(0, Ordering::Relaxed);
@@ -45,14 +53,14 @@ impl AccountAllocator {
     }
 
     fn reserve(&self, bytes: usize) -> Result<super::Reservation<'_>, AllocError> {
-        self.memory.account.reserve(bytes).map_err(|_| {
+        self.memory().account.reserve(bytes).map_err(|_| {
             self.denied.store(1, Ordering::Relaxed);
             AllocError
         })
     }
 
-    fn work(&self, bytes: usize) -> Result<(), AllocError> {
-        self.memory.charge_work(bytes as u64).map_err(|_| {
+    fn admit(&self, bytes: usize) -> Result<(), AllocError> {
+        self.execution.charge_work(bytes as u64).map_err(|_| {
             self.denied.store(2, Ordering::Relaxed);
             AllocError
         })
@@ -71,12 +79,14 @@ impl AccountAllocator {
 
 // SAFETY: Global supplies the exact requested Layout size and alignment. We
 // forward pointers/layouts unchanged and never invalidate a block when handles
-// move or drop. Containers retain Memory (Arc) until after deallocation. Allocation
+// move or drop. Memory owns its Arc; borrowed Execution statically retains its
+// parser and has an independent account keeper, including for forgotten storage.
+// Every keeper outlives container deallocation. Allocation
 // failures leave old blocks and their charges intact. No raw storage is exposed.
-unsafe impl Allocator for AccountAllocator {
+unsafe impl<W: Work> Allocator for AccountAllocator<W> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let reservation = self.reserve(layout.size())?;
-        self.work(layout.size())?;
+        self.admit(layout.size())?;
         #[cfg(test)]
         self.backend_attempt()?;
         let block = Global.allocate(layout)?;
@@ -90,7 +100,7 @@ unsafe impl Allocator for AccountAllocator {
         unsafe {
             Global.deallocate(ptr, layout);
         }
-        self.memory.account.release(layout.size());
+        self.memory().account.release(layout.size());
     }
 
     unsafe fn grow(
@@ -102,14 +112,14 @@ unsafe impl Allocator for AccountAllocator {
         // Reserve the whole replacement before realloc: the backend may hold
         // old and new blocks simultaneously, even if it can often grow in place.
         let reservation = self.reserve(new.size())?;
-        self.work(new.size())?;
-        self.work(old.size())?;
+        self.admit(new.size())?;
+        self.admit(old.size())?;
         #[cfg(test)]
         self.backend_attempt()?;
         // SAFETY: caller supplies a live pointer and fitting old layout, and
         // new.size() >= old.size(). Global allocated the original block.
         let block = unsafe { Global.grow(ptr, old, new)? };
-        self.memory.account.release(old.size());
+        self.memory().account.release(old.size());
         reservation.commit();
         Ok(block)
     }
@@ -121,14 +131,14 @@ unsafe impl Allocator for AccountAllocator {
         new: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
         let reservation = self.reserve(new.size())?;
-        self.work(new.size())?;
-        self.work(old.size())?;
+        self.admit(new.size())?;
+        self.admit(old.size())?;
         #[cfg(test)]
         self.backend_attempt()?;
         // SAFETY: same live-pointer and layout contract as grow; Global also
         // initializes the newly added bytes required by grow_zeroed.
         let block = unsafe { Global.grow_zeroed(ptr, old, new)? };
-        self.memory.account.release(old.size());
+        self.memory().account.release(old.size());
         reservation.commit();
         Ok(block)
     }
@@ -138,7 +148,7 @@ unsafe impl Allocator for AccountAllocator {
 // Layout and lifetime contracts as 0.4. Forward to the implementation above;
 // quota admission, backend calls, rollback and release have one owner. Only
 // the two crates' distinct zero-sized AllocError types are translated.
-unsafe impl allocator_api2_hashbrown::alloc::Allocator for AccountAllocator {
+unsafe impl<W: Work> allocator_api2_hashbrown::alloc::Allocator for AccountAllocator<W> {
     fn allocate(
         &self,
         layout: Layout,

@@ -15,7 +15,7 @@ use crate::error::{Error, ErrorCode, Located, Result};
 use crate::oid;
 #[cfg(test)]
 use alloc::vec::Vec;
-use structured_asn1::memory::{Memory, OwnedString, OwnedVec};
+use structured_asn1::memory::{Memory, OwnedString, OwnedVec, Work};
 use structured_asn1::{Class, Element, Oid, Reader, Tag, universal};
 use unicode_bidi::BidiClass;
 
@@ -60,6 +60,8 @@ pub struct AttributeValue<'a> {
     contents: &'a [u8],
     der: &'a [u8],
     offset: u64,
+    // Original container depth for deferred constructed-string preparation.
+    depth: u32,
 }
 
 /// Which string encoding a value was written in, where it is a string at all.
@@ -207,6 +209,15 @@ impl<'a> Name<'a> {
     /// # Errors
     /// Returns a located resource error before unfunded comparison work.
     pub fn matches(&self, other: &Name<'_>, execution: &Memory) -> Result<bool> {
+        self.matches_with(other, execution, None)
+    }
+
+    pub(crate) fn matches_with<W: structured_asn1::memory::Work>(
+        &self,
+        other: &Name<'_>,
+        execution: &W,
+        parent: Option<&Reader<'_>>,
+    ) -> Result<bool> {
         if self.parts.len() != other.parts.len() {
             return Ok(false);
         }
@@ -220,11 +231,15 @@ impl<'a> Name<'a> {
                 return Ok(true);
             }
         }
-        Ok(self.order(other, execution)? == core::cmp::Ordering::Equal)
+        Ok(self.order_with(other, execution, parent)? == core::cmp::Ordering::Equal)
     }
 
     pub(crate) fn offset(&self) -> u64 {
         self.offset
+    }
+
+    pub(crate) fn field(&self) -> &'static str {
+        self.field
     }
 
     pub(crate) fn resource(&self, reason: structured_asn1::memory::MemoryError) -> Error {
@@ -248,6 +263,15 @@ impl<'a> Name<'a> {
     /// # Errors
     /// Returns a located resource error before unfunded preparation or comparison.
     pub fn order(&self, other: &Name<'_>, execution: &Memory) -> Result<core::cmp::Ordering> {
+        self.order_with(other, execution, None)
+    }
+
+    fn order_with<W: structured_asn1::memory::Work>(
+        &self,
+        other: &Name<'_>,
+        execution: &W,
+        parent: Option<&Reader<'_>>,
+    ) -> Result<core::cmp::Ordering> {
         let order = self.parts.len().cmp(&other.parts.len());
         if order != core::cmp::Ordering::Equal {
             return Ok(order);
@@ -258,7 +282,7 @@ impl<'a> Name<'a> {
             execution
                 .charge_work(1)
                 .map_err(|reason| Error::resource(reason, self.field, self.offset))?;
-            let order = prepared::compare_parts(left, right, execution)?;
+            let order = prepared::compare_parts_in(left, right, execution, parent)?;
             if order != core::cmp::Ordering::Equal {
                 return Ok(order);
             }
@@ -656,6 +680,60 @@ pub(crate) fn well_formed_in(
             )
         })?;
     parent.charge(work).field(field)?;
+    let value = attribute.value;
+    if value.tag.is_constructed()
+        && value.tag.class() == Class::Universal
+        && value.tag.number().is_some_and(segmented_universal_type)
+        && value.tag.number() != Some(universal::BIT_STRING)
+        && syntax_of(attribute.kind).is_some()
+    {
+        // X.690 §8.23: the BER restricted-string spelling has OCTET STRING
+        // fragments. Validate the joined logical value under the same schema
+        // rather than treating its constructed tag as unsupported text.
+        // https://www.itu.int/rec/T-REC-X.690-202102-I/en
+        debug_assert!(value.depth > 0);
+        let mut reader = parent
+            .parser()
+            .read_nested_in(
+                value.der,
+                value.offset,
+                structured_asn1::Encoding::Ber,
+                value.depth - 1,
+                parent.memory(),
+            )
+            .field(field)?;
+        let element = reader
+            .next_element()
+            .field(field)?
+            .expect("retained complete attribute value");
+        let execution = parent.execution();
+        let mut contents = execution.vector();
+        segments::walk_in(
+            &reader,
+            &element,
+            field,
+            false,
+            Some(&mut contents),
+            &execution,
+        )?;
+        parent
+            .charge((contents.len() as u64).checked_mul(2).ok_or_else(|| {
+                Error::resource(
+                    structured_asn1::memory::MemoryError::WorkExceeded,
+                    field,
+                    value.offset,
+                )
+            })?)
+            .field(field)?;
+        return Ok(well_formed(&Attribute {
+            kind: attribute.kind,
+            value: AttributeValue {
+                tag: Tag::primitive(value.tag.number().expect("universal string")),
+                contents: &contents,
+                ..value
+            },
+        }));
+    }
     Ok(well_formed(attribute))
 }
 
@@ -1924,6 +2002,7 @@ fn check_der<'a>(
                         contents: element.contents(),
                         der: element.as_bytes(),
                         offset: element.span().start,
+                        depth: parent.depth(),
                     };
                     // TeletexString is left out of this, as it is left out
                     // of the shape question a name asks: its repertoire is
@@ -2223,6 +2302,7 @@ fn read_attribute<'a>(
             contents: value.contents(),
             der: value.as_bytes(),
             offset: value.span().start,
+            depth: pair.depth(),
         },
     })
 }

@@ -1,8 +1,11 @@
 //! RFC 5280 §7.4 URI identity, with iterative linear path normalization.
 
 use crate::error::{Error, ErrorCode, Result};
-use structured_asn1::memory::{Memory, MemoryError, OwnedVec};
+#[cfg(test)]
+use structured_asn1::memory::Memory;
+use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 
+#[cfg(test)]
 const FIELD: &str = "certificateList.scope.uri";
 
 fn default_port(scheme: &[u8]) -> Option<&'static [u8]> {
@@ -16,8 +19,13 @@ fn default_port(scheme: &[u8]) -> Option<&'static [u8]> {
     }
 }
 
-fn percent_octets(raw: &[u8], execution: &Memory, at: u64) -> Result<OwnedVec<u8>> {
-    let fail = |reason| Error::resource(reason, FIELD, at);
+fn percent_octets<W: Work>(
+    raw: &[u8],
+    execution: &W,
+    at: u64,
+    field: &'static str,
+) -> Result<OwnedVec<u8, W>> {
+    let fail = |reason| Error::resource(reason, field, at);
     let mut bytes = execution.vector();
     bytes.try_reserve_exact(raw.len()).map_err(fail)?;
     let mut input = raw;
@@ -44,17 +52,33 @@ fn percent_octets(raw: &[u8], execution: &Memory, at: u64) -> Result<OwnedVec<u8
     Ok(bytes)
 }
 
-pub(super) fn matches(left: &str, right: &str, execution: &Memory, at: u64) -> Result<bool> {
-    let left = normalize(left, execution, at)?;
-    let right = normalize(right, execution, at)?;
+#[cfg(test)]
+fn matches(left: &str, right: &str, execution: &Memory, at: u64) -> Result<bool> {
+    matches_in(left, right, execution, at, FIELD)
+}
+
+pub(super) fn matches_in<W: Work>(
+    left: &str,
+    right: &str,
+    execution: &W,
+    at: u64,
+    field: &'static str,
+) -> Result<bool> {
+    let left = normalize(left, execution, at, field)?;
+    let right = normalize(right, execution, at, field)?;
     execution
         .charge_work(left.len().max(right.len()) as u64)
-        .map_err(|reason| Error::resource(reason, FIELD, at))?;
+        .map_err(|reason| Error::resource(reason, field, at))?;
     Ok(left == right)
 }
 
-fn normalize(raw: &str, execution: &Memory, at: u64) -> Result<OwnedVec<u8>> {
-    let fail = |reason| Error::resource(reason, FIELD, at);
+fn normalize<W: Work>(
+    raw: &str,
+    execution: &W,
+    at: u64,
+    field: &'static str,
+) -> Result<OwnedVec<u8, W>> {
+    let fail = |reason| Error::resource(reason, field, at);
     // Constant-many component/grammar scans plus one push/pop per path byte.
     // Admission precedes validation, percent decoding and component discovery;
     // collection methods separately admit storage and each output copy.
@@ -65,13 +89,13 @@ fn normalize(raw: &str, execution: &Memory, at: u64) -> Result<OwnedVec<u8>> {
         .ok_or_else(|| fail(MemoryError::WorkExceeded))?;
     execution.charge_work(work).map_err(fail)?;
     if !crate::general_name::is_cps_uri(raw) {
-        return Err(Error::new(ErrorCode::MalformedValue, FIELD, at));
+        return Err(Error::new(ErrorCode::MalformedValue, field, at));
     }
     // Component delimiters are reserved and never decoded by generic percent
     // normalization. Unreserved octets decode; remaining escape hex is upper.
     // RFC3987 §§5.3.2.1/5.3.2.3; RFC3986 §§2.1–2.3.
     // https://www.rfc-editor.org/rfc/rfc3987#section-5.3.2
-    let mut bytes = percent_octets(raw.as_bytes(), execution, at)?;
+    let mut bytes = percent_octets(raw.as_bytes(), execution, at, field)?;
     let colon = bytes
         .iter()
         .position(|byte| *byte == b':')
@@ -150,19 +174,24 @@ fn normalize(raw: &str, execution: &Memory, at: u64) -> Result<OwnedVec<u8>> {
     if authority && default_port.is_some() && path.is_empty() {
         output.try_push(b'/').map_err(fail)?;
     } else {
-        path_segments(path, &mut output, at)?;
+        path_segments(path, &mut output, at, field)?;
     }
     let suffix = &tail[path_end..];
     if scheme == b"ldap" && suffix.starts_with(b"?") {
-        ldap_query(&suffix[1..], &mut output, at)?;
+        ldap_query(&suffix[1..], &mut output, at, field)?;
     } else {
         output.try_extend_from_slice(suffix).map_err(fail)?;
     }
     Ok(output)
 }
 
-fn path_segments(mut input: &[u8], output: &mut OwnedVec<u8>, at: u64) -> Result<()> {
-    let fail = |reason| Error::resource(reason, FIELD, at);
+fn path_segments<W: Work>(
+    mut input: &[u8],
+    output: &mut OwnedVec<u8, W>,
+    at: u64,
+    field: &'static str,
+) -> Result<()> {
+    let fail = |reason| Error::resource(reason, field, at);
     let begin = output.len();
     // RFC3986 §5.2.4: every octet is pushed at most once and popped at most
     // once. No prefix/suffix rescanning or recursive segment processing.
@@ -201,8 +230,13 @@ fn path_segments(mut input: &[u8], output: &mut OwnedVec<u8>, at: u64) -> Result
     Ok(())
 }
 
-fn ldap_query(input: &[u8], output: &mut OwnedVec<u8>, at: u64) -> Result<()> {
-    let fail = |reason| Error::resource(reason, FIELD, at);
+fn ldap_query<W: Work>(
+    input: &[u8],
+    output: &mut OwnedVec<u8, W>,
+    at: u64,
+    field: &'static str,
+) -> Result<()> {
+    let fail = |reason| Error::resource(reason, field, at);
     let fragment = input
         .iter()
         .position(|byte| *byte == b'#')
@@ -210,7 +244,7 @@ fn ldap_query(input: &[u8], output: &mut OwnedVec<u8>, at: u64) -> Result<()> {
     let mut fields = [&[][..]; 4];
     for (index, value) in input[..fragment].split(|byte| *byte == b'?').enumerate() {
         if index == fields.len() {
-            return Err(Error::new(ErrorCode::MalformedValue, FIELD, at));
+            return Err(Error::new(ErrorCode::MalformedValue, field, at));
         }
         fields[index] = value;
     }
@@ -309,7 +343,7 @@ mod tests {
                 "http://user:@example.com/a?q=%2F#",
             ),
         ] {
-            let result = super::normalize(raw, &execution, 900).unwrap();
+            let result = super::normalize(raw, &execution, 900, super::FIELD).unwrap();
             assert_eq!(&*result, expected.as_bytes());
         }
     }
@@ -350,7 +384,8 @@ mod tests {
         // The generic pass cannot convert percent-encoded reserved delimiters
         // into structural components before URI identity comparison.
         let execution = crate::fixtures::memory();
-        let actual = super::percent_octets(b"%7e/%2f/%2e%2e?q=%3f", &execution, 0).unwrap();
+        let actual =
+            super::percent_octets(b"%7e/%2f/%2e%2e?q=%3f", &execution, 0, super::FIELD).unwrap();
         assert_eq!(&*actual, b"~/%2F/..?q=%3F");
     }
 }

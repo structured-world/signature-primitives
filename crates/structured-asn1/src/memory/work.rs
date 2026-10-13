@@ -21,6 +21,10 @@ pub trait Work: Clone + private::Sealed {
     /// supplies one owning handle per collection without allocating a new account.
     fn retain_storage(&self) -> Self::Retained;
 
+    /// Moves the existing account owner when finishing independently owned storage.
+    /// The sealed implementations preserve the account without cloning it.
+    fn into_storage_owner(self, retained: Self::Retained) -> Memory;
+
     /// The account retaining allocated capacity.
     fn memory(&self) -> &Memory;
 
@@ -60,6 +64,10 @@ impl Work for Memory {
     type Retained = ();
 
     fn retain_storage(&self) {}
+
+    fn into_storage_owner(self, (): ()) -> Memory {
+        self
+    }
 
     fn memory(&self) -> &Memory {
         self
@@ -109,6 +117,10 @@ impl Work for Execution<'_> {
 
     fn retain_storage(&self) -> Memory {
         self.memory.clone()
+    }
+
+    fn into_storage_owner(self, retained: Memory) -> Memory {
+        retained
     }
 
     fn memory(&self) -> &Memory {

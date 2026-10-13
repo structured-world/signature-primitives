@@ -255,6 +255,42 @@ pub struct OwnedVec<T, W: Work = Memory> {
     values: Vec<T, allocator::AccountAllocator<W>>,
 }
 
+impl<T, W: Work> OwnedVec<T, W> {
+    /// Finishes bounded construction as an independently owned result.
+    ///
+    /// Transfers the existing allocation and its original account without
+    /// copying elements, reallocating, changing capacity or reserving again.
+    /// Subsequent operations use that aggregate account; the parser-local
+    /// ceiling governed construction and is no longer attached. Borrows in
+    /// `T` retain their own lifetimes.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::sync::Arc;
+    /// use structured_asn1::{Parser, memory::{Memory, MemoryAccount, Work}};
+    /// let memory = Memory::new(Arc::new(MemoryAccount::new(1024, 1024)));
+    /// let result;
+    /// {
+    ///     let parser = Parser::ber(memory.clone());
+    ///     let reader = parser.read(&[], 0)?;
+    ///     let mut scratch = reader.execution().vector();
+    ///     scratch.try_push(7_u8).unwrap();
+    ///     result = scratch.into_owned();
+    /// }
+    /// assert_eq!(&*result, &[7]);
+    /// assert!(memory.used() > 0);
+    /// drop(result);
+    /// assert_eq!(memory.used(), 0);
+    /// # Ok::<(), structured_asn1::Error>(())
+    /// ```
+    #[must_use]
+    pub fn into_owned(self) -> OwnedVec<T> {
+        OwnedVec {
+            values: allocator::retain(self.values),
+        }
+    }
+}
+
 impl<T: fmt::Debug, W: Work> fmt::Debug for OwnedVec<T, W> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.values.fmt(f)

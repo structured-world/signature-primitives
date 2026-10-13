@@ -1012,6 +1012,11 @@ fn sorting_a_part_charges_the_kinds_it_compares() {
         limits,
         crate::fixtures::memory(),
     );
+    // Catalogue growth belongs to the producing allowance too. Fund reading
+    // separately before testing the unchanged current-operation sort refusal.
+    let error = parse(&parser, &der).unwrap_err();
+    assert!(error.is_resource());
+    let parser = Parser::der(crate::fixtures::memory());
     let name = parse(&parser, &der).unwrap();
     let execution = structured_asn1::memory::Memory::new(alloc::sync::Arc::new(
         structured_asn1::memory::MemoryAccount::new(1024 * 1024, 16_384),

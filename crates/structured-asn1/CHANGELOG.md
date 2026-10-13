@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.1.5...structured-asn1-v0.1.6) - 2026-10-13
+
+### Fixed
+
+- *(pkix)* bound name catalogue construction ([#45](https://github.com/structured-world/signature-primitives/pull/45))
+
 ## [0.1.5](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.1.4...structured-asn1-v0.1.5) - 2026-10-13
 
 ### Added

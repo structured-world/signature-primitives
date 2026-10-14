@@ -72,8 +72,8 @@ pub struct DeviationError {
 /// Fixed component storage cannot grow with attacker-controlled field count.
 /// Diagnostics retain their own capacity charge; callers must consider them
 /// before accepting a token/proof. Unknown or out-of-order fields and readable
-/// nonminimal INTEGERs remain faults. Identical original duplicates retain the
-/// first reading; conflicting original spellings refuse rather than selecting
+/// nonminimal INTEGERs remain faults. Numerically equal duplicates retain the
+/// first original reading; conflicting numeric values refuse rather than selecting
 /// a value. This recovery is an inspection contract, not specified by RFC3161.
 #[derive(Debug)]
 pub struct AccuracyReading<'a> {
@@ -127,26 +127,12 @@ impl<'a> AccuracyReading<'a> {
                 continue;
             };
             let index = component.index();
-            if let Some(earlier) = parts[index] {
-                if earlier.element.as_bytes().len() != field.as_bytes().len() {
-                    return Err(Error::schema(ErrorCode::DuplicateField, FIELD, at));
+            if parts[index].is_none() {
+                if last.is_some_and(|last| index < last) {
+                    record(&mut faults, Error::schema(ErrorCode::FieldOrder, FIELD, at))?;
                 }
-                execution
-                    .charge_work(field.as_bytes().len() as u64)
-                    .map_err(|reason| Error::resource(reason, FIELD, at))?;
-                if earlier.element.as_bytes() != field.as_bytes() {
-                    return Err(Error::schema(ErrorCode::DuplicateField, FIELD, at));
-                }
-                record(
-                    &mut faults,
-                    Error::schema(ErrorCode::DuplicateField, FIELD, at),
-                )?;
-                continue;
+                last = Some(last.map_or(index, |last| last.max(index)));
             }
-            if last.is_some_and(|last| index < last) {
-                record(&mut faults, Error::schema(ErrorCode::FieldOrder, FIELD, at))?;
-            }
-            last = Some(last.map_or(index, |last| last.max(index)));
             let (value, fault) = inside
                 .integer_reading(&field)
                 .map_err(|error| Error::encoding(error, FIELD))?
@@ -163,6 +149,28 @@ impl<'a> AccuracyReading<'a> {
                     &mut faults,
                     Error::schema(ErrorCode::MalformedValue, FIELD, at),
                 )?;
+            }
+            if let Some(earlier) = parts[index] {
+                // RFC3161 §2.4.2 does not specify duplicate recovery. Our
+                // inspection contract retains one numeric reading and every
+                // fault, including X.690 §8.3.2 redundant-sign violations.
+                // integer_reading already produced minimal borrowed suffixes;
+                // compare them without a bounded numeric projection/sentinel.
+                // https://www.rfc-editor.org/rfc/rfc3161#section-2.4.2
+                if earlier.value.as_bytes().len() != value.as_bytes().len() {
+                    return Err(Error::schema(ErrorCode::DuplicateField, FIELD, at));
+                }
+                execution
+                    .charge_work(value.as_bytes().len() as u64)
+                    .map_err(|reason| Error::resource(reason, FIELD, at))?;
+                if earlier.value.as_bytes() != value.as_bytes() {
+                    return Err(Error::schema(ErrorCode::DuplicateField, FIELD, at));
+                }
+                record(
+                    &mut faults,
+                    Error::schema(ErrorCode::DuplicateField, FIELD, at),
+                )?;
+                continue;
             }
             parts[index] = Some(ComponentReading {
                 element: field,

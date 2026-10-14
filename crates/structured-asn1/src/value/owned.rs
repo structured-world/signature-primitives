@@ -2,7 +2,7 @@
 
 use super::Oid;
 use crate::error::{Error, ErrorCode, Path, Result};
-use crate::memory::{Memory, MemoryError, OwnedVec};
+use crate::memory::{Memory, MemoryError, OwnedVec, Work};
 
 /// An independently owned object identifier with retained capacity accounting.
 ///
@@ -72,9 +72,20 @@ impl OwnedOid {
     /// Copies an already validated identifier into the supplied storage domain.
     /// The original encoding and source remain unchanged on resource refusal.
     pub fn from_oid(value: Oid<'_>, execution: &Memory) -> core::result::Result<Self, MemoryError> {
+        Self::from_oid_in(value, execution)
+    }
+
+    /// Retains validated arcs after funding copying/capacity in current work.
+    /// The resulting owner keeps its allocation but no borrowed parser budget.
+    pub fn from_oid_in<W: Work>(
+        value: Oid<'_>,
+        execution: &W,
+    ) -> core::result::Result<Self, MemoryError> {
         let mut bytes = execution.vector();
         bytes.try_extend_from_slice(value.as_bytes())?;
-        Ok(Self { bytes })
+        Ok(Self {
+            bytes: bytes.into_owned(),
+        })
     }
 
     /// A constant-time borrowed view of the validated immutable encoding.

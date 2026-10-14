@@ -11,7 +11,7 @@ use crate::extension::{self, Extension};
 use crate::general_name::{self, GeneralName};
 use crate::name::{self, RelativeName};
 use crate::oid;
-use structured_asn1::memory::{Memory, OwnedVec};
+use structured_asn1::memory::{Memory, OwnedVec, Work};
 use structured_asn1::{BitString, Element, Oid, Reader, Tag, universal};
 
 /// One published service or document, and where it is.
@@ -96,7 +96,8 @@ impl<'a> InfoAccess<'a> {
         };
 
         let mut inside = extension::sequence(extension, field, execution)?;
-        let mut descriptions = inside.memory().vector();
+        let work = inside.execution_in(execution);
+        let mut descriptions = work.vector();
 
         while let Some(entry) = inside.next_element().field(field)? {
             let at = |code| Error::new(code, field, entry.span().start);
@@ -134,7 +135,7 @@ impl<'a> InfoAccess<'a> {
             ));
         }
         Ok(Self {
-            descriptions,
+            descriptions: descriptions.into_owned(),
             field,
         })
     }
@@ -201,7 +202,8 @@ impl<'a> DistributionPoints<'a> {
         };
 
         let mut inside = extension::sequence(extension, field, execution)?;
-        let mut points = inside.memory().vector();
+        let work = inside.execution_in(execution);
+        let mut points = work.vector();
         while let Some(entry) = inside.next_element().field(field)? {
             points
                 .try_push(read_point(&inside, &entry, field)?)
@@ -215,7 +217,9 @@ impl<'a> DistributionPoints<'a> {
                 extension.span().start,
             ));
         }
-        Ok(Self { points })
+        Ok(Self {
+            points: points.into_owned(),
+        })
     }
 }
 

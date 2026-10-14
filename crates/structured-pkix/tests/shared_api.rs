@@ -153,9 +153,9 @@ fn constructed_generalized_time_keeps_current_storage_work_and_original_depth_li
 
 #[test]
 fn constructed_generalized_time_cannot_reset_local_work_with_a_new_execution_domain() {
-    // The original parser pays the outer header, retained reader path (17
-    // units), and first child header, but cannot copy that child. Rebinding
-    // cannot refill it or move this refusal to a synthetic joined offset.
+    // The original parser pays the outer header and retained reader path, but
+    // cannot fund the walker's first frame allocation. Rebinding cannot refill
+    // it or move the refusal to a synthetic joined-buffer offset.
     let bytes = b"\x38\x13\x04\x0820260101\x04\x07000000Z";
     let original = memory();
     let parser = Parser::new(
@@ -176,9 +176,9 @@ fn constructed_generalized_time_cannot_reset_local_work_with_a_new_execution_dom
         error.code(),
         structured_pkix::ErrorCode::Encoding(AsnError::LimitExceeded(Limit::Work))
     );
-    // Reader::charge reports the current original-source cursor after the
-    // selected child header/content; no synthetic joined-buffer offset.
-    assert_eq!(error.offset(), 413);
+    // Frame allocation now refuses before visiting any child. Its original
+    // container offset is the correct allocation location, not a joined label.
+    assert_eq!(error.offset(), 401);
     assert_eq!(execution.used(), 0);
     assert_eq!(original.work_used(), before);
 }

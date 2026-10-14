@@ -12,9 +12,9 @@ Since version 0.1.1, PKIX also checks an already supplied leaf-first certificate
 through `structured_pkix::path::validate`, returning typed static facts or
 located rejections; see the [supplied-chain contract](crates/structured-pkix/README.md#check-an-already-supplied-chain).
 
-The source version adds caller-supplied CRL, delta-CRL and OCSP evidence
+PKIX also provides caller-supplied CRL, delta-CRL and OCSP evidence
 processing, with exact signature provenance and explicit issuer, request and
-time facts. These modules are not in registry version 0.1.2; see the
+time facts, published since version 0.1.3; see the
 [revocation contract](crates/structured-pkix/README.md#crl-delta-crl-and-ocsp-evidence).
 
 ## Choose a crate
@@ -28,6 +28,12 @@ Downloads are cumulative per crate. The two crates share a coordinated release
 version and can be used separately. CMS, timestamp and XML advanced-signature
 mechanisms will be listed when their standalone contracts and integrations are
 verified.
+
+The current source adds [structured-cms](crates/structured-cms/README.md):
+provider-neutral CMS SignedData, ESS certificate binding and RFC 3161 request
+and timestamp checks with original signed bytes and retained source mappings.
+This new package is not yet published; it is not available through the registry
+installation examples below. Its runtime contains no cryptographic engine.
 
 ## Install
 

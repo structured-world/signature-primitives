@@ -6,9 +6,14 @@ changelog_update = true
 [[package]]
 name = "structured-asn1"
 version_group = "primitives"
-changelog_include = ["structured-pkix"]
+changelog_include = ["structured-pkix", "structured-cms"]
 
 [[package]]
 name = "structured-pkix"
 version_group = "primitives"
-changelog_include = ["structured-asn1"]
+changelog_include = ["structured-asn1", "structured-cms"]
+
+[[package]]
+name = "structured-cms"
+version_group = "primitives"
+changelog_include = ["structured-asn1", "structured-pkix"]

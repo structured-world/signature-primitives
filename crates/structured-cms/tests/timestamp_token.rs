@@ -1,0 +1,339 @@
+//! Timestamp envelope uniqueness and scoped attached-content decoding.
+
+use std::sync::Arc;
+use structured_asn1::memory::{Memory, MemoryAccount};
+use structured_asn1::{Parser, Span};
+use structured_cms::content_source::{ContentError, Coordinates};
+use structured_cms::timestamp::{InfoError, Token};
+use structured_cms::{ErrorCode, oid};
+
+fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
+    let mut output = vec![tag];
+    if value.len() < 128 {
+        output.push(u8::try_from(value.len()).unwrap());
+    } else {
+        output.extend([0x81, u8::try_from(value.len()).unwrap()]);
+    }
+    output.extend_from_slice(value);
+    output
+}
+fn info() -> Vec<u8> {
+    let mut fields = vec![
+        2, 1, 1, 6, 1, 43, 0x30, 9, 0x30, 3, 6, 1, 42, 4, 2, b'a', b'b', 2, 1, 7,
+    ];
+    fields.extend(tlv(0x18, b"20260101000000Z"));
+    tlv(0x30, &fields)
+}
+fn signer(signature: u8, indefinite: bool) -> Vec<u8> {
+    let fields = [
+        2, 1, 3, 0x80, 1, 7, 0x30, 3, 6, 1, 42, 0x30, 3, 6, 1, 43, 4, 1, signature,
+    ];
+    if indefinite {
+        let mut bytes = vec![0x30, 0x80];
+        bytes.extend(fields);
+        bytes.extend([0, 0]);
+        bytes
+    } else {
+        tlv(0x30, &fields)
+    }
+}
+fn message(kind: &[u8], payload: Option<&[u8]>, signers: &[u8], segmented: bool) -> Vec<u8> {
+    let mut content = tlv(6, kind);
+    if let Some(payload) = payload {
+        let bytes = if segmented {
+            let mut pieces = tlv(4, &payload[..7]);
+            pieces.extend(tlv(4, &payload[7..]));
+            tlv(0x24, &pieces)
+        } else {
+            tlv(4, payload)
+        };
+        content.extend(tlv(0xa0, &bytes));
+    }
+    let mut fields = vec![2, 1, 3, 0x31, 0];
+    fields.extend(tlv(0x30, &content));
+    fields.extend(tlv(0x31, signers));
+    let mut envelope = tlv(6, oid::SIGNED_DATA.as_bytes());
+    envelope.extend(tlv(0xa0, &tlv(0x30, &fields)));
+    tlv(0x30, &envelope)
+}
+fn memory() -> Memory {
+    Memory::new(Arc::new(MemoryAccount::new(1 << 20, 1 << 24)))
+}
+
+#[test]
+fn nested_timestamp_errors_keep_physical_provenance_after_both_joins_drop() {
+    // A carried CMS token can itself contain segmented TSTInfo. Composing
+    // maps must retain original physical positions rather than the outer join's
+    // logical positions, without keeping either temporary byte buffer alive.
+    use structured_asn1::Encoding;
+    use structured_cms::{ContentInfo, Octets, SignedData};
+    let memory = memory();
+    let cms = message(
+        oid::TST_INFO.as_bytes(),
+        Some(&info()),
+        &signer(8, false),
+        true,
+    );
+    let mut pieces = tlv(4, &cms[..30]);
+    pieces.extend(tlv(4, &cms[30..]));
+    let document = tlv(0x24, &pieces);
+    let result = {
+        let parser = Parser::ber(memory.clone());
+        let mut root = parser.read(&document, 400).unwrap();
+        let element = root.next_element().unwrap().unwrap();
+        let octets = Octets::read(&root, &element, "outer").unwrap();
+        octets
+            .with_nested_reader(&root, Encoding::Ber, "outer", |reader, map| {
+                let (envelope, parent) = ContentInfo::read(reader).unwrap();
+                let message = SignedData::read_element(&parent, envelope.content()).unwrap();
+                let token = Token::from_message(message, &parent).unwrap();
+                Ok::<_, ()>(token.with_info_mapped(&parent, map, |info, _, source| {
+                    assert_eq!(source.coordinates(), Coordinates::Logical);
+                    Err::<(), _>(info.span().start)
+                }))
+            })
+            .unwrap()
+    };
+    let ContentError::Callback {
+        source: InfoError::Callback(at),
+        context,
+    } = result.unwrap_err()
+    else {
+        panic!("callback cause must retain its source map");
+    };
+    let physical = context.project_offset(at, &memory).unwrap();
+    assert!(physical > 430);
+    assert_eq!(document[usize::try_from(physical - 400).unwrap()], 0x30);
+    assert!(memory.used() > 0);
+    drop(context);
+    assert_eq!(memory.used(), 0);
+}
+
+#[test]
+fn retained_facts_and_source_map_survive_segmented_info_scope() {
+    // Logical fact ranges require their independent physical map. Keeping both
+    // must not retain temporary joins/parser, lose fragment boundaries or let
+    // source capacity go uncharged before the final owners are dropped.
+    let memory = memory();
+    let (facts, context) = {
+        let parser = Parser::ber(memory.clone());
+        let bytes = message(
+            oid::TST_INFO.as_bytes(),
+            Some(&info()),
+            &signer(8, false),
+            true,
+        );
+        let token = Token::read(&parser, &bytes, 400).unwrap();
+        let query = parser.read(&[], 400).unwrap();
+        token
+            .with_info(&query, |info, parent, source| {
+                let facts = info.retain_facts(parent)?;
+                let context = source.try_copy_in(&parent.execution())?;
+                Ok::<_, structured_cms::Error>((facts, context))
+            })
+            .unwrap()
+    };
+    assert_eq!(context.coordinates(), Coordinates::Logical);
+    assert_eq!(facts.source_span().start, 0);
+    assert_eq!(facts.serial(), &[7]);
+    assert_eq!(facts.imprint().hashed(), b"ab");
+    assert!(
+        context
+            .project_offset(facts.source_span().start, &memory)
+            .unwrap()
+            > 400
+    );
+    let ranges = context.project_span(facts.source_span(), &memory).unwrap();
+    assert_eq!(ranges.len(), 2);
+    assert!(ranges[0].end() < ranges[1].start);
+    drop(ranges);
+    assert!(memory.used() > 0);
+    drop(facts);
+    assert!(memory.used() > 0);
+    drop(context);
+    assert_eq!(memory.used(), 0);
+}
+
+#[test]
+fn attached_timestamp_reads_whole_info_without_escaping_joined_models() {
+    // Both BER payload forms use the original parser budget and yield the same
+    // facts without asserting signature correctness or trust.
+    for segmented in [false, true] {
+        let memory = memory();
+        let parser = Parser::ber(memory.clone());
+        let bytes = message(
+            oid::TST_INFO.as_bytes(),
+            Some(&info()),
+            &signer(8, false),
+            segmented,
+        );
+        let token = Token::read(&parser, &bytes, 400).unwrap();
+        let query = parser.read(&[], 400).unwrap();
+        let seconds = token
+            .with_info(&query, |info, _, map| {
+                assert!(!info.has_faults());
+                assert_eq!(
+                    map.coordinates(),
+                    if segmented {
+                        Coordinates::Logical
+                    } else {
+                        Coordinates::Original
+                    }
+                );
+                Ok::<_, ()>(info.gen_time().start().seconds())
+            })
+            .unwrap();
+        assert_eq!(seconds, 1_767_225_600);
+        assert!(token.faults().is_empty());
+        assert_eq!(token.signer().signature().as_one(), Some(&[8][..]));
+        drop(token);
+        assert_eq!(memory.used(), 0);
+    }
+}
+
+#[test]
+fn equal_ber_signers_keep_first_encoding_and_fault_but_conflicts_refuse() {
+    // Outer BER length/indefinite spelling is not signer-value identity; an
+    // actual signature difference remains ambiguous and cannot select one TSA.
+    let parser = Parser::ber(memory());
+    let mut signers = signer(8, false);
+    signers.extend(signer(8, true));
+    let bytes = message(oid::TST_INFO.as_bytes(), Some(&info()), &signers, false);
+    let token = Token::read(&parser, &bytes, 400).unwrap();
+    assert_eq!(token.faults().len(), 1);
+    assert_eq!(token.faults()[0].code(), ErrorCode::ExtraSignature);
+    assert_eq!(token.signer().as_bytes(), signer(8, false));
+    let mut conflicting = signer(8, false);
+    conflicting.extend(signer(9, true));
+    let bytes = message(oid::TST_INFO.as_bytes(), Some(&info()), &conflicting, false);
+    assert_eq!(
+        Token::read(&parser, &bytes, 400).unwrap_err().code(),
+        ErrorCode::SignerCount
+    );
+}
+
+#[test]
+fn detached_wrong_type_and_missing_signer_cannot_be_timestamp_envelopes() {
+    // These RFC3161 envelope constraints are not left to a crypto callback.
+    let parser = Parser::ber(memory());
+    for (kind, payload, signers, expected) in [
+        (
+            oid::TST_INFO.as_bytes(),
+            None,
+            signer(8, false),
+            ErrorCode::DetachedContent,
+        ),
+        (
+            oid::DATA.as_bytes(),
+            Some(info()),
+            signer(8, false),
+            ErrorCode::UnexpectedContentType,
+        ),
+        (
+            oid::TST_INFO.as_bytes(),
+            Some(info()),
+            vec![],
+            ErrorCode::SignerCount,
+        ),
+    ] {
+        let bytes = message(kind, payload.as_deref(), &signers, false);
+        assert_eq!(
+            Token::read(&parser, &bytes, 400).unwrap_err().code(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn malformed_info_error_keeps_logical_source_mapping_after_token_drop() {
+    // Logical TSTInfo parse errors cannot leave the join as physical offsets.
+    // The attached map retains the original error's exact physical projection.
+    let memory = memory();
+    let parser = Parser::ber(memory.clone());
+    let payload = [0x30, 8, 2, 1, 1, 6, 1, 43, 2, 0];
+    let bytes = message(
+        oid::TST_INFO.as_bytes(),
+        Some(&payload),
+        &signer(8, false),
+        true,
+    );
+    let token = Token::read(&parser, &bytes, 400).unwrap();
+    let query = parser.read(&[], 400).unwrap();
+    let original = token.message().content().content().unwrap().pieces()[0].span();
+    let error = token
+        .with_info(&query, |_, _, _| Ok::<_, ()>(()))
+        .unwrap_err();
+    drop(token);
+    drop(query);
+    drop(parser);
+    let ContentError::Callback {
+        source: InfoError::Processing(error),
+        context,
+    } = error
+    else {
+        panic!("located cause/map lost")
+    };
+    assert_eq!(context.coordinates(), Coordinates::Logical);
+    let physical = context
+        .project_span(
+            Span {
+                start: 0,
+                length: 2,
+            },
+            &memory,
+        )
+        .unwrap();
+    assert_eq!(
+        &*physical,
+        &[Span {
+            start: original.start,
+            length: 2
+        }]
+    );
+    assert!(context.project_offset(error.offset(), &memory).unwrap() >= original.start);
+    drop(error);
+    drop(physical);
+    drop(context);
+    assert_eq!(memory.used(), 0);
+}
+
+#[test]
+fn misplaced_and_unreadable_counter_values_still_mark_extra_signature() {
+    // Timestamp detection is not the count of successfully decoded legal
+    // unsigned children: signed placement and empty/unreadable values count.
+    let parser = Parser::ber(memory());
+    for tag in [0xa0, 0xa1] {
+        for values in [&[][..], &[5, 0][..]] {
+            let mut attr = tlv(6, oid::COUNTERSIGNATURE.as_bytes());
+            attr.extend(tlv(0x31, values));
+            let attrs = tlv(tag, &tlv(0x30, &attr));
+            let original = signer(8, false);
+            let mut fields = Vec::new();
+            if tag == 0xa0 {
+                fields.extend_from_slice(&original[2..13]);
+                fields.extend(attrs);
+                fields.extend_from_slice(&original[13..]);
+            } else {
+                fields.extend_from_slice(&original[2..]);
+                fields.extend(attrs);
+            }
+            let bytes = message(
+                oid::TST_INFO.as_bytes(),
+                Some(&info()),
+                &tlv(0x30, &fields),
+                false,
+            );
+            let token = Token::read(&parser, &bytes, 400).unwrap();
+            assert_eq!(token.faults().len(), 1);
+            assert_eq!(token.faults()[0].code(), ErrorCode::ExtraSignature);
+            assert_eq!(
+                token.faults()[0].field(),
+                if tag == 0xa0 {
+                    "signerInfo.signedAttrs.countersignature"
+                } else {
+                    "signerInfo.unsignedAttrs.countersignature"
+                }
+            );
+        }
+    }
+}

@@ -22,6 +22,14 @@ pub(super) struct PreparedName<'a, W: Work = Memory> {
 
 impl<'a, W: Work> PreparedName<'a, W> {
     pub(super) fn of(parts: &[RelativeName<'a>], memory: &W) -> Result<Self, Error> {
+        Self::of_in(parts, memory, None)
+    }
+
+    pub(super) fn of_in(
+        parts: &[RelativeName<'a>],
+        memory: &W,
+        parent: Option<&structured_asn1::Reader<'_>>,
+    ) -> Result<Self, Error> {
         let mut attributes = memory.vector();
         let mut lengths = memory.vector();
         if parts.is_empty() {
@@ -34,7 +42,7 @@ impl<'a, W: Work> PreparedName<'a, W> {
         let fail = |reason| Error::resource(reason, "name.attribute", offset);
         memory.charge_work(parts.len() as u64).map_err(fail)?;
         for relative in parts {
-            let prepared = part(relative, memory)?;
+            let prepared = part_in(relative, memory, parent)?;
             lengths.try_push(prepared.len()).map_err(fail)?;
             for attribute in prepared {
                 attributes.try_push(attribute).map_err(fail)?;
@@ -46,10 +54,10 @@ impl<'a, W: Work> PreparedName<'a, W> {
         })
     }
 
-    pub(super) fn order(
+    pub(super) fn order<V: Work, E: Work>(
         &self,
-        other: &PreparedName<'_, W>,
-        memory: &W,
+        other: &PreparedName<'_, V>,
+        memory: &E,
     ) -> Result<Ordering, MemoryError> {
         let parts = self.lengths.len().cmp(&other.lengths.len());
         if parts != Ordering::Equal {
@@ -109,10 +117,10 @@ impl<'a, W: Work> Prepared<'a, W> {
         })
     }
 
-    pub(super) fn order(
+    pub(super) fn order<V: Work, E: Work>(
         &self,
-        other: &Prepared<'_, W>,
-        memory: &W,
+        other: &Prepared<'_, V>,
+        memory: &E,
     ) -> Result<Ordering, MemoryError> {
         let left = self.attribute.kind.as_bytes();
         let right = other.attribute.kind.as_bytes();
@@ -221,12 +229,12 @@ fn canonical<'a, W: Work>(
             debug_assert!(value.depth > 0);
             let reader = parent
                 .parser()
-                .read_nested_in(
+                .read_nested_query_in(
+                    parent,
                     value.der,
                     value.offset,
                     structured_asn1::Encoding::Ber,
                     value.depth - 1,
-                    memory.memory(),
                 )
                 .field("name.attribute")?;
             return canonical_segmented(attribute, memory, reader);
@@ -391,15 +399,16 @@ fn unicode<const FOLD_CASE: bool, W: Work>(
     Ok(Some(Canonical::Unicode(canonical)))
 }
 
-pub(super) fn part<'a, W: Work>(
+fn part_in<'a, W: Work>(
     part: &RelativeName<'a>,
     memory: &W,
+    parent: Option<&structured_asn1::Reader<'_>>,
 ) -> Result<OwnedVec<Prepared<'a, W>, W>, Error> {
     let mut attributes = memory.vector();
     let fail = |reason| Error::resource(reason, "name.attribute", part.attributes[0].value.offset);
     for &attribute in part.attributes() {
         attributes
-            .try_push(Prepared::of(attribute, memory)?)
+            .try_push(Prepared::of_in(attribute, memory, parent)?)
             .map_err(fail)?;
     }
     attributes
@@ -574,8 +583,8 @@ mod tests {
             };
             let left = read(&left_der);
             let right = read(&right_der);
-            let ours = part(&left.parts()[0], &memory).unwrap();
-            let theirs = part(&right.parts()[0], &memory).unwrap();
+            let ours = part_in(&left.parts()[0], &memory, None).unwrap();
+            let theirs = part_in(&right.parts()[0], &memory, None).unwrap();
             assert_eq!(
                 ours[0].order(&theirs[0], &memory).unwrap() == Ordering::Equal,
                 left.parts[0].matches(&right.parts[0])
@@ -623,8 +632,8 @@ mod tests {
         };
         let wide = read(&wide);
         let narrow = read(&narrow);
-        let left = part(&wide.parts()[0], &memory).unwrap();
-        let right = part(&narrow.parts()[0], &memory).unwrap();
+        let left = part_in(&wide.parts()[0], &memory, None).unwrap();
+        let right = part_in(&narrow.parts()[0], &memory, None).unwrap();
         assert_ne!(left[0].order(&right[0], &memory).unwrap(), Ordering::Equal);
     }
 }

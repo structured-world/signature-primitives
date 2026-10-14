@@ -8,7 +8,7 @@ use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extensions};
 use crate::name::{self, Name};
 use crate::{Certificate, Time, oid, time};
-use structured_asn1::memory::{Memory, OwnedVec};
+use structured_asn1::memory::{Memory, OwnedVec, Work};
 use structured_asn1::{
     BitString, Element, Encoding, Integer, Oid, Parser, Reader, Span, Tag, universal,
 };
@@ -117,12 +117,12 @@ impl<'a> ResponseBytes<'a> {
         }
         let mut nested = reader
             .parser()
-            .read_nested_in(
+            .read_nested_query_in(
+                &reader,
                 self.payload,
                 self.span.start,
                 Encoding::Der,
                 reader.depth(),
-                reader.memory(),
             )
             .field(BASIC)?;
         let root = required(&mut nested, BASIC)?;
@@ -448,7 +448,8 @@ fn read_basic<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<BasicRes
         .expect(Tag::constructed(universal::SEQUENCE))
         .field(DATA)?;
     let mut assertions_reader = data.enter(&assertions).field(SINGLE)?;
-    let mut responses = parent.memory().vector();
+    let work = parent.execution();
+    let mut responses = work.vector();
     while let Some(assertion) = assertions_reader.next_element().field(SINGLE)? {
         responses
             .try_push(read_single(&assertions_reader, &assertion)?)
@@ -466,7 +467,7 @@ fn read_basic<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<BasicRes
     let algorithm = required(&mut reader, BASIC)?;
     let algorithm = algorithm::read(&reader, &algorithm, BASIC)?;
     let signature = reader.read_bit_string().field(BASIC)?;
-    let mut certificates = parent.memory().vector();
+    let mut certificates = work.vector();
     if let Some(wrapper) = reader.next_element().field(BASIC)? {
         if wrapper.tag() != Tag::context(true, 0) {
             return Err(Error::new(
@@ -491,11 +492,11 @@ fn read_basic<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<BasicRes
     Ok(BasicResponse {
         responder,
         produced_at,
-        responses,
+        responses: responses.into_owned(),
         extensions,
         algorithm,
         signature,
-        certificates,
+        certificates: certificates.into_owned(),
         signed: signed.as_bytes(),
         bytes: element.as_bytes(),
         span: element.span(),

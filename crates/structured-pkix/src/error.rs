@@ -43,6 +43,8 @@ pub enum ErrorCode {
     MalformedValue,
     /// A value too large for the type this crate represents it in.
     ValueTooLarge,
+    /// A lazy operation was supplied a reader from a different parser session.
+    ForeignReader,
 }
 
 impl fmt::Display for ErrorCode {
@@ -63,6 +65,7 @@ impl fmt::Display for ErrorCode {
             }
             Self::MalformedValue => f.write_str("value the schema does not allow"),
             Self::ValueTooLarge => f.write_str("value too large to represent"),
+            Self::ForeignReader => f.write_str("reader belongs to a different parser session"),
         }
     }
 }

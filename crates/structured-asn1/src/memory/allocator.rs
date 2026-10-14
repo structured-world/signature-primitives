@@ -13,9 +13,30 @@ use super::{Memory, MemoryError, Work};
 pub(super) fn retain<T, W: Work>(
     values: allocator_api2::vec::Vec<T, AccountAllocator<W>>,
 ) -> allocator_api2::vec::Vec<T, AccountAllocator> {
+    transfer(values, |allocator| {
+        let memory = allocator.execution.into_storage_owner(allocator.storage);
+        AccountAllocator::new(memory)
+    })
+}
+
+/// Attaches current work to storage whose account identity was checked.
+pub(super) fn scope<T, W: Work>(
+    values: allocator_api2::vec::Vec<T, AccountAllocator>,
+    execution: &W,
+) -> allocator_api2::vec::Vec<T, AccountAllocator<W>> {
+    transfer(values, |allocator| {
+        let (execution, storage) = execution.with_storage_owner(allocator.execution);
+        AccountAllocator::with_storage(execution, storage)
+    })
+}
+
+/// Only the two private, infallible keeper-moving closures above call this.
+fn transfer<T, W: Work, V: Work>(
+    values: allocator_api2::vec::Vec<T, AccountAllocator<W>>,
+    convert: impl FnOnce(AccountAllocator<W>) -> AccountAllocator<V>,
+) -> allocator_api2::vec::Vec<T, AccountAllocator<V>> {
     let (pointer, length, capacity, allocator) = values.into_raw_parts_with_alloc();
-    let memory = allocator.execution.into_storage_owner(allocator.storage);
-    let allocator = AccountAllocator::new(memory);
+    let allocator = convert(allocator);
     // SAFETY: the consumed Vec supplied this pointer, initialized length and
     // capacity for the unchanged T. Both allocator types forward to Global
     // with identical Layout rules and the same account; no block is allocated,
@@ -41,9 +62,13 @@ pub(super) struct AccountAllocator<W: Work = Memory> {
 impl<W: Work> AccountAllocator<W> {
     pub(super) fn new(execution: W) -> Self {
         let retained = execution.retain_storage();
+        Self::with_storage(execution, retained)
+    }
+
+    fn with_storage(execution: W, storage: W::Retained) -> Self {
         Self {
             execution,
-            storage: retained,
+            storage,
             denied: AtomicU8::new(0),
             #[cfg(test)]
             attempts: core::sync::atomic::AtomicUsize::new(0),

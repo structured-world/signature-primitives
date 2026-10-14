@@ -1642,7 +1642,13 @@ fn lazy_extensions_charge_current_execution_and_retained_metadata_releases_on_dr
     assert!(original.used() > 0);
     let used_work = original.work_used();
     let current = memory(64 * 1024, 1_000_000);
-    let extension = parsed.tbs().extensions().iter().next().unwrap();
+    let extension = parsed
+        .tbs()
+        .extensions()
+        .iter(&current)
+        .next()
+        .unwrap()
+        .unwrap();
     let mut reader = extension.reader(&current).unwrap();
     assert_eq!(reader.read_integer().unwrap().as_u64(), Some(1));
     assert!(current.work_used() > 0);
@@ -1764,7 +1770,13 @@ fn issuing_distribution_point_shares_names_and_preserves_partial_indirect_scope(
         );
         let bytes = crl(&tbs(Some(1), &tlv(0xa0, &tlv(48, &ext))));
         let parsed = CertificateList::read(&parser, &bytes, 100).unwrap();
-        let extension = parsed.tbs().extensions().iter().next().unwrap();
+        let extension = parsed
+            .tbs()
+            .extensions()
+            .iter(&execution)
+            .next()
+            .unwrap()
+            .unwrap();
         let scope = IssuingDistributionPoint::read(extension, &execution).unwrap();
         assert_eq!(scope.certificate_kind(), expected_kind);
         assert_eq!(scope.is_indirect(), expected_indirect);
@@ -1791,7 +1803,13 @@ fn issuing_distribution_point_shares_names_and_preserves_partial_indirect_scope(
         let parsed = CertificateList::read(&parser, &bytes, 100).unwrap();
         assert!(
             IssuingDistributionPoint::read(
-                parsed.tbs().extensions().iter().next().unwrap(),
+                parsed
+                    .tbs()
+                    .extensions()
+                    .iter(&execution)
+                    .next()
+                    .unwrap()
+                    .unwrap(),
                 &execution
             )
             .is_err()

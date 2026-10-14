@@ -1,7 +1,7 @@
 //! Borrowed parser execution for transitive scratch work.
 
-use super::{Memory, MemoryError, OwnedVec, allocator};
-use crate::limits::Budget;
+use super::{HashWork, Memory, MemoryError, OwnedMap, OwnedVec, allocator};
+use crate::limits::BudgetView;
 
 mod private {
     pub trait Sealed {}
@@ -24,6 +24,10 @@ pub trait Work: Clone + private::Sealed {
     /// Moves the existing account owner when finishing independently owned storage.
     /// The sealed implementations preserve the account without cloning it.
     fn into_storage_owner(self, retained: Self::Retained) -> Memory;
+
+    /// Attaches current work while moving an existing same-account owner.
+    /// The caller verifies account identity before transferring storage.
+    fn with_storage_owner(&self, memory: Memory) -> (Self, Self::Retained);
 
     /// The account retaining allocated capacity.
     fn memory(&self) -> &Memory;
@@ -56,6 +60,13 @@ pub trait Work: Clone + private::Sealed {
             )),
         }
     }
+
+    /// Creates a bounded scratch map in this storage and execution domain.
+    /// Hash/probes, table growth and value movement retain the same ceilings.
+    #[must_use]
+    fn map<K: HashWork, V>(&self) -> OwnedMap<K, V, Self> {
+        OwnedMap::new(self.clone())
+    }
 }
 
 impl private::Sealed for Memory {}
@@ -67,6 +78,10 @@ impl Work for Memory {
 
     fn into_storage_owner(self, (): ()) -> Memory {
         self
+    }
+
+    fn with_storage_owner(&self, memory: Memory) -> (Self, ()) {
+        (memory, ())
     }
 
     fn memory(&self) -> &Memory {
@@ -101,11 +116,11 @@ impl Work for Memory {
 #[derive(Debug, Clone, Copy)]
 pub struct Execution<'a> {
     memory: &'a Memory,
-    budget: &'a Budget,
+    budget: BudgetView<'a>,
 }
 
 impl<'a> Execution<'a> {
-    pub(crate) fn new(memory: &'a Memory, budget: &'a Budget) -> Self {
+    pub(crate) fn new(memory: &'a Memory, budget: BudgetView<'a>) -> Self {
         Self { memory, budget }
     }
 }
@@ -121,6 +136,10 @@ impl Work for Execution<'_> {
 
     fn into_storage_owner(self, retained: Memory) -> Memory {
         retained
+    }
+
+    fn with_storage_owner(&self, memory: Memory) -> (Self, Memory) {
+        (*self, memory)
     }
 
     fn memory(&self) -> &Memory {

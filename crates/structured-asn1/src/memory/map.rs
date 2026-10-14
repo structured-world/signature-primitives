@@ -7,7 +7,7 @@ use hashbrown::hash_map::RawEntryMut;
 use hashbrown::{DefaultHashBuilder, HashMap, TryReserveError};
 
 use super::allocator::AccountAllocator;
-use super::{Memory, MemoryError};
+use super::{Memory, MemoryError, Work};
 
 /// A trusted key type's upper bound for hashing and equality work.
 ///
@@ -58,27 +58,27 @@ impl HashWork for (crate::Oid<'_>, crate::Oid<'_>) {
 /// Hashbrown supplies bucket/probing/SIMD machinery. Reservations include its
 /// control bytes and alignment, not merely the initialized entries. Hashing and
 /// actual collision comparisons are admitted before examining candidate keys.
-pub struct OwnedMap<K: HashWork, V> {
-    values: HashMap<K, V, DefaultHashBuilder, AccountAllocator>,
-    memory: Memory,
+pub struct OwnedMap<K: HashWork, V, W: Work = Memory> {
+    values: HashMap<K, V, DefaultHashBuilder, AccountAllocator<W>>,
+    execution: W,
     key_work: u64,
     maximum_capacity: usize,
 }
 
-impl<K: HashWork + fmt::Debug, V: fmt::Debug> fmt::Debug for OwnedMap<K, V> {
+impl<K: HashWork + fmt::Debug, V: fmt::Debug, W: Work> fmt::Debug for OwnedMap<K, V, W> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.values.fmt(f)
     }
 }
 
-impl<K: HashWork, V> OwnedMap<K, V> {
-    pub(super) fn new(memory: Memory) -> Self {
+impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
+    pub(super) fn new(execution: W) -> Self {
         Self {
             values: HashMap::with_hasher_in(
                 DefaultHashBuilder::default(),
-                AccountAllocator::new(memory.clone()),
+                AccountAllocator::new(execution.clone()),
             ),
-            memory,
+            execution,
             key_work: 0,
             maximum_capacity: 0,
         }
@@ -87,7 +87,7 @@ impl<K: HashWork, V> OwnedMap<K, V> {
     /// The shared account retained until the table is deallocated.
     #[must_use]
     pub fn memory(&self) -> &Memory {
-        &self.memory
+        self.execution.memory()
     }
 
     /// Number of initialized entries.
@@ -122,7 +122,7 @@ impl<K: HashWork, V> OwnedMap<K, V> {
     pub fn try_iter<'a>(
         &'a self,
         execution: &Memory,
-    ) -> Result<impl Iterator<Item = (&'a K, &'a V)> + use<'a, K, V>, MemoryError> {
+    ) -> Result<impl Iterator<Item = (&'a K, &'a V)> + use<'a, K, V, W>, MemoryError> {
         execution.charge_work(self.buckets()?)?;
         Ok(self.values.iter())
     }
@@ -170,7 +170,7 @@ impl<K: HashWork, V> OwnedMap<K, V> {
             .ok_or(MemoryError::WorkExceeded)
     }
 
-    fn hash_key(&self, key: &K, execution: &Memory) -> Result<u64, MemoryError> {
+    fn hash_key<E: Work>(&self, key: &K, execution: &E) -> Result<u64, MemoryError> {
         let work = key
             .hash_work()?
             .checked_add(self.control_work()?)
@@ -242,15 +242,19 @@ impl<K: HashWork, V> OwnedMap<K, V> {
     /// To mutate under a different domain, build a new collection there from
     /// explicitly admitted borrowed entries; retained capacity is not rebound.
     pub fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, MemoryError> {
-        let hash = self.hash_key(&key, &self.memory)?;
+        let hash = self.hash_key(&key, &self.execution)?;
         let mut failure = None;
         let entry = self.values.raw_entry_mut().from_hash(hash, |candidate| {
-            equivalent(&self.memory, &key, candidate, &mut failure)
+            equivalent(&self.execution, &key, candidate, &mut failure)
         });
         if let Some(reason) = failure {
             return Err(reason);
         }
         if let RawEntryMut::Occupied(entry) = entry {
+            let moves = (core::mem::size_of::<V>() as u64)
+                .checked_mul(2)
+                .ok_or(MemoryError::WorkExceeded)?;
+            self.execution.charge_work(moves)?;
             return Ok(Some(core::mem::replace(entry.into_mut(), value)));
         }
         let key_work = self
@@ -259,7 +263,7 @@ impl<K: HashWork, V> OwnedMap<K, V> {
             .ok_or(MemoryError::WorkExceeded)?;
         if self.values.len() == self.values.capacity() {
             // Include collision-dependent slot searches, not just key hashes.
-            self.memory().charge_work(self.rehash_work()?)?;
+            self.execution.charge_work(self.rehash_work()?)?;
             self.values.allocator().clear_failure();
             self.values.try_reserve(1).map_err(|error| match error {
                 TryReserveError::CapacityOverflow => MemoryError::CapacityOverflow,
@@ -271,7 +275,7 @@ impl<K: HashWork, V> OwnedMap<K, V> {
         // needed: the first lookup established absence and resize preserves keys.
         // raw_entry searches for a match; insert_hashed_nocheck subsequently
         // searches for an insertion slot. Admit both control traversals.
-        self.memory.charge_work(
+        self.execution.charge_work(
             self.control_work()?
                 .checked_mul(2)
                 .ok_or(MemoryError::WorkExceeded)?,
@@ -333,8 +337,8 @@ impl<K: HashWork, V> OwnedMap<K, V> {
 /// A synthetic match stops hashbrown immediately on exhaustion. The caller
 /// checks failure before exposing or mutating the matched entry, so no false
 /// equality escapes and no expensive comparison runs after a refusal.
-fn equivalent<K: HashWork>(
-    memory: &Memory,
+fn equivalent<K: HashWork, W: Work>(
+    memory: &W,
     query: &K,
     candidate: &K,
     failure: &mut Option<MemoryError>,

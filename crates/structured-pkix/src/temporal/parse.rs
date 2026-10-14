@@ -1,7 +1,7 @@
 use super::{Instant, Reading};
 use crate::error::{Error, ErrorCode, Result};
 use crate::time::{days_from_civil, days_in_month, fields_of, number, split};
-use structured_asn1::memory::MemoryError;
+use structured_asn1::memory::{MemoryError, Work};
 use structured_asn1::{Element, Reader, Tag, universal};
 
 /// Read a zoned `GeneralizedTime`, preserving leap labels and decimal precision.
@@ -35,8 +35,16 @@ pub fn read_generalized(
         // X.690 §§8.25, 8.23.3 and 8.23.6 inherit OCTET STRING construction.
         // The primitive requirement in §8.26 concerns the distinct TIME type.
         // https://www.itu.int/rec/T-REC-X.690-202102-I/en
-        let mut contents = parent.memory().vector();
-        crate::name::segments::walk(parent, element, field, false, Some(&mut contents))?;
+        let execution = parent.execution();
+        let mut contents = execution.vector();
+        crate::name::segments::walk_in(
+            parent,
+            element,
+            field,
+            false,
+            Some(&mut contents),
+            &execution,
+        )?;
         admit_label(parent, contents.len(), element.span().start, field)?;
         return generalized_label(&contents, element.span().start, field);
     }

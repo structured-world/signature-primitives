@@ -40,8 +40,10 @@ impl<'a> BasicResponse<'a> {
             Error::resource(reason, "ocspResponse.extensions", self.span.start)
         })?;
         let mut nonce = None;
-        for extension in self.extensions.iter() {
-            execution.charge_work(11).map_err(|reason| {
+        for extension in self.extensions.iter(execution) {
+            let extension = extension?;
+            // The common iterator already admitted the metadata step.
+            execution.charge_work(10).map_err(|reason| {
                 Error::resource(reason, "ocspResponse.extensions", extension.span().start)
             })?;
             if extension.kind() == oid::OCSP_NONCE {

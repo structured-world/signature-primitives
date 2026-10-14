@@ -4305,7 +4305,17 @@ fn reading_a_long_list_of_policies_costs_what_reading_it_costs() {
         alloc::vec![issued_under_many(20_000)],
         alloc::vec![issued_under(HOUSE_POLICY)],
     );
-    let parser = Parser::der(crate::fixtures::memory());
+    // Isolate the existing 40_000-unit search bound from this large fixture's
+    // separately funded policy catalogue decoding. Parser refusal has its own
+    // public regression and remains a resource error, not path truncation.
+    let parser = Parser::new(
+        structured_asn1::Encoding::Der,
+        structured_asn1::Limits {
+            max_work: 1_000_000_000_000,
+            ..structured_asn1::Limits::default()
+        },
+        crate::fixtures::memory(),
+    );
     let read = parse(&parser, &ders);
     let anchors = alloc::vec![Anchor::from_certificate(read.last().expect("the root"))];
     let pool: Vec<&Certificate<'_>> = read[1..read.len() - 1].iter().collect();
@@ -4372,7 +4382,19 @@ fn one_issuer_named_in_many_mappings_is_answered_once() {
         alloc::vec![issued_under(HOUSE_POLICY)],
         alloc::vec![issued_under(HOUSE_POLICY), mapping_one_issuer(20_000)],
     );
-    let parser = Parser::der(crate::fixtures::memory());
+    // This fixture tests the unchanged 100_000-unit path bound. Its separate
+    // 20k-entry decoding includes conservative pre-admission of hashbrown
+    // probes, catalogue allocation and copying in the producing session.
+    // Give that construction an explicit ceiling instead of relying on its
+    // former aggregate-only admission to bypass the default parser ceiling.
+    let parser = Parser::new(
+        structured_asn1::Encoding::Der,
+        structured_asn1::Limits {
+            max_work: 1_000_000_000_000,
+            ..structured_asn1::Limits::default()
+        },
+        crate::fixtures::memory(),
+    );
     let read = parse(&parser, &ders);
     let anchors = alloc::vec![Anchor::from_certificate(read.last().expect("the root"))];
     let pool: Vec<&Certificate<'_>> = read[1..read.len() - 1].iter().collect();
@@ -4555,7 +4577,17 @@ fn demanding(count: u32) -> Vec<Vec<u8>> {
 /// settles, or reaches a bound while reading them.
 fn settles_reading(count: u32, work: u64) -> Option<Truncation> {
     let ders = demanding(count);
-    let parser = Parser::der(crate::fixtures::memory());
+    // This test isolates the path processor's 40_000-unit bound. Fully fund
+    // the separate trusted wide-fixture parse now that its duplicate index
+    // and retained capacity correctly consume the producing local allowance.
+    let parser = Parser::new(
+        structured_asn1::Encoding::Der,
+        structured_asn1::Limits {
+            max_work: 1_000_000_000,
+            ..structured_asn1::Limits::default()
+        },
+        crate::fixtures::memory(),
+    );
     let read = parse(&parser, &ders);
     let anchors = alloc::vec![Anchor::from_certificate(&read[1])];
     let outcome = build(
@@ -4589,6 +4621,11 @@ fn reading_a_long_list_of_critical_extensions_costs_what_it_reads() {
     // The scheme here understands them, which is what makes the whole list
     // read: a demand nobody understood settles the answer at the first one.
     assert_eq!(settles_reading(4, 40_000), None);
+    let ders = demanding(20_000);
+    let parser = Parser::der(crate::fixtures::memory());
+    let error = Certificate::read(&parser, &ders[0], 0).unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!(error.field(), "certificate.tbsCertificate.extensions");
     assert_eq!(settles_reading(20_000, 40_000), Some(Truncation::Work));
 }
 

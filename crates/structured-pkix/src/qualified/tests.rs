@@ -62,7 +62,13 @@ fn lazy_qc_statement_keeps_its_document_depth() {
                 max_depth: 0,
                 ..structured_asn1::Limits::default()
             },
-            list.iter().next().unwrap().parser().memory().clone(),
+            list.iter(list.memory())
+                .next()
+                .unwrap()
+                .unwrap()
+                .parser()
+                .memory()
+                .clone(),
         );
         let mut statements = list.qc_statements(list.memory()).unwrap().unwrap();
         statements.parser = &limited;
@@ -548,9 +554,17 @@ fn a_retention_period_past_any_interval_is_read_as_one() {
         );
         // Understood, so a critical list carrying it does not block.
         assert_eq!(
-            list.unhandled_critical(&(), list.iter().next().unwrap().parser().memory())
-                .unwrap()
-                .len(),
+            list.unhandled_critical(
+                &(),
+                list.iter(list.memory())
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .parser()
+                    .memory()
+            )
+            .unwrap()
+            .len(),
             0
         );
     });

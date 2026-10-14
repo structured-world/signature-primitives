@@ -266,7 +266,14 @@ fn ber(bytes: &[u8], kind: Oid<'_>, parser: &Parser, execution: &Memory) -> Resu
         && super::permits(kind, logical_encoding)
     {
         let mut joined = execution.vector();
-        segments::walk(&reader, &element, FIELD, false, Some(&mut joined))?;
+        segments::walk_in(
+            &reader,
+            &element,
+            FIELD,
+            false,
+            Some(&mut joined),
+            execution,
+        )?;
         Some(joined)
     } else {
         None

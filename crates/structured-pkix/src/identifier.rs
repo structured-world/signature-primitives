@@ -10,7 +10,7 @@ use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
 use crate::general_name::{self, GeneralName};
 use structured_asn1::memory::{Memory, OwnedVec};
-use structured_asn1::{Element, Integer, Tag, universal};
+use structured_asn1::{Element, Integer, Reader, Tag, universal};
 
 /// An identifier for the key this certificate carries.
 #[derive(Debug, Clone, Copy)]
@@ -29,10 +29,32 @@ impl<'a> SubjectKeyIdentifier<'a> {
 
     /// Reads the value of a subject key identifier extension.
     pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+        Self::read_value(
+            extension,
+            extension
+                .reader(execution)
+                .field("extensions.subjectKeyIdentifier")?,
+        )
+    }
+
+    /// Reads the original value while also enforcing current query ceilings.
+    /// The returned identifier borrows the original extension, not the query.
+    pub fn read_in<'query>(extension: &Extension<'a>, query: &Reader<'query>) -> Result<Self>
+    where
+        'a: 'query,
+    {
+        Self::read_value(
+            extension,
+            extension
+                .reader_in(query)
+                .field("extensions.subjectKeyIdentifier")?,
+        )
+    }
+
+    fn read_value(extension: &Extension<'a>, mut reader: Reader<'_>) -> Result<Self> {
         const FIELD: &str = "extensions.subjectKeyIdentifier";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
-        let mut reader = extension.reader(execution).field(FIELD)?;
         let element = reader
             .next_element()
             .field(FIELD)?
@@ -46,8 +68,14 @@ impl<'a> SubjectKeyIdentifier<'a> {
             return Err(fail(ErrorCode::TrailingData));
         }
 
+        // The common reader admitted one complete primitive OCTET STRING and
+        // no trailing data. Its contents are the suffix of this original value;
+        // project that validated length without tying storage to query lifetime
+        // or implementing another tag/length decoder.
+        let original = extension.value();
+        let from = original.len() - element.contents().len();
         Ok(Self {
-            bytes: element.contents(),
+            bytes: &original[from..],
         })
     }
 }

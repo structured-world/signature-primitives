@@ -7,7 +7,7 @@
 
 use crate::error::{Error, ErrorCode, Located, Result, gate};
 use crate::extension::{self, Extension};
-use structured_asn1::memory::{Memory, OwnedVec};
+use structured_asn1::memory::{Memory, OwnedVec, Work};
 use structured_asn1::{Oid, Parser, Tag, universal};
 
 /// One policy, and whatever was written beside it.
@@ -101,8 +101,9 @@ impl<'a> CertificatePolicies<'a> {
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
         let mut inside = extension::sequence(extension, FIELD, execution)?;
-        let mut policies = inside.memory().vector();
-        let mut identifiers = inside.memory().map::<Oid<'a>, ()>();
+        let work = inside.execution_in(execution);
+        let mut policies = work.vector();
+        let mut identifiers = work.map::<Oid<'a>, ()>();
 
         while let Some(entry) = inside.next_element().field(FIELD)? {
             let at = |code| Error::new(code, FIELD, entry.span().start);
@@ -114,7 +115,7 @@ impl<'a> CertificatePolicies<'a> {
 
             let mut information = inside.enter(&entry).field(FIELD)?;
             let policy = information.read_oid().field(FIELD)?;
-            let mut qualifiers = inside.memory().vector();
+            let mut qualifiers = work.vector();
 
             if let Some(list) = information.next_element().field(FIELD)? {
                 if list.tag() != Tag::constructed(universal::SEQUENCE) {
@@ -178,7 +179,7 @@ impl<'a> CertificatePolicies<'a> {
             policies
                 .try_push(PolicyInformation {
                     policy,
-                    qualifiers,
+                    qualifiers: qualifiers.into_owned(),
                     at: entry.span().start,
                 })
                 .map_err(|reason| Error::resource(reason, FIELD, entry.span().start))?;
@@ -187,7 +188,9 @@ impl<'a> CertificatePolicies<'a> {
         if policies.is_empty() {
             return Err(fail(ErrorCode::EmptySequence));
         }
-        Ok(Self { policies })
+        Ok(Self {
+            policies: policies.into_owned(),
+        })
     }
 }
 
@@ -231,8 +234,9 @@ impl<'a> PolicyMappings<'a> {
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
         let mut inside = extension::sequence(extension, FIELD, execution)?;
-        let mut mappings = inside.memory().vector();
-        let mut seen = inside.memory().map::<(Oid<'a>, Oid<'a>), ()>();
+        let work = inside.execution_in(execution);
+        let mut mappings = work.vector();
+        let mut seen = work.map::<(Oid<'a>, Oid<'a>), ()>();
 
         while let Some(entry) = inside.next_element().field(FIELD)? {
             let at = |code| Error::new(code, FIELD, entry.span().start);
@@ -279,7 +283,9 @@ impl<'a> PolicyMappings<'a> {
         if mappings.is_empty() {
             return Err(fail(ErrorCode::EmptySequence));
         }
-        Ok(Self { mappings })
+        Ok(Self {
+            mappings: mappings.into_owned(),
+        })
     }
 }
 

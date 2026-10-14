@@ -12,6 +12,57 @@ fn parse<'a>(parser: &'a Parser, der: &'a [u8]) -> Result<Extensions<'a>> {
 }
 
 #[test]
+fn full_extension_iteration_pays_before_exposing_metadata() {
+    // The full iterator must not bypass the same metadata admission enforced
+    // by criticals/get. A noncritical value still costs one traversal step.
+    let execution = crate::fixtures::memory();
+    let parser = Parser::der(execution.clone());
+    let der = seq(&[extension(oid::BASIC_CONSTRAINTS, false, &seq(&[]))]);
+    let extensions = parse(&parser, &der).unwrap();
+    let before = execution.work_used();
+    let mut entries = extensions.iter(&execution);
+    assert_eq!(
+        execution.work_used(),
+        before,
+        "constructor performs no traversal"
+    );
+    let item = entries.next().unwrap().unwrap();
+    assert_eq!(item.kind(), oid::BASIC_CONSTRAINTS);
+    assert_eq!(execution.work_used(), before + 1);
+    assert!(entries.next().is_none());
+    assert!(entries.next().is_none());
+    assert_eq!(execution.work_used(), before + 1);
+}
+
+#[test]
+fn embedded_certificate_extension_catalogue_and_duplicate_index_share_local_work() {
+    // CMS carried certificates reuse this parser. Both the retained extension
+    // catalogue and temporary hashbrown duplicate index must pay its local
+    // ceiling before allocation/hash/probes, not only the aggregate account.
+    let der = seq(&[extension(oid::BASIC_CONSTRAINTS, false, &seq(&[]))]);
+    let execution = crate::fixtures::memory();
+    let parser = Parser::der(execution.clone());
+    let extensions = parse(&parser, &der).unwrap();
+    let full_work = u64::try_from(execution.work_used()).unwrap();
+    drop(extensions);
+    assert_eq!(execution.used(), 0);
+    let limited = crate::fixtures::memory();
+    let parser = Parser::new(
+        structured_asn1::Encoding::Der,
+        structured_asn1::Limits {
+            max_work: full_work - 1,
+            ..structured_asn1::Limits::default()
+        },
+        limited.clone(),
+    );
+    let error = parse(&parser, &der)
+        .expect_err("every extension storage/index operation belongs to the producer");
+    assert!(error.is_resource());
+    assert_eq!(error.field(), "test");
+    assert_eq!(limited.used(), 0);
+}
+
+#[test]
 fn critical_filter_refuses_unfunded_noncritical_scanning_and_then_stops() {
     // A critical-free answer still visits every metadata entry. Exhaustion
     // before the last noncritical element must not look like an empty result.
@@ -304,7 +355,9 @@ fn a_scheme_says_which_of_its_own_extensions_it_knows() {
 
     // Both are still there to be reported, whether or not anything knows them.
     assert_eq!(extensions.len(), 2);
-    assert!(extensions.iter().all(|extension| extension.is_critical()));
+    for extension in extensions.iter(parser.memory()) {
+        assert!(extension.unwrap().is_critical());
+    }
 }
 
 #[test]

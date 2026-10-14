@@ -2,8 +2,8 @@
 
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
-use structured_asn1::memory::{Memory, OwnedVec};
-use structured_asn1::{BitString, Oid};
+use structured_asn1::memory::{Memory, OwnedVec, Work};
+use structured_asn1::{BitString, Oid, Reader};
 
 /// The purposes a key may be used for, as the bits the certificate set.
 #[derive(Debug, Clone, Copy)]
@@ -158,12 +158,38 @@ impl<'a> ExtendedKeyUsage<'a> {
 
     /// Reads the value of an extended key usage extension.
     pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+        Self::read_value(
+            extension,
+            extension::sequence(extension, "extensions.extKeyUsage", execution)?,
+            execution,
+        )
+    }
+
+    /// Decodes the original value with current query and origin admission.
+    pub fn read_in<'work>(
+        extension: &Extension<'a>,
+        query: &Reader<'work>,
+    ) -> Result<ExtendedKeyUsage<'work>>
+    where
+        'a: 'work,
+    {
+        let reader = extension.reader_in(query).field("extensions.extKeyUsage")?;
+        let inside =
+            extension::sequence_reader(reader, "extensions.extKeyUsage", extension.span().start)?;
+        ExtendedKeyUsage::read_value(extension, inside, query.memory())
+    }
+
+    fn read_value(
+        extension: &Extension<'a>,
+        mut inside: Reader<'a>,
+        execution: &Memory,
+    ) -> Result<Self> {
         const FIELD: &str = "extensions.extKeyUsage";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
-        let mut inside = extension::sequence(extension, FIELD, execution)?;
-        let mut purposes = inside.memory().vector();
-        let mut seen = inside.memory().map::<Oid<'a>, ()>();
+        let work = inside.execution_in(execution);
+        let mut purposes = work.vector();
+        let mut seen = work.map::<Oid<'a>, ()>();
         while !inside.is_empty() {
             let purpose = inside.read_oid().field(FIELD)?;
             // The list is a SEQUENCE OF with no uniqueness constraint, and
@@ -187,7 +213,7 @@ impl<'a> ExtendedKeyUsage<'a> {
         }
 
         Ok(Self {
-            purposes,
+            purposes: purposes.into_owned(),
             at: extension.span().start,
         })
     }

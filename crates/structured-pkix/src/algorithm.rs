@@ -6,17 +6,24 @@
 //! including parameters it does not understand.
 
 use crate::error::{Error, ErrorCode, Located, Result};
-use structured_asn1::memory::Memory;
-use structured_asn1::{Element, Oid, Reader, Tag, universal};
+use core::num::NonZeroUsize;
+use structured_asn1::memory::{Memory, Work};
+use structured_asn1::{Element, Encoding, Oid, Parser, Reader, Tag, universal};
 
 /// An algorithm and its parameters, as the certificate wrote them.
 #[derive(Debug, Clone, Copy)]
 pub struct AlgorithmIdentifier<'a> {
     algorithm: Oid<'a>,
-    parameters: Option<&'a [u8]>,
+    // A parameter follows the OID, so its relative start is nonzero. It is
+    // the last schema component; only an indefinite root's EOC follows it.
+    parameter_start: Option<NonZeroUsize>,
     der: &'a [u8],
     offset: u64,
     field: &'static str,
+    parser: &'a Parser,
+    outer: u32,
+    encoding: Encoding,
+    indefinite: bool,
 }
 
 impl<'a> AlgorithmIdentifier<'a> {
@@ -34,10 +41,74 @@ impl<'a> AlgorithmIdentifier<'a> {
     /// another.
     #[must_use]
     pub fn parameters(self) -> Option<&'a [u8]> {
-        self.parameters
+        let start = self.parameter_start?.get();
+        let end = self.der.len() - if self.indefinite { 2 } else { 0 };
+        Some(&self.der[start..end])
+    }
+
+    /// Original algorithm element offset, without scanning or deriving a new range.
+    #[must_use]
+    pub fn offset(self) -> u64 {
+        self.offset
+    }
+
+    /// Encoding selected by the original schema reader for this identifier.
+    #[must_use]
+    pub fn encoding(self) -> Encoding {
+        self.encoding
+    }
+
+    /// Opens the whole original parameter TLV at its original reader depth.
+    ///
+    /// `parent` must belong to the original parser session; rebinding its
+    /// current execution account is allowed. A foreign session is rejected
+    /// before lookup, work or allocation. Both current funding and the original
+    /// cumulative session ceiling govern all later decoding. Absence is only
+    /// returned after admission, never as a resource fallback.
+    ///
+    /// The returned depth equals an immediate `inside.reread(parameter, encoding)`
+    /// after this identifier was read, including an IMPLICIT context envelope.
+    /// It includes the parameter header, not just its contents; no replacement
+    /// parser, canonical serialization or extra parameter nesting is introduced.
+    pub fn parameters_reader_in<'query>(
+        self,
+        parent: &Reader<'query>,
+        field: &'static str,
+    ) -> Result<Option<Reader<'query>>>
+    where
+        'a: 'query,
+    {
+        if !self.same_session(parent) {
+            return Err(Error::new(ErrorCode::ForeignReader, field, self.offset));
+        }
+        let at = self
+            .parameter_start
+            .map_or(self.offset, |start| self.offset + start.get() as u64);
+        parent
+            .execution()
+            .charge_work(1)
+            .map_err(|reason| Error::resource(reason, field, at))?;
+        let Some(parameter) = self.parameters() else {
+            return Ok(None);
+        };
+        self.parser
+            .read_nested_query_in(parent, parameter, at, self.encoding, self.outer)
+            .field(field)
+            .map(Some)
+    }
+
+    /// Whether this original identifier was produced by this parser session.
+    /// Account equality does not establish source/session identity. This O(1)
+    /// metadata predicate reads no parameters and spends no data-dependent work.
+    #[must_use]
+    pub fn same_session(self, parent: &Reader<'_>) -> bool {
+        core::ptr::eq(self.parser, parent.parser())
     }
 
     /// The whole identifier as it was encoded.
+    ///
+    /// For [`read_implicit`], this retains the original context tag, not a
+    /// synthesized SEQUENCE suitable for reparsing as an untagged identifier.
     #[must_use]
     pub fn as_bytes(self) -> &'a [u8] {
         self.der
@@ -48,7 +119,7 @@ impl<'a> AlgorithmIdentifier<'a> {
     #[must_use]
     pub fn has_no_parameters(self) -> bool {
         // A null is two bytes: the tag and a zero length.
-        self.parameters
+        self.parameters()
             .is_none_or(|parameters| parameters == [0x05, 0x00])
     }
 
@@ -128,7 +199,7 @@ impl<'a> AlgorithmIdentifier<'a> {
         if self.has_no_parameters() && other.has_no_parameters() {
             return Ok(true);
         }
-        let (Some(left), Some(right)) = (self.parameters, other.parameters) else {
+        let (Some(left), Some(right)) = (self.parameters(), other.parameters()) else {
             return Ok(false);
         };
         if left.len() != right.len() {
@@ -154,9 +225,40 @@ pub fn read<'a>(
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<AlgorithmIdentifier<'a>> {
+    read_tagged(
+        parent,
+        element,
+        Tag::constructed(universal::SEQUENCE),
+        field,
+    )
+}
+
+/// Reads an original `[number] IMPLICIT AlgorithmIdentifier` without retagging.
+///
+/// The caller supplies the tag number selected by its trusted schema. For
+/// example, `CMSAlgorithmProtection` uses `[1]` for a signature and `[2]` for a
+/// MAC (RFC6211 §2); that cardinality/choice rule belongs to the CMS schema.
+/// The same inner algorithm/parameter core as [`read`] preserves original
+/// bytes, encoding, inherited depth and current producing execution ceilings.
+/// <https://www.rfc-editor.org/rfc/rfc6211#section-2>
+pub fn read_implicit<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    number: u32,
+    field: &'static str,
+) -> Result<AlgorithmIdentifier<'a>> {
+    read_tagged(parent, element, Tag::context(true, number), field)
+}
+
+fn read_tagged<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    expected: Tag,
+    field: &'static str,
+) -> Result<AlgorithmIdentifier<'a>> {
     let fail = |code| Error::new(code, field, element.span().start);
 
-    if element.tag() != Tag::constructed(universal::SEQUENCE) {
+    if element.tag() != expected {
         return Err(fail(ErrorCode::Encoding(
             structured_asn1::ErrorCode::UnexpectedTag,
         )));
@@ -173,20 +275,31 @@ pub fn read<'a>(
     if let Some(parameter) = &parameter {
         crate::name::walk_der(&inside, parameter, field, crate::name::Strings::Checked)?;
     }
-    let parameters = parameter.map(Element::as_bytes);
-
     // The schema has room for one parameter and no more, and a second would
     // leave which of them the algorithm takes with no answer.
     if !inside.is_empty() {
         return Err(fail(ErrorCode::TrailingData));
     }
 
+    let parameter_start = match parameter {
+        None => None,
+        Some(parameter) => {
+            let start = usize::try_from(parameter.span().start - element.span().start)
+                .map_err(|_| fail(ErrorCode::ValueTooLarge))?;
+            Some(NonZeroUsize::new(start).expect("the algorithm OID precedes its parameters"))
+        }
+    };
+
     Ok(AlgorithmIdentifier {
         algorithm,
-        parameters,
+        parameter_start,
         der: element.as_bytes(),
         offset: element.span().start,
         field,
+        parser: parent.parser(),
+        outer: parent.depth(),
+        encoding: inside.encoding(),
+        indefinite: element.is_indefinite(),
     })
 }
 

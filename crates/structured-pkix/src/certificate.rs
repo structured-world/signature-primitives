@@ -436,7 +436,7 @@ fn read_tbs<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<TbsCertifi
     // certificate names nobody while reading as a supplied identity.
     if subject.is_empty()
         && !extensions
-            .get(crate::oid::SUBJECT_ALT_NAME, inside.memory())?
+            .get(crate::oid::SUBJECT_ALT_NAME, &inside.execution())?
             .is_some_and(|alternative| alternative.is_critical())
     {
         return Err(Error::new(

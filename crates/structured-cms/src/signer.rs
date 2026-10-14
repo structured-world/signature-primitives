@@ -246,10 +246,11 @@ impl<'a> SignerInfo<'a> {
         &self.faults
     }
 
-    /// Narrow parsed-field identity for duplicate recovery, not PKIX equivalence.
+    /// Parsed-field identity for duplicate recovery, not signature acceptance.
     ///
-    /// BER outer headers and octet segmentation are ignored. Issuer/serial,
-    /// opaque parameters and attribute sets retain encoded identity. Two
+    /// BER outer headers and octet segmentation are ignored. Issuer names use
+    /// the common PKIX equality rules; serial bytes, opaque parameters and
+    /// attribute sets retain encoded identity. Two
     /// present NULL parameters compare by their parsed NULL value, so its
     /// root length spelling cannot create a different reading. Signed
     /// attributes therefore remain byte-identical. RFC5754 §2 SHA-2 digest
@@ -261,17 +262,7 @@ impl<'a> SignerInfo<'a> {
         }
         // Resource refusal belongs to this duplicate query, not a prior
         // retained algorithm's location. Syntax/caller errors keep provenance.
-        let comparison_error = |source: structured_pkix::Error| {
-            if source.is_resource() {
-                Error::pkix(structured_pkix::Error::new(
-                    source.code(),
-                    "signedData.signerInfos",
-                    other.span().start,
-                ))
-            } else {
-                Error::pkix(source)
-            }
-        };
+        let comparison_error = |source| duplicate_comparison_error(source, other.span().start);
         // RFC5754 §2 requires SHA224/256/384/512 absent/NULL equivalence.
         // Written identity is checked first so identical opaque malformed
         // parameters remain inspectable, without claiming algorithm acceptance.
@@ -315,7 +306,12 @@ impl<'a> SignerInfo<'a> {
                     serial: number,
                 },
             ) => {
-                same_bytes(parent, issuer.as_bytes(), right.as_bytes(), field, at)?
+                // RFC5280 §7.1 names denote the same issuer after the shared
+                // directory-string preparation; original signedAttrs stay exact.
+                // https://www.rfc-editor.org/rfc/rfc5280#section-7.1
+                issuer
+                    .matches_in(right, parent)
+                    .map_err(|source| duplicate_comparison_error(source, at))?
                     && same_bytes(parent, serial.as_bytes(), number.as_bytes(), field, at)?
             }
             (
@@ -343,6 +339,18 @@ impl<'a> SignerInfo<'a> {
         }
         self.signature
             .same_value(&other.signature, parent, field, at)
+    }
+}
+
+fn duplicate_comparison_error(source: structured_pkix::Error, at: u64) -> Error {
+    if source.is_resource() {
+        Error::pkix(structured_pkix::Error::new(
+            source.code(),
+            "signedData.signerInfos",
+            at,
+        ))
+    } else {
+        Error::pkix(source)
     }
 }
 

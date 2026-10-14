@@ -276,3 +276,57 @@ fn duplicate_foreign_session_refuses_before_field_shortcuts_or_work() {
     assert_eq!(error.offset(), 900);
     assert_eq!((memory.used(), memory.work_used()), before);
 }
+
+#[test]
+fn duplicate_algorithm_budget_boundaries_keep_the_extra_signer_location() {
+    // Exhaust each admission boundary, including left SHA-2 validation and
+    // signature comparison: every resource refusal identifies the duplicate.
+    let first = sha2_signer(1, &[]);
+    let second = sha2_signer(1, &[5, 0x81, 0]);
+    let parser = Parser::ber(memory());
+    let mut parent = parser.read(&first, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let left = SignerInfo::read(&parent, &element).unwrap();
+    let mut parent = parser.read(&second, 900).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let right = SignerInfo::read(&parent, &element).unwrap();
+    let full = memory();
+    assert!(
+        left.same_value(&right, &parent.try_clone().unwrap().with_execution(&full))
+            .unwrap()
+    );
+    let cost = full.work_used();
+    assert!(cost > 10);
+    for available in 0..cost {
+        let current = Memory::new(Arc::new(MemoryAccount::new(262_144, available)));
+        let query = parent.try_clone().unwrap().with_execution(&current);
+        let error = left.same_value(&right, &query).unwrap_err();
+        assert!(error.is_resource());
+        assert_eq!(error.field(), "signedData.signerInfos");
+        assert_eq!(error.offset(), 900);
+        assert_eq!(current.used(), 0);
+    }
+}
+
+#[test]
+fn duplicate_parameter_syntax_error_keeps_its_original_algorithm() {
+    // Only resource refusals are relocated; a known bad parameter keeps the
+    // original algorithm field/offset rather than becoming duplicate mismatch.
+    let first = sha2_signer(1, &[0x30, 0]);
+    let second = sha2_signer(1, &[]);
+    let parser = Parser::ber(memory());
+    let mut parent = parser.read(&first, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let left = SignerInfo::read(&parent, &element).unwrap();
+    let mut parent = parser.read(&second, 900).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let right = SignerInfo::read(&parent, &element).unwrap();
+    let error = left.same_value(&right, &parent).unwrap_err();
+    assert!(!error.is_resource());
+    assert_eq!(error.field(), "signerInfo.digestAlgorithm");
+    assert_eq!(error.offset(), left.digest_algorithm().offset());
+    assert_eq!(
+        error.code(),
+        ErrorCode::Pkix(structured_pkix::ErrorCode::MalformedValue)
+    );
+}

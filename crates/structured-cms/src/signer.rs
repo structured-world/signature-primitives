@@ -259,6 +259,19 @@ impl<'a> SignerInfo<'a> {
         if !self.same_fields(other, parent)? {
             return Ok(false);
         }
+        // Resource refusal belongs to this duplicate query, not a prior
+        // retained algorithm's location. Syntax/caller errors keep provenance.
+        let comparison_error = |source: structured_pkix::Error| {
+            if source.is_resource() {
+                Error::pkix(structured_pkix::Error::new(
+                    source.code(),
+                    "signedData.signerInfos",
+                    other.span().start,
+                ))
+            } else {
+                Error::pkix(source)
+            }
+        };
         // RFC5754 §2 requires SHA224/256/384/512 absent/NULL equivalence.
         // Written identity is checked first so identical opaque malformed
         // parameters remain inspectable, without claiming algorithm acceptance.
@@ -266,17 +279,17 @@ impl<'a> SignerInfo<'a> {
         if !self
             .digest_algorithm
             .same_written_in(&other.digest_algorithm, parent)
-            .map_err(Error::pkix)?
+            .map_err(comparison_error)?
             && !self
                 .digest_algorithm
                 .digest_matches_in(&other.digest_algorithm, parent)
-                .map_err(Error::pkix)?
+                .map_err(comparison_error)?
         {
             return Ok(false);
         }
         self.signature_algorithm
             .same_written_in(&other.signature_algorithm, parent)
-            .map_err(Error::pkix)
+            .map_err(comparison_error)
     }
 
     // Shared document-field identity for encoded and selected-provider paths.

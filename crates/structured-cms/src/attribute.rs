@@ -66,6 +66,12 @@ impl<'a> Attribute<'a> {
         let execution = parent.execution();
         let mut values = execution.vector();
         let mut previous = None;
+        // RFC5652 §§5.3/12.1: attrValues is SET OF AttributeValue without SIZE.
+        // The nonempty bound belongs to SignedAttributes/UnsignedAttributes,
+        // not this inner set. Registered attribute rules impose their own
+        // cardinality in binding/counter/ESS processing; unknown syntax cannot
+        // inherit a blanket lower bound from the outer collection.
+        // https://www.rfc-editor.org/rfc/rfc5652#section-5.3
         while let Some(value) = members
             .next_element()
             .map_err(|error| Error::encoding(error, field))?

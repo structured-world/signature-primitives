@@ -54,6 +54,26 @@ fn unknown_repeated_instances_and_empty_generic_values_are_preserved() {
 }
 
 #[test]
+fn empty_inner_values_do_not_remove_the_nonempty_outer_bound() {
+    // Generic Attribute and SignedAttributes have different ASN.1 bounds;
+    // accepting an unknown empty inner set must not permit an empty outer set.
+    let parser = Parser::ber(memory());
+    let valid = [0xa0, 7, 0x30, 5, 6, 1, 42, 0x31, 0];
+    let mut parent = parser.read(&valid, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let attributes = Attributes::read(&parent, &element, Placement::Signed).unwrap();
+    assert_eq!(attributes.items().len(), 1);
+    assert!(attributes.items()[0].values().is_empty());
+    assert_eq!(attributes.signed_bytes().unwrap()[1], &valid[1..]);
+    let empty = [0xa0, 0];
+    let mut parent = parser.read(&empty, 500).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let error = Attributes::read(&parent, &element, Placement::Signed).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::EmptyAttributes);
+    assert_eq!(error.offset(), 500);
+}
+
+#[test]
 fn signed_ber_header_is_refused_while_unsigned_ber_is_readable() {
     // The schema role, not untrusted content, selects the mandatory DER boundary.
     let signed = [0xa0, 0x81, 9, 0x30, 7, 6, 1, 42, 0x31, 2, 5, 0];

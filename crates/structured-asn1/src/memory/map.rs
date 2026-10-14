@@ -119,10 +119,10 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
     /// assert_eq!(entries.next(), Some((&1, &42)));
     /// # Ok::<(), MemoryError>(())
     /// ```
-    pub fn try_iter<'a>(
+    pub fn try_iter<'a, E: Work>(
         &'a self,
-        execution: &Memory,
-    ) -> Result<impl Iterator<Item = (&'a K, &'a V)> + use<'a, K, V, W>, MemoryError> {
+        execution: &E,
+    ) -> Result<impl Iterator<Item = (&'a K, &'a V)> + 'a + use<'a, K, V, W, E>, MemoryError> {
         execution.charge_work(self.buckets()?)?;
         Ok(self.values.iter())
     }
@@ -194,7 +194,7 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
     /// assert_eq!(map.get(&2, &memory)?, None);
     /// # Ok::<(), MemoryError>(())
     /// ```
-    pub fn get(&self, key: &K, execution: &Memory) -> Result<Option<&V>, MemoryError> {
+    pub fn get(&self, key: &K, execution: &impl Work) -> Result<Option<&V>, MemoryError> {
         let hash = self.hash_key(key, execution)?;
         let mut failure = None;
         let entry = self.values.raw_entry().from_hash(hash, |candidate| {
@@ -221,7 +221,11 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
     /// assert_eq!(map.get(&1, &memory)?, Some(&7));
     /// # Ok::<(), MemoryError>(())
     /// ```
-    pub fn get_mut(&mut self, key: &K, execution: &Memory) -> Result<Option<&mut V>, MemoryError> {
+    pub fn get_mut(
+        &mut self,
+        key: &K,
+        execution: &impl Work,
+    ) -> Result<Option<&mut V>, MemoryError> {
         let hash = self.hash_key(key, execution)?;
         let mut failure = None;
         let entry = self.values.raw_entry_mut().from_hash(hash, |candidate| {
@@ -278,6 +282,7 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
         self.execution.charge_work(
             self.control_work()?
                 .checked_mul(2)
+                .and_then(|work| work.checked_add(core::mem::size_of::<(K, V)>() as u64))
                 .ok_or(MemoryError::WorkExceeded)?,
         )?;
         let RawEntryMut::Vacant(entry) = self.values.raw_entry_mut().from_hash(hash, |_| false)
@@ -305,7 +310,7 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
     /// assert_eq!(memory.used(), capacity_charge);
     /// # Ok::<(), MemoryError>(())
     /// ```
-    pub fn remove(&mut self, key: &K, execution: &Memory) -> Result<Option<V>, MemoryError> {
+    pub fn remove(&mut self, key: &K, execution: &impl Work) -> Result<Option<V>, MemoryError> {
         let hash = self.hash_key(key, execution)?;
         let mut failure = None;
         let entry = self.values.raw_entry_mut().from_hash(hash, |candidate| {

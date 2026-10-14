@@ -16,6 +16,8 @@ pub use callback::{CallbackError, CallbackResult};
 pub enum ErrorCode {
     /// The bytes are not the encoding the schema asks for here.
     Encoding(structured_asn1::ErrorCode),
+    /// The caller supplied another parser for a producing-reader operation.
+    ForeignReader,
     /// A field the schema requires is absent.
     MissingField,
     /// A field is present that this version of the structure does not have.
@@ -43,14 +45,13 @@ pub enum ErrorCode {
     MalformedValue,
     /// A value too large for the type this crate represents it in.
     ValueTooLarge,
-    /// A lazy operation was supplied a reader from a different parser session.
-    ForeignReader,
 }
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Encoding(code) => write!(f, "{code}"),
+            Self::ForeignReader => f.write_str("reader belongs to another parser"),
             Self::MissingField => f.write_str("required field absent"),
             Self::UnexpectedField => f.write_str("field not part of this version"),
             Self::TrailingData => f.write_str("bytes left over"),
@@ -65,7 +66,6 @@ impl fmt::Display for ErrorCode {
             }
             Self::MalformedValue => f.write_str("value the schema does not allow"),
             Self::ValueTooLarge => f.write_str("value too large to represent"),
-            Self::ForeignReader => f.write_str("reader belongs to a different parser session"),
         }
     }
 }

@@ -4,6 +4,10 @@ use crate::{Error, ErrorCode, Octets, Result};
 use structured_asn1::{Element, Oid, Reader, Span, Tag, universal};
 
 /// The CMS `ContentInfo` envelope (RFC 5652 §3).
+///
+/// Its explicit content field is mandatory. Detached `SignedData` instead omits
+/// the inner [`Encapsulated`] `eContent` (RFC 5652 §5.2). This type does not use
+/// the older PKCS#7 optional outer-content grammar from RFC 2315 §7.
 #[derive(Debug)]
 pub struct ContentInfo<'a> {
     kind: Oid<'a>,
@@ -52,8 +56,9 @@ impl<'a> ContentInfo<'a> {
         let kind = inside
             .read_oid()
             .map_err(|error| Error::encoding(error, "contentInfo.contentType"))?;
-        // RFC5652 §3: content [0] EXPLICIT ANY DEFINED BY contentType;
-        // exactly one value is carried inside the explicit wrapper.
+        // RFC5652 §§3/12.1 require outer content (no OPTIONAL), unlike PKCS#7
+        // RFC2315 §7. Detached CMS omits only EncapsulatedContentInfo.eContent
+        // (§5.2); it does not omit this wrapper or its single inner value.
         // https://www.rfc-editor.org/rfc/rfc5652#section-3
         let wrapper = inside
             .expect(Tag::context(true, 0))

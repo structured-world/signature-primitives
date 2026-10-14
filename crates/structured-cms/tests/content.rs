@@ -58,6 +58,26 @@ fn detached_and_attached_empty_remain_distinct() {
 }
 
 #[test]
+fn cms_outer_content_is_required_while_inner_content_can_be_detached() {
+    // RFC5652 §§3/5.2 distinguish mandatory ContentInfo.content from optional
+    // EncapsulatedContentInfo.eContent. PKCS#7's older outer OPTIONAL grammar
+    // must not silently replace the selected CMS contract.
+    let parser = Parser::ber(memory());
+    let omitted = [0x30, 3, 6, 1, 42];
+    let mut reader = parser.read(&omitted, 400).unwrap();
+    assert!(ContentInfo::read(&mut reader).is_err());
+
+    let nested_detached = [0x30, 10, 6, 1, 42, 0xa0, 5, 0x30, 3, 6, 1, 42];
+    let mut reader = parser.read(&nested_detached, 500).unwrap();
+    let (envelope, producing) = ContentInfo::read(&mut reader).unwrap();
+    let inner = Encapsulated::read(&producing, envelope.content()).unwrap();
+    assert!(inner.is_detached());
+    assert!(inner.content().is_none());
+    assert_eq!(envelope.content().as_bytes(), &nested_detached[7..]);
+    assert_eq!(envelope.content().span().start, 507);
+}
+
+#[test]
 fn encapsulated_wrapper_refuses_two_payload_values() {
     // EXPLICIT OCTET STRING is one value, even when both extra values are empty.
     let data = [0x30, 9, 6, 1, 42, 0xa0, 4, 4, 0, 4, 0];

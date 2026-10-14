@@ -8,7 +8,7 @@
 use crate::error::{Error, ErrorCode, Located, Result};
 use core::num::NonZeroUsize;
 use structured_asn1::memory::{Memory, Work};
-use structured_asn1::{Element, Encoding, Oid, Parser, Reader, Tag, universal};
+use structured_asn1::{Element, Encoding, Oid, Parser, Reader, Span, Tag, universal};
 
 /// An algorithm and its parameters, as the certificate wrote them.
 #[derive(Debug, Clone, Copy)]
@@ -25,6 +25,270 @@ pub struct AlgorithmIdentifier<'a> {
     outer: u32,
     encoding: Encoding,
     indefinite: bool,
+}
+
+// Raw schema fields are deliberately a different type from the validated
+// identifier. Only a fault-free reading can cross the crypto-facing boundary.
+#[derive(Debug, Clone, Copy)]
+struct AlgorithmFields<'a> {
+    algorithm: Oid<'a>,
+    parameter_start: Option<NonZeroUsize>,
+    null_parameter: bool,
+    der: &'a [u8],
+    offset: u64,
+    field: &'static str,
+    parser: &'a Parser,
+    outer: u32,
+    encoding: Encoding,
+    indefinite: bool,
+}
+
+/// Original algorithm fields plus a recoverable parameter-syntax diagnostic.
+///
+/// A malformed reading is inspection data, not valid BER/DER or a provider
+/// input. Only [`Self::identifier`] can expose a validated identifier. No input
+/// bytes are copied and the diagnostic itself has no allocated storage.
+///
+/// ```compile_fail
+/// use structured_pkix::algorithm::{AlgorithmIdentifier, AlgorithmReading};
+/// fn crypto_input(_: AlgorithmIdentifier<'_>) {}
+/// fn unchecked(reading: AlgorithmReading<'_>) {
+///     crypto_input(reading); // Inspection data is not a validated identifier.
+/// }
+/// ```
+#[derive(Debug)]
+pub struct AlgorithmReading<'a> {
+    fields: AlgorithmFields<'a>,
+    fault: Option<Error>,
+}
+
+impl<'a> AlgorithmReading<'a> {
+    /// The original, successfully decoded OID; not a supported capability.
+    #[must_use]
+    pub fn algorithm(&self) -> Oid<'a> {
+        self.fields.algorithm
+    }
+
+    /// The whole original parameter encoding, including any malformed form.
+    #[must_use]
+    pub fn parameters(&self) -> Option<&'a [u8]> {
+        parameter_bytes(
+            self.fields.der,
+            self.fields.parameter_start,
+            self.fields.indefinite,
+        )
+    }
+
+    /// Original parameter range in the producing reader's coordinates.
+    /// Joined content requires its caller-owned source map for physical ranges.
+    #[must_use]
+    pub fn parameters_span(&self) -> Option<Span> {
+        let start = self.fields.parameter_start?.get();
+        Some(Span {
+            start: self.fields.offset + start as u64,
+            length: self.parameters()?.len() as u64,
+        })
+    }
+
+    /// A primitive NULL whose complete parameter validation succeeded.
+    /// A malformed form, including constructed NULL, never has this fact.
+    #[must_use]
+    pub fn has_null_parameter(&self) -> bool {
+        self.fields.null_parameter
+    }
+
+    /// Whole original algorithm encoding, including an original IMPLICIT tag.
+    #[must_use]
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.fields.der
+    }
+
+    /// Original enclosing algorithm position in the producing source.
+    #[must_use]
+    pub fn offset(&self) -> u64 {
+        self.fields.offset
+    }
+
+    /// Encoding used by the producing reader, without a replacement parser.
+    #[must_use]
+    pub fn encoding(&self) -> Encoding {
+        self.fields.encoding
+    }
+
+    /// Parameter syntax fault; resource and processing failures are never here.
+    #[must_use]
+    pub fn fault(&self) -> Option<&Error> {
+        self.fault.as_ref()
+    }
+
+    /// A validated identifier only when the complete parameter check succeeded.
+    /// Selected-provider parameter/profile acceptance still belongs to that provider.
+    #[must_use]
+    pub fn identifier(&self) -> Option<AlgorithmIdentifier<'a>> {
+        if self.fault.is_some() {
+            return None;
+        }
+        Some(self.fields.identifier())
+    }
+
+    /// Paid written-value identity for inspection, not parameter acceptance.
+    /// Malformed parameters retain exact encoded identity; only two validated
+    /// primitive NULL values can ignore their BER length spelling. Absence is
+    /// never inferred as a default. Both readings require this producing parser.
+    pub fn same_written_in(&self, other: &Self, parent: &Reader<'_>) -> Result<bool> {
+        written_matches(&self.fields, &other.fields, parent, false)
+    }
+
+    fn into_identifier(self) -> Result<AlgorithmIdentifier<'a>> {
+        match self.fault {
+            Some(error) => Err(error),
+            None => Ok(self.fields.identifier()),
+        }
+    }
+}
+
+impl<'a> AlgorithmFields<'a> {
+    // Called only after the reading's fault gate. The raw type never escapes.
+    fn identifier(self) -> AlgorithmIdentifier<'a> {
+        AlgorithmIdentifier {
+            algorithm: self.algorithm,
+            parameter_start: self.parameter_start,
+            null_parameter: self.null_parameter,
+            der: self.der,
+            offset: self.offset,
+            field: self.field,
+            parser: self.parser,
+            outer: self.outer,
+            encoding: self.encoding,
+            indefinite: self.indefinite,
+        }
+    }
+}
+
+fn parameter_bytes(bytes: &[u8], start: Option<NonZeroUsize>, indefinite: bool) -> Option<&[u8]> {
+    let start = start?.get();
+    let end = bytes.len() - if indefinite { 2 } else { 0 };
+    Some(&bytes[start..end])
+}
+
+trait WrittenValue {
+    fn oid_bytes(&self) -> &[u8];
+    fn parameter_bytes(&self) -> Option<&[u8]>;
+    fn valid_null(&self) -> bool;
+    fn producer(&self) -> &Parser;
+    fn field(&self) -> &'static str;
+    fn offset(&self) -> u64;
+}
+
+impl WrittenValue for AlgorithmFields<'_> {
+    fn oid_bytes(&self) -> &[u8] {
+        self.algorithm.as_bytes()
+    }
+    fn parameter_bytes(&self) -> Option<&[u8]> {
+        parameter_bytes(self.der, self.parameter_start, self.indefinite)
+    }
+    fn valid_null(&self) -> bool {
+        self.null_parameter
+    }
+    fn producer(&self) -> &Parser {
+        self.parser
+    }
+    fn field(&self) -> &'static str {
+        self.field
+    }
+    fn offset(&self) -> u64 {
+        self.offset
+    }
+}
+
+impl WrittenValue for AlgorithmIdentifier<'_> {
+    fn oid_bytes(&self) -> &[u8] {
+        self.algorithm.as_bytes()
+    }
+    fn parameter_bytes(&self) -> Option<&[u8]> {
+        self.parameters()
+    }
+    fn valid_null(&self) -> bool {
+        self.null_parameter
+    }
+    fn producer(&self) -> &Parser {
+        self.parser
+    }
+    fn field(&self) -> &'static str {
+        self.field
+    }
+    fn offset(&self) -> u64 {
+        self.offset
+    }
+}
+
+fn require_written_parsers(
+    left: &impl WrittenValue,
+    right: &impl WrittenValue,
+    parent: &Reader<'_>,
+) -> Result<()> {
+    if !core::ptr::eq(left.producer(), parent.parser()) {
+        return Err(Error::new(
+            ErrorCode::ForeignReader,
+            left.field(),
+            left.offset(),
+        ));
+    }
+    if !core::ptr::eq(right.producer(), parent.parser()) {
+        return Err(Error::new(
+            ErrorCode::ForeignReader,
+            right.field(),
+            right.offset(),
+        ));
+    }
+    Ok(())
+}
+
+fn written_matches(
+    left: &impl WrittenValue,
+    right: &impl WrittenValue,
+    parent: &Reader<'_>,
+    defaults: bool,
+) -> Result<bool> {
+    require_written_parsers(left, right, parent)?;
+    written_values(left, right, parent, defaults)
+}
+
+fn written_values(
+    left: &impl WrittenValue,
+    right: &impl WrittenValue,
+    parent: &Reader<'_>,
+    defaults: bool,
+) -> Result<bool> {
+    let charge = |amount| {
+        parent.charge(amount).map_err(|error| {
+            Error::new(
+                ErrorCode::Encoding(error.code()),
+                right.field(),
+                right.offset(),
+            )
+        })
+    };
+    charge(1)?;
+    let kind = left.oid_bytes();
+    if kind.len() != right.oid_bytes().len() {
+        return Ok(false);
+    }
+    charge(kind.len() as u64)?;
+    if kind != right.oid_bytes() {
+        return Ok(false);
+    }
+    if defaults || (left.valid_null() && right.valid_null()) {
+        return Ok(true);
+    }
+    let (Some(first), Some(second)) = (left.parameter_bytes(), right.parameter_bytes()) else {
+        return Ok(left.parameter_bytes().is_none() && right.parameter_bytes().is_none());
+    };
+    if first.len() != second.len() {
+        return Ok(false);
+    }
+    charge(first.len() as u64)?;
+    Ok(first == second)
 }
 
 impl<'a> AlgorithmIdentifier<'a> {
@@ -61,20 +325,7 @@ impl<'a> AlgorithmIdentifier<'a> {
     }
 
     fn value_matches(self, other: &Self, parent: &Reader<'_>, digest: bool) -> Result<bool> {
-        for operand in [self, *other] {
-            if !core::ptr::eq(operand.parser, parent.parser()) {
-                return Err(Error::new(
-                    ErrorCode::ForeignReader,
-                    operand.field,
-                    operand.offset,
-                ));
-            }
-        }
-        let charge = |amount| {
-            parent.charge(amount).map_err(|error| {
-                Error::new(ErrorCode::Encoding(error.code()), other.field, other.offset)
-            })
-        };
+        require_written_parsers(&self, other, parent)?;
         let sha2 = if digest {
             let known = self.validate_digest_params(parent)?;
             other.validate_digest_params(parent)?;
@@ -82,29 +333,7 @@ impl<'a> AlgorithmIdentifier<'a> {
         } else {
             false
         };
-        charge(1)?;
-        let kind = self.algorithm.as_bytes();
-        if kind.len() != other.algorithm.as_bytes().len() {
-            return Ok(false);
-        }
-        charge(kind.len() as u64)?;
-        if self.algorithm != other.algorithm {
-            return Ok(false);
-        }
-        if sha2 {
-            return Ok(true);
-        }
-        if self.null_parameter && other.null_parameter {
-            return Ok(true);
-        }
-        let (Some(left), Some(right)) = (self.parameters(), other.parameters()) else {
-            return Ok(self.parameter_start.is_none() && other.parameter_start.is_none());
-        };
-        if left.len() != right.len() {
-            return Ok(false);
-        }
-        charge(left.len() as u64)?;
-        Ok(left == right)
+        written_values(&self, other, parent, sha2)
     }
 
     fn validate_digest_params(self, parent: &Reader<'_>) -> Result<bool> {
@@ -148,9 +377,7 @@ impl<'a> AlgorithmIdentifier<'a> {
     /// another.
     #[must_use]
     pub fn parameters(self) -> Option<&'a [u8]> {
-        let start = self.parameter_start?.get();
-        let end = self.der.len() - if self.indefinite { 2 } else { 0 };
-        Some(&self.der[start..end])
+        parameter_bytes(self.der, self.parameter_start, self.indefinite)
     }
 
     /// Original algorithm element offset, without scanning or deriving a new range.
@@ -357,42 +584,72 @@ pub fn read_implicit<'a>(
     read_tagged(parent, element, Tag::context(true, number), field)
 }
 
-fn read_tagged<'a>(
+/// Inspects a uniquely shaped identifier while retaining parameter syntax faults.
+///
+/// The OID and at most one whole parameter must be unambiguous. Invalid
+/// parameter syntax is preserved as [`AlgorithmReading::fault`], never as a
+/// validated identifier. Resource/caller refusals, missing fields and ambiguous
+/// schema remain errors. This does not authorize malformed crypto input.
+pub fn read_inspection<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    field: &'static str,
+) -> Result<AlgorithmReading<'a>> {
+    read_fields::<true>(
+        parent,
+        element,
+        Tag::constructed(universal::SEQUENCE),
+        field,
+    )
+}
+
+/// Original IMPLICIT counterpart of [`read_inspection`], sharing the same kernel.
+pub fn read_implicit_inspection<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    number: u32,
+    field: &'static str,
+) -> Result<AlgorithmReading<'a>> {
+    read_fields::<true>(parent, element, Tag::context(true, number), field)
+}
+
+fn read_fields<'a, const INSPECTION: bool>(
     parent: &Reader<'a>,
     element: &Element<'a>,
     expected: Tag,
     field: &'static str,
-) -> Result<AlgorithmIdentifier<'a>> {
+) -> Result<AlgorithmReading<'a>> {
     let fail = |code| Error::new(code, field, element.span().start);
-
     if element.tag() != expected {
         return Err(fail(ErrorCode::Encoding(
             structured_asn1::ErrorCode::UnexpectedTag,
         )));
     }
-
     let mut inside = parent.enter(element).field(field)?;
     let algorithm = inside.read_oid().field(field)?;
     let parameter = inside.next_element().field(field)?;
-
-    // What the parameter says is the registry's business: a curve, a hash,
-    // the salt length of a padding scheme. It is handed the bytes on the
-    // promise that they are the encoding the document claims, so the whole
-    // value is held to that and not only its outer header.
+    let mut fault = None;
     let mut null_parameter = false;
     if let Some(parameter) = &parameter {
-        crate::name::walk_der(&inside, parameter, field, crate::name::Strings::Checked)?;
-        if parameter.tag() == Tag::primitive(universal::NULL) {
-            inside.null(parameter).field(field)?;
-            null_parameter = true;
+        match crate::name::walk_der(&inside, parameter, field, crate::name::Strings::Checked) {
+            Ok(()) => {
+                // The shared walker validates primitive NULL contents. A
+                // constructed/nonempty NULL cannot acquire this cached fact.
+                // X.690 (02/2021) §8.8.1–2: primitive, with empty contents.
+                // https://www.itu.int/rec/T-REC-X.690-202102-I/en
+                null_parameter = parameter.tag() == Tag::primitive(universal::NULL);
+            }
+            Err(error) => {
+                if !INSPECTION || error.is_resource() || error.code() == ErrorCode::ForeignReader {
+                    return Err(error);
+                }
+                fault = Some(error);
+            }
         }
     }
-    // The schema has room for one parameter and no more, and a second would
-    // leave which of them the algorithm takes with no answer.
     if !inside.is_empty() {
         return Err(fail(ErrorCode::TrailingData));
     }
-
     let parameter_start = match parameter {
         None => None,
         Some(parameter) => {
@@ -401,19 +658,30 @@ fn read_tagged<'a>(
             Some(NonZeroUsize::new(start).expect("the algorithm OID precedes its parameters"))
         }
     };
-
-    Ok(AlgorithmIdentifier {
-        algorithm,
-        parameter_start,
-        null_parameter,
-        der: element.as_bytes(),
-        offset: element.span().start,
-        field,
-        parser: parent.parser(),
-        outer: parent.depth(),
-        encoding: inside.encoding(),
-        indefinite: element.is_indefinite(),
+    Ok(AlgorithmReading {
+        fields: AlgorithmFields {
+            algorithm,
+            parameter_start,
+            null_parameter,
+            der: element.as_bytes(),
+            offset: element.span().start,
+            field,
+            parser: parent.parser(),
+            outer: parent.depth(),
+            encoding: inside.encoding(),
+            indefinite: element.is_indefinite(),
+        },
+        fault,
     })
+}
+
+fn read_tagged<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    expected: Tag,
+    field: &'static str,
+) -> Result<AlgorithmIdentifier<'a>> {
+    read_fields::<false>(parent, element, expected, field)?.into_identifier()
 }
 
 #[cfg(test)]

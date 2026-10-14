@@ -268,6 +268,21 @@ whole-second projections.
 
 ## Deferred decoding and resource accounting
 
+Algorithm parsing remains strict through `algorithm::read` and `read_implicit`.
+For diagnostic inspection, `read_inspection` and `read_implicit_inspection`
+return an `AlgorithmReading` with original OID, parameter bytes/range and a
+located parameter-syntax fault. A malformed reading cannot expose a validated
+identifier: require `identifier()` to return `Some` before handing it to a
+cryptographic provider. Provider/profile acceptance is a further check.
+Constructed NULL is malformed under X.690 §8.8; retaining it is inspection,
+not acceptance of another BER spelling.
+
+`AlgorithmReading::same_written_in` funds comparisons through the producing
+reader. Malformed parameters keep opaque encoded identity; two validated
+primitive NULL values can ignore BER length spelling. No algorithm defaults
+are inferred. Resource/processing refusals and ambiguous schema remain errors,
+never recovered document faults or successful mismatches.
+
 `general_name::read` reads names carried by other schemas using the parent
 reader. Extension values, policy qualifiers and qualified-statement decoders
 retain the document's parsing budget, depth and original offsets.

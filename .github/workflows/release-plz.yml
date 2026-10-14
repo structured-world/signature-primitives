@@ -79,10 +79,31 @@ jobs:
         run: python3 .github/scripts/release_ci.py
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Select first-publication mode
+        id: bootstrap
+        env:
+          CMS_BOOTSTRAP_TOKEN: ${{ secrets.CMS_BOOTSTRAP_TOKEN }}
+        run: |
+          if [ -n "$CMS_BOOTSTRAP_TOKEN" ]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish approved coordinated release
         uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
         with:
           command: release
           version: 0.3.171
+          config: ${{ steps.bootstrap.outputs.enabled == 'true' && '.github/release-core.toml' || 'release-plz.toml' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the first CMS version
+        if: steps.bootstrap.outputs.enabled == 'true'
+        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
+        with:
+          command: release
+          version: 0.3.171
+          config: .github/release-cms.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CMS_BOOTSTRAP_TOKEN }}

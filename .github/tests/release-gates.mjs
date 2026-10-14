@@ -19,7 +19,7 @@ function context(value) {
 
 function evaluate(expression, values) {
   const tokens = new Lexer(expression).lex().tokens;
-  const expr = new Parser(tokens, ["github", "inputs", "needs"], []).parse();
+  const expr = new Parser(tokens, ["github", "inputs", "needs", "steps"], []).parse();
   const result = new Evaluator(expr, context(values)).evaluate();
   assert.ok(result instanceof data.BooleanData);
   return result.value;
@@ -56,6 +56,41 @@ assert.equal(publish.concurrency["cancel-in-progress"], false);
 assert.ok(workflow.on.push.branches.includes("main"));
 assert.equal(release.if, undefined);
 console.log("PASS: supported main triggers require exact-SHA CI before OIDC publication.");
+
+// A new crate cannot mint an OIDC token before its first publication. Its
+// narrowly scoped API token must never replace existing-package authentication.
+const selection = publish.steps.find(step => step.id === "bootstrap");
+const firstCms = publish.steps.find(step => step.name === "Publish the first CMS version");
+assert.ok(selection && firstCms);
+assert.ok(gate < publish.steps.indexOf(selection));
+assert.ok(publish.steps.indexOf(selection) < publish.steps.indexOf(release));
+assert.ok(publish.steps.indexOf(release) < publish.steps.indexOf(firstCms));
+assert.equal(release.env.CARGO_REGISTRY_TOKEN, undefined);
+assert.equal(firstCms.env.CARGO_REGISTRY_TOKEN, "${{ secrets.CMS_BOOTSTRAP_TOKEN }}");
+assert.equal(firstCms.with.config, ".github/release-cms.toml");
+assert.equal(firstCms.with.command, "release");
+assert.equal(firstCms.with.version, release.with.version);
+for (const enabled of ["true", "false"]) {
+  const values = { steps: { bootstrap: { outputs: { enabled } } } };
+  assert.equal(evaluate(firstCms.if, values), enabled === "true");
+  const expression = release.with.config.slice(3, -2).trim();
+  const parsed = new Parser(new Lexer(expression).lex().tokens, ["steps"], []).parse();
+  const selected = new Evaluator(parsed, context(values)).evaluate();
+  assert.equal(selected.coerceString(), enabled === "true" ? ".github/release-core.toml" : "release-plz.toml");
+}
+const modeOutput = mkdtempSync(join(tmpdir(), "primitives-publish-mode-"));
+try {
+  for (const token of ["", "synthetic-bootstrap-credential"]) {
+    const output = join(modeOutput, token ? "present" : "absent");
+    execFileSync("bash", ["-eu", "-c", selection.run], {
+      env: { ...process.env, CMS_BOOTSTRAP_TOKEN: token, GITHUB_OUTPUT: output }, stdio: "pipe",
+    });
+    assert.equal(readFileSync(output, "utf8"), `enabled=${token ? "true" : "false"}\n`);
+  }
+} finally {
+  rmSync(modeOutput, { recursive: true, force: true });
+}
+console.log("PASS: first CMS publication uses its own token only after OIDC dependencies; absent token selects normal OIDC.");
 
 // CI completion used to prepare the next release while the second package was
 // still publishing, yielding a spurious version-only 0.1.5 after 0.1.4.

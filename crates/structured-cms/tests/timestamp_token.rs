@@ -61,6 +61,34 @@ fn memory() -> Memory {
 }
 
 #[test]
+fn duplicate_sha2_signers_retain_first_encoding_and_extra_signature_fault() {
+    // RFC5754 §2 default equivalence must also reach the public TSP envelope
+    // recovery path; a readable duplicate still carries its adverse fault.
+    for kind in [4, 1, 2, 3] {
+        let make = |parameter: &[u8]| {
+            let mut fields = vec![2, 1, 3, 0x80, 1, 7];
+            let mut algorithm = vec![6, 9, 0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, kind];
+            algorithm.extend_from_slice(parameter);
+            fields.extend(tlv(0x30, &algorithm));
+            fields.extend([0x30, 3, 6, 1, 43, 4, 1, 8]);
+            tlv(0x30, &fields)
+        };
+        let first = make(&[]);
+        for parameter in [&[5, 0][..], &[5, 0x81, 0][..]] {
+            let mut signers = first.clone();
+            signers.extend(make(parameter));
+            let bytes = message(oid::TST_INFO.as_bytes(), Some(&info()), &signers, false);
+            let parser = Parser::ber(memory());
+            let token = Token::read(&parser, &bytes, 400).unwrap();
+            assert_eq!(token.signer().as_bytes(), first);
+            assert_eq!(token.signer().digest_algorithm().parameters(), None);
+            assert_eq!(token.faults().len(), 1);
+            assert_eq!(token.faults()[0].code(), ErrorCode::ExtraSignature);
+        }
+    }
+}
+
+#[test]
 fn nested_timestamp_errors_keep_physical_provenance_after_both_joins_drop() {
     // A carried CMS token can itself contain segmented TSTInfo. Composing
     // maps must retain original physical positions rather than the outer join's

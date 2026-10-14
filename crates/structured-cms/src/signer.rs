@@ -252,30 +252,44 @@ impl<'a> SignerInfo<'a> {
     /// opaque parameters and attribute sets retain encoded identity. Two
     /// present NULL parameters compare by their parsed NULL value, so its
     /// root length spelling cannot create a different reading. Signed
-    /// attributes therefore remain byte-identical. No algorithm defaults are
-    /// inferred; selected-provider comparison is a separate operation.
+    /// attributes therefore remain byte-identical. RFC5754 §2 SHA-2 digest
+    /// absence/NULL defaults share the PKIX comparer; other algorithm defaults
+    /// and selected-provider acceptance remain separate operations.
     pub fn same_value(&self, other: &SignerInfo<'_>, parent: &Reader<'_>) -> Result<bool> {
         if !self.same_fields(other, parent)? {
             return Ok(false);
         }
-        let field = "signedData.signerInfos";
-        let at = other.span().start;
-        for (left, right) in [
-            (self.digest_algorithm, other.digest_algorithm),
-            (self.signature_algorithm, other.signature_algorithm),
-        ] {
-            if !same_bytes(
-                parent,
-                left.algorithm().as_bytes(),
-                right.algorithm().as_bytes(),
-                field,
-                at,
-            )? || !same_parameters(parent, left, right, field, at)?
-            {
-                return Ok(false);
+        // Resource refusal belongs to this duplicate query, not a prior
+        // retained algorithm's location. Syntax/caller errors keep provenance.
+        let comparison_error = |source: structured_pkix::Error| {
+            if source.is_resource() {
+                Error::pkix(structured_pkix::Error::new(
+                    source.code(),
+                    "signedData.signerInfos",
+                    other.span().start,
+                ))
+            } else {
+                Error::pkix(source)
             }
+        };
+        // RFC5754 §2 requires SHA224/256/384/512 absent/NULL equivalence.
+        // Written identity is checked first so identical opaque malformed
+        // parameters remain inspectable, without claiming algorithm acceptance.
+        // https://www.rfc-editor.org/rfc/rfc5754#section-2
+        if !self
+            .digest_algorithm
+            .same_written_in(&other.digest_algorithm, parent)
+            .map_err(comparison_error)?
+            && !self
+                .digest_algorithm
+                .digest_matches_in(&other.digest_algorithm, parent)
+                .map_err(comparison_error)?
+        {
+            return Ok(false);
         }
-        Ok(true)
+        self.signature_algorithm
+            .same_written_in(&other.signature_algorithm, parent)
+            .map_err(comparison_error)
     }
 
     // Shared document-field identity for encoded and selected-provider paths.
@@ -284,6 +298,8 @@ impl<'a> SignerInfo<'a> {
     pub(crate) fn same_fields(&self, other: &SignerInfo<'_>, parent: &Reader<'_>) -> Result<bool> {
         let field = "signedData.signerInfos";
         let at = other.span().start;
+        self.require_session(parent, field)?;
+        other.require_session(parent, field)?;
         parent
             .execution()
             .charge_work(1)
@@ -328,57 +344,6 @@ impl<'a> SignerInfo<'a> {
         self.signature
             .same_value(&other.signature, parent, field, at)
     }
-}
-
-fn same_parameters(
-    parent: &Reader<'_>,
-    left: AlgorithmIdentifier<'_>,
-    right: AlgorithmIdentifier<'_>,
-    field: &'static str,
-    at: u64,
-) -> Result<bool> {
-    let execution = parent.execution();
-    execution
-        .charge_work(1)
-        .map_err(|reason| Error::resource(reason, field, at))?;
-    let (Some(left_bytes), Some(right_bytes)) = (left.parameters(), right.parameters()) else {
-        return Ok(left.parameters().is_none() && right.parameters().is_none());
-    };
-    if same_bytes(parent, left_bytes, right_bytes, field, at)? {
-        return Ok(true);
-    }
-    // X.690 §8.1.3.3 permits different BER length spellings for the same
-    // NULL value. Use the shared primitive reader after checking its tag,
-    // rather than a byte grammar or a replacement parser. This neither
-    // equates absent with NULL nor normalizes unknown opaque parameters or
-    // algorithm-specific defaults; those remain
-    // the selected provider's semantic comparison responsibility.
-    // https://www.itu.int/rec/T-REC-X.690-202102-I/en
-    let mut left_reader = left
-        .parameters_reader_in(parent, field)
-        .map_err(Error::pkix)?
-        .ok_or_else(|| Error::schema(ErrorCode::MissingField, field, left.offset()))?;
-    let mut right_reader = right
-        .parameters_reader_in(parent, field)
-        .map_err(Error::pkix)?
-        .ok_or_else(|| Error::schema(ErrorCode::MissingField, field, right.offset()))?;
-    let left_value = required(&mut left_reader, field)?;
-    let right_value = required(&mut right_reader, field)?;
-    execution
-        .charge_work(1)
-        .map_err(|reason| Error::resource(reason, field, at))?;
-    if left_value.tag() != Tag::primitive(universal::NULL)
-        || right_value.tag() != Tag::primitive(universal::NULL)
-    {
-        return Ok(false);
-    }
-    left_reader
-        .null(&left_value)
-        .map_err(|error| Error::encoding(error, field))?;
-    right_reader
-        .null(&right_value)
-        .map_err(|error| Error::encoding(error, field))?;
-    Ok(true)
 }
 
 pub(crate) fn required<'a>(reader: &mut Reader<'a>, field: &'static str) -> Result<Element<'a>> {

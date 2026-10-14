@@ -205,3 +205,128 @@ fn duplicate_primitive_parameters_ignore_ber_length_but_do_not_invent_defaults()
         );
     }
 }
+
+fn sha2_signer(kind: u8, parameter: &[u8]) -> Vec<u8> {
+    let mut fields = vec![2, 1, 3, 0x80, 1, 7];
+    let mut algorithm = vec![6, 9, 0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, kind];
+    algorithm.extend_from_slice(parameter);
+    fields.extend(tlv(0x30, &algorithm));
+    fields.extend([0xa0, 8, 0x30, 6, 6, 2, 42, 9, 0x31, 0]);
+    fields.extend([0x30, 3, 6, 1, 43, 4, 1, 8]);
+    tlv(0x30, &fields)
+}
+
+#[test]
+fn duplicate_sha2_defaults_preserve_original_signed_octets() {
+    // RFC5754 §2 gives these four digest identifiers the same absent/NULL
+    // meaning; duplicate recovery must retain the first exact signedAttrs.
+    for kind in [4, 1, 2, 3] {
+        let first = sha2_signer(kind, &[]);
+        let parser = Parser::ber(memory());
+        let mut parent = parser.read(&first, 400).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let left = SignerInfo::read(&parent, &element).unwrap();
+        for parameter in [&[5, 0][..], &[5, 0x81, 0][..]] {
+            let encoded = sha2_signer(kind, parameter);
+            let mut right_parent = parser.read(&encoded, 900).unwrap();
+            let element = right_parent.next_element().unwrap().unwrap();
+            let right = SignerInfo::read(&right_parent, &element).unwrap();
+            assert!(left.same_value(&right, &right_parent).unwrap());
+            assert_eq!(left.as_bytes(), first);
+            assert_eq!(left.digest_algorithm().parameters(), None);
+            assert_eq!(right.digest_algorithm().parameters(), Some(parameter));
+        }
+    }
+}
+
+#[test]
+fn identical_opaque_invalid_digest_parameters_remain_inspectable() {
+    // Identity inspection is not algorithm acceptance: identical malformed
+    // known parameters must not erase the readable duplicate or become defaults.
+    let encoded = sha2_signer(1, &[0x30, 0]);
+    let parser = Parser::ber(memory());
+    let mut parent = parser.read(&encoded, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let value = SignerInfo::read(&parent, &element).unwrap();
+    assert!(value.same_value(&value, &parent).unwrap());
+    assert_eq!(value.digest_algorithm().parameters(), Some(&[0x30, 0][..]));
+}
+
+#[test]
+fn duplicate_foreign_session_refuses_before_field_shortcuts_or_work() {
+    // A version mismatch must not hide foreign-parser misuse or consume query
+    // work before both original sessions have been checked.
+    let left_bytes = signer(&[0x80, 1, 7], &[4, 1, 8], 3);
+    let right_bytes = signer(&[0x80, 1, 7], &[4, 1, 8], 1);
+    let memory = memory();
+    let left_parser = Parser::ber(memory.clone());
+    let right_parser = Parser::ber(memory.clone());
+    let mut left_parent = left_parser.read(&left_bytes, 400).unwrap();
+    let left_element = left_parent.next_element().unwrap().unwrap();
+    let left = SignerInfo::read(&left_parent, &left_element).unwrap();
+    let mut right_parent = right_parser.read(&right_bytes, 900).unwrap();
+    let right_element = right_parent.next_element().unwrap().unwrap();
+    let right = SignerInfo::read(&right_parent, &right_element).unwrap();
+    let before = (memory.used(), memory.work_used());
+    let error = left.same_value(&right, &left_parent).unwrap_err();
+    assert_eq!(
+        error.code(),
+        ErrorCode::Pkix(structured_pkix::ErrorCode::ForeignReader)
+    );
+    assert_eq!(error.offset(), 900);
+    assert_eq!((memory.used(), memory.work_used()), before);
+}
+
+#[test]
+fn duplicate_algorithm_budget_boundaries_keep_the_extra_signer_location() {
+    // Exhaust each admission boundary, including left SHA-2 validation and
+    // signature comparison: every resource refusal identifies the duplicate.
+    let first = sha2_signer(1, &[]);
+    let second = sha2_signer(1, &[5, 0x81, 0]);
+    let parser = Parser::ber(memory());
+    let mut parent = parser.read(&first, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let left = SignerInfo::read(&parent, &element).unwrap();
+    let mut parent = parser.read(&second, 900).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let right = SignerInfo::read(&parent, &element).unwrap();
+    let full = memory();
+    assert!(
+        left.same_value(&right, &parent.try_clone().unwrap().with_execution(&full))
+            .unwrap()
+    );
+    let cost = full.work_used();
+    assert!(cost > 10);
+    for available in 0..cost {
+        let current = Memory::new(Arc::new(MemoryAccount::new(262_144, available)));
+        let query = parent.try_clone().unwrap().with_execution(&current);
+        let error = left.same_value(&right, &query).unwrap_err();
+        assert!(error.is_resource());
+        assert_eq!(error.field(), "signedData.signerInfos");
+        assert_eq!(error.offset(), 900);
+        assert_eq!(current.used(), 0);
+    }
+}
+
+#[test]
+fn duplicate_parameter_syntax_error_keeps_its_original_algorithm() {
+    // Only resource refusals are relocated; a known bad parameter keeps the
+    // original algorithm field/offset rather than becoming duplicate mismatch.
+    let first = sha2_signer(1, &[0x30, 0]);
+    let second = sha2_signer(1, &[]);
+    let parser = Parser::ber(memory());
+    let mut parent = parser.read(&first, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let left = SignerInfo::read(&parent, &element).unwrap();
+    let mut parent = parser.read(&second, 900).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let right = SignerInfo::read(&parent, &element).unwrap();
+    let error = left.same_value(&right, &parent).unwrap_err();
+    assert!(!error.is_resource());
+    assert_eq!(error.field(), "signerInfo.digestAlgorithm");
+    assert_eq!(error.offset(), left.digest_algorithm().offset());
+    assert_eq!(
+        error.code(),
+        ErrorCode::Pkix(structured_pkix::ErrorCode::MalformedValue)
+    );
+}

@@ -8,6 +8,10 @@ performs no implicit I/O and includes no cryptographic engine.
 The implemented surface covers SignedData rather than encrypted CMS content
 types. Use the coordinated ASN.1/PKIX/CMS API family:
 
+The registry snippets below target the first coordinated 0.2 release and resolve
+only after that version is published. A source checkout alone does not establish
+registry availability; see the [current registry version](https://crates.io/crates/structured-cms).
+
 ```toml
 [dependencies]
 structured-asn1 = "0.2"

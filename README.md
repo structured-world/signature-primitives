@@ -34,6 +34,14 @@ XAdES remains a separate planned mechanism, not a capability of these crates.
 
 ## Install
 
+The snippets below target the coordinated **0.2 API family** and resolve only
+after that release is available on crates.io; the badges above show registry
+availability, not the development manifest. Before its publication, use the
+versioned [ASN.1](https://docs.rs/structured-asn1/0.1.6) and
+[PKIX](https://docs.rs/structured-pkix/0.1.6) guides for the existing 0.1 family.
+CMS starts with the coordinated 0.2 release; do not mix its parser/resource types
+with the 0.1 libraries.
+
 For ASN.1 parsing:
 
 ```toml
@@ -110,17 +118,22 @@ resource and time contracts.
 
 ## Releases
 
-`structured-asn1` and `structured-pkix` use one release-plz version group.
+`structured-asn1`, `structured-pkix` and `structured-cms` use one release-plz
+version group.
 Release-plz prepares a version/changelog PR using the organization release bot;
 merging that PR publishes the packages after CI succeeds on its exact main commit.
 Dependencies are published before their dependants. Git tags and release notes
-retain each package's name, even though both packages share their version.
+retain each package's name, even though all three packages share their version.
 
 Registry publishing uses OIDC, bound to this repository, `release-plz.yml` and
 the `release` environment. No long-lived crates.io token is stored in GitHub.
-The workflow's manual run verifies token exchange without uploading
-a new version. First-time publication of a new package still requires an owner
-to bootstrap it and register its trusted publisher on crates.io.
+Manual runs enforce the same exact-SHA CI and release-PR gates; they do not
+force an upload or prove token exchange when nothing requires publication.
+First-time publication requires a limited API token because crates.io cannot
+register an unpublished crate's trusted publisher. During CMS bootstrap,
+existing packages keep OIDC and only the first CMS version uses the temporary
+token. After registration, remove that token and its environment secret so the
+full workspace uses OIDC.
 
 ## Dependency updates
 

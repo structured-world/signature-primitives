@@ -391,13 +391,20 @@ impl<'a> Fields<'a> {
             }
             Slot::Imprint => self.imprint = Some(MessageImprint::read(parent, element)?),
             Slot::Serial => {
+                let serial = IntegerField::read(parent, element, "tstInfo.serialNumber", faults)?;
+                // RFC3161 §2.4.2 places serial after messageImprint. Before
+                // that anchor, value 1 also admits a repeated version with
+                // serial absent. Recovery must not select a competing reading.
+                // https://www.rfc-editor.org/rfc/rfc3161#section-2.4.2
+                if self.imprint.is_none() && serial.value.as_u64() == Some(1) {
+                    return Err(Error::schema(
+                        ErrorCode::DuplicateField,
+                        FIELD,
+                        element.span().start,
+                    ));
+                }
                 self.serial_displaced = self.imprint.is_none() || self.gen_time.is_some();
-                self.serial = Some(IntegerField::read(
-                    parent,
-                    element,
-                    "tstInfo.serialNumber",
-                    faults,
-                )?);
+                self.serial = Some(serial);
             }
             Slot::GenTime => {
                 self.gen_time = Some(

@@ -45,6 +45,25 @@ fn time() -> Vec<u8> {
 }
 
 #[test]
+fn early_serial_cannot_be_a_repeated_version() {
+    // Before policy/imprint, INTEGER 1 can also be a repeated version with
+    // serial missing. Inspection must refuse rather than invent serial 1.
+    let mut body = vec![2, 1, 1, 2, 1, 1, 6, 1, 43];
+    body.extend(imprint(false));
+    body.extend(time());
+    let bytes = tlv(0x30, &body);
+    let account = memory();
+    let parser = Parser::ber(account.clone());
+    let mut parent = parser.read(&bytes, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let error = TokenInfo::read(&parent, &element).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::DuplicateField);
+    assert_eq!(error.offset(), 405);
+    drop(error);
+    assert_eq!(account.used(), 0);
+}
+
+#[test]
 fn repeated_integer_must_match_nonce_not_an_unrelated_prior_field() {
     // Once nonce is populated, a version/serial match cannot rescue a
     // conflicting second nonce. Equal nonce recovery retains one fault.

@@ -274,9 +274,66 @@ fn accuracy_reader_never_replaces_negative_or_too_wide_values_with_a_number() {
 }
 
 #[test]
+fn accuracy_equal_numeric_duplicates_retain_encoding_faults() {
+    // Different sign padding must not destroy a unique numeric reading.
+    // Equality includes negative and wide integers, never a u64 sentinel.
+    use std::sync::Arc;
+    use structured_asn1::{
+        Parser,
+        memory::{Memory, MemoryAccount},
+    };
+    use structured_cms::{
+        ErrorCode,
+        timestamp::{AccuracyReading, Component},
+    };
+    for (tag, component, minimal, padded) in [
+        (0x80, Component::Millis, &[1][..], &[0, 1][..]),
+        (0x81, Component::Micros, &[0xff][..], &[0xff, 0xff][..]),
+        (
+            2,
+            Component::Seconds,
+            &[1, 0, 0, 0, 0, 0, 0, 0, 0][..],
+            &[0, 1, 0, 0, 0, 0, 0, 0, 0, 0][..],
+        ),
+    ] {
+        let mut body = vec![tag, u8::try_from(minimal.len()).unwrap()];
+        body.extend_from_slice(minimal);
+        let duplicate_at = 402 + u64::try_from(body.len()).unwrap();
+        body.extend([tag, u8::try_from(padded.len()).unwrap()]);
+        body.extend_from_slice(padded);
+        let mut bytes = vec![0x30, u8::try_from(body.len()).unwrap()];
+        bytes.extend(body);
+        let account = Memory::new(Arc::new(MemoryAccount::new(65536, 65536)));
+        let parser = Parser::ber(account.clone());
+        let mut parent = parser.read(&bytes, 400).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let reading = AccuracyReading::read(&parent, &element).unwrap();
+        assert_eq!(
+            reading.faults().len(),
+            if component == Component::Millis { 2 } else { 4 }
+        );
+        assert_eq!(
+            reading.component(component).unwrap().element().contents(),
+            minimal
+        );
+        assert!(
+            reading
+                .faults()
+                .iter()
+                .any(|f| f.code() == ErrorCode::DuplicateField && f.offset() == duplicate_at)
+        );
+        assert!(reading.faults().iter().any(|f| f.code()
+            == ErrorCode::Encoding(structured_asn1::ErrorCode::IntegerNotMinimal)
+            && f.offset() == duplicate_at));
+        drop(reading);
+        assert_eq!(account.used(), 0);
+    }
+}
+
+#[test]
 fn accuracy_duplicate_recovery_keeps_original_spelling_and_refuses_conflicts() {
-    // The reviewed donor contract compares whole encodings. Different BER
-    // spellings are not silently collapsed merely because their numbers agree.
+    // Recovery preserves the first original encoding and refuses conflicting
+    // numbers. Equal numbers with encoding faults are covered separately.
     use std::sync::Arc;
     use structured_asn1::{
         Parser,
@@ -295,13 +352,69 @@ fn accuracy_duplicate_recovery_keeps_original_spelling_and_refuses_conflicts() {
     drop(accuracy);
     for bytes in [
         &[0x30, 6, 2, 1, 3, 2, 1, 4][..],
-        &[0x30, 7, 2, 1, 3, 2, 2, 0, 3][..],
+        &[0x30, 7, 2, 1, 3, 2, 2, 0, 4][..],
+        &[0x30, 6, 2, 1, 0xff, 2, 1, 0xfe][..],
+        &[
+            0x30, 22, 2, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 9, 1, 0, 0, 0, 0, 0, 0, 0, 1,
+        ][..],
     ] {
         let mut parent = parser.read(bytes, 400).unwrap();
         let element = parent.next_element().unwrap().unwrap();
         let refusal = AccuracyReading::read(&parent, &element).unwrap_err();
         assert_eq!(refusal.code(), ErrorCode::DuplicateField);
-        assert_eq!(refusal.offset(), 405);
+        assert_eq!(refusal.offset(), if bytes.len() == 24 { 413 } else { 405 });
         assert_eq!(memory.used(), 0);
+    }
+}
+
+#[test]
+fn accuracy_numeric_recovery_obeys_work_and_diagnostic_capacity() {
+    // Exact funded work succeeds; one fewer work unit or insufficient retained
+    // diagnostic capacity is terminal, never success with missing faults.
+    use std::sync::Arc;
+    use structured_asn1::{
+        Encoding, Limits, Parser,
+        memory::{Memory, MemoryAccount},
+    };
+    use structured_cms::timestamp::AccuracyReading;
+    let bytes = [0x30, 7, 0x80, 1, 1, 0x80, 2, 0, 1];
+    let account = Memory::new(Arc::new(MemoryAccount::new(65536, 65536)));
+    let parser = Parser::ber(account.clone());
+    let mut parent = parser.read(&bytes, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let reading = AccuracyReading::read(&parent, &element).unwrap();
+    let work = account.work_used();
+    let storage = account.used();
+    assert!(work > 0 && storage > 0);
+    assert_eq!(reading.faults().len(), 2);
+    drop(reading);
+    assert_eq!(account.used(), 0);
+    for (local, aggregate, capacity, success) in [
+        (work, work, 65536, true),
+        (work - 1, 65536, 65536, false),
+        (65536, work - 1, 65536, false),
+        (65536, 65536, storage - 1, false),
+    ] {
+        let account = Memory::new(Arc::new(MemoryAccount::new(capacity, aggregate)));
+        let parser = Parser::new(
+            Encoding::Ber,
+            Limits {
+                max_work: u64::try_from(local).unwrap(),
+                ..Limits::default()
+            },
+            account.clone(),
+        );
+        let mut parent = parser.read(&bytes, 400).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let result = AccuracyReading::read(&parent, &element);
+        if success {
+            assert_eq!(result.unwrap().faults().len(), 2);
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.is_resource());
+            assert_eq!(error.offset(), 405);
+            drop(error);
+        }
+        assert_eq!(account.used(), 0);
     }
 }

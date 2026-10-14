@@ -4,7 +4,7 @@ use super::{TokenInfo, record};
 use crate::content_source::{ContentError, SourceMap};
 use crate::{ContentInfo, Error, ErrorCode, Result, SignedData, oid};
 use structured_asn1::memory::{OwnedVec, Work};
-use structured_asn1::{Encoding, Parser, Reader, Tag, universal};
+use structured_asn1::{Encoding, Parser, Reader};
 
 /// Timestamp envelope; reading does not establish signature, trust or chronology.
 ///
@@ -144,6 +144,10 @@ impl<'a> Token<'a> {
     /// use the provided map's coordinates; that map is retained with every inner
     /// error. The caller chooses verification/trust/request context, and admits
     /// explicit independent proof data before leaving the callback.
+    /// A uniquely readable first value followed by trailing carried bytes is
+    /// returned with a located `TrailingData` fault; those bytes are not repaired
+    /// or parsed as another token. Diagnostic retention can itself refuse
+    /// resources. Complete checking still rejects the nonconforming information.
     #[expect(
         clippy::result_large_err,
         reason = "preserve both original cause and accounted source context without allocating an error envelope"
@@ -204,17 +208,7 @@ impl<'a> Token<'a> {
             )));
         };
         let decode = |reader: &mut Reader<'_>, context: &SourceMap| {
-            let element = reader
-                .expect(Tag::constructed(universal::SEQUENCE))
-                .map_err(|error| InfoError::Processing(Error::encoding(error, "tstInfo")))?;
-            let info = TokenInfo::read(reader, &element).map_err(InfoError::Processing)?;
-            if !reader.is_empty() {
-                return Err(InfoError::Processing(Error::schema(
-                    ErrorCode::TrailingData,
-                    "tstInfo",
-                    reader.offset(),
-                )));
-            }
+            let info = TokenInfo::read_carried(reader).map_err(InfoError::Processing)?;
             callback(&info, reader, context).map_err(InfoError::Callback)
         };
         match source {

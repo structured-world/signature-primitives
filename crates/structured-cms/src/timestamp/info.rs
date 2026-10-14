@@ -63,6 +63,40 @@ pub struct TokenInfo<'a> {
 }
 
 impl<'a> TokenInfo<'a> {
+    pub(super) fn read_carried(parent: &mut Reader<'a>) -> Result<Self> {
+        let element = parent
+            .expect(Tag::constructed(universal::SEQUENCE))
+            .map_err(|error| Error::encoding(error, FIELD))?;
+        let info = Self::read(parent, &element)?;
+        if parent.is_empty() {
+            return Ok(info);
+        }
+        info.with_tail(parent)
+    }
+
+    fn with_tail(mut self, parent: &Reader<'_>) -> Result<Self> {
+        let at = parent.offset();
+        let work = parent.execution();
+        // Recovery retains the uniquely bounded first TSTInfo and its source
+        // map. RFC3161 §2.4.2 does not permit trailing content: this fault must
+        // still prevent complete checking/evidence. It is inspection recovery,
+        // not a second TSTInfo or silently consumed bytes.
+        // https://www.rfc-editor.org/rfc/rfc3161#section-2.4.2
+        let mut faults = self.faults.with_execution(&work).map_err(|_| {
+            Error::pkix(structured_pkix::Error::new(
+                structured_pkix::ErrorCode::ForeignReader,
+                FIELD,
+                at,
+            ))
+        })?;
+        record(
+            &mut faults,
+            Error::schema(ErrorCode::TrailingData, FIELD, at),
+        )?;
+        self.faults = faults.into_owned();
+        Ok(self)
+    }
+
     /// Reads RFC3161 §2.4.2 fields under the original producing reader.
     ///
     /// A BER inspection reader retains DER/schema faults instead of repairing
@@ -494,5 +528,74 @@ fn distinguished<W: Work>(
     match result {
         Ok(()) => Ok(()),
         Err(error) => record(faults, error),
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use structured_asn1::{
+        Parser,
+        memory::{Memory, MemoryAccount, MemoryError},
+    };
+
+    fn carried_bytes() -> [u8; 42] {
+        [
+            0x30, 37, 2, 1, 1, 6, 1, 43, 0x30, 9, 0x30, 3, 6, 1, 42, 4, 2, b'a', b'b', 2, 1, 7,
+            0x18, 15, b'2', b'0', b'2', b'6', b'0', b'1', b'0', b'1', b'0', b'0', b'0', b'0', b'0',
+            b'0', b'Z', 0xff, 0xfe, 0xfd,
+        ]
+    }
+
+    #[test]
+    fn tail_capacity_refusal_rolls_back_without_funding_a_successful_reading() {
+        // Fill capacity only after schema reading, isolating the fault admission
+        // from temporary DER-walk frames and proving refusal at the tail itself.
+        let bytes = carried_bytes();
+        let memory = Memory::new(Arc::new(MemoryAccount::new(65_536, 1_000_000)));
+        let parser = Parser::ber(memory.clone());
+        let mut parent = parser.read(&bytes, 70).unwrap();
+        let element = parent
+            .expect(Tag::constructed(universal::SEQUENCE))
+            .unwrap();
+        let info = TokenInfo::read(&parent, &element).unwrap();
+        assert_eq!(info.faults().len(), 0);
+        let mut held = memory.vector::<u8>();
+        held.try_reserve_exact(memory.limit() - memory.used())
+            .unwrap();
+        assert_eq!(memory.used(), memory.limit());
+        let error = info.with_tail(&parent).unwrap_err();
+        assert!(error.is_terminal());
+        assert_eq!(error.offset(), 109);
+        assert_eq!(error.field(), "tstInfo");
+        assert_eq!(
+            error.code(),
+            ErrorCode::Encoding(structured_asn1::ErrorCode::from(MemoryError::LimitExceeded))
+        );
+        drop(error);
+        drop(held);
+        assert_eq!(memory.used(), 0);
+    }
+
+    #[test]
+    fn retained_tail_diagnostic_keeps_charge_after_original_parser_drops() {
+        // Moving the independently owned catalogue preserves its allocation and
+        // source location; releasing the parser is not a storage refund.
+        let bytes = carried_bytes();
+        let memory = Memory::new(Arc::new(MemoryAccount::new(65_536, 1_000_000)));
+        let faults = {
+            let parser = Parser::ber(memory.clone());
+            let mut reader = parser.read(&bytes, 70).unwrap();
+            let TokenInfo { faults, .. } = TokenInfo::read_carried(&mut reader).unwrap();
+            faults
+        };
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0].code(), ErrorCode::TrailingData);
+        assert_eq!(faults[0].offset(), 109);
+        assert_eq!(faults[0].field(), "tstInfo");
+        assert!(memory.used() >= core::mem::size_of::<Error>());
+        drop(faults);
+        assert_eq!(memory.used(), 0);
     }
 }

@@ -61,6 +61,137 @@ fn memory() -> Memory {
 }
 
 #[test]
+fn carried_info_tail_keeps_readable_facts_and_original_source_projection() {
+    // A bounded readable first TSTInfo is inspection data, with an adverse fault;
+    // trailing garbage must not suppress its callback or lose physical location.
+    for segmented in [false, true] {
+        let account = memory();
+        let mut payload = info();
+        payload.extend([0xff, 0xfe, 0xfd]);
+        let bytes = message(
+            oid::TST_INFO.as_bytes(),
+            Some(&payload),
+            &signer(8, false),
+            segmented,
+        );
+        let expected = 400
+            + u64::try_from(
+                bytes
+                    .windows(3)
+                    .position(|bytes| bytes == [0xff, 0xfe, 0xfd])
+                    .unwrap(),
+            )
+            .unwrap();
+        let (offset, source) = {
+            let parser = Parser::ber(account.clone());
+            let token = Token::read(&parser, &bytes, 400).unwrap();
+            let parent = parser.read(&[], 400).unwrap();
+            token
+                .with_info(&parent, |info, parent, map| {
+                    assert_eq!(info.serial().value().as_u64(), Some(7));
+                    assert_eq!(info.imprint().hashed().as_one(), Some(&b"ab"[..]));
+                    assert_eq!(info.faults().len(), 1);
+                    let fault = &info.faults()[0];
+                    assert_eq!(fault.code(), ErrorCode::TrailingData);
+                    assert_eq!(fault.field(), "tstInfo");
+                    assert_eq!(fault.offset(), info.span().end());
+                    Ok::<_, structured_cms::Error>((
+                        fault.offset(),
+                        map.try_copy_in(&parent.execution())?,
+                    ))
+                })
+                .unwrap()
+        };
+        assert_eq!(source.project_offset(offset, &account).unwrap(), expected);
+        assert_eq!(
+            source.coordinates(),
+            if segmented {
+                Coordinates::Logical
+            } else {
+                Coordinates::Original
+            }
+        );
+        drop(source);
+        assert_eq!(account.used(), 0);
+    }
+}
+
+#[test]
+fn carried_tail_diagnostic_respects_local_and_aggregate_work_before_callback() {
+    // Profile only the existing complete schema read, excluding tail retention.
+    // The public path must refuse when no work remains for its additional fault.
+    use structured_asn1::{Encoding, Limits, Tag, universal};
+    use structured_cms::timestamp::TokenInfo;
+    let mut payload = info();
+    payload.extend([0xff, 0xfe, 0xfd]);
+    let bytes = message(
+        oid::TST_INFO.as_bytes(),
+        Some(&payload),
+        &signer(8, false),
+        false,
+    );
+    let account = memory();
+    let parser = Parser::ber(account.clone());
+    let token = Token::read(&parser, &bytes, 400).unwrap();
+    let query = parser.read(&[], 400).unwrap();
+    let tail = token
+        .message()
+        .content()
+        .content()
+        .unwrap()
+        .with_nested_reader(&query, Encoding::Ber, "tstInfo", |reader, _| {
+            let element = reader
+                .expect(Tag::constructed(universal::SEQUENCE))
+                .unwrap();
+            let info = TokenInfo::read(reader, &element)?;
+            assert_eq!(info.faults().len(), 0);
+            Ok::<_, structured_cms::Error>(reader.offset())
+        })
+        .unwrap();
+    let prefix = account.work_used();
+    for local in [false, true] {
+        let account = Memory::new(Arc::new(MemoryAccount::new(
+            1 << 20,
+            if local { 1 << 24 } else { prefix },
+        )));
+        let limits = Limits {
+            max_work: if local {
+                u64::try_from(prefix).unwrap()
+            } else {
+                1 << 24
+            },
+            ..Limits::default()
+        };
+        let parser = Parser::new(Encoding::Ber, limits, account.clone());
+        let token = Token::read(&parser, &bytes, 400).unwrap();
+        let held = account.used();
+        let parent = parser.read(&[], 400).unwrap();
+        let called = core::cell::Cell::new(false);
+        let error = token
+            .with_info(&parent, |_, _, _| {
+                called.set(true);
+                Ok::<_, ()>(())
+            })
+            .unwrap_err();
+        assert!(!called.get());
+        let ContentError::Callback {
+            source: InfoError::Processing(error),
+            context,
+        } = error
+        else {
+            panic!("lost original tail-retention refusal");
+        };
+        assert!(error.is_terminal());
+        assert_eq!(error.field(), "tstInfo");
+        assert_eq!(error.offset(), tail);
+        drop(context);
+        assert_eq!(account.used(), held);
+        drop(token);
+        assert_eq!(account.used(), 0);
+    }
+}
+
+#[test]
 fn equivalent_issuer_signers_preserve_original_token_reading_and_fault() {
     // The public token path shares semantic issuer identity with the comparer;
     // accepting a readable duplicate does not remove its ExtraSignature fault.

@@ -10,7 +10,7 @@ use crate::error::{Error, ErrorCode, Located, Result, gate};
 use crate::extension::{self, Extension};
 use crate::name::is_ia5;
 use crate::oid;
-use structured_asn1::memory::{Memory, OwnedVec};
+use structured_asn1::memory::{Memory, OwnedVec, Work};
 use structured_asn1::{Oid, Parser, Tag, universal};
 
 /// One statement: what it is, and whatever was written with it.
@@ -326,8 +326,9 @@ impl<'a> QcStatements<'a> {
         const FIELD: &str = "extensions.qcStatements";
 
         let mut inside = extension::sequence(extension, FIELD, execution)?;
-        let mut statements = inside.memory().vector();
-        let mut kinds = inside.memory().map::<Oid<'a>, Option<&'a [u8]>>();
+        let work = inside.execution_in(execution);
+        let mut statements = work.vector();
+        let mut kinds = work.map::<Oid<'a>, Option<&'a [u8]>>();
 
         while let Some(entry) = inside.next_element().field(FIELD)? {
             let at = |code| Error::new(code, FIELD, entry.span().start);
@@ -406,7 +407,7 @@ impl<'a> QcStatements<'a> {
         // writes SIZE (1..MAX). An empty one makes no qualified claim, which
         // is an answer a report can give.
         Ok(Self {
-            statements,
+            statements: statements.into_owned(),
             parser: extension.parser(),
         })
     }

@@ -255,6 +255,25 @@ pub struct OwnedVec<T, W: Work = Memory> {
     values: Vec<T, allocator::AccountAllocator<W>>,
 }
 
+impl<T> OwnedVec<T> {
+    /// Temporarily attaches the current operation's work ceilings.
+    ///
+    /// The execution must use this allocation's existing account. On mismatch
+    /// the original collection is returned unchanged. On success the pointer,
+    /// values, capacity, charge and owning account handle move without copying,
+    /// allocation or new work. Previously admitted work is neither reset nor
+    /// charged again. Call [`OwnedVec::into_owned`] to retain the allocation
+    /// independently after the callback, including after a refused mutation.
+    pub fn with_execution<W: Work>(self, execution: &W) -> Result<OwnedVec<T, W>, Self> {
+        if !self.memory().same_account(execution.memory()) {
+            return Err(self);
+        }
+        Ok(OwnedVec {
+            values: allocator::scope(self.values, execution),
+        })
+    }
+}
+
 impl<T, W: Work> OwnedVec<T, W> {
     /// Finishes bounded construction as an independently owned result.
     ///

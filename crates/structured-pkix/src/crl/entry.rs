@@ -195,9 +195,12 @@ fn check_source_metadata<'r, 'a>(
     execution: &Memory,
 ) -> Result<Option<&'r Extension<'a>>> {
     const FIELD: &str = "certificateList.extensions";
-    for extension in crl.tbs().extensions().iter() {
+    for extension in crl.tbs().extensions().iter(execution) {
+        let extension = extension?;
         execution
-            .charge_work(53)
+            // Metadata admission belongs to the common iterator; this
+            // previously combined cost retains only the OID/profile work.
+            .charge_work(52)
             .map_err(|reason| Error::resource(reason, FIELD, extension.span().start))?;
         let kind = extension.kind();
         let malformed = || Error::new(ErrorCode::MalformedValue, FIELD, extension.span().start);

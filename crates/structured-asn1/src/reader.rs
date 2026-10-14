@@ -7,7 +7,7 @@
 
 use crate::error::{Error, ErrorCode, Limit, Path, Result};
 use crate::length::{self, Encoding, Length};
-use crate::limits::{Budget, Limits};
+use crate::limits::{Budget, BudgetView, Limits};
 use crate::memory::{Memory, Work};
 use crate::tag::{self, Tag, universal};
 use crate::value::{self, BitString, Integer, Oid};
@@ -57,6 +57,20 @@ impl Parser {
     #[must_use]
     pub fn memory(&self) -> &Memory {
         self.budget.memory()
+    }
+
+    /// Borrows this session's cumulative work ceiling and a current account.
+    ///
+    /// This creates no reader, allocation or owning account clone. It allows
+    /// schema scratch to keep the same local ceiling while a reader cursor
+    /// advances. Selecting an aggregate account does not reset earlier work;
+    /// existing retained capacity stays with its original storage owner.
+    #[must_use]
+    pub fn execution_in<'work>(
+        &'work self,
+        memory: &'work Memory,
+    ) -> crate::memory::Execution<'work> {
+        crate::memory::Execution::new(memory, BudgetView::root(&self.budget))
     }
 
     /// A reader over `data`, whose first byte sits at `base` in the document.
@@ -110,6 +124,7 @@ impl Parser {
             encoding,
             parser: self,
             execution: execution.clone(),
+            query: None,
         })
     }
 
@@ -160,6 +175,42 @@ impl Parser {
         self.budget
             .depth(depth)
             .map_err(|limit| Error::new(ErrorCode::LimitExceeded(limit), base, Path::default()))?;
+        reader.depth = depth;
+        Ok(reader)
+    }
+
+    /// Reads an original source window under the current query's ceilings.
+    ///
+    /// The original parser, encoding, offsets and inherited depth remain the
+    /// source's. Its cumulative limits and the query operation's limits both
+    /// apply before work; the current aggregate account is charged once.
+    /// Further foreign-source transitions retain the same operation owner,
+    /// rather than accumulating a chain of unrelated source budgets.
+    pub fn read_nested_query_in<'a>(
+        &'a self,
+        query: &Reader<'a>,
+        data: &'a [u8],
+        base: u64,
+        encoding: Encoding,
+        outer: u32,
+    ) -> Result<Reader<'a>> {
+        let depth = outer.checked_add(1).ok_or_else(|| {
+            Error::new(
+                ErrorCode::LimitExceeded(Limit::Depth),
+                base,
+                Path::default(),
+            )
+        })?;
+        let operation = query.budget().operation();
+        let budget = BudgetView::query(&self.budget, operation);
+        budget
+            .depth(depth)
+            .map_err(|limit| Error::new(ErrorCode::LimitExceeded(limit), base, Path::default()))?;
+        budget
+            .work_in(1, query.memory())
+            .map_err(|limit| Error::new(ErrorCode::LimitExceeded(limit), base, Path::default()))?;
+        let mut reader = self.read_as_in(data, base, encoding, query.memory())?;
+        reader.query = Some(operation);
         reader.depth = depth;
         Ok(reader)
     }
@@ -271,6 +322,7 @@ pub struct Reader<'a> {
     encoding: Encoding,
     parser: &'a Parser,
     execution: Memory,
+    query: Option<&'a Budget>,
 }
 
 impl<'a> Reader<'a> {
@@ -304,8 +356,12 @@ impl<'a> Reader<'a> {
         crate::memory::Execution::new(self.memory(), self.budget())
     }
 
-    /// Borrows this parser's ceiling and the supplied current account.
-    /// Does not borrow the cursor, so admitted scratch can accompany iteration.
+    /// Borrows the source/query budgets independently of this reader cursor.
+    ///
+    /// Supply the operation account explicitly so scratch can keep the same
+    /// admission while the cursor advances. This creates no allocation or
+    /// owning account clone and cannot discard an inherited query ceiling.
+    #[must_use]
     pub fn execution_in<'work>(&self, memory: &'work Memory) -> crate::memory::Execution<'work>
     where
         'a: 'work,
@@ -320,6 +376,44 @@ impl<'a> Reader<'a> {
     pub fn with_execution(mut self, execution: &Memory) -> Self {
         self.execution = execution.clone();
         self
+    }
+
+    /// Moves this cursor into a current query without copying its retained path.
+    /// Original parser, data, offsets and depth remain unchanged. Both source
+    /// and operation admission apply before changing execution; existing path
+    /// capacity keeps its original owner until actually freed.
+    pub fn with_query<'query>(self, query: &Reader<'query>) -> Result<Reader<'query>>
+    where
+        'a: 'query,
+    {
+        let operation = query.budget().operation();
+        let budget = BudgetView::query(&self.parser.budget, operation);
+        budget.depth(self.depth).map_err(|limit| {
+            Error::new(
+                ErrorCode::LimitExceeded(limit),
+                self.offset(),
+                Path::default(),
+            )
+        })?;
+        budget.work_in(1, query.memory()).map_err(|limit| {
+            Error::new(
+                ErrorCode::LimitExceeded(limit),
+                self.offset(),
+                Path::default(),
+            )
+        })?;
+        Ok(Reader {
+            data: self.data,
+            pos: self.pos,
+            base: self.base,
+            depth: self.depth,
+            next_index: self.next_index,
+            path: self.path,
+            encoding: self.encoding,
+            parser: self.parser,
+            execution: query.memory().clone(),
+            query: Some(operation),
+        })
     }
 
     /// Copies the reader position and diagnostic path fallibly in the same domain.
@@ -339,6 +433,7 @@ impl<'a> Reader<'a> {
             encoding: self.encoding,
             parser: self.parser,
             execution: self.execution.clone(),
+            query: self.query,
         })
     }
     /// Whether every element here has been read.
@@ -356,8 +451,11 @@ impl<'a> Reader<'a> {
     }
 
     /// The shared budget, by way of the parser.
-    fn budget(&self) -> &'a Budget {
-        &self.parser.budget
+    fn budget(&self) -> BudgetView<'a> {
+        match self.query {
+            Some(operation) => BudgetView::query(&self.parser.budget, operation),
+            None => BudgetView::root(&self.parser.budget),
+        }
     }
 
     /// Charges caller-side scanning to the shared work budget.
@@ -434,6 +532,7 @@ impl<'a> Reader<'a> {
             encoding,
             parser: self.parser,
             execution: self.execution.clone(),
+            query: self.query,
         })
     }
 
@@ -524,6 +623,7 @@ impl<'a> Reader<'a> {
             encoding: self.encoding,
             parser: self.parser,
             execution: self.execution.clone(),
+            query: self.query,
         })
     }
 
@@ -888,7 +988,7 @@ fn header_at(
     input: &[u8],
     encoding: Encoding,
     start: u64,
-    budget: &Budget,
+    budget: BudgetView<'_>,
     execution: &Memory,
 ) -> core::result::Result<Header, (ErrorCode, u64)> {
     // Common short headers use one aggregate atomic admission for both bytes.

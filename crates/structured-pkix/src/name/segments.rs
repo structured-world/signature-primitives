@@ -14,7 +14,7 @@ pub(super) fn implicit<'a>(
         if parent.encoding().is_der() {
             return Ok(false);
         }
-        walk(parent, element, field, bits, None)?;
+        walk(parent, element, field, bits)?;
     } else if bits {
         return super::reads(parent.bit_string(element), field);
     }
@@ -30,8 +30,16 @@ pub(super) fn validate<'a>(
     let number = element.tag().number().expect("assigned universal string");
     let time = matches!(number, universal::UTC_TIME | universal::GENERALIZED_TIME);
     if (strings == Strings::Checked && !matches!(number, 3 | 4)) || time {
-        let mut contents = parent.memory().vector();
-        walk(parent, element, field, false, Some(&mut contents))?;
+        let execution = parent.execution();
+        let mut contents = execution.vector();
+        walk_in(
+            parent,
+            element,
+            field,
+            false,
+            Some(&mut contents),
+            &execution,
+        )?;
         let work = (contents.len() as u64).checked_mul(3).ok_or_else(|| {
             Error::resource(
                 structured_asn1::memory::MemoryError::WorkExceeded,
@@ -61,7 +69,7 @@ pub(super) fn validate<'a>(
             ));
         }
     } else {
-        walk(parent, element, field, number == 3, None)?;
+        walk(parent, element, field, number == 3)?;
     }
     Ok(())
 }
@@ -76,19 +84,18 @@ struct Frame<'a> {
 /// X.690 §§8.6.4, 8.7.3.2, 8.23.3. Nested final padding propagates outward;
 /// a following empty child does not make earlier padding permissible.
 /// <https://www.itu.int/rec/T-REC-X.690-202102-I/en>
-pub(crate) fn walk<'a>(
+fn walk<'a>(
     parent: &Reader<'a>,
     element: &Element<'a>,
     field: &'static str,
     bits: bool,
-    output: Option<&mut OwnedVec<u8>>,
 ) -> Result<()> {
-    walk_in(parent, element, field, bits, output, parent.memory())
+    walk_in(parent, element, field, bits, None, &parent.execution())
 }
 
 /// Uses the same walker with parser-bound scratch admission when preparation
 /// belongs to the producing parse, rather than an independent retained query.
-pub(super) fn walk_in<'a, W: Work>(
+pub(crate) fn walk_in<'a, W: Work>(
     parent: &Reader<'a>,
     element: &Element<'a>,
     field: &'static str,
@@ -137,12 +144,10 @@ pub(super) fn walk_in<'a, W: Work>(
             frame.reader.bit_string(&child).field(field)?;
             frame.unused = child.contents()[0];
         } else if let Some(bytes) = output.as_deref_mut() {
-            // OwnedVec admits both copied octets and allocation growth before
-            // executing them; the producing reader keeps its local ceiling.
-            frame
-                .reader
-                .charge(child.contents().len() as u64)
-                .field(field)?;
+            // The caller's Work-backed output admits both copying and growth
+            // before either begins. Producing paths pass Execution, so the
+            // same charge reaches local and aggregate ceilings once. Retained
+            // queries use their explicitly supplied current aggregate owner.
             bytes
                 .try_extend_from_slice(child.contents())
                 .map_err(|reason| Error::resource(reason, field, child.span().start))?;

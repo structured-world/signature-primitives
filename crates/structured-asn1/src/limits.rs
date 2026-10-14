@@ -77,6 +77,96 @@ pub(crate) struct Budget {
     memory: Memory,
 }
 
+/// One source ceiling and the current operation ceiling, with one account bill.
+/// Foreign-source transitions replace the source, never the operation owner.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BudgetView<'a> {
+    origin: &'a Budget,
+    operation: Option<&'a Budget>,
+}
+
+impl<'a> BudgetView<'a> {
+    pub(crate) const fn root(origin: &'a Budget) -> Self {
+        Self {
+            origin,
+            operation: None,
+        }
+    }
+    pub(crate) fn query(origin: &'a Budget, operation: &'a Budget) -> Self {
+        Self {
+            origin,
+            operation: if core::ptr::eq(origin, operation) {
+                None
+            } else {
+                Some(operation)
+            },
+        }
+    }
+    pub(crate) fn operation(self) -> &'a Budget {
+        self.operation.unwrap_or(self.origin)
+    }
+    pub(crate) fn work_in(self, amount: u64, execution: &Memory) -> Result<(), Limit> {
+        if amount > self.origin.limits.max_work - self.origin.work.get() {
+            return Err(Limit::Work);
+        }
+        if let Some(operation) = self.operation
+            && amount > operation.limits.max_work - operation.work.get()
+        {
+            return Err(Limit::Work);
+        }
+        execution.charge_work(amount).map_err(|_| Limit::Work)?;
+        self.origin.work.set(self.origin.work.get() + amount);
+        if let Some(operation) = self.operation {
+            operation.work.set(operation.work.get() + amount);
+        }
+        Ok(())
+    }
+    pub(crate) fn local_work(self, amount: u64) -> Result<(), Limit> {
+        if amount > self.origin.limits.max_work - self.origin.work.get() {
+            return Err(Limit::Work);
+        }
+        if let Some(operation) = self.operation
+            && amount > operation.limits.max_work - operation.work.get()
+        {
+            return Err(Limit::Work);
+        }
+        self.origin.work.set(self.origin.work.get() + amount);
+        if let Some(operation) = self.operation {
+            operation.work.set(operation.work.get() + amount);
+        }
+        Ok(())
+    }
+    pub(crate) fn element(self) -> Result<(), Limit> {
+        if self.origin.elements.get() >= self.origin.limits.max_elements {
+            return Err(Limit::Elements);
+        }
+        if let Some(operation) = self.operation
+            && operation.elements.get() >= operation.limits.max_elements
+        {
+            return Err(Limit::Elements);
+        }
+        self.origin.elements.set(self.origin.elements.get() + 1);
+        if let Some(operation) = self.operation {
+            operation.elements.set(operation.elements.get() + 1);
+        }
+        Ok(())
+    }
+    pub(crate) fn depth(self, depth: u32) -> Result<(), Limit> {
+        self.origin.depth(depth)?;
+        if let Some(operation) = self.operation {
+            operation.depth(depth)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn length(self, length: u64) -> Result<(), Limit> {
+        self.origin.length(length)?;
+        if let Some(operation) = self.operation {
+            operation.length(length)?;
+        }
+        Ok(())
+    }
+}
+
 impl Budget {
     pub(crate) fn new(limits: Limits, memory: Memory) -> Self {
         Self {
@@ -99,44 +189,15 @@ impl Budget {
     ///
     /// Reports which budget ran out and nothing else: where it happened is
     /// known to the caller, who assembles that only when there is an error.
+    #[cfg(test)]
     pub(crate) fn element(&self) -> Result<(), Limit> {
-        let spent = self.elements.get();
-        debug_assert!(spent <= self.limits.max_elements);
-        if spent >= self.limits.max_elements {
-            return Err(Limit::Elements);
-        }
-        self.elements.set(spent + 1);
-        Ok(())
+        BudgetView::root(self).element()
     }
 
     /// Charges structure in the original domain for budget unit tests.
     #[cfg(test)]
     pub(crate) fn work(&self, amount: u64) -> Result<(), Limit> {
-        self.work_in(amount, &self.memory)
-    }
-
-    /// Retains the session ceiling while charging the current execution domain.
-    pub(crate) fn work_in(&self, amount: u64, execution: &Memory) -> Result<(), Limit> {
-        let spent = self.work.get();
-        debug_assert!(spent <= self.limits.max_work);
-        if amount > self.limits.max_work - spent {
-            return Err(Limit::Work);
-        }
-        execution.charge_work(amount).map_err(|_| Limit::Work)?;
-        self.work.set(spent + amount);
-        Ok(())
-    }
-
-    /// Reserves the session share of an operation whose owned storage methods
-    /// already charge the aggregate account. Never charge that account twice.
-    pub(crate) fn local_work(&self, amount: u64) -> Result<(), Limit> {
-        let spent = self.work.get();
-        debug_assert!(spent <= self.limits.max_work);
-        if amount > self.limits.max_work - spent {
-            return Err(Limit::Work);
-        }
-        self.work.set(spent + amount);
-        Ok(())
+        BudgetView::root(self).work_in(amount, &self.memory)
     }
 
     /// Checks a depth before descending to it.

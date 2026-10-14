@@ -3,7 +3,7 @@
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
 use crate::general_name::{self, GeneralName};
-use structured_asn1::memory::{Memory, OwnedVec};
+use structured_asn1::memory::{Memory, OwnedVec, Work};
 use structured_asn1::{Tag, universal};
 
 /// A count of certificates a constraint names.
@@ -165,10 +165,9 @@ impl<'a> NameConstraints<'a> {
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
         let mut inside = extension::sequence(extension, FIELD, execution)?;
-        let mut constraints = Self {
-            permitted: inside.memory().vector(),
-            excluded: inside.memory().vector(),
-        };
+        let work = inside.execution_in(execution);
+        let mut permitted = work.vector();
+        let mut excluded = work.vector();
 
         // The schema fixes the order: permitted, then excluded. A tag at or
         // below the last one read is a repeat or a field written backwards,
@@ -177,8 +176,8 @@ impl<'a> NameConstraints<'a> {
         while let Some(field) = inside.next_element().field(FIELD)? {
             let tag = extension::context_of(field.tag());
             let subtrees = match tag {
-                Some((0, true)) if last_number.is_none() => &mut constraints.permitted,
-                Some((1, true)) if last_number < Some(1) => &mut constraints.excluded,
+                Some((0, true)) if last_number.is_none() => &mut permitted,
+                Some((1, true)) if last_number < Some(1) => &mut excluded,
                 _ => {
                     return Err(Error::new(
                         ErrorCode::UnexpectedField,
@@ -206,10 +205,13 @@ impl<'a> NameConstraints<'a> {
 
         // A constraint that permits nothing and excludes nothing constrains
         // nothing, while being marked critical to say it must be obeyed.
-        if constraints.permitted.is_empty() && constraints.excluded.is_empty() {
+        if permitted.is_empty() && excluded.is_empty() {
             return Err(fail(ErrorCode::MalformedValue));
         }
-        Ok(constraints)
+        Ok(Self {
+            permitted: permitted.into_owned(),
+            excluded: excluded.into_owned(),
+        })
     }
 }
 

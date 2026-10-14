@@ -170,9 +170,18 @@ fn read_list_as<'a>(
 ) -> Result<OwnedVec<GeneralName<'a>>> {
     let mut names = inside.memory().vector();
     while let Some(entry) = inside.next_element().field(field)? {
-        names
-            .try_push(read_as(inside, &entry, field, form)?)
+        let name = read_as(inside, &entry, field, form)?;
+        let work = inside.execution();
+        // Cursor advancement and read_as do not replace this reader's account.
+        // Move the existing keeper into scoped work and back without cloning
+        // an account per name or holding a borrow across the mutable cursor.
+        let Ok(mut scoped) = names.with_execution(&work) else {
+            unreachable!("the name decoder preserves its catalogue account")
+        };
+        scoped
+            .try_push(name)
             .map_err(|reason| Error::resource(reason, field, entry.span().start))?;
+        names = scoped.into_owned();
     }
 
     // A list of names that holds none says nothing while claiming to, and the

@@ -22,8 +22,11 @@ use crate::oid;
 use crate::policy::{CertificatePolicies, PolicyMappings};
 use crate::qualified::QcStatements;
 use crate::usage::{ExtendedKeyUsage, KeyUsage};
-use structured_asn1::memory::{Memory, MemoryError, OwnedVec};
+use structured_asn1::memory::{Memory, MemoryError, OwnedVec, Work};
 use structured_asn1::{Element, Oid, Parser, Reader, Span, Tag, universal};
+
+mod entry;
+pub use entry::{ExtensionFields, ExtensionHeader, ExtensionValue, open, read_with};
 
 /// One extension: what it is, whether it must be understood, and its value.
 #[derive(Debug, Clone, Copy)]
@@ -92,6 +95,25 @@ impl<'a> Extension<'a> {
         )
     }
 
+    /// Original DER value under both origin and current query ceilings.
+    ///
+    /// The query may come from another source. Original parser identity,
+    /// offsets and inherited depth are preserved from creation; allocation,
+    /// traversal and scratch also obey the current operation's local budget
+    /// and aggregate account. Previously retained storage is not transferred.
+    pub fn reader_in<'work>(self, query: &Reader<'work>) -> structured_asn1::Result<Reader<'work>>
+    where
+        'a: 'work,
+    {
+        self.parser.read_nested_query_in(
+            query,
+            self.value,
+            self.value_span.start,
+            structured_asn1::Encoding::Der,
+            self.outer,
+        )
+    }
+
     /// The parser the certificate was read with, whose budget every decode
     /// of this extension shares.
     #[must_use]
@@ -119,9 +141,33 @@ impl<'a> Extensions<'a> {
             items: execution.vector(),
         }
     }
-    /// Every extension, in order.
-    pub fn iter(&self) -> impl Iterator<Item = &Extension<'a>> {
-        self.items.iter()
+    /// Every extension in order, funded by this query's current execution.
+    /// The constructor allocates/clones nothing. Each metadata step is paid
+    /// before advancing; a resource failure is yielded once, then traversal
+    /// stops. Empty/exhausted catalogues perform no additional charged work.
+    /// Recognition and payload parsing must fund their own data-dependent work.
+    pub fn iter<'r, 'e, W: Work + 'e>(
+        &'r self,
+        execution: &'e W,
+    ) -> impl Iterator<Item = Result<&'r Extension<'a>>> + 'e
+    where
+        'r: 'e,
+    {
+        let mut entries = self.items.iter();
+        let mut failed = false;
+        core::iter::from_fn(move || {
+            if failed || entries.as_slice().is_empty() {
+                return None;
+            }
+            if let Err(reason) = execution.charge_work(1) {
+                failed = true;
+                // Source metadata for the refusal; the traversal has not
+                // advanced or exposed this item as a successful reading.
+                let at = entries.as_slice()[0].span.start;
+                return Some(Err(Error::resource(reason, "extensions", at)));
+            }
+            entries.next().map(Ok)
+        })
     }
 
     /// How many there are.
@@ -139,7 +185,7 @@ impl<'a> Extensions<'a> {
     /// One extension by identifier. There is at most one of each: a
     /// certificate carrying two copies is refused when it is read, because
     /// which of them applies would have no answer.
-    pub fn get(&self, kind: Oid<'_>, execution: &Memory) -> Result<Option<&Extension<'a>>> {
+    pub fn get<W: Work>(&self, kind: Oid<'_>, execution: &W) -> Result<Option<&Extension<'a>>> {
         for item in &self.items {
             let work = item.kind.as_bytes().len().max(kind.as_bytes().len()) as u64;
             execution
@@ -216,21 +262,13 @@ impl<'a> Extensions<'a> {
     where
         'r: 'e,
     {
-        let mut entries = self.items.iter();
-        let mut failed = false;
+        let mut entries = self.iter(execution);
         core::iter::from_fn(move || {
-            if failed {
-                return None;
-            }
             for item in entries.by_ref() {
-                if let Err(reason) = execution.charge_work(1) {
-                    failed = true;
-                    return Some(Err(Error::resource(
-                        reason,
-                        "extensions",
-                        item.span().start,
-                    )));
-                }
+                let item = match item {
+                    Ok(item) => item,
+                    Err(error) => return Some(Err(error)),
+                };
                 if item.critical {
                     return Some(Ok(item));
                 }
@@ -473,6 +511,32 @@ macro_rules! typed_accessors {
 /// be read. Lookup and decoding use the caller's current execution domain;
 /// the original parser's cumulative local ceilings still apply.
 impl<'a> Extensions<'a> {
+    /// Reads one original Extensions SEQUENCE with the certificate catalogue
+    /// invariants: nonempty, no duplicate OIDs, primitive extnValue, and the
+    /// producing encoding's DEFAULT rules. This does not recognize/trust values.
+    pub fn read_element(
+        parent: &Reader<'a>,
+        element: &Element<'a>,
+        field: &'static str,
+    ) -> Result<Self> {
+        read(parent, element, field)
+    }
+
+    /// Reads `[number] IMPLICIT Extensions` without changing original bytes.
+    /// The number is selected by the enclosing schema (RFC3161 §§2.4.1–2.4.2).
+    /// This strict catalogue is suitable for requests, not `TSTInfo` inspection
+    /// recovery; use [`read_with`] there before deciding duplicate/fault policy.
+    /// Original source/depth and producing local/current aggregate work survive.
+    /// <https://www.rfc-editor.org/rfc/rfc3161#section-2.4.1>
+    pub fn read_implicit(
+        parent: &Reader<'a>,
+        element: &Element<'a>,
+        number: u32,
+        field: &'static str,
+    ) -> Result<Self> {
+        read_tagged(parent, element, Tag::context(true, number), field)
+    }
+
     typed_accessors! {
         /// Whether this is a certification authority, and how deep a path
         /// below it may go.
@@ -749,9 +813,19 @@ pub(crate) fn sequence<'a>(
     field: &'static str,
     execution: &Memory,
 ) -> Result<Reader<'a>> {
-    let fail = |code| Error::new(code, field, extension.span().start);
+    sequence_reader(
+        extension.reader(execution).field(field)?,
+        field,
+        extension.span().start,
+    )
+}
 
-    let mut reader = extension.reader(execution).field(field)?;
+pub(crate) fn sequence_reader<'a>(
+    mut reader: Reader<'a>,
+    field: &'static str,
+    at: u64,
+) -> Result<Reader<'a>> {
+    let fail = |code| Error::new(code, field, at);
     let element = reader
         .next_element()
         .field(field)?
@@ -792,68 +866,73 @@ pub(crate) fn read<'a>(
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<Extensions<'a>> {
+    read_tagged(
+        parent,
+        element,
+        Tag::constructed(universal::SEQUENCE),
+        field,
+    )
+}
+
+fn read_tagged<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    expected: Tag,
+    field: &'static str,
+) -> Result<Extensions<'a>> {
     let parser = parent.parser();
     let fail = |code| Error::new(code, field, element.span().start);
 
-    if element.tag() != Tag::constructed(universal::SEQUENCE) {
+    if element.tag() != expected {
         return Err(fail(ErrorCode::Encoding(
             structured_asn1::ErrorCode::UnexpectedTag,
         )));
     }
 
     let mut sequence = parent.enter(element).field(field)?;
-    let mut items = parent.memory().vector();
+    let mut items = parent.execution().vector();
     // A set rather than a scan of what came before: a certificate can carry
     // tens of thousands of extensions within the parse budget, and a per-item
     // scan of the list would be quadratic work the budget never sees.
-    let mut kinds = parent.memory().map::<Oid<'a>, ()>();
+    let mut kinds = parent.execution().map::<Oid<'a>, ()>();
 
     while let Some(entry) = sequence.next_element().field(field)? {
         let at = |code| Error::new(code, field, entry.span().start);
 
-        if entry.tag() != Tag::constructed(universal::SEQUENCE) {
-            return Err(at(ErrorCode::Encoding(
-                structured_asn1::ErrorCode::UnexpectedTag,
-            )));
+        let fields = open(&sequence, &entry, field)?;
+        if fields.header().default_written() && fields.reader().encoding().is_der() {
+            let at = fields
+                .header()
+                .critical_span()
+                .expect("written flag has a span")
+                .start;
+            return Err(Error::new(ErrorCode::MalformedValue, field, at));
         }
-
-        let mut inside = sequence.enter(&entry).field(field)?;
-        let kind = inside.read_oid().field(field)?;
-
-        let mut next = inside.next_element().field(field)?;
-        let critical = match next {
-            Some(flag) if flag.tag() == Tag::primitive(universal::BOOLEAN) => {
-                let value = inside.boolean(&flag).field(field)?;
-                // The flag defaults to false, and DER requires a default to
-                // be omitted: writing it out is a second spelling of the
-                // absent flag, and two spellings of one value is what DER
-                // exists to refuse. BER has no such rule, and issuers write
-                // it, so there the spelled-out default reads as itself.
-                if !value && inside.encoding().is_der() {
+        let decoded = fields
+            .read_with(|_header, inside, value| {
+                // RFC5280 §4.1 / X.690 §11.5: the strict certificate profile
+                // keeps its primitive-value and DER-default invariants. TSP
+                // inspection can instead retain the common structural metadata.
+                // https://www.rfc-editor.org/rfc/rfc5280#section-4.1
+                if value.tag() != Tag::primitive(universal::OCTET_STRING) {
                     return Err(Error::new(
-                        ErrorCode::MalformedValue,
+                        ErrorCode::Encoding(structured_asn1::ErrorCode::UnexpectedTag),
                         field,
-                        flag.span().start,
+                        value.span().start,
                     ));
                 }
-                next = inside.next_element().field(field)?;
-                value
-            }
-            // Absent means false, which is what most extensions leave it at.
-            _ => false,
-        };
-
-        let value = next.ok_or_else(|| at(ErrorCode::MissingField))?;
-        if value.tag() != Tag::primitive(universal::OCTET_STRING) {
-            return Err(Error::new(
-                ErrorCode::Encoding(structured_asn1::ErrorCode::UnexpectedTag),
-                field,
-                value.span().start,
-            ));
-        }
-        if !inside.is_empty() {
-            return Err(at(ErrorCode::TrailingData));
-        }
+                if !inside.is_empty() {
+                    return Err(at(ErrorCode::TrailingData));
+                }
+                Ok((value.contents(), value.contents_span(), inside.depth()))
+            })
+            .map_err(|error| match error {
+                CallbackError::Processing(error) | CallbackError::Callback(error) => error,
+            })?;
+        let header = decoded.header();
+        let kind = header.kind();
+        let critical = header.is_critical();
+        let (value, value_span, outer) = decoded.into_value();
 
         // Two copies of one extension leave no answer to which applies, and a
         // reader that took the first would disagree with one that took the
@@ -870,11 +949,11 @@ pub(crate) fn read<'a>(
             .try_push(Extension {
                 kind,
                 critical,
-                value: value.contents(),
-                value_span: value.contents_span(),
+                value,
+                value_span,
                 span: entry.span(),
                 parser,
-                outer: inside.depth(),
+                outer,
             })
             .map_err(|reason| Error::resource(reason, field, entry.span().start))?;
     }
@@ -885,7 +964,9 @@ pub(crate) fn read<'a>(
         return Err(fail(ErrorCode::EmptySequence));
     }
 
-    Ok(Extensions { items })
+    Ok(Extensions {
+        items: items.into_owned(),
+    })
 }
 
 #[cfg(test)]

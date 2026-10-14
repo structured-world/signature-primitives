@@ -212,12 +212,25 @@ impl<'a> ExtendedKeyUsage<'a> {
 
     /// Reads the value of an extended key usage extension.
     pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
-        const FIELD: &str = "extensions.extKeyUsage";
         Self::read_members(
-            extension::sequence(extension, FIELD, execution)?,
+            extension::sequence(extension, "extensions.extKeyUsage", execution)?,
             execution,
             extension.span().start,
         )
+    }
+
+    /// Decodes the original value with current query and origin admission.
+    pub fn read_in<'work>(
+        extension: &Extension<'a>,
+        query: &Reader<'work>,
+    ) -> Result<ExtendedKeyUsage<'work>>
+    where
+        'a: 'work,
+    {
+        let reader = extension.reader_in(query).field("extensions.extKeyUsage")?;
+        let inside =
+            extension::sequence_reader(reader, "extensions.extKeyUsage", extension.span().start)?;
+        ExtendedKeyUsage::read_members(inside, query.memory(), extension.span().start)
     }
 }
 

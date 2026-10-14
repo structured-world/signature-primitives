@@ -212,6 +212,16 @@ impl<'a> Name<'a> {
         self.matches_with(other, execution, None)
     }
 
+    /// Compares retained names under the current query reader's execution.
+    ///
+    /// Names may come from independently parsed certificates. Their storage
+    /// stays on its original account; normalization/comparison scratch and
+    /// deferred string decoding use the query's local and aggregate ceilings.
+    /// This is a comparison, not permission to reparse a foreign certificate.
+    pub fn matches_in(&self, other: &Name<'_>, parent: &Reader<'_>) -> Result<bool> {
+        self.matches_with(other, &parent.execution(), Some(parent))
+    }
+
     pub(crate) fn matches_with<W: structured_asn1::memory::Work>(
         &self,
         other: &Name<'_>,
@@ -305,6 +315,27 @@ impl<'a> Name<'a> {
         })
     }
 
+    /// Prepares a cache inside the current producing operation's work ceilings.
+    ///
+    /// Original document values and their retained nesting depths remain intact.
+    /// Deferred BER strings use the supplied reader's session/account instead
+    /// of a new Parser. Cache storage retains its current account; its work
+    /// owner borrows the operation independently of the document's lifetime.
+    /// This is the same semantic order as [`Name::ordered`], with scoped funding.
+    pub fn ordered_in<'p>(
+        &self,
+        parent: &'p Reader<'_>,
+    ) -> Result<Ordered<'a, structured_asn1::memory::Execution<'p>>> {
+        Ok(Ordered {
+            prepared: prepared::PreparedName::of_in(
+                &self.parts,
+                &parent.execution(),
+                Some(parent),
+            )?,
+            offset: self.offset,
+        })
+    }
+
     /// Whether this name sits below another one: the parts of the other, in
     /// order, from the top down, and anything at all after them.
     ///
@@ -338,17 +369,21 @@ impl<'a> Name<'a> {
 /// Encoded values borrow the source document. Storage charges survive the
 /// parser; every comparison is paid by its explicit current execution domain.
 #[derive(Debug)]
-pub struct Ordered<'a> {
-    prepared: prepared::PreparedName<'a>,
+pub struct Ordered<'a, W: structured_asn1::memory::Work = Memory> {
+    prepared: prepared::PreparedName<'a, W>,
     offset: u64,
 }
 
-impl Ordered<'_> {
+impl<W: structured_asn1::memory::Work> Ordered<'_, W> {
     /// The same order [`Name::order`] gives, using already prepared values.
     ///
     /// # Errors
     /// Returns a located resource error before unfunded comparison work.
-    pub fn order(&self, other: &Ordered<'_>, execution: &Memory) -> Result<core::cmp::Ordering> {
+    pub fn order<V: structured_asn1::memory::Work, E: structured_asn1::memory::Work>(
+        &self,
+        other: &Ordered<'_, V>,
+        execution: &E,
+    ) -> Result<core::cmp::Ordering> {
         self.prepared
             .order(&other.prepared, execution)
             .map_err(|reason| Error::resource(reason, "name", self.offset))
@@ -694,12 +729,12 @@ pub(crate) fn well_formed_in(
         debug_assert!(value.depth > 0);
         let mut reader = parent
             .parser()
-            .read_nested_in(
+            .read_nested_query_in(
+                parent,
                 value.der,
                 value.offset,
                 structured_asn1::Encoding::Ber,
                 value.depth - 1,
-                parent.memory(),
             )
             .field(field)?;
         let element = reader

@@ -10,7 +10,7 @@ use crate::extension::{self, Extensions};
 use crate::name::{self, Name};
 use crate::path::{Verified, Verify, WorkingKey};
 use crate::time::{self, Time};
-use structured_asn1::memory::{Memory, OwnedVec};
+use structured_asn1::memory::{Memory, OwnedVec, Work};
 use structured_asn1::{BitString, Element, Integer, Parser, Reader, Span, Tag, universal};
 
 mod scope;
@@ -454,7 +454,8 @@ fn read_tbs<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<TbsCertLis
         }
         _ => None,
     };
-    let mut revoked = inside.memory().vector();
+    let work = parent.execution();
+    let mut revoked = work.vector();
     if let Some(sequence) =
         next.filter(|value| value.tag() == Tag::constructed(universal::SEQUENCE))
     {
@@ -496,7 +497,7 @@ fn read_tbs<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<TbsCertLis
         issuer,
         this_update,
         next_update,
-        revoked,
+        revoked: revoked.into_owned(),
         extensions,
         bytes: element.as_bytes(),
         span: element.span(),

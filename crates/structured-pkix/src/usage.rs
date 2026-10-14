@@ -2,8 +2,8 @@
 
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
-use structured_asn1::memory::{Memory, OwnedVec};
-use structured_asn1::{BitString, Oid};
+use structured_asn1::memory::{Memory, OwnedVec, Work};
+use structured_asn1::{BitString, Element, Oid, Reader, Tag, universal};
 
 /// The purposes a key may be used for, as the bits the certificate set.
 #[derive(Debug, Clone, Copy)]
@@ -131,6 +131,60 @@ pub struct ExtendedKeyUsage<'a> {
 }
 
 impl<'a> ExtendedKeyUsage<'a> {
+    /// Reads an original EKU SEQUENCE using its producing reader and depth.
+    /// No certificate reconstruction or replacement parser is needed.
+    /// The returned catalogue retains its allocation charge; temporary lookup
+    /// storage is released before return. All decoding and storage work uses
+    /// the producing reader's local and aggregate execution bounds.
+    ///
+    /// # Errors
+    /// Returns malformed or empty EKU syntax, inherited depth refusal, or a
+    /// located resource error before unfunded catalogue growth or copying.
+    pub fn read_value(parent: &Reader<'a>, value: &Element<'a>) -> Result<Self> {
+        const FIELD: &str = "extensions.extKeyUsage";
+        let fail = |code| Error::new(code, FIELD, value.span().start);
+        if value.tag() != Tag::constructed(universal::SEQUENCE) {
+            return Err(fail(ErrorCode::Encoding(
+                structured_asn1::ErrorCode::UnexpectedTag,
+            )));
+        }
+        Self::read_members(
+            parent.enter(value).field(FIELD)?,
+            parent.memory(),
+            value.span().start,
+        )
+    }
+
+    fn read_members(mut inside: Reader<'a>, execution: &Memory, at: u64) -> Result<Self> {
+        const FIELD: &str = "extensions.extKeyUsage";
+        let work = inside.execution_in(execution);
+        let mut purposes = work.vector();
+        let mut seen = work.map::<Oid<'a>, ()>();
+        // RFC5280 §4.2.1.12 gives a nonempty sequence of purpose OIDs, without
+        // a uniqueness constraint. Repeated purposes add no new capability;
+        // retain their first-occurrence order through this shared decoder.
+        // https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.12
+        while !inside.is_empty() {
+            let purpose = inside.read_oid().field(FIELD)?;
+            if seen
+                .try_insert(purpose, ())
+                .map_err(|reason| Error::resource(reason, FIELD, inside.offset()))?
+                .is_none()
+            {
+                purposes
+                    .try_push(purpose)
+                    .map_err(|reason| Error::resource(reason, FIELD, inside.offset()))?;
+            }
+        }
+        if purposes.is_empty() {
+            return Err(Error::new(ErrorCode::EmptySequence, FIELD, at));
+        }
+        Ok(Self {
+            purposes: purposes.into_owned(),
+            at,
+        })
+    }
+
     /// The purposes, in the order the certificate holds them.
     #[must_use]
     pub fn purposes(&self) -> &[Oid<'a>] {
@@ -159,37 +213,11 @@ impl<'a> ExtendedKeyUsage<'a> {
     /// Reads the value of an extended key usage extension.
     pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
         const FIELD: &str = "extensions.extKeyUsage";
-        let fail = |code| Error::new(code, FIELD, extension.span().start);
-
-        let mut inside = extension::sequence(extension, FIELD, execution)?;
-        let mut purposes = inside.memory().vector();
-        let mut seen = inside.memory().map::<Oid<'a>, ()>();
-        while !inside.is_empty() {
-            let purpose = inside.read_oid().field(FIELD)?;
-            // The list is a SEQUENCE OF with no uniqueness constraint, and
-            // a repeated purpose permits exactly what one occurrence does:
-            // refusing it would block a valid certificate, so the repeat is
-            // folded away and the list holds each purpose once. A set
-            // rather than a scan, so a long list costs the work its size
-            // says and not its square.
-            if seen
-                .try_insert(purpose, ())
-                .map_err(|reason| Error::resource(reason, FIELD, inside.offset()))?
-                .is_none()
-            {
-                purposes
-                    .try_push(purpose)
-                    .map_err(|reason| Error::resource(reason, FIELD, inside.offset()))?;
-            }
-        }
-        if purposes.is_empty() {
-            return Err(fail(ErrorCode::EmptySequence));
-        }
-
-        Ok(Self {
-            purposes,
-            at: extension.span().start,
-        })
+        Self::read_members(
+            extension::sequence(extension, FIELD, execution)?,
+            execution,
+            extension.span().start,
+        )
     }
 }
 

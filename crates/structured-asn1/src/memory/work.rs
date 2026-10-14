@@ -1,6 +1,6 @@
 //! Borrowed parser execution for transitive scratch work.
 
-use super::{Memory, MemoryError, OwnedVec, allocator};
+use super::{HashWork, Memory, MemoryError, OwnedMap, OwnedVec, allocator};
 use crate::limits::Budget;
 
 mod private {
@@ -55,6 +55,12 @@ pub trait Work: Clone + private::Sealed {
                 self.clone(),
             )),
         }
+    }
+
+    /// Creates scratch map storage and mutations under this execution ceiling.
+    #[must_use]
+    fn map<K: HashWork, V>(&self) -> OwnedMap<K, V, Self> {
+        OwnedMap::new(self.clone())
     }
 }
 

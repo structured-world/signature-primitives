@@ -16,6 +16,8 @@ pub use callback::{CallbackError, CallbackResult};
 pub enum ErrorCode {
     /// The bytes are not the encoding the schema asks for here.
     Encoding(structured_asn1::ErrorCode),
+    /// The caller supplied another parser for a producing-reader operation.
+    ForeignReader,
     /// A field the schema requires is absent.
     MissingField,
     /// A field is present that this version of the structure does not have.
@@ -49,6 +51,7 @@ impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Encoding(code) => write!(f, "{code}"),
+            Self::ForeignReader => f.write_str("reader belongs to another parser"),
             Self::MissingField => f.write_str("required field absent"),
             Self::UnexpectedField => f.write_str("field not part of this version"),
             Self::TrailingData => f.write_str("bytes left over"),

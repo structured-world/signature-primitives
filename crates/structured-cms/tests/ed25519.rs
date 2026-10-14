@@ -520,6 +520,7 @@ fn timestamp_fixture(
 #[derive(Clone, Copy)]
 enum FixtureCatalogue {
     Signer,
+    Tail,
     Empty,
     Other,
 }
@@ -584,7 +585,10 @@ fn timestamp_fixture_catalogue(
     if stated_accuracy {
         info.extend([0x30, 0]);
     }
-    let info = tlv(0x30, &info);
+    let mut info = tlv(0x30, &info);
+    if matches!(catalogue, FixtureCatalogue::Tail) {
+        info.extend([0xff, 0xfe, 0xfd]);
+    }
     let mut content_type = tlv(6, oid::CONTENT_TYPE.as_bytes());
     content_type.extend(tlv(0x31, &tlv(6, oid::TST_INFO.as_bytes())));
     let mut digest = tlv(6, oid::MESSAGE_DIGEST.as_bytes());
@@ -614,7 +618,7 @@ fn timestamp_fixture_catalogue(
     content.extend(tlv(0xa0, &tlv(0x24, &fragments)));
     let mut fields = vec![2, 1, 3];
     fields.extend(match catalogue {
-        FixtureCatalogue::Signer => tlv(0x31, &digest_algorithm),
+        FixtureCatalogue::Signer | FixtureCatalogue::Tail => tlv(0x31, &digest_algorithm),
         FixtureCatalogue::Empty => tlv(0x31, &[]),
         FixtureCatalogue::Other => tlv(0x31, &tlv(0x30, &tlv(6, &[42]))),
     });
@@ -799,6 +803,67 @@ fn malformed_timestamp_info_is_refused_before_crypto_or_covered_source() {
     assert_eq!(provider.digest_resolutions.get(), 0);
     assert_eq!(provider.digest_starts.get(), 0);
     assert_eq!(provider.raw_starts.get(), 0);
+}
+
+#[test]
+fn readable_timestamp_tail_stays_nonconforming_before_crypto_and_evidence() {
+    // This CMS signature authenticates the actual malformed carried bytes.
+    // Readable recovery must not authorize crypto work or successful evidence.
+    use structured_cms::content_source::ContentError;
+    use structured_cms::timestamp::{CheckContext, CheckError, InfoCheckError, InfoError, Token};
+    use structured_pkix::{
+        Certificate,
+        temporal::{Instant, LeapTable},
+    };
+    let signing = SigningKey::from_bytes(&hex(
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    ));
+    let (bytes, certificate_bytes) =
+        timestamp_fixture_catalogue(&signing, true, false, FixtureCatalogue::Tail);
+    let memory = Memory::new(Arc::new(MemoryAccount::new(1_000_000, 10_000_000)));
+    let parser = Parser::ber(memory.clone());
+    let token = Token::read(&parser, &bytes, 400).unwrap();
+    let parent = parser.read(&[], 400).unwrap();
+    let cert_parser = Parser::der(memory.clone());
+    let certificate = Certificate::read(&cert_parser, &certificate_bytes, 900).unwrap();
+    let certificate_parent = cert_parser.read(&[], 900).unwrap();
+    let utc = LeapTable::new(0, 2_000_000_000, &[]).unwrap();
+    let provider = Oracle {
+        key: signing.verifying_key(),
+        digest_resolutions: Cell::new(0),
+        digest_starts: Cell::new(0),
+        raw_starts: Cell::new(0),
+        raw_finishes: Cell::new(0),
+    };
+    let context = CheckContext {
+        certificate: &certificate,
+        certificate_parent: &certificate_parent,
+        key: WorkingKey::standing(certificate.tbs().public_key()),
+        requested: None,
+        utc: &utc,
+        reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
+        window: None,
+    };
+    let answer = token.check(
+        &provider,
+        &parent,
+        &context,
+        &mut [&b"document"[..]],
+        |_, _| Ok::<_, ()>(false),
+    );
+    let Err(CheckError::Information(ContentError::Callback {
+        source: InfoError::Callback(InfoCheckError::Nonconforming { span }),
+        context,
+    })) = answer
+    else {
+        panic!("tail inspection became successful or lost its fault class");
+    };
+    assert_eq!(span.start, 0);
+    assert!(context.project_offset(span.end(), &memory).unwrap() > 400);
+    assert_eq!(provider.digest_resolutions.get(), 0);
+    assert_eq!(provider.digest_starts.get(), 0);
+    assert_eq!(provider.raw_starts.get(), 0);
+    assert_eq!(provider.raw_finishes.get(), 0);
 }
 
 #[derive(Debug)]

@@ -40,6 +40,9 @@ Constructed content can have several physical ranges. `SourceMap` retains that
 mapping independently of temporary joins. Nested timestamp checking preserves
 separate CMS-envelope and TSTInfo coordinate contexts. A foreign-reader refusal
 occurs before map admission; it is caller misuse, not malformed document data.
+Timestamp inspection preserves a uniquely readable TSTInfo followed by trailing
+carried bytes, with a located `TrailingData` fault and the original source map.
+Fault retention is fallible and uses the producing execution's resource limits.
 
 `timestamp::Evidence` records successful common checks, not a trust decision.
 Applications must validate the TSA certification path and status, enforce signed

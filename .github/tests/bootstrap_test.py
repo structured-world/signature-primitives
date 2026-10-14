@@ -9,6 +9,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 class BootstrapPackages(unittest.TestCase):
+    def test_cms_tag_pattern_survives_bootstrap_to_workspace_transition(self):
+        # The first CMS version is already tagged v0.2.0. Release-plz defaults
+        # differ for one versus several public packages; neither mode may
+        # change the existing CMS baseline when bootstrap access is removed.
+        normal = tomllib.loads((ROOT / "release-plz.toml").read_text())
+        cms = next(package for package in normal["package"]
+                   if package["name"] == "structured-cms")
+        bootstrap = tomllib.loads((ROOT / ".github/release-cms.toml").read_text())
+        self.assertEqual(cms["git_tag_name"], "v{{ version }}")
+        self.assertEqual(bootstrap["workspace"]["git_tag_name"], cms["git_tag_name"])
+
     def test_exact_package_partition_and_release_commit_gate(self):
         # Parse the committed TOML rather than a second hand-written model of
         # the configuration. A future package must be classified explicitly.

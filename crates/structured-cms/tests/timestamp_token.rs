@@ -61,6 +61,34 @@ fn memory() -> Memory {
 }
 
 #[test]
+fn equivalent_issuer_signers_preserve_original_token_reading_and_fault() {
+    // The public token path shares semantic issuer identity with the comparer;
+    // accepting a readable duplicate does not remove its ExtraSignature fault.
+    let make = |text: &[u8], tag| {
+        let mut attribute = vec![6, 3, 0x55, 4, 3];
+        attribute.extend(tlv(tag, text));
+        let mut sid = tlv(0x30, &tlv(0x31, &tlv(0x30, &attribute)));
+        sid.extend([2, 1, 7]);
+        let mut body = vec![2, 1, 1];
+        body.extend(tlv(0x30, &sid));
+        body.extend([0x30, 3, 6, 1, 42, 0x30, 3, 6, 1, 43, 4, 1, 8]);
+        tlv(0x30, &body)
+    };
+    let first = make(b"Example CA", 0x0c);
+    let mut signers = first.clone();
+    signers.extend(make(b"  EXAMPLE   ca  ", 0x13));
+    let bytes = message(oid::TST_INFO.as_bytes(), Some(&info()), &signers, false);
+    let account = memory();
+    let parser = Parser::ber(account.clone());
+    let token = Token::read(&parser, &bytes, 400).unwrap();
+    assert_eq!(token.signer().as_bytes(), first);
+    assert_eq!(token.faults().len(), 1);
+    assert_eq!(token.faults()[0].code(), ErrorCode::ExtraSignature);
+    drop(token);
+    assert_eq!(account.used(), 0);
+}
+
+#[test]
 fn duplicate_sha2_signers_retain_first_encoding_and_extra_signature_fault() {
     // RFC5754 §2 default equivalence must also reach the public TSP envelope
     // recovery path; a readable duplicate still carries its adverse fault.

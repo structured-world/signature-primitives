@@ -45,6 +45,35 @@ fn time() -> Vec<u8> {
 }
 
 #[test]
+fn repeated_integer_must_match_nonce_not_an_unrelated_prior_field() {
+    // Once nonce is populated, a version/serial match cannot rescue a
+    // conflicting second nonce. Equal nonce recovery retains one fault.
+    for repeated in [1, 7, 9] {
+        let mut body = fields(false, &[7], &time());
+        body.extend([2, 1, 9]);
+        let offset = body.len();
+        body.extend([2, 1, repeated]);
+        let bytes = tlv(0x30, &body);
+        let account = memory();
+        let parser = Parser::ber(account.clone());
+        let mut parent = parser.read(&bytes, 400).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let result = TokenInfo::read(&parent, &element);
+        if repeated == 9 {
+            let info = result.unwrap();
+            assert_eq!(info.nonce().unwrap().value().as_u64(), Some(9));
+            assert_eq!(info.faults().len(), 1);
+            assert_eq!(info.faults()[0].code(), ErrorCode::DuplicateField);
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.code(), ErrorCode::DuplicateField);
+            assert_eq!(error.offset(), 402 + u64::try_from(offset).unwrap());
+        }
+        assert_eq!(account.used(), 0);
+    }
+}
+
+#[test]
 fn displaced_version_does_not_choose_between_serial_and_nonce() {
     // After policy/imprint, INTEGER 1 could be displaced version or serial
     // with version missing. A second INTEGER cannot make that reading unique.

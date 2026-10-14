@@ -26,6 +26,89 @@ fn signer(sid: &[u8], signature: &[u8], version: u8) -> Vec<u8> {
     tlv(0x30, &inside)
 }
 
+fn named_signer(text: &[u8], tag: u8, serial: u8) -> Vec<u8> {
+    let mut attribute = vec![6, 3, 0x55, 4, 3];
+    attribute.extend(tlv(tag, text));
+    let name = tlv(0x30, &tlv(0x31, &tlv(0x30, &attribute)));
+    let mut identity = name;
+    identity.extend([2, 1, serial]);
+    signer(&tlv(0x30, &identity), &[4, 1, 8], 1)
+}
+
+#[test]
+fn duplicate_issuer_identity_uses_shared_name_semantics() {
+    // RFC5280 §7.1 issuer equality must survive case, space and DirectoryString
+    // spelling changes without changing the original signer or serial bytes.
+    let original = named_signer(b"Example CA", 0x0c, 7);
+    let parser = Parser::ber(memory());
+    let mut parent = parser.read(&original, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let left = SignerInfo::read(&parent, &element).unwrap();
+    for (text, tag, serial, expected) in [
+        (&b"  EXAMPLE   ca  "[..], 0x13, 7, true),
+        (&b"example ca"[..], 0x0c, 7, true),
+        (&b"Other CA"[..], 0x0c, 7, false),
+        (&b"example ca"[..], 0x0c, 8, false),
+    ] {
+        let bytes = named_signer(text, tag, serial);
+        let mut parent = parser.read(&bytes, 900).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let right = SignerInfo::read(&parent, &element).unwrap();
+        assert_eq!(left.same_value(&right, &parent).unwrap(), expected);
+        assert_eq!(left.as_bytes(), original);
+        assert_eq!(left.signature().as_one(), Some(&[8][..]));
+    }
+}
+
+#[test]
+fn issuer_normalization_refusals_keep_duplicate_location_and_release_scratch() {
+    // Normalization uses current query funding; partial preparation must release
+    // scratch while retained issuer catalogues stay on their original account.
+    // Non-ASCII composition exercises allocating preparation rather than the
+    // allocation-free borrowed ASCII fast path.
+    let first = named_signer("Éxample CA".as_bytes(), 0x0c, 7);
+    let second = named_signer("  E\u{301}XAMPLE   ca  ".as_bytes(), 0x0c, 7);
+    let retained = memory();
+    let parser = Parser::new(
+        Encoding::Ber,
+        Limits {
+            max_work: 100_000,
+            ..Limits::default()
+        },
+        retained.clone(),
+    );
+    let mut parent = parser.read(&first, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let left = SignerInfo::read(&parent, &element).unwrap();
+    let mut parent = parser.read(&second, 900).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let right = SignerInfo::read(&parent, &element).unwrap();
+    let original_capacity = retained.used();
+    let full = memory();
+    let query = parent.try_clone().unwrap().with_execution(&full);
+    assert!(left.same_value(&right, &query).unwrap());
+    let cost = full.work_used();
+    assert!(cost > 1);
+    assert_eq!(full.used(), 0);
+    for (capacity, work) in [(262_144, 0), (262_144, cost - 1), (0, cost)] {
+        let current = Memory::new(Arc::new(MemoryAccount::new(capacity, work)));
+        let query = parent.try_clone().unwrap().with_execution(&current);
+        let error = left.same_value(&right, &query).unwrap_err();
+        assert!(error.is_resource());
+        assert_eq!(error.field(), "signedData.signerInfos");
+        assert_eq!(error.offset(), 900);
+        assert_eq!(current.used(), 0);
+        assert_eq!(retained.used(), original_capacity);
+    }
+    while parent.charge(1).is_ok() {}
+    let current = memory();
+    let query = parent.with_execution(&current);
+    let error = left.same_value(&right, &query).unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!(error.offset(), 900);
+    assert_eq!(current.work_used(), 0);
+}
+
 #[test]
 fn both_sid_forms_preserve_values_and_original_primitive_signature() {
     // Both RFC5652 CHOICE branches must reach the same borrowed signature path.

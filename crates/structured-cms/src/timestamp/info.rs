@@ -237,7 +237,16 @@ fn same_duplicate(
             .map_err(refusal)?;
         return Ok(policy.as_bytes() == other.as_bytes());
     }
-    for prior in seen.iter().flatten() {
+    // RFC3161 §2.4.2 orders the INTEGER roles. Here all three roles are
+    // populated, so another INTEGER can only repeat nonce. Standard-silent
+    // recovery must not rescue a conflicting nonce by matching version/serial.
+    // https://www.rfc-editor.org/rfc/rfc3161#section-2.4.2
+    let applicable = if element.tag() == Tag::primitive(universal::INTEGER) {
+        &seen[Slot::Nonce as usize..=Slot::Nonce as usize]
+    } else {
+        &seen[..]
+    };
+    for prior in applicable.iter().flatten() {
         execution.charge_work(1).map_err(refusal)?;
         if prior.as_bytes().len() != element.as_bytes().len() {
             continue;

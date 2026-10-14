@@ -2,6 +2,9 @@
 [workspace]
 release_always = false
 git_release_enable = true
+# Keep the first CI-created CMS tag pattern in the normal workspace as well.
+# https://release-plz.dev/docs/config#the-git_tag_name-field
+git_tag_name = "v{{ version }}"
 
 [[package]]
 name = "structured-asn1"

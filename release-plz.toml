@@ -15,5 +15,6 @@ changelog_include = ["structured-asn1", "structured-cms"]
 
 [[package]]
 name = "structured-cms"
+git_tag_name = "v{{ version }}"
 version_group = "primitives"
 changelog_include = ["structured-asn1", "structured-pkix"]

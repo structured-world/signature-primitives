@@ -1,0 +1,12 @@
+# First publication is limited to CMS after its registry dependencies are live.
+[workspace]
+release_always = false
+git_release_enable = true
+
+[[package]]
+name = "structured-asn1"
+release = false
+
+[[package]]
+name = "structured-pkix"
+release = false

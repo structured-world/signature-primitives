@@ -5,8 +5,15 @@ explicit resource accounts and injected cryptographic providers. Applications
 supply content and own trust, policy, acquisition and reporting. The library
 performs no implicit I/O and includes no cryptographic engine.
 
-This package is under development and has not been published. Its implemented
-surface covers SignedData rather than encrypted CMS content types.
+The implemented surface covers SignedData rather than encrypted CMS content
+types. Use the coordinated ASN.1/PKIX/CMS API family:
+
+```toml
+[dependencies]
+structured-asn1 = "0.2"
+structured-pkix = "0.2"
+structured-cms = "0.2"
+```
 
 - `ContentInfo` and `SignedData` preserve original BER encodings, signer
   identifiers, certificate/revocation choices and signed attributes.

@@ -481,7 +481,7 @@ pub(super) fn process<'a, R: Recognizer, D: Driver<'a, R>>(
     settings: &Settings<'a, '_, R>,
     driver: &mut D,
 ) -> BuildResult<Validation<'a>, D::VerificationError, R::Error> {
-    processing::process(input, EffectiveAnchor::standing(anchor), settings, driver)
+    processing::process(input, &EffectiveAnchor::standing(anchor), settings, driver)
 }
 
 struct Supplied<'a, 'p, V: Verify, W: Watch, R: Recognizer> {
@@ -668,7 +668,7 @@ pub fn validate_effective<'a, V: Verify, W: Watch, R: Recognizer>(
         policies: context.bounds.policies,
         recognizer: context.recognizer,
     };
-    let outcome = processing::process(Chain::Supplied(chain), effective, &settings, &mut driver)?;
+    let outcome = processing::process(Chain::Supplied(chain), &effective, &settings, &mut driver)?;
     if let Some(halted) = driver.halted {
         return Ok(Validation::Incomplete(halted));
     }

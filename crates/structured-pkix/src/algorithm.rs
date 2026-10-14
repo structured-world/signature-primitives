@@ -7,19 +7,127 @@
 
 use crate::error::{Error, ErrorCode, Located, Result};
 use structured_asn1::memory::Memory;
-use structured_asn1::{Element, Oid, Reader, Tag, universal};
+use structured_asn1::{Element, Oid, Parser, Reader, Tag, universal};
 
 /// An algorithm and its parameters, as the certificate wrote them.
 #[derive(Debug, Clone, Copy)]
 pub struct AlgorithmIdentifier<'a> {
     algorithm: Oid<'a>,
     parameters: Option<&'a [u8]>,
+    null_parameter: bool,
+    parser: &'a Parser,
     der: &'a [u8],
     offset: u64,
     field: &'static str,
 }
 
 impl<'a> AlgorithmIdentifier<'a> {
+    /// Whether a written primitive NULL was validated by the producing reader.
+    /// Original parameter bytes remain unchanged; absence is not NULL here.
+    #[must_use]
+    pub fn has_null_parameter(self) -> bool {
+        self.null_parameter
+    }
+
+    /// Compares written values without assuming algorithm-specific defaults.
+    /// Two validated primitive NULLs share a value despite BER length spelling;
+    /// other parameters retain opaque encoded identity. Both identifiers must
+    /// come from this producing parser. This is not algorithm acceptance.
+    ///
+    /// # Errors
+    /// Returns a located resource refusal or a foreign-parser error before
+    /// comparing identifiers from another parsing session.
+    pub fn same_written_in(self, other: &Self, parent: &Reader<'_>) -> Result<bool> {
+        self.value_matches(other, parent, false)
+    }
+
+    /// Compares RFC5754 §2 SHA224/256/384/512 identifiers with absent/NULL defaults.
+    /// Unknown algorithms retain written-value semantics, not a guessed default.
+    /// Invalid known parameters and resource/caller refusals remain errors.
+    /// Selected-provider support and signature-profile acceptance are separate.
+    /// <https://www.rfc-editor.org/rfc/rfc5754#section-2>
+    ///
+    /// # Errors
+    /// Returns invalid known parameters, foreign-parser misuse, or resource
+    /// refusal separately from an ordinary identity mismatch.
+    pub fn digest_matches_in(self, other: &Self, parent: &Reader<'_>) -> Result<bool> {
+        self.value_matches(other, parent, true)
+    }
+
+    fn value_matches(self, other: &Self, parent: &Reader<'_>, digest: bool) -> Result<bool> {
+        for operand in [self, *other] {
+            if !core::ptr::eq(operand.parser, parent.parser()) {
+                return Err(Error::new(
+                    ErrorCode::ForeignReader,
+                    operand.field,
+                    operand.offset,
+                ));
+            }
+        }
+        let charge = |amount| {
+            parent.charge(amount).map_err(|error| {
+                Error::new(ErrorCode::Encoding(error.code()), other.field, other.offset)
+            })
+        };
+        let sha2 = if digest {
+            let known = self.validate_digest_params(parent)?;
+            other.validate_digest_params(parent)?;
+            known
+        } else {
+            false
+        };
+        charge(1)?;
+        let kind = self.algorithm.as_bytes();
+        if kind.len() != other.algorithm.as_bytes().len() {
+            return Ok(false);
+        }
+        charge(kind.len() as u64)?;
+        if self.algorithm != other.algorithm {
+            return Ok(false);
+        }
+        if sha2 {
+            return Ok(true);
+        }
+        if self.null_parameter && other.null_parameter {
+            return Ok(true);
+        }
+        let (Some(left), Some(right)) = (self.parameters, other.parameters) else {
+            return Ok(self.parameters.is_none() && other.parameters.is_none());
+        };
+        if left.len() != right.len() {
+            return Ok(false);
+        }
+        charge(left.len() as u64)?;
+        Ok(left == right)
+    }
+
+    fn validate_digest_params(self, parent: &Reader<'_>) -> Result<bool> {
+        let charge = |amount| {
+            parent.charge(amount).map_err(|error| {
+                Error::new(ErrorCode::Encoding(error.code()), self.field, self.offset)
+            })
+        };
+        charge(1)?;
+        let kind = self.algorithm.as_bytes();
+        if kind.len() != 9 {
+            return Ok(false);
+        }
+        charge(9)?;
+        if kind[..8] != [0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2] || kind[8] < 1 || kind[8] > 4 {
+            return Ok(false);
+        }
+        if self.parameters.is_some() && !self.null_parameter {
+            // RFC5754 §2 permits only absent or NULL parameters for these four
+            // SHA2 identifiers. Unknown algorithms get no inferred default.
+            // https://www.rfc-editor.org/rfc/rfc5754#section-2
+            return Err(Error::new(
+                ErrorCode::MalformedValue,
+                self.field,
+                self.offset,
+            ));
+        }
+        Ok(true)
+    }
     /// Which algorithm.
     #[must_use]
     pub fn algorithm(self) -> Oid<'a> {
@@ -170,8 +278,13 @@ pub fn read<'a>(
     // the salt length of a padding scheme. It is handed the bytes on the
     // promise that they are the encoding the document claims, so the whole
     // value is held to that and not only its outer header.
+    let mut null_parameter = false;
     if let Some(parameter) = &parameter {
         crate::name::walk_der(&inside, parameter, field, crate::name::Strings::Checked)?;
+        if parameter.tag() == Tag::primitive(universal::NULL) {
+            inside.null(parameter).field(field)?;
+            null_parameter = true;
+        }
     }
     let parameters = parameter.map(Element::as_bytes);
 
@@ -184,6 +297,8 @@ pub fn read<'a>(
     Ok(AlgorithmIdentifier {
         algorithm,
         parameters,
+        null_parameter,
+        parser: parent.parser(),
         der: element.as_bytes(),
         offset: element.span().start,
         field,

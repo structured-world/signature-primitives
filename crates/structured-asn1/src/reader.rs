@@ -304,6 +304,15 @@ impl<'a> Reader<'a> {
         crate::memory::Execution::new(self.memory(), self.budget())
     }
 
+    /// Borrows this parser's ceiling and the supplied current account.
+    /// Does not borrow the cursor, so admitted scratch can accompany iteration.
+    pub fn execution_in<'work>(&self, memory: &'work Memory) -> crate::memory::Execution<'work>
+    where
+        'a: 'work,
+    {
+        crate::memory::Execution::new(memory, self.budget())
+    }
+
     /// Selects the domain for subsequent execution without moving existing
     /// storage charges. Offsets, depth and parser-session cumulative limits
     /// remain unchanged; a new domain does not reset that session ceiling.

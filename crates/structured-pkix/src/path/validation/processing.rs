@@ -85,7 +85,7 @@ struct Processing<'a> {
 impl<'a> Processing<'a> {
     fn new<R: Recognizer, D: Driver<'a, R>>(
         chain: &[&'a Certificate<'a>],
-        effective: EffectiveAnchor<'a>,
+        effective: &EffectiveAnchor<'a>,
         settings: &Settings<'a, '_, R>,
         driver: &mut D,
     ) -> Result<'a, Self, D::VerificationError, R::Error> {
@@ -404,7 +404,7 @@ impl<'a> Processing<'a> {
 
 fn inner<'a, R: Recognizer, D: Driver<'a, R>>(
     input: Chain<'a, '_>,
-    anchor: EffectiveAnchor<'a>,
+    anchor: &EffectiveAnchor<'a>,
     settings: &Settings<'a, '_, R>,
     driver: &mut D,
 ) -> Result<'a, ValidationFacts<'a>, D::VerificationError, R::Error> {
@@ -421,7 +421,7 @@ fn inner<'a, R: Recognizer, D: Driver<'a, R>>(
 
 pub(super) fn process<'a, R: Recognizer, D: Driver<'a, R>>(
     input: Chain<'a, '_>,
-    anchor: EffectiveAnchor<'a>,
+    anchor: &EffectiveAnchor<'a>,
     settings: &Settings<'a, '_, R>,
     driver: &mut D,
 ) -> BuildResult<Validation<'a>, D::VerificationError, R::Error> {

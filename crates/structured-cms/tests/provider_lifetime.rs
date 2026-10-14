@@ -829,12 +829,15 @@ fn prepared_duplicate_comparison_uses_resolved_identities_without_resolution_or_
     let limited = Parser::new(
         Encoding::Ber,
         structured_asn1::Limits {
-            max_work: 0,
+            max_work: 1,
             ..structured_asn1::Limits::default()
         },
         current.clone(),
     );
     let query = limited.read(&[], 1500).unwrap();
+    // Preserve the signers' origin session while narrowing the current query;
+    // a new unrelated parser is caller misuse, not a local-budget test.
+    let query = parser.read(&[], 1500).unwrap().with_query(&query).unwrap();
     let Err(PrepareError::Processing(error)) = ready[0].same_signer_value(&ready[1], &query) else {
         panic!("local refusal lost")
     };

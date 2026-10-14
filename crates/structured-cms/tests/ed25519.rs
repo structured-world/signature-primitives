@@ -509,6 +509,27 @@ fn timestamp_fixture(
     stated_accuracy: bool,
     nonminimal_serial: bool,
 ) -> (Vec<u8>, Vec<u8>) {
+    timestamp_fixture_catalogue(
+        signing,
+        stated_accuracy,
+        nonminimal_serial,
+        FixtureCatalogue::Signer,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum FixtureCatalogue {
+    Signer,
+    Empty,
+    Other,
+}
+
+fn timestamp_fixture_catalogue(
+    signing: &SigningKey,
+    stated_accuracy: bool,
+    nonminimal_serial: bool,
+    catalogue: FixtureCatalogue,
+) -> (Vec<u8>, Vec<u8>) {
     // Entirely synthetic certificate/token from the public RFC8032 test key.
     let algorithm = tlv(0x30, &tlv(6, ED25519));
     let mut attribute = tlv(6, &[0x55, 4, 3]);
@@ -592,7 +613,11 @@ fn timestamp_fixture(
     let mut content = tlv(6, oid::TST_INFO.as_bytes());
     content.extend(tlv(0xa0, &tlv(0x24, &fragments)));
     let mut fields = vec![2, 1, 3];
-    fields.extend(tlv(0x31, &digest_algorithm));
+    fields.extend(match catalogue {
+        FixtureCatalogue::Signer => tlv(0x31, &digest_algorithm),
+        FixtureCatalogue::Empty => tlv(0x31, &[]),
+        FixtureCatalogue::Other => tlv(0x31, &tlv(0x30, &tlv(6, &[42]))),
+    });
     fields.extend(tlv(0x30, &content));
     fields.extend(tlv(0x31, &tlv(0x30, &signer_fields)));
     let mut envelope = tlv(6, oid::SIGNED_DATA.as_bytes());
@@ -613,14 +638,20 @@ fn complete_timestamp_checker_binds_signature_ess_content_time_and_retains_evide
     let signing = SigningKey::from_bytes(&hex(
         "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
     ));
-    for (accuracy, covered_bytes, positive) in [
-        (true, &b"document"[..], true),
-        (true, &b"different"[..], false),
-        (false, &b"document"[..], false),
+    // RFC5652 §§5.1/5.3 explicitly permit an empty catalogue and optional
+    // refusal of unlisted algorithms. No application rejection is asserted by
+    // Evidence; real arithmetic still uses the original SHA512 signer input.
+    for (accuracy, covered_bytes, positive, catalogue) in [
+        (true, &b"document"[..], true, FixtureCatalogue::Signer),
+        (true, &b"different"[..], false, FixtureCatalogue::Signer),
+        (false, &b"document"[..], false, FixtureCatalogue::Signer),
+        (true, &b"document"[..], true, FixtureCatalogue::Empty),
+        (true, &b"document"[..], true, FixtureCatalogue::Other),
     ] {
         let memory = Memory::new(Arc::new(MemoryAccount::new(1_000_000, 10_000_000)));
         let evidence = {
-            let (bytes, certificate_bytes) = timestamp_fixture(&signing, accuracy, false);
+            let (bytes, certificate_bytes) =
+                timestamp_fixture_catalogue(&signing, accuracy, false, catalogue);
             let parser = Parser::ber(memory.clone());
             let cert_parser = Parser::der(memory.clone());
             let token = Token::read(&parser, &bytes, 400).unwrap();

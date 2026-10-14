@@ -181,6 +181,10 @@ impl<'a> SignedData<'a> {
         self.required_version
     }
     /// Original advertised digest algorithms; provider resolution is separate.
+    /// RFC5652 §§5.1, 5.3 permit zero entries and do not require recipients to
+    /// refuse an unlisted signer digest. These advertisements never replace the
+    /// original signer algorithm; stricter catalogue acceptance is caller policy.
+    /// <https://www.rfc-editor.org/rfc/rfc5652#section-5.1>
     #[must_use]
     pub fn digest_algorithms(&self) -> &[AlgorithmIdentifier<'a>] {
         &self.algorithms

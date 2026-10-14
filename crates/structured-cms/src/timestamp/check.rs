@@ -410,6 +410,9 @@ impl<'doc> Token<'doc> {
     /// external. Semantic negatives remain facts, never evidence. Processing,
     /// provider and source refusals abort. Provider errors are source-independent
     /// so a temporary joined information buffer cannot escape in their type.
+    /// Optional rejection of unlisted digest algorithms (RFC5652 §5.3) belongs
+    /// to caller policy. Evidence does not assert that every sender SHOULD or
+    /// application-profile requirement was satisfied.
     #[expect(
         clippy::result_large_err,
         reason = "preserve original cause and accounted source context without allocating on refusal"

@@ -37,6 +37,11 @@ impl<'a> Token<'a> {
     /// The key may borrow a shorter-lived caller descriptor and retain inherited
     /// parameters. SID/ESS binding, TSA purpose, request/time and trust remain
     /// independent checks; Valid alone never creates authenticated evidence.
+    /// RFC5652 §§5.1, 5.3 allow an empty advertised digest catalogue and make
+    /// rejection of an unlisted signer algorithm optional. This operation
+    /// verifies the signer's actual algorithm; catalogue-based rejection is
+    /// an application profile decision, not an unconditional CMS syntax rule.
+    /// <https://www.rfc-editor.org/rfc/rfc5652#section-5.3>
     pub fn check_signature<'check, P: SignatureProvider<'check>>(
         &'check self,
         provider: &'check P,
@@ -46,6 +51,10 @@ impl<'a> Token<'a> {
     where
         'a: 'check,
     {
+        // RFC5652 §5.3 uses SHOULD for listing and MAY for recipient refusal.
+        // The catalogue is not the signed algorithm input. Resolve that input
+        // directly, rather than turning optional profile rejection into a
+        // mandatory malformed answer or substituting an advertised algorithm.
         let request = match prepare::resolve(
             provider,
             self.signer(),

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.2.4...structured-asn1-v0.3.0) - 2026-10-15
+
+### Fixed
+
+- *(pkix)* retain scoped execution and provenance ([#72](https://github.com/structured-world/signature-primitives/pull/72))
+
 ## [0.2.4](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.2.3...structured-asn1-v0.2.4) - 2026-10-14
 
 ### Fixed

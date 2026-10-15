@@ -28,7 +28,7 @@ impl<'a, W: Work> PreparedName<'a, W> {
     pub(super) fn of_in(
         parts: &[RelativeName<'a>],
         memory: &W,
-        parent: Option<&structured_asn1::Reader<'_>>,
+        parent: Option<&structured_asn1::ScopedReader<'_, '_>>,
     ) -> Result<Self, Error> {
         let mut attributes = memory.vector();
         let mut lengths = memory.vector();
@@ -109,7 +109,7 @@ impl<'a, W: Work> Prepared<'a, W> {
     fn of_in(
         attribute: Attribute<'a>,
         memory: &W,
-        parent: Option<&structured_asn1::Reader<'_>>,
+        parent: Option<&structured_asn1::ScopedReader<'_, '_>>,
     ) -> Result<Self, Error> {
         Ok(Self {
             attribute,
@@ -198,7 +198,7 @@ pub(super) fn folds(attribute: Attribute<'_>, memory: &Memory) -> Result<bool, E
 fn canonical<'a, W: Work>(
     attribute: Attribute<'a>,
     memory: &W,
-    parent: Option<&structured_asn1::Reader<'_>>,
+    parent: Option<&structured_asn1::ScopedReader<'_, '_>>,
 ) -> Result<Option<Canonical<'a, W>>, Error> {
     let value = attribute.value;
     let fail = |reason| Error::resource(reason, "name.attribute", value.offset);
@@ -239,10 +239,11 @@ fn canonical<'a, W: Work>(
                 .field("name.attribute")?;
             return canonical_segmented(attribute, memory, reader);
         }
-        // A retained query has no producing parser ceiling. Physical input
-        // size bounds possible headers/nesting; current aggregate availability
-        // bounds all work. No default parser profile may silently reject a
-        // previously accepted deep value, and the account is never reset.
+        // A retained query has no producing parser argument. Physical input
+        // size bounds this temporary source's headers/nesting; the Work bridge
+        // also preserves any current operation ceiling, not just its account.
+        // No default profile may silently reject a previously accepted deep
+        // value, and neither account nor current operation is reset.
         let length = u64::try_from(value.der.len()).map_err(|_| fail(MemoryError::WorkExceeded))?;
         let max_work = u64::try_from(memory.memory().work_remaining())
             .map_err(|_| fail(MemoryError::WorkExceeded))?;
@@ -257,8 +258,14 @@ fn canonical<'a, W: Work>(
             },
             memory.memory().clone(),
         );
-        let reader = parser
-            .read(value.der, value.offset)
+        let reader = memory
+            .read_source(
+                &parser,
+                value.der,
+                value.offset,
+                structured_asn1::Encoding::Ber,
+                0,
+            )
             .field("name.attribute")?;
         return canonical_segmented(attribute, memory, reader);
     }
@@ -268,7 +275,7 @@ fn canonical<'a, W: Work>(
 fn canonical_segmented<'a, W: Work>(
     attribute: Attribute<'a>,
     memory: &W,
-    mut reader: structured_asn1::Reader<'_>,
+    mut reader: structured_asn1::ScopedReader<'_, '_>,
 ) -> Result<Option<Canonical<'a, W>>, Error> {
     let value = attribute.value;
     let fail = |reason| Error::resource(reason, "name.attribute", value.offset);
@@ -402,7 +409,7 @@ fn unicode<const FOLD_CASE: bool, W: Work>(
 fn part_in<'a, W: Work>(
     part: &RelativeName<'a>,
     memory: &W,
-    parent: Option<&structured_asn1::Reader<'_>>,
+    parent: Option<&structured_asn1::ScopedReader<'_, '_>>,
 ) -> Result<OwnedVec<Prepared<'a, W>, W>, Error> {
     let mut attributes = memory.vector();
     let fail = |reason| Error::resource(reason, "name.attribute", part.attributes[0].value.offset);
@@ -429,7 +436,7 @@ pub(super) fn compare_parts_in<W: Work>(
     left: &RelativeName<'_>,
     right: &RelativeName<'_>,
     execution: &W,
-    parent: Option<&structured_asn1::Reader<'_>>,
+    parent: Option<&structured_asn1::ScopedReader<'_, '_>>,
 ) -> Result<Ordering, Error> {
     compare_views(
         left.attributes

@@ -11,8 +11,8 @@ use crate::extension::{self, Extension};
 use crate::general_name::{self, GeneralName};
 use crate::name::{self, RelativeName};
 use crate::oid;
-use structured_asn1::memory::{Memory, OwnedVec, Work};
-use structured_asn1::{BitString, Element, Oid, Reader, Tag, universal};
+use structured_asn1::memory::{OwnedVec, Work};
+use structured_asn1::{BitString, Element, Oid, ScopedReader as Reader, Tag, universal};
 
 /// One published service or document, and where it is.
 #[derive(Debug)]
@@ -54,10 +54,10 @@ impl<'a> InfoAccess<'a> {
     /// The locations published for one method. Each comparison is admitted
     /// in the current execution domain; an error is yielded once and ends
     /// the iterator. Returned locations borrow this collection.
-    pub fn locations_for<'n, 'q>(
+    pub fn locations_for<'n, 'q, W: Work>(
         &'n self,
         method: Oid<'q>,
-        execution: &'q Memory,
+        execution: &'q W,
     ) -> impl Iterator<Item = Result<&'n GeneralName<'a>>> + 'q
     where
         'n: 'q,
@@ -88,7 +88,7 @@ impl<'a> InfoAccess<'a> {
 
     /// Reads the value of an authority or subject information access
     /// extension, which have the same shape.
-    pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         let field = if extension.kind() == oid::SUBJECT_INFO_ACCESS {
             "extensions.subjectInfoAccess"
         } else {
@@ -96,7 +96,7 @@ impl<'a> InfoAccess<'a> {
         };
 
         let mut inside = extension::sequence(extension, field, execution)?;
-        let work = inside.execution_in(execution);
+        let work = inside.execution_in(execution.memory());
         let mut descriptions = work.vector();
 
         while let Some(entry) = inside.next_element().field(field)? {
@@ -194,7 +194,7 @@ impl<'a> DistributionPoints<'a> {
 
     /// Reads the value of a distribution points extension, which the freshest
     /// revocation list is published in the same shape as.
-    pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         let field = if extension.kind() == oid::FRESHEST_CRL {
             "extensions.freshestCRL"
         } else {
@@ -202,7 +202,7 @@ impl<'a> DistributionPoints<'a> {
         };
 
         let mut inside = extension::sequence(extension, field, execution)?;
-        let work = inside.execution_in(execution);
+        let work = inside.execution_in(execution.memory());
         let mut points = work.vector();
         while let Some(entry) = inside.next_element().field(field)? {
             points
@@ -224,7 +224,7 @@ impl<'a> DistributionPoints<'a> {
 }
 
 fn read_point<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<DistributionPoint<'a>> {
@@ -364,7 +364,7 @@ pub(crate) enum PointName<'a> {
 
 /// Shared `DistributionPointName` grammar for certificate DPs and CRL IDPs.
 pub(crate) fn read_distribution_name<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<PointName<'a>> {
@@ -398,7 +398,7 @@ pub(crate) fn read_distribution_name<'a>(
 }
 
 fn read_point_name<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     point: &mut DistributionPoint<'a>,

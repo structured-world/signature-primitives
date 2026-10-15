@@ -22,7 +22,7 @@ use crate::general_name::GeneralName;
 use crate::name::Name;
 use crate::oid;
 use structured_asn1::Oid;
-use structured_asn1::memory::{Memory, MemoryError, OwnedVec};
+use structured_asn1::memory::{Memory, MemoryError, OwnedVec, Work};
 
 /// Where a name falls with respect to one region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,8 +181,8 @@ impl<'a> Presented<'a> {
 
 /// The regions the authorities above a certificate named, one layer each.
 #[derive(Debug)]
-pub(super) struct NameSpace<'a, S = ()> {
-    layers: OwnedVec<Layer<'a, S>>,
+pub(super) struct NameSpace<'a, S = (), W: Work = Memory> {
+    layers: OwnedVec<Layer<'a, S>, W>,
 }
 
 #[derive(Debug)]
@@ -214,8 +214,8 @@ impl<'a> NameSpace<'a> {
     }
 }
 
-impl<'a, S: Copy> NameSpace<'a, S> {
-    pub(super) fn with_sources(execution: &Memory) -> Self {
+impl<'a, S: Copy, W: Work> NameSpace<'a, S, W> {
+    pub(super) fn with_sources(execution: &W) -> Self {
         Self {
             layers: execution.vector(),
         }
@@ -266,12 +266,12 @@ impl<'a, S: Copy> NameSpace<'a, S> {
     /// Name by name rather than as one sum at the end, because forming a
     /// name reads it: a list priced in full before the meter is consulted
     /// is a list read in full whatever the budget said.
-    pub(super) fn charge(
+    pub(super) fn charge<E: Work>(
         &self,
         subject: &Name<'_>,
         alternatives: &[GeneralName<'_>],
         meter: &mut impl Meter,
-        execution: &Memory,
+        execution: &E,
     ) -> Result<bool> {
         let mut regions = [0u64; SHAPES];
         for layer in &self.layers {
@@ -327,24 +327,24 @@ impl<'a, S: Copy> NameSpace<'a, S> {
     /// against the mail constraints, because that is where such a
     /// certificate's mail identity is (RFC 5280 4.2.1.10).
     #[cfg(test)]
-    pub(super) fn admits<E>(
+    pub(super) fn admits<E, Q: Work>(
         &self,
         subject: &Name<'_>,
         alternatives: &[GeneralName<'_>],
-        recognizer: &impl Recognizer<Error = E>,
-        execution: &Memory,
+        recognizer: &impl Recognizer<Q, Error = E>,
+        execution: &Q,
     ) -> CallbackResult<Admission, E> {
         self.admits_located(subject, alternatives, recognizer, execution)
             .map(|(admission, _)| admission)
     }
 
     /// Returns the source of the decisive constraint without cloning its data.
-    pub(super) fn admits_located<E>(
+    pub(super) fn admits_located<E, Q: Work>(
         &self,
         subject: &Name<'_>,
         alternatives: &[GeneralName<'_>],
-        recognizer: &impl Recognizer<Error = E>,
-        execution: &Memory,
+        recognizer: &impl Recognizer<Q, Error = E>,
+        execution: &Q,
     ) -> CallbackResult<(Admission, Option<S>), E> {
         if self.layers.is_empty() {
             return Ok((Admission::Admitted, None));
@@ -367,12 +367,12 @@ impl<'a, S: Copy> NameSpace<'a, S> {
     }
 
     /// Where one name of a certificate falls, across every layer.
-    fn admits_one<E>(
+    fn admits_one<E, Q: Work>(
         &self,
         name: Presented<'_>,
         origin: &Name<'_>,
-        recognizer: &impl Recognizer<Error = E>,
-        execution: &Memory,
+        recognizer: &impl Recognizer<Q, Error = E>,
+        execution: &Q,
     ) -> CallbackResult<(Admission, Option<S>), E> {
         let mut worst = (Admission::Admitted, None);
         for layer in &self.layers {
@@ -523,10 +523,10 @@ impl<'a> Unformed<'a> {
 /// alternative names carries its mail identity among them, and holding its
 /// subject attribute to the mail regions as well would refuse it for an
 /// address the regions were never about.
-fn unformed<'a, 'q>(
+fn unformed<'a, 'q, W: Work>(
     subject: &'a Name<'a>,
     alternatives: &'a [GeneralName<'a>],
-    execution: &'q Memory,
+    execution: &'q W,
 ) -> impl Iterator<Item = Result<Unformed<'a>>> + 'q
 where
     'a: 'q,
@@ -551,10 +551,10 @@ where
 }
 
 /// The same names, in the forms the regions are matched against them.
-fn presented<'a, 'q>(
+fn presented<'a, 'q, W: Work>(
     subject: &'a Name<'a>,
     alternatives: &'a [GeneralName<'a>],
-    execution: &'q Memory,
+    execution: &'q W,
 ) -> impl Iterator<Item = Result<Presented<'a>>> + 'q
 where
     'a: 'q,
@@ -597,12 +597,12 @@ fn presented_name<'a>(name: &'a GeneralName<'a>) -> Presented<'a> {
 }
 
 /// Where one name falls with respect to one region.
-fn fit<E>(
+fn fit<E, W: Work>(
     base: &GeneralName<'_>,
     name: Presented<'_>,
     origin: &Name<'_>,
-    recognizer: &impl Recognizer<Error = E>,
-    execution: &Memory,
+    recognizer: &impl Recognizer<W, Error = E>,
+    execution: &W,
 ) -> CallbackResult<Fit, E> {
     let admit = |work| {
         execution

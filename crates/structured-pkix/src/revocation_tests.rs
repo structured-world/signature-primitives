@@ -262,7 +262,7 @@ fn response<'a>(parser: &'a Parser, bytes: &'a [u8]) -> ocsp::BasicResponse<'a> 
 }
 
 fn assert_current_good(
-    source: ocsp::ScopedResponse<'_, '_>,
+    source: &ocsp::ScopedResponse<'_, '_>,
     target: &Certificate<'_>,
     provider: &Provider,
     execution: &Memory,
@@ -461,7 +461,7 @@ fn real_delegate_authority_cannot_be_substituted_or_inferred_from_signature() {
         }
     );
     assert!(core::ptr::eq(scoped.issuer(), &raw const issuer));
-    assert_current_good(scoped, &target, &provider, &execution);
+    assert_current_good(&scoped, &target, &provider, &execution);
     assert_eq!(
         signed.trust_for_issuer(&issuer).source(),
         ocsp::AuthoritySource::Configured

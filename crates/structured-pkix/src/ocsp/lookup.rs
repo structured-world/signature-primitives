@@ -3,7 +3,7 @@
 use super::{CertMatch, Digest, SignedResponse, SingleResponse};
 use crate::Certificate;
 use crate::error::{CallbackResult, Error};
-use structured_asn1::memory::Memory;
+use structured_asn1::memory::Work;
 
 /// Identity lookup within an authenticated response, not a complete verdict.
 #[derive(Debug, Clone, Copy)]
@@ -33,12 +33,12 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
     /// certificate. The caller binds these inputs to its actual request and
     /// checks nonce/intended recipient separately; identity alone is insufficient.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-3.2>
-    pub fn find<D: Digest>(
+    pub fn find<D: Digest<E>, E: Work>(
         self,
         target: &Certificate<'_>,
         issuer: &Certificate<'_>,
         digest: &D,
-        execution: &Memory,
+        execution: &E,
     ) -> CallbackResult<Lookup<'r, 'a>, D::Error> {
         let mut first = None;
         for response in self.response().responses() {

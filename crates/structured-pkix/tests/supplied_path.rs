@@ -2,7 +2,7 @@
 
 use std::cell::Cell;
 use std::sync::Arc;
-use structured_asn1::memory::{Memory, MemoryAccount};
+use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, Work};
 use structured_asn1::{BitString, Oid, Parser};
 use structured_pkix::path::{
     self, Anchor, BuildError, ConstraintSource, Interval, Policy, RejectionReason, Truncation,
@@ -77,6 +77,214 @@ struct Provider<'a> {
     signed: &'a [u8],
     calls: Cell<usize>,
     error: bool,
+}
+
+struct ScopedProvider {
+    calls: Cell<usize>,
+    cost: u64,
+}
+
+impl<E: Work> Verify<E> for ScopedProvider {
+    type Error = MemoryError;
+    fn verify(
+        &self,
+        _: &AlgorithmIdentifier<'_>,
+        _: WorkingKey<'_>,
+        _: &[u8],
+        _: BitString<'_>,
+        execution: &E,
+    ) -> Result<Verified, Self::Error> {
+        self.calls.set(self.calls.get() + 1);
+        execution.charge_work(self.cost)?;
+        Ok(Verified::Yes)
+    }
+}
+
+fn validation_with_temporary_operation<'a>(
+    leaf: &'a Certificate<'a>,
+    root: &'a Certificate<'a>,
+    wanted: &'a [Oid<'a>],
+    current: &Memory,
+) -> (Validation<'a>, usize) {
+    let operation = Parser::der(current.clone());
+    let query = operation.read(&[], 1200).unwrap();
+    let work = query.execution();
+    let verifier = ScopedProvider {
+        calls: Cell::new(0),
+        cost: 1,
+    };
+    let context = ValidationContext {
+        execution: &work,
+        interval: Interval::at(leaf.tbs().validity().not_before().seconds()),
+        policy: Policy {
+            wanted,
+            ..Policy::default()
+        },
+        bounds: ValidationBounds::default(),
+        verifier: &verifier,
+        watch: &(),
+        recognizer: &(),
+    };
+    let result = path::validate(
+        &[leaf],
+        Anchor::new(root.tbs().subject(), root.tbs().public_key()),
+        &context,
+    )
+    .unwrap();
+    (result, verifier.calls.get())
+}
+
+#[test]
+fn scoped_validation_results_outlive_temporary_execution_but_keep_original_sources() {
+    // A returned validation borrows the original certificate/policy sources,
+    // not a local operation Reader. Its detached policy capacity stays charged
+    // until the result is dropped; neither key nor OID is copied or reparsed.
+    let policy = Oid::from_bytes(&[42, 3]);
+    let named = seq(&[
+        tlv(6, oid::CERTIFICATE_POLICIES.as_bytes()),
+        tlv(4, &seq(&[seq(&[tlv(6, policy.as_bytes())])])),
+    ]);
+    let root_bytes = certificate("Root", false);
+    let leaf_bytes = certificate_with_extensions("Leaf", &[named]);
+    let source = Parser::der(memory(1 << 20, 1 << 24));
+    let root = Certificate::read(&source, &root_bytes, 400).unwrap();
+    let leaf = Certificate::read(&source, &leaf_bytes, 800).unwrap();
+    let wanted = [policy];
+    let current = memory(1 << 20, 1 << 24);
+    for requested in [&wanted[..], &[][..]] {
+        let (Validation::Accepted(facts), calls) =
+            validation_with_temporary_operation(&leaf, &root, requested, &current)
+        else {
+            panic!("original supplied chain")
+        };
+        assert_eq!(calls, 1);
+        assert_eq!(
+            facts.key.key().as_bytes().as_ptr(),
+            leaf.tbs().public_key().as_bytes().as_ptr()
+        );
+        assert_eq!(facts.policies(), &wanted);
+        let pointer = facts.policies()[0].as_bytes().as_ptr();
+        if requested.is_empty() {
+            assert!((leaf.as_bytes().as_ptr_range()).contains(&pointer));
+        } else {
+            assert_eq!(pointer, wanted[0].as_bytes().as_ptr());
+        }
+        assert!(current.used() > 0);
+        drop(facts);
+        assert_eq!(current.used(), 0);
+    }
+}
+
+#[test]
+fn scoped_rejection_outlives_operation_and_keeps_original_extension_identifier() {
+    // Rejected outcomes also borrow source identifiers. Dropping current
+    // execution must not require an OID copy or erase the original cause.
+    let kind = Oid::from_bytes(&[42, 99]);
+    let extension = seq(&[tlv(6, kind.as_bytes()), tlv(1, &[0xff]), tlv(4, &seq(&[]))]);
+    let root_bytes = certificate("Root", false);
+    let leaf_bytes = certificate_with_extensions("Leaf", &[extension]);
+    let source = Parser::der(memory(1 << 20, 1 << 24));
+    let root = Certificate::read(&source, &root_bytes, 400).unwrap();
+    let leaf = Certificate::read(&source, &leaf_bytes, 800).unwrap();
+    let current = memory(1 << 20, 1 << 24);
+    let (Validation::Rejected(rejection), calls) =
+        validation_with_temporary_operation(&leaf, &root, &[], &current)
+    else {
+        panic!("unknown critical demand")
+    };
+    let RejectionReason::CriticalExtension(original) = rejection.reason else {
+        panic!("preserve exact semantic cause")
+    };
+    assert_eq!(original, kind);
+    assert!((leaf.as_bytes().as_ptr_range()).contains(&original.as_bytes().as_ptr()));
+    assert_eq!(calls, 0);
+    assert_eq!(current.used(), 0);
+}
+
+#[test]
+fn public_supplied_path_retains_scoped_work_in_graph_lazy_values_and_verifier() {
+    // The actual supplied-path kernel must fund scratch graph/callbacks/lazy
+    // extension reads under the operation, independently of retained sources.
+    let policy = Oid::from_bytes(&[42, 3]);
+    let named = seq(&[
+        tlv(6, oid::CERTIFICATE_POLICIES.as_bytes()),
+        tlv(4, &seq(&[seq(&[tlv(6, policy.as_bytes())])])),
+    ]);
+    let root_bytes = certificate("Root", false);
+    let leaf_bytes = certificate_with_extensions("Leaf", &[named]);
+    let source = Parser::der(memory(1 << 20, 1 << 24));
+    let root = Certificate::read(&source, &root_bytes, 400).unwrap();
+    let leaf = Certificate::read(&source, &leaf_bytes, 800).unwrap();
+    let anchor = Anchor::new(root.tbs().subject(), root.tbs().public_key());
+    let source_work = source.memory().work_used();
+    let current = memory(1 << 20, 1 << 24);
+    let operation = Parser::der(current.clone());
+    let query = operation.read(&[], 1200).unwrap();
+    let execution = query.execution();
+    let verifier = ScopedProvider {
+        calls: Cell::new(0),
+        cost: 1,
+    };
+    let wanted = [policy];
+    let context = ValidationContext {
+        execution: &execution,
+        interval: Interval::at(leaf.tbs().validity().not_before().seconds()),
+        policy: Policy {
+            wanted: &wanted,
+            ..Policy::default()
+        },
+        bounds: ValidationBounds::default(),
+        verifier: &verifier,
+        watch: &(),
+        recognizer: &(),
+    };
+    let Validation::Accepted(facts) = path::validate(&[&leaf], anchor, &context).unwrap() else {
+        panic!("the scoped validator must use the same semantic policy graph");
+    };
+    assert_eq!(facts.policies(), &[policy]);
+    assert_eq!(verifier.calls.get(), 1);
+    assert_eq!(source.memory().work_used(), source_work);
+    assert!(current.used() > 0);
+    drop(facts);
+    assert_eq!(current.used(), 0);
+    for (work, depth, callback_cost, callback_expected) in [
+        (0, 32, 1, false),
+        (1_000_000, 0, 1, true),
+        (1_000_000, 32, 1_000_000, true),
+    ] {
+        let account = memory(1 << 20, 1 << 24);
+        let operation = Parser::new(
+            structured_asn1::Encoding::Der,
+            structured_asn1::Limits {
+                max_work: work,
+                max_depth: depth,
+                ..structured_asn1::Limits::default()
+            },
+            account.clone(),
+        );
+        let query = operation.read(&[], 1200).unwrap();
+        let work = query.execution();
+        let provider = ScopedProvider {
+            calls: Cell::new(0),
+            cost: callback_cost,
+        };
+        let context = ValidationContext {
+            execution: &work,
+            verifier: &provider,
+            ..context
+        };
+        let error = path::validate(&[&leaf], anchor, &context).unwrap_err();
+        if callback_cost == 1_000_000 {
+            assert!(matches!(
+                error,
+                BuildError::Verification(MemoryError::WorkExceeded)
+            ));
+        } else {
+            assert!(matches!(error, BuildError::Processing(ref error) if error.is_resource()));
+        }
+        assert_eq!(provider.calls.get(), usize::from(callback_expected));
+        assert_eq!(account.used(), 0);
+    }
 }
 impl Verify for Provider<'_> {
     type Error = &'static str;

@@ -10,7 +10,7 @@ use crate::constraints::BasicConstraints;
 use crate::extension::{Extension, Recognizer};
 use crate::{Certificate, ErrorCode, Name, oid};
 use structured_asn1::Oid;
-use structured_asn1::memory::{Memory, MemoryError, OwnedVec};
+use structured_asn1::memory::{Memory, MemoryError, OwnedVec, Work};
 
 mod processing;
 
@@ -27,10 +27,10 @@ impl<'a> EffectiveAnchor<'a> {
     /// Bind a previously projected effective key to this anchor's original
     /// SPKI. `None` denotes completed source mismatch; resource errors remain
     /// errors. Inherited parameter bytes continue borrowing their source.
-    pub fn bind(
+    pub fn bind<E: Work>(
         anchor: Anchor<'a>,
         key: WorkingKey<'a>,
-        execution: &Memory,
+        execution: &E,
     ) -> crate::Result<Option<Self>> {
         let left = anchor.key().as_bytes();
         let right = key.key().as_bytes();
@@ -220,9 +220,9 @@ impl Default for ValidationBounds {
 /// Explicit execution inputs for static checking of a borrowed supplied path.
 /// Callers supply trusted anchors, cryptographic capability and application
 /// policy separately; no clock, network or trust discovery is performed here.
-pub struct ValidationContext<'a, 'p, V: Verify, W: Watch, R: Recognizer> {
+pub struct ValidationContext<'a, 'p, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work = Memory> {
     /// The current operation's shared work and storage account.
-    pub execution: &'p Memory,
+    pub execution: &'p E,
     /// The interval every certificate must cover.
     pub interval: Interval,
     /// Certificate-policy processing inputs.
@@ -237,8 +237,8 @@ pub struct ValidationContext<'a, 'p, V: Verify, W: Watch, R: Recognizer> {
     pub recognizer: &'p R,
 }
 
-pub(super) struct Settings<'a, 'p, R: Recognizer> {
-    pub(super) execution: &'p Memory,
+pub(super) struct Settings<'a, 'p, R: Recognizer<E>, E: Work = Memory> {
+    pub(super) execution: &'p E,
     pub(super) interval: Interval,
     pub(super) policy: Policy<'a>,
     pub(super) policies: usize,
@@ -254,7 +254,7 @@ pub(super) struct CertificateFacts<'a> {
     pub(super) rejected: Option<RejectionReason<'a>>,
 }
 
-pub(super) trait Driver<'a, R: Recognizer>: Meter {
+pub(super) trait Driver<'a, R: Recognizer<E>, E: Work = Memory>: Meter {
     type VerificationError;
     fn verified(
         &mut self,
@@ -264,7 +264,7 @@ pub(super) trait Driver<'a, R: Recognizer>: Meter {
     fn facts(
         &mut self,
         certificate: &'a Certificate<'a>,
-        settings: &Settings<'a, '_, R>,
+        settings: &Settings<'a, '_, R, E>,
     ) -> BuildResult<Option<CertificateFacts<'a>>, Self::VerificationError, R::Error>;
 }
 
@@ -331,9 +331,9 @@ pub(super) fn spend_names(
     meter.spend(work)
 }
 
-fn critical_policy(
+fn critical_policy<E: Work>(
     item: &Extension<'_>,
-    execution: &Memory,
+    execution: &E,
 ) -> Option<(Oid<'static>, crate::Result<bool>)> {
     // Known path extensions retain decoder failures even when critical.
     let kind = item.kind();
@@ -366,9 +366,9 @@ fn critical_policy(
     }
 }
 
-pub(super) fn certificate_facts<'a, E, R: Recognizer, M: Meter>(
+pub(super) fn certificate_facts<'a, E, R: Recognizer<Q>, M: Meter, Q: Work>(
     certificate: &'a Certificate<'a>,
-    settings: &Settings<'a, '_, R>,
+    settings: &Settings<'a, '_, R, Q>,
     meter: &mut M,
 ) -> BuildResult<Option<CertificateFacts<'a>>, E, R::Error> {
     let execution = settings.execution;
@@ -475,23 +475,23 @@ fn rejection(at: ConstraintSource, reason: RejectionReason<'_>) -> Validation<'_
     })
 }
 
-pub(super) fn process<'a, R: Recognizer, D: Driver<'a, R>>(
+pub(super) fn process<'a, R: Recognizer<E>, D: Driver<'a, R, E>, E: Work>(
     input: Chain<'a, '_>,
     anchor: Anchor<'a>,
-    settings: &Settings<'a, '_, R>,
+    settings: &Settings<'a, '_, R, E>,
     driver: &mut D,
 ) -> BuildResult<Validation<'a>, D::VerificationError, R::Error> {
     processing::process(input, &EffectiveAnchor::standing(anchor), settings, driver)
 }
 
-struct Supplied<'a, 'p, V: Verify, W: Watch, R: Recognizer> {
-    context: &'p ValidationContext<'a, 'p, V, W, R>,
+struct Supplied<'a, 'p, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work> {
+    context: &'p ValidationContext<'a, 'p, V, W, R, E>,
     origin: &'a Certificate<'a>,
     spent: u64,
     halted: Option<Truncation>,
 }
 
-impl<V: Verify, W: Watch, R: Recognizer> Supplied<'_, '_, V, W, R> {
+impl<V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work> Supplied<'_, '_, V, W, R, E> {
     fn admit(&mut self, work: u64) -> crate::Result<Option<Truncation>> {
         if work > self.context.bounds.work - self.spent {
             return Ok(Some(Truncation::Work));
@@ -508,7 +508,7 @@ impl<V: Verify, W: Watch, R: Recognizer> Supplied<'_, '_, V, W, R> {
     }
 }
 
-impl<V: Verify, W: Watch, R: Recognizer> Meter for Supplied<'_, '_, V, W, R> {
+impl<V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work> Meter for Supplied<'_, '_, V, W, R, E> {
     fn spend(&mut self, work: u64) -> crate::Result<bool> {
         if let Some(halted) = self.admit(work)? {
             self.halted = Some(halted);
@@ -518,7 +518,9 @@ impl<V: Verify, W: Watch, R: Recognizer> Meter for Supplied<'_, '_, V, W, R> {
     }
 }
 
-impl<'a, V: Verify, W: Watch, R: Recognizer> Driver<'a, R> for Supplied<'a, '_, V, W, R> {
+impl<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work> Driver<'a, R, E>
+    for Supplied<'a, '_, V, W, R, E>
+{
     type VerificationError = V::Error;
     fn verified(
         &mut self,
@@ -543,7 +545,7 @@ impl<'a, V: Verify, W: Watch, R: Recognizer> Driver<'a, R> for Supplied<'a, '_, 
     fn facts(
         &mut self,
         certificate: &'a Certificate<'a>,
-        settings: &Settings<'a, '_, R>,
+        settings: &Settings<'a, '_, R, E>,
     ) -> BuildResult<Option<CertificateFacts<'a>>, V::Error, R::Error> {
         certificate_facts(certificate, settings, self)
     }
@@ -581,10 +583,10 @@ impl<'a, V: Verify, W: Watch, R: Recognizer> Driver<'a, R> for Supplied<'a, '_, 
 ///     path::validate(chain, anchor, &context)
 /// }
 /// ```
-pub fn validate<'a, V: Verify, W: Watch, R: Recognizer>(
+pub fn validate<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>(
     chain: &[&'a Certificate<'a>],
     anchor: Anchor<'a>,
-    context: &ValidationContext<'a, '_, V, W, R>,
+    context: &ValidationContext<'a, '_, V, W, R, E>,
 ) -> BuildResult<Validation<'a>, V::Error, R::Error> {
     validate_effective(chain, EffectiveAnchor::standing(anchor), context)
 }
@@ -594,10 +596,10 @@ pub fn validate<'a, V: Verify, W: Watch, R: Recognizer>(
 /// certificate's name constraints. It does not resume constraints or policy
 /// state inherited from a previously validated ancestor path. For original-root
 /// validation, pass that complete path and its original anchor instead.
-pub fn validate_effective<'a, V: Verify, W: Watch, R: Recognizer>(
+pub fn validate_effective<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>(
     chain: &[&'a Certificate<'a>],
     effective: EffectiveAnchor<'a>,
-    context: &ValidationContext<'a, '_, V, W, R>,
+    context: &ValidationContext<'a, '_, V, W, R, E>,
 ) -> BuildResult<Validation<'a>, V::Error, R::Error> {
     let anchor = effective.anchor;
     let Some(target) = chain.first() else {

@@ -4,7 +4,7 @@ use super::{BasicResponse, Digest, DigestAlgorithm, ResponderId};
 use crate::path::{Verified, Verify, WorkingKey};
 use crate::{Certificate, Error};
 use core::fmt;
-use structured_asn1::memory::{Memory, MemoryError};
+use structured_asn1::memory::{MemoryError, Work};
 
 /// Failure to execute authentication, retaining the originating capability.
 #[derive(Debug)]
@@ -104,13 +104,13 @@ impl<'a> BasicResponse<'a> {
     /// Included certificates are candidates only. RFC6960 §§4.2.2.2–4.2.2.3
     /// require authorization and status validity beyond this signature fact.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-4.2.2.2>
-    pub fn authenticate_signature<'r, V: Verify, D: Digest>(
+    pub fn authenticate_signature<'r, V: Verify<E>, D: Digest<E>, E: Work>(
         &'r self,
         signer: &'r Certificate<'a>,
         key: WorkingKey<'a>,
         verifier: &V,
         digest: &D,
-        execution: &Memory,
+        execution: &E,
     ) -> core::result::Result<SignatureAuthentication<'r, 'a>, SignatureError<V::Error, D::Error>>
     {
         const FIELD: &str = "ocspResponse.signature";
@@ -187,6 +187,7 @@ mod tests {
     use super::*;
     use crate::fixtures::{CertificateParts, bits, context, extension, octets, seq, tlv};
     use core::{cell::Cell, num::NonZeroUsize};
+    use structured_asn1::memory::Memory;
     use structured_asn1::{BitString, Parser};
 
     struct Provider<'a> {

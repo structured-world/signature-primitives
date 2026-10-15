@@ -6,24 +6,24 @@ use crate::oid;
 use crate::path::Meter;
 use crate::policy::{CertificatePolicies, PolicyMappings};
 use structured_asn1::Oid;
-use structured_asn1::memory::{Memory, MemoryError, OwnedMap, OwnedVec};
+use structured_asn1::memory::{Memory, MemoryError, OwnedMap, OwnedVec, Work};
 
 /// The usual single edge/index is inline; fan-in retains an accounted tail.
 #[derive(Debug)]
-struct Indices {
+struct Indices<E: Work = Memory> {
     first: Option<usize>,
-    rest: OwnedVec<usize>,
+    rest: OwnedVec<usize, E>,
 }
 
-impl Indices {
-    fn new(execution: &Memory) -> Self {
+impl<E: Work> Indices<E> {
+    fn new(execution: &E) -> Self {
         Self {
             first: None,
             rest: execution.vector(),
         }
     }
 
-    fn one(at: usize, execution: &Memory) -> Self {
+    fn one(at: usize, execution: &E) -> Self {
         Self {
             first: Some(at),
             rest: execution.vector(),
@@ -53,10 +53,10 @@ impl Indices {
 }
 
 #[derive(Debug)]
-pub(super) struct Node<'a> {
+pub(super) struct Node<'a, E: Work = Memory> {
     pub(super) policy: Oid<'a>,
-    pub(super) expected: OwnedVec<Oid<'a>>,
-    parents: Indices,
+    pub(super) expected: OwnedVec<Oid<'a>, E>,
+    parents: Indices<E>,
     pub(super) depth: u32,
     children: usize,
     pub(super) live: bool,
@@ -65,19 +65,19 @@ pub(super) struct Node<'a> {
 }
 
 #[cfg(test)]
-impl Node<'_> {
+impl<E: Work> Node<'_, E> {
     pub(super) fn parent_indices(&self) -> impl Iterator<Item = usize> + '_ {
         self.parents.iter()
     }
 }
 
 #[derive(Debug)]
-pub(in crate::path) struct Processing<'a> {
-    pub(super) nodes: Option<OwnedVec<Node<'a>>>,
-    execution: Memory,
+pub(in crate::path) struct Processing<'a, E: Work = Memory> {
+    pub(super) nodes: Option<OwnedVec<Node<'a, E>, E>>,
+    execution: E,
     offset: u64,
     depth: u32,
-    frontier: Indices,
+    frontier: Indices<E>,
     explicit_policy: u32,
     policy_mapping: u32,
     inhibit_any_policy: u32,
@@ -97,12 +97,12 @@ fn admit(meter: &mut impl Meter, entries: usize, offset: u64) -> Result<(), Over
     Ok(())
 }
 
-impl<'a> Processing<'a> {
+impl<'a, E: Work> Processing<'a, E> {
     pub(in crate::path) fn new(
         length: u32,
         initial: Initial,
         ceiling: usize,
-        execution: &Memory,
+        execution: &E,
         offset: u64,
     ) -> Result<Self, Overflow> {
         if ceiling == 0 {
@@ -160,8 +160,8 @@ impl<'a> Processing<'a> {
     fn push(
         &mut self,
         policy: Oid<'a>,
-        parents: Indices,
-        expected: OwnedVec<Oid<'a>>,
+        parents: Indices<E>,
+        expected: OwnedVec<Oid<'a>, E>,
         meter: &mut impl Meter,
     ) -> Result<usize, Overflow> {
         let edges = parents.len();
@@ -236,7 +236,7 @@ impl<'a> Processing<'a> {
         }
         let offset = self.offset;
         let fail = |reason| resource(reason, offset);
-        let mut expecting: OwnedMap<Oid<'a>, Indices> = self.execution.map();
+        let mut expecting: OwnedMap<Oid<'a>, Indices<E>, E> = self.execution.map();
         let mut any = None;
         admit(meter, self.frontier.len(), self.offset)?;
         for at in self.frontier.iter() {
@@ -272,7 +272,7 @@ impl<'a> Processing<'a> {
         }
 
         let mut next = Indices::new(&self.execution);
-        let mut standing: OwnedMap<Oid<'a>, ()> = self.execution.map();
+        let mut standing: OwnedMap<Oid<'a>, (), E> = self.execution.map();
         let mut has_any = false;
         for named in policies.policies() {
             admit(meter, 1, self.offset)?;
@@ -414,7 +414,7 @@ impl<'a> Processing<'a> {
         }
         let offset = self.offset;
         let fail = |reason| resource(reason, offset);
-        let mut standing: OwnedMap<Oid<'a>, usize> = self.execution.map();
+        let mut standing: OwnedMap<Oid<'a>, usize, E> = self.execution.map();
         let mut any = None;
         admit(meter, self.frontier.len(), self.offset)?;
         for at in self.frontier.iter() {
@@ -447,7 +447,7 @@ impl<'a> Processing<'a> {
         // PolicyMappings decoder has already rejected anyPolicy and deduplicated pairs.
         // Grouping is accounted scratch. Only expectations or nodes actually
         // attached below consume the retained graph ceiling.
-        let mut grouped: OwnedMap<Oid<'a>, OwnedVec<Oid<'a>>> = self.execution.map();
+        let mut grouped: OwnedMap<Oid<'a>, OwnedVec<Oid<'a>, E>, E> = self.execution.map();
         let mut order = self.execution.vector();
         for mapping in mappings.mappings() {
             admit(meter, 1, self.offset)?;
@@ -515,7 +515,7 @@ impl<'a> Processing<'a> {
         let fail = |reason| resource(reason, self.offset);
         let mut output = self.execution.vector();
         if let Some(nodes) = &self.nodes {
-            let mut authority: OwnedMap<Oid<'a>, ()> = self.execution.map();
+            let mut authority: OwnedMap<Oid<'a>, (), E> = self.execution.map();
             for node in nodes {
                 admit(meter, 1, self.offset)?;
                 if !node.live || node.parents.len() != 1 {
@@ -529,7 +529,7 @@ impl<'a> Processing<'a> {
                     authority.try_insert(node.policy, ()).map_err(fail)?;
                 }
             }
-            let mut requested: OwnedMap<Oid<'a>, ()> = self.execution.map();
+            let mut requested: OwnedMap<Oid<'a>, (), E> = self.execution.map();
             for policy in wanted {
                 admit(meter, 1, self.offset)?;
                 requested.try_insert(*policy, ()).map_err(fail)?;
@@ -577,7 +577,7 @@ impl<'a> Processing<'a> {
             })?;
         Ok(Settled {
             satisfied: self.explicit_policy > 0 || !output.is_empty(),
-            policies: output,
+            policies: output.into_owned(),
         })
     }
 }

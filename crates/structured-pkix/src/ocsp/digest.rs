@@ -5,7 +5,7 @@ use crate::AlgorithmIdentifier;
 use crate::Certificate;
 use crate::error::{CallbackError, CallbackResult, Error};
 use core::num::NonZeroUsize;
-use structured_asn1::memory::{Memory, MemoryError};
+use structured_asn1::memory::{Memory, MemoryError, Work};
 
 /// The digest's normative source, without reconstructing an identifier.
 #[derive(Debug, Clone, Copy)]
@@ -30,7 +30,7 @@ pub struct ResolvedDigest<H: Copy> {
 /// Every input-derived callback scan/allocation/hash/comparison is admitted
 /// through the supplied execution domain before work begins. A fixed output
 /// reservation does not qualify opaque custom-provider internal allocations.
-pub trait Digest {
+pub trait Digest<E: Work = Memory> {
     /// Copyable resolved algorithm capability.
     type Handle: Copy;
     /// Original provider or resource error, never collapsed into mismatch.
@@ -39,7 +39,7 @@ pub trait Digest {
     fn resolve(
         &self,
         algorithm: DigestAlgorithm<'_>,
-        execution: &Memory,
+        execution: &E,
     ) -> core::result::Result<Option<ResolvedDigest<Self::Handle>>, Self::Error>;
     /// Hash original bytes and compare with an already width-checked expected
     /// value. No owned-output conversion or extra allocation is required by core.
@@ -48,7 +48,7 @@ pub trait Digest {
         handle: Self::Handle,
         input: &[u8],
         expected: &[u8],
-        execution: &Memory,
+        execution: &E,
     ) -> core::result::Result<bool, Self::Error>;
 }
 
@@ -71,12 +71,12 @@ impl CertId<'_> {
     /// contents. The caller retains their authenticated issuer/path provenance;
     /// matching hashes does not verify the target certificate's signature.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-4.1.1>
-    pub fn matches<D: Digest>(
+    pub fn matches<D: Digest<E>, E: Work>(
         &self,
         target: &Certificate<'_>,
         issuer: &Certificate<'_>,
         digest: &D,
-        execution: &Memory,
+        execution: &E,
     ) -> CallbackResult<CertMatch, D::Error> {
         const FIELD: &str = "ocspResponse.certID";
         let at = self.span.start;

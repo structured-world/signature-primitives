@@ -1,7 +1,7 @@
 //! Shared Extension grammar; protocol-specific conformance and duplicate policy.
 
 use crate::error::{CallbackError, CallbackResult, Error, ErrorCode, Located, Result};
-use structured_asn1::{Element, Oid, Reader, Span, Tag, universal};
+use structured_asn1::{Element, Oid, ScopedReader, Span, Tag, universal};
 
 /// Original scalar header facts, available before payload decoding/allocation.
 ///
@@ -99,13 +99,13 @@ impl<'a, V> ExtensionValue<'a, V> {
 /// a malformed-value answer. This function performs no mandatory allocation
 /// other than the producing reader's already-accounted path operations.
 /// <https://www.rfc-editor.org/rfc/rfc5280#section-4.1>
-pub fn read_with<'a, V, E>(
-    parent: &Reader<'a>,
+pub fn read_with<'a: 'operation, 'operation, V, E>(
+    parent: &ScopedReader<'a, 'operation>,
     element: &Element<'a>,
     field: &'static str,
     read_value: impl FnOnce(
         &ExtensionHeader<'a>,
-        &Reader<'a>,
+        &ScopedReader<'a, 'operation>,
         &Element<'a>,
     ) -> core::result::Result<V, E>,
 ) -> CallbackResult<ExtensionValue<'a, V>, E> {
@@ -117,19 +117,22 @@ pub fn read_with<'a, V, E>(
 /// Inspection callers can admit a DEFAULT diagnostic before even reading the
 /// next value header. Missing/malformed values then cannot erase that prior
 /// header fault. No borrowed callback state or duplicate policy is imposed.
-pub struct ExtensionFields<'a> {
+pub struct ScopedExtensionFields<'a: 'operation, 'operation> {
     header: ExtensionHeader<'a>,
-    inside: Reader<'a>,
+    inside: ScopedReader<'a, 'operation>,
     pending: ValueState<'a>,
     field: &'static str,
 }
+
+/// Header/value cursor when source and operation have the same lifetime.
+pub type ExtensionFields<'a> = ScopedExtensionFields<'a, 'a>;
 
 enum ValueState<'a> {
     Read(Option<Element<'a>>),
     Deferred,
 }
 
-impl<'a> ExtensionFields<'a> {
+impl<'a: 'operation, 'operation> ScopedExtensionFields<'a, 'operation> {
     /// Original header facts, before deferred extnValue parsing.
     #[must_use]
     pub fn header(&self) -> ExtensionHeader<'a> {
@@ -138,7 +141,7 @@ impl<'a> ExtensionFields<'a> {
 
     /// Producing execution/depth, for header diagnostic admission.
     #[must_use]
-    pub fn reader(&self) -> &Reader<'a> {
+    pub fn reader(&self) -> &ScopedReader<'a, 'operation> {
         &self.inside
     }
 
@@ -150,7 +153,7 @@ impl<'a> ExtensionFields<'a> {
         mut self,
         read_value: impl FnOnce(
             &ExtensionHeader<'a>,
-            &Reader<'a>,
+            &ScopedReader<'a, 'operation>,
             &Element<'a>,
         ) -> core::result::Result<V, E>,
     ) -> CallbackResult<ExtensionValue<'a, V>, E> {
@@ -190,11 +193,11 @@ impl<'a> ExtensionFields<'a> {
 /// Reads Extension's OID/optional BOOLEAN, deferring extnValue after a flag.
 /// This is the same kernel used by [`read_with`]. Applications needing header
 /// diagnostics before payload allocation use this two-stage form.
-pub fn open<'a>(
-    parent: &Reader<'a>,
+pub fn open<'a: 'operation, 'operation>(
+    parent: &ScopedReader<'a, 'operation>,
     element: &Element<'a>,
     field: &'static str,
-) -> Result<ExtensionFields<'a>> {
+) -> Result<ScopedExtensionFields<'a, 'operation>> {
     let fail = |code, offset| Error::new(code, field, offset);
     if element.tag() != Tag::constructed(universal::SEQUENCE) {
         return Err(fail(
@@ -217,7 +220,7 @@ pub fn open<'a>(
         // the opportunity to admit a written-default diagnostic.
         pending = ValueState::Deferred;
     }
-    Ok(ExtensionFields {
+    Ok(ScopedExtensionFields {
         header: ExtensionHeader {
             kind,
             critical,

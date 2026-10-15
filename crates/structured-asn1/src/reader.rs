@@ -164,8 +164,30 @@ impl Parser {
         outer: u32,
         execution: &Memory,
     ) -> Result<Reader<'a>> {
+        self.read_depth_in(data, base, encoding, outer.checked_add(1), execution)
+    }
+
+    pub(crate) fn read_source_in<'a>(
+        &'a self,
+        data: &'a [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+        execution: &Memory,
+    ) -> Result<Reader<'a>> {
+        self.read_depth_in(data, base, encoding, Some(depth), execution)
+    }
+
+    fn read_depth_in<'a>(
+        &'a self,
+        data: &'a [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: Option<u32>,
+        execution: &Memory,
+    ) -> Result<Reader<'a>> {
         let mut reader = self.read_as_in(data, base, encoding, execution)?;
-        let depth = outer.checked_add(1).ok_or_else(|| {
+        let depth = depth.ok_or_else(|| {
             Error::new(
                 ErrorCode::LimitExceeded(Limit::Depth),
                 base,
@@ -194,26 +216,111 @@ impl Parser {
         encoding: Encoding,
         outer: u32,
     ) -> Result<Reader<'a>> {
-        let depth = outer.checked_add(1).ok_or_else(|| {
-            Error::new(
-                ErrorCode::LimitExceeded(Limit::Depth),
-                base,
-                Path::default(),
-            )
-        })?;
-        let operation = query.budget().operation();
+        self.read_nested_operation_in(
+            data,
+            base,
+            encoding,
+            outer,
+            query.budget().operation(),
+            query.memory(),
+        )
+    }
+
+    /// Reads an original source window at its actual depth under a current query.
+    ///
+    /// A fresh ASN.1 document carried by another format, such as XML base64,
+    /// starts at depth zero: that carrier is not an ASN.1 enclosing element.
+    /// Existing nested windows retain their actual inherited depth instead.
+    /// Source and current-operation cumulative work/depth ceilings both apply;
+    /// storage and new work use the current account, charged once. This does
+    /// not create a parser or reset either session's prior work. The caller
+    /// supplies the original source provenance, as for `read_nested_query_in`.
+    pub fn read_query_in<'a>(
+        &'a self,
+        query: &Reader<'a>,
+        data: &'a [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+    ) -> Result<Reader<'a>> {
+        self.read_query_budget_in(
+            data,
+            base,
+            encoding,
+            depth,
+            query.budget().operation(),
+            query.memory(),
+        )
+    }
+
+    pub(crate) fn read_nested_operation_in<'a>(
+        &'a self,
+        data: &'a [u8],
+        base: u64,
+        encoding: Encoding,
+        outer: u32,
+        operation: &'a Budget,
+        execution: &Memory,
+    ) -> Result<Reader<'a>> {
+        let depth = nested_depth(outer, base)?;
+        self.read_query_budget_in(data, base, encoding, depth, operation, execution)
+    }
+
+    pub(crate) fn read_query_budget_in<'a>(
+        &'a self,
+        data: &'a [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+        operation: &'a Budget,
+        execution: &Memory,
+    ) -> Result<Reader<'a>> {
+        self.read_scoped_source_in(data, base, encoding, depth, Some(operation), execution)
+    }
+
+    pub(crate) fn read_scoped_source_in<'source: 'operation, 'operation>(
+        &'source self,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+        operation: Option<&'operation Budget>,
+        execution: &Memory,
+    ) -> Result<ScopedReader<'source, 'operation>> {
+        let Some(operation) = operation else {
+            return self.read_depth_in(data, base, encoding, Some(depth), execution);
+        };
         let budget = BudgetView::query(&self.budget, operation);
         budget
             .depth(depth)
             .map_err(|limit| Error::new(ErrorCode::LimitExceeded(limit), base, Path::default()))?;
         budget
-            .work_in(1, query.memory())
+            .work_in(1, execution)
             .map_err(|limit| Error::new(ErrorCode::LimitExceeded(limit), base, Path::default()))?;
-        let mut reader = self.read_as_in(data, base, encoding, query.memory())?;
-        reader.query = Some(operation);
-        reader.depth = depth;
-        Ok(reader)
+        let reader = self.read_as_in(data, base, encoding, execution)?;
+        Ok(ScopedReader {
+            data: reader.data,
+            pos: reader.pos,
+            base: reader.base,
+            depth,
+            next_index: reader.next_index,
+            path: reader.path,
+            encoding: reader.encoding,
+            parser: reader.parser,
+            execution: reader.execution,
+            query: Some(operation),
+        })
     }
+}
+
+fn nested_depth(outer: u32, base: u64) -> Result<u32> {
+    outer.checked_add(1).ok_or_else(|| {
+        Error::new(
+            ErrorCode::LimitExceeded(Limit::Depth),
+            base,
+            Path::default(),
+        )
+    })
 }
 
 /// Where in a document one run of bytes sits.
@@ -312,7 +419,7 @@ impl<'a> Element<'a> {
 /// come back to a container later can put the reader aside rather than start
 /// again from the document and count the nesting as one.
 #[derive(Debug)]
-pub struct Reader<'a> {
+pub struct ScopedReader<'a: 'operation, 'operation> {
     data: &'a [u8],
     pos: usize,
     base: u64,
@@ -322,10 +429,15 @@ pub struct Reader<'a> {
     encoding: Encoding,
     parser: &'a Parser,
     execution: Memory,
-    query: Option<&'a Budget>,
+    query: Option<&'operation Budget>,
 }
 
-impl<'a> Reader<'a> {
+/// Source reader whose input and operation have the same lifetime.
+/// Scoped schema processing can instead use [`ScopedReader`] to return input
+/// views independently of the current operation's borrowed budget.
+pub type Reader<'a> = ScopedReader<'a, 'a>;
+
+impl<'a: 'operation, 'operation> ScopedReader<'a, 'operation> {
     /// Current domain for deferred work, copies and new storage.
     #[must_use]
     pub fn memory(&self) -> &Memory {
@@ -365,8 +477,31 @@ impl<'a> Reader<'a> {
     pub fn execution_in<'work>(&self, memory: &'work Memory) -> crate::memory::Execution<'work>
     where
         'a: 'work,
+        'operation: 'work,
     {
         crate::memory::Execution::new(memory, self.budget())
+    }
+
+    /// Borrows original-source and current root-operation work ceilings for
+    /// metadata queries that do not enter a payload or advance a cursor.
+    ///
+    /// Construction allocates nothing, copies no diagnostic path and does not
+    /// inspect bytes or require an additional ASN.1 nesting level. Work and
+    /// collection admission still checks both cumulative ceilings, charging
+    /// the current query's aggregate account once. A prior foreign source is
+    /// replaced by this source, never by a wider ancestor operation.
+    #[must_use]
+    pub fn execution_query<'query>(
+        &self,
+        query: &'query Reader<'_>,
+    ) -> crate::memory::Execution<'query>
+    where
+        'a: 'query,
+    {
+        crate::memory::Execution::new(
+            query.memory(),
+            BudgetView::query(&self.parser.budget, query.budget().operation()),
+        )
     }
 
     /// Selects the domain for subsequent execution without moving existing
@@ -402,7 +537,7 @@ impl<'a> Reader<'a> {
                 Path::default(),
             )
         })?;
-        Ok(Reader {
+        Ok(ScopedReader {
             data: self.data,
             pos: self.pos,
             base: self.base,
@@ -451,7 +586,7 @@ impl<'a> Reader<'a> {
     }
 
     /// The shared budget, by way of the parser.
-    fn budget(&self) -> BudgetView<'a> {
+    fn budget(&self) -> BudgetView<'operation> {
         match self.query {
             Some(operation) => BudgetView::query(&self.parser.budget, operation),
             None => BudgetView::root(&self.parser.budget),
@@ -516,10 +651,10 @@ impl<'a> Reader<'a> {
     /// element's header is read again under the chosen rules, so a header
     /// only the lenient encoding accepts is refused too. Offsets stay offsets
     /// in the document and the budget stays the shared one.
-    pub fn reread(&self, element: &Element<'a>, encoding: Encoding) -> Result<Reader<'a>> {
+    pub fn reread(&self, element: &Element<'a>, encoding: Encoding) -> Result<Self> {
         self.admit_path(0)
             .map_err(|reason| Error::resource(reason, element.whole.start))?;
-        Ok(Reader {
+        Ok(Self {
             data: element.bytes,
             pos: 0,
             base: element.whole.start,
@@ -583,7 +718,7 @@ impl<'a> Reader<'a> {
     /// further elements, and reading them as elements is how a parser is
     /// talked into finding structure inside an octet string that nobody put
     /// there.
-    pub fn enter(&self, element: &Element<'a>) -> Result<Reader<'a>> {
+    pub fn enter(&self, element: &Element<'a>) -> Result<Self> {
         if !element.tag.is_constructed() {
             return Err(self.fail_under(ErrorCode::WrongConstruction, element));
         }
@@ -613,7 +748,7 @@ impl<'a> Reader<'a> {
         path.push(self.memory(), element.index)
             .map_err(|reason| Error::resource(reason, element.contents_span.start))?;
 
-        Ok(Reader {
+        Ok(Self {
             data: element.contents,
             pos: 0,
             base: element.contents_span.start,

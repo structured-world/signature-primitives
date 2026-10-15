@@ -2,7 +2,7 @@
 
 use super::{BasicResponse, SingleResponse};
 use crate::{Error, Result, oid};
-use structured_asn1::memory::Memory;
+use structured_asn1::memory::Work;
 use structured_asn1::{Oid, Span};
 
 /// Supported extension processing, separate from application acceptance.
@@ -30,12 +30,12 @@ impl<'a> BasicResponse<'a> {
     /// RFC6960 §4.4 makes optional extension support explicit. This core
     /// supports nonce; other optional noncritical values remain opaque.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-4.4>
-    pub fn check_extensions(&self, execution: &Memory) -> Result<ExtensionProcessing<'a>> {
+    pub fn check_extensions<W: Work>(&self, execution: &W) -> Result<ExtensionProcessing<'a>> {
         self.process_extensions(execution)
             .map(|facts| facts.processing)
     }
 
-    pub(super) fn process_extensions(&self, execution: &Memory) -> Result<Processed<'a>> {
+    pub(super) fn process_extensions<W: Work>(&self, execution: &W) -> Result<Processed<'a>> {
         execution.charge_work(1).map_err(|reason| {
             Error::resource(reason, "ocspResponse.extensions", self.span.start)
         })?;
@@ -69,7 +69,7 @@ impl<'a> SingleResponse<'a> {
     /// Process this assertion's critical demands, independently of unrelated
     /// assertions. No optional single-extension semantics are advertised
     /// by this core, so unknown critical demands remain unsupported facts.
-    pub fn check_extensions(&self, execution: &Memory) -> Result<ExtensionProcessing<'a>> {
+    pub fn check_extensions<W: Work>(&self, execution: &W) -> Result<ExtensionProcessing<'a>> {
         execution.charge_work(1).map_err(|reason| {
             Error::resource(
                 reason,

@@ -6,7 +6,7 @@ use super::{
 };
 use crate::temporal::{LeapTable, Reading};
 use crate::{Certificate, Error, Result, oid};
-use structured_asn1::memory::{Memory, MemoryError, OwnedVec};
+use structured_asn1::memory::{Memory, MemoryError, OwnedVec, Work};
 
 /// Caller-provided acquisition fact for RFC5280 §6.3.3(a)'s endpoint rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,13 +18,13 @@ pub enum SourceOrigin {
 }
 
 /// Temporal/resource inputs, without a clock, fetching or age-policy defaults.
-pub struct Evaluation<'p> {
+pub struct Evaluation<'p, E: Work = Memory> {
     /// Current caller-provided label, retaining subnanosecond precision.
     pub now: Reading,
     /// Complete authenticated UTC facts and explicit coverage supplied by caller.
     pub utc: &'p LeapTable<'p>,
     /// Current shared operation domain.
-    pub execution: &'p Memory,
+    pub execution: &'p E,
     /// Acquisition fact for the complete or updating delta source.
     pub origin: SourceOrigin,
 }
@@ -54,6 +54,17 @@ pub struct AbsenceEvidence<'r, 'a> {
     source: EvidenceSource<'r, 'a>,
 }
 impl<'r, 'a> AbsenceEvidence<'r, 'a> {
+    /// Actual original certificate whose status was processed. This association
+    /// comes from the same evaluation, not a later caller-supplied target.
+    #[must_use]
+    pub fn target(self) -> &'r Certificate<'a> {
+        self.target
+    }
+    /// Exact evaluation label, including its subnanosecond remainder.
+    #[must_use]
+    pub fn evaluated_at(self) -> Reading {
+        self.now
+    }
     /// Original sources, retaining exact signed-range provenance.
     #[must_use]
     pub fn source(self) -> EvidenceSource<'r, 'a> {
@@ -134,10 +145,10 @@ impl<'r, 'a> Authenticated<'r, 'a> {
     /// Compose applicability, time and full-list entry semantics over this
     /// original complete source. Caller supplies authenticated issuer path and
     /// same-anchor provenance as required by RFC5280 §6.3.3(f).
-    pub fn evaluate<'b>(
+    pub fn evaluate<'b, E: Work>(
         &'b self,
         target: &'r Certificate<'a>,
-        time: &Evaluation<'_>,
+        time: &Evaluation<'_, E>,
     ) -> Result<CompleteEvidence<'b, 'r, 'a>> {
         if self
             .crl()
@@ -239,10 +250,10 @@ pub enum DeltaEvidence<'b, 'r, 'a> {
 impl<'b, 'r, 'a> BoundDelta<'b, 'r, 'a> {
     /// Compose bound-pair scope, both source metadata/entries and temporal facts.
     /// No base expiry is silently used as the delta's expiry or vice versa.
-    pub fn evaluate(
+    pub fn evaluate<E: Work>(
         self,
         target: &'r Certificate<'a>,
-        time: &Evaluation<'_>,
+        time: &Evaluation<'_, E>,
     ) -> Result<DeltaEvidence<'b, 'r, 'a>> {
         let reasons = match self.base().scope(target, time.execution)? {
             ScopeOutcome::Applicable(reasons) => reasons,
@@ -286,18 +297,20 @@ pub enum CoverageAdmission {
 #[derive(Debug)]
 pub struct Coverage<'r, 'a> {
     reasons: Reasons,
-    sources: OwnedVec<AbsenceEvidence<'r, 'a>>,
+    // Temporarily moved, never copied, while attaching the current growth
+    // execution. Every returning path restores the independently owned buffer.
+    sources: Option<OwnedVec<AbsenceEvidence<'r, 'a>>>,
 }
 impl<'r, 'a> Coverage<'r, 'a> {
     /// Retain the first qualified source; capacity remains charged until drop.
-    pub fn new(first: AbsenceEvidence<'r, 'a>, execution: &Memory) -> Result<Self> {
+    pub fn new<W: Work>(first: AbsenceEvidence<'r, 'a>, execution: &W) -> Result<Self> {
         let mut sources = execution.vector();
         sources
             .try_push(first)
             .map_err(|reason| first.target.tbs().subject().resource(reason))?;
         Ok(Self {
             reasons: first.reasons,
-            sources,
+            sources: Some(sources.into_owned()),
         })
     }
     /// Current qualified reason coverage.
@@ -305,24 +318,56 @@ impl<'r, 'a> Coverage<'r, 'a> {
     pub fn reasons(&self) -> Reasons {
         self.reasons
     }
+    /// Original target shared by every contributing reason source.
+    ///
+    /// # Panics
+    /// Only if the private nonempty source invariant is violated.
+    #[must_use]
+    pub fn target(&self) -> &'r Certificate<'a> {
+        self.sources()[0].target()
+    }
+    /// Exact evaluation label shared by every contributing reason source.
+    ///
+    /// # Panics
+    /// Only if the private nonempty source invariant is violated.
+    #[must_use]
+    pub fn evaluated_at(&self) -> Reading {
+        self.sources()[0].evaluated_at()
+    }
     /// Original evidence behind every contributing reason union.
+    ///
+    /// # Panics
+    /// Only if the internal growth invariant is violated: each public return
+    /// restores the owned source buffer before exposing this collection.
     #[must_use]
     pub fn sources(&self) -> &[AbsenceEvidence<'r, 'a>] {
-        &self.sources
+        self.sources
+            .as_deref()
+            .expect("coverage growth restores its buffer")
     }
     /// Add compatible qualified coverage under the current operation account.
     /// Growing coverage is request-scoped: `execution` must share its original
     /// account. Later requests may inspect retained facts, but cannot grow this
     /// collection using a different work domain. No old-account fallback.
-    pub fn add(
+    ///
+    /// # Panics
+    /// Only if the internal owned-buffer or checked-account transfer invariant
+    /// is violated. Resource refusals restore the original collection.
+    pub fn add<W: Work>(
         &mut self,
         evidence: AbsenceEvidence<'r, 'a>,
-        execution: &Memory,
+        execution: &W,
     ) -> Result<CoverageAdmission> {
-        if !self.sources.memory().same_account(execution) {
+        if !self
+            .sources
+            .as_ref()
+            .expect("coverage owns its buffer")
+            .memory()
+            .same_account(execution.memory())
+        {
             return Ok(CoverageAdmission::DifferentExecution);
         }
-        let first = &self.sources[0];
+        let first = &self.sources()[0];
         execution
             .charge_work(1)
             .map_err(|reason| evidence.target.tbs().subject().resource(reason))?;
@@ -352,9 +397,13 @@ impl<'r, 'a> Coverage<'r, 'a> {
         if union == self.reasons {
             return Ok(CoverageAdmission::Redundant);
         }
-        self.sources
-            .try_push(evidence)
-            .map_err(|reason| evidence.target.tbs().subject().resource(reason))?;
+        let sources = self.sources.take().expect("coverage owns its buffer");
+        let Ok(mut scoped) = sources.with_execution(execution) else {
+            unreachable!("the account was checked before any coverage work")
+        };
+        let admitted = scoped.try_push(evidence);
+        self.sources = Some(scoped.into_owned());
+        admitted.map_err(|reason| evidence.target.tbs().subject().resource(reason))?;
         self.reasons = union;
         Ok(CoverageAdmission::Added)
     }

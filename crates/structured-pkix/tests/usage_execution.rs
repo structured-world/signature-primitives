@@ -28,6 +28,106 @@ fn catalogue() -> Vec<u8> {
 }
 
 #[test]
+fn eku_generic_work_keeps_current_query_through_decode_catalogue_and_later_lookup() {
+    // Temporary execution wrappers may disappear, but decoding/growth and
+    // subsequent queries must not silently fall back to the aggregate account.
+    let bytes = catalogue();
+    let storage = Memory::new(Arc::new(MemoryAccount::new(1 << 20, 1 << 24)));
+    let source = Parser::ber(storage.clone());
+    let mut parent = source.read(&bytes, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let extensions = Extensions::read_element(&parent, &element, "extensions").unwrap();
+    let extension = extensions
+        .get(structured_pkix::oid::EXT_KEY_USAGE, &storage)
+        .unwrap()
+        .unwrap();
+    let held = storage.used();
+    let before = storage.work_used();
+    let current = Memory::new(Arc::new(MemoryAccount::new(1 << 20, 1 << 24)));
+    let operation = Parser::ber(current.clone());
+    let query = operation.read(&[], 900).unwrap();
+    let usage = {
+        let execution = query.execution();
+        ExtendedKeyUsage::read(extension, &execution).unwrap()
+    };
+    assert_eq!(usage.purposes().len(), 1);
+    assert_eq!(storage.used(), held);
+    assert_eq!(storage.work_used(), before);
+    let full = current.work_used();
+    assert!(full > 0);
+    assert!(current.used() > 0);
+    let limited = Memory::new(Arc::new(MemoryAccount::new(1 << 20, 1 << 24)));
+    let root = Parser::new(
+        Encoding::Ber,
+        Limits {
+            max_work: u64::try_from(full - 1).unwrap(),
+            ..Limits::default()
+        },
+        limited.clone(),
+    );
+    let query = root.read(&[], 900).unwrap();
+    let error = ExtendedKeyUsage::read(extension, &query.execution()).unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!(error.field(), "extensions.extKeyUsage");
+    assert_eq!(limited.used(), 0);
+    assert_eq!(storage.used(), held);
+    let denied = Parser::new(
+        Encoding::Ber,
+        Limits {
+            max_work: 0,
+            ..Limits::default()
+        },
+        limited.clone(),
+    );
+    let query = denied.read(&[], 900).unwrap();
+    assert!(
+        usage
+            .has(usage.purposes()[0], &query.execution())
+            .unwrap_err()
+            .is_resource()
+    );
+    drop(usage);
+    assert_eq!(current.used(), 0);
+}
+
+#[test]
+fn generic_lazy_extension_keeps_origin_and_query_depth_before_scalar_decoding() {
+    // Current scalar checks share the same original nested-reader kernel as
+    // allocating EKU checks. A large aggregate allowance cannot erase depth.
+    let mut extension = tlv(6, structured_pkix::oid::BASIC_CONSTRAINTS.as_bytes());
+    extension.extend(tlv(4, &[0x30, 0]));
+    let bytes = tlv(0x30, &tlv(0x30, &extension));
+    let source = Parser::ber(Memory::new(Arc::new(MemoryAccount::new(1 << 20, 1 << 24))));
+    let mut parent = source.read(&bytes, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let extensions = Extensions::read_element(&parent, &element, "extensions").unwrap();
+    let extension = extensions
+        .get(structured_pkix::oid::BASIC_CONSTRAINTS, source.memory())
+        .unwrap()
+        .unwrap();
+    for (depth, success) in [(3, false), (4, true)] {
+        let account = Memory::new(Arc::new(MemoryAccount::new(1 << 20, 1 << 24)));
+        let operation = Parser::new(
+            Encoding::Ber,
+            Limits {
+                max_depth: depth,
+                ..Limits::default()
+            },
+            account.clone(),
+        );
+        let query = operation.read(&[], 900).unwrap();
+        let result =
+            structured_pkix::constraints::BasicConstraints::read(extension, &query.execution());
+        if success {
+            assert!(!result.unwrap().is_authority());
+        } else {
+            assert!(result.unwrap_err().is_resource());
+        }
+        assert_eq!(account.used(), 0);
+    }
+}
+
+#[test]
 fn eku_storage_and_copy_work_cannot_bypass_producing_local_ceiling() {
     // The global work observed on a successful full read includes all actual
     // catalogue allocations. Use one repeatedly queried key so randomized hash

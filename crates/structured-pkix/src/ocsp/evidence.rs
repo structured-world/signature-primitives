@@ -7,7 +7,7 @@ use super::{
 use crate::error::{CallbackResult, Result};
 use crate::temporal::{LeapTable, Reading};
 use crate::{Certificate, Error};
-use structured_asn1::memory::{Memory, MemoryError};
+use structured_asn1::memory::{Memory, MemoryError, Work};
 use structured_asn1::{Oid, Span};
 
 /// Actual caller request facts, never inferred from the received response.
@@ -22,13 +22,13 @@ pub struct Request<'p, 'a> {
 }
 
 /// Current temporal/resource facts; maximum age and clock-skew policy stay outside.
-pub struct Evaluation<'p> {
+pub struct Evaluation<'p, E: Work = Memory> {
     /// Actual caller-supplied current label, retaining subnanosecond precision.
     pub now: Reading,
     /// Caller-authenticated UTC correction evidence and explicit coverage.
     pub utc: &'p LeapTable<'p>,
     /// Current operation's shared work and storage domain.
-    pub execution: &'p Memory,
+    pub execution: &'p E,
 }
 
 /// Whether this evidence is bound to the caller's exact intended signer input.
@@ -89,6 +89,10 @@ impl<'r, 'a> Evidence<'r, 'a> {
 
 /// Target processing outcome, without turning missing/unsupported into Good.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "retain source/key/time facts by value rather than allocate a box per target merely to discriminate the result"
+)]
 pub enum TargetEvidence<'r, 'a> {
     /// Identity and supported extension semantics completed; policy facts remain.
     Evidence(Evidence<'r, 'a>),
@@ -105,10 +109,84 @@ pub enum TargetEvidence<'r, 'a> {
     },
 }
 
-fn exact_signer(
+/// Complete target processing together with the original requested certificate.
+/// Target and response lifetimes are independent; no temporary request,
+/// evaluation context, provider or execution wrapper is retained.
+#[derive(Debug)]
+pub struct TargetReading<'target, 'request, 'response, 'source> {
+    target: &'target Certificate<'request>,
+    evaluated_at: Reading,
+    outcome: TargetEvidence<'response, 'source>,
+}
+
+impl<'target, 'request, 'response, 'source> TargetReading<'target, 'request, 'response, 'source> {
+    /// Original actual target, not another certificate with a matching hint.
+    #[must_use]
+    pub fn target(&self) -> &'target Certificate<'request> {
+        self.target
+    }
+    /// Exact label used by the same update-window/revocation-time processing.
+    #[must_use]
+    pub fn evaluated_at(&self) -> Reading {
+        self.evaluated_at
+    }
+    /// Original complete result, including lookup and critical-demand failures.
+    #[must_use]
+    pub fn outcome(&self) -> &TargetEvidence<'response, 'source> {
+        &self.outcome
+    }
+    /// Bind established mechanism facts to the target used by this invocation.
+    /// Status, temporal uncertainty, nonce and delegated-responder requirements
+    /// remain exactly as reported; this does not mean the status is Good.
+    #[must_use]
+    pub fn evidence(&self) -> Option<BoundEvidence<'target, 'request, 'response, 'source>> {
+        match self.outcome {
+            TargetEvidence::Evidence(evidence) => Some(BoundEvidence {
+                target: self.target,
+                evaluated_at: self.evaluated_at,
+                evidence,
+            }),
+            _ => None,
+        }
+    }
+    /// Move the original outcome when the caller does not retain target binding.
+    #[must_use]
+    pub fn into_outcome(self) -> TargetEvidence<'response, 'source> {
+        self.outcome
+    }
+}
+
+/// Privately bound target and facts from the same completed common evaluation.
+/// This association cannot be created from an unrelated certificate and result.
+#[derive(Debug, Clone, Copy)]
+pub struct BoundEvidence<'target, 'request, 'response, 'source> {
+    target: &'target Certificate<'request>,
+    evaluated_at: Reading,
+    evidence: Evidence<'response, 'source>,
+}
+
+impl<'target, 'request, 'response, 'source> BoundEvidence<'target, 'request, 'response, 'source> {
+    /// Original requested certificate whose identity the common kernel matched.
+    #[must_use]
+    pub fn target(self) -> &'target Certificate<'request> {
+        self.target
+    }
+    /// Original evaluation label; the caller cannot relabel status in time.
+    #[must_use]
+    pub fn evaluated_at(self) -> Reading {
+        self.evaluated_at
+    }
+    /// Same original mechanism facts, without repeating identity hashes.
+    #[must_use]
+    pub fn evidence(self) -> Evidence<'response, 'source> {
+        self.evidence
+    }
+}
+
+fn exact_signer<E: Work>(
     left: &Certificate<'_>,
     right: &Certificate<'_>,
-    execution: &Memory,
+    execution: &E,
     at: u64,
 ) -> Result<bool> {
     let left = left.as_bytes();
@@ -125,14 +203,32 @@ fn exact_signer(
 }
 
 impl<'r, 'a> ScopedResponse<'r, 'a> {
+    /// Run the same complete target-processing kernel once while retaining its
+    /// original requested certificate. No hashing, parsing or allocation is
+    /// repeated to recover provenance later. Failures retain their original
+    /// result/cause; no positive target binding is returned for a lookup failure.
+    pub fn evaluate_with_target<'target, 'request, D: Digest<E>, E: Work>(
+        self,
+        request: &Request<'target, 'request>,
+        time: &Evaluation<'_, E>,
+        digest: &D,
+    ) -> CallbackResult<TargetReading<'target, 'request, 'r, 'a>, D::Error> {
+        let outcome = self.evaluate(request, time, digest)?;
+        Ok(TargetReading {
+            target: request.target,
+            evaluated_at: time.now,
+            outcome,
+        })
+    }
+
     /// Evaluate the actual request against this issuer-scoped signed response.
     /// RFC6960 §3.2 requires identity, signer, authorization and temporal checks;
     /// this operation composes mechanism facts without choosing caller policy.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-3.2>
-    pub fn evaluate<D: Digest>(
+    pub fn evaluate<D: Digest<E>, E: Work>(
         self,
         request: &Request<'_, '_>,
-        time: &Evaluation<'_>,
+        time: &Evaluation<'_, E>,
         digest: &D,
     ) -> CallbackResult<TargetEvidence<'r, 'a>, D::Error> {
         let execution = time.execution;

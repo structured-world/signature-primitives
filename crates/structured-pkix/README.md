@@ -73,6 +73,41 @@ Applications own trust decisions, external data acquisition and the accounting
 of work inside their injected verification and recognizer callbacks. Merely
 passing an execution account does not bound arbitrary external callback code.
 
+### Scoped execution for retained inputs
+
+Supplied-path validation accepts `ValidationContext<..., E>` with
+`E: structured_asn1::memory::Work`. Implement `Verify<E>` and `Recognizer<E>`
+for that same execution type and pass the current reader's `execution()`.
+The default type remains `Memory`; an implementation of `Verify<Memory>` alone
+does not implement verification under a reader-local ceiling. Path construction
+with `Context` continues to use its documented `Memory` execution contract.
+
+Name queries, lazy extension readers and CRL/OCSP operations also accept `Work`.
+When retained certificate data is read during another operation, the shared
+reader bridge preserves original source offsets, encoding and depth, checks the
+original source ceilings, and charges the current root operation. Storage stays
+on its original account until its allocation is freed; a new query does not
+inherit credit from an earlier parse. Callback implementations must use the
+provided execution before their own data-dependent work and allocations.
+
+`ScopedReader<'source, 'operation>` separates input views from the current
+decoding budget. Parsed OIDs, names, extension values and static path facts
+can retain their original source lifetime after a temporary operation ends;
+the reader cursor and scoped scratch cannot escape that operation. The existing
+`Reader<'a>` name denotes the equal-lifetime case. `Extension::reader_scoped`
+and the shared lazy decoders use this same parser kernel, without copying or
+reparsing input, cloning a budget owner, or weakening source/query admission.
+
+`ScopedResponse::evaluate_with_target` uses the same OCSP evaluation as
+`evaluate`, while retaining the original target and evaluation label. Its
+`TargetReading::evidence()` returns a target-bound result only when evaluation
+produced evidence. `ScopedResponse::issuing_key()` retains the actual issuing
+key and inherited parameters for issuer/delegate authentication; configured
+responder trust returns `None` because that branch does not authenticate an
+issuer key. These facts do not replace caller trust, freshness or revocation
+policy. CRL absence and coverage evidence likewise expose their original target
+and evaluation label.
+
 ## GeneralName identity
 
 The source API adds `GeneralName::matches(other, &Memory)` for retained queries

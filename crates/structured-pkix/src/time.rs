@@ -30,11 +30,11 @@ pub enum Relation {
     Uncertain(crate::temporal::Uncertainty),
 }
 
-pub(crate) fn relation_in(
+pub(crate) fn relation_in<W: structured_asn1::memory::Work>(
     label: Instant,
     now: crate::temporal::Reading,
     utc: &crate::temporal::LeapTable<'_>,
-    execution: &structured_asn1::memory::Memory,
+    execution: &W,
     origin: (&'static str, u64),
 ) -> Result<Relation> {
     let (field, at) = origin;

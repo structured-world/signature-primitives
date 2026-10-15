@@ -561,6 +561,84 @@ fn reason_scoped_crl(flags: &[u8]) -> Vec<u8> {
     ))
 }
 
+fn assert_current_crl_query<'r, 'a>(
+    proof: structured_pkix::crl::Authenticated<'r, 'a>,
+    target: &'r structured_pkix::Certificate<'a>,
+    time: &structured_pkix::crl::Evaluation<'_>,
+) {
+    // Evaluation after authentication switches to the current operation. Lazy
+    // IDP and source-entry processing must retain its depth/work ceilings.
+    use structured_pkix::crl::{CompleteEvidence, Evaluation};
+    let source_work = time.execution.work_used();
+    for (work, depth, accepted) in [(1_000_000, 32, true), (0, 32, false), (1_000_000, 0, false)] {
+        let account = memory(128 * 1024, 10_000_000);
+        let operation = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: work,
+                max_depth: depth,
+                ..Limits::default()
+            },
+            account.clone(),
+        );
+        let query = operation.read(&[], 3000).unwrap();
+        let current = query.execution();
+        let scoped = Evaluation {
+            now: time.now,
+            utc: time.utc,
+            execution: &current,
+            origin: time.origin,
+        };
+        let outcome = proof.evaluate(target, &scoped);
+        if accepted {
+            let CompleteEvidence::Facts(facts) = outcome.unwrap() else {
+                panic!("same applicable original CRL required")
+            };
+            assert!(facts.absence().is_some());
+        } else {
+            assert!(outcome.unwrap_err().is_resource());
+        }
+        assert_eq!(account.used(), 0);
+        assert_eq!(time.execution.work_used(), source_work);
+    }
+}
+
+fn assert_current_coverage_growth<'r, 'a>(
+    coverage: &mut structured_pkix::crl::Coverage<'r, 'a>,
+    next: &structured_pkix::crl::AbsenceEvidence<'r, 'a>,
+    width: usize,
+    execution: &Memory,
+) {
+    // Metadata/identity admission is not credit for subsequent copy/growth.
+    // Refusal preserves the original contributors, allocation and reasons.
+    assert!(
+        structured_pkix::crl::Coverage::new(coverage.sources()[0], &memory(0, 10_000_000))
+            .unwrap_err()
+            .is_resource()
+    );
+    let limited = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 2 + 2 * u64::try_from(width).unwrap(),
+            ..Limits::default()
+        },
+        execution.clone(),
+    );
+    let query = limited.read(&[], 3000).unwrap();
+    let contributors = coverage.sources().as_ptr();
+    let held = execution.used();
+    assert!(
+        coverage
+            .add(*next, &query.execution())
+            .unwrap_err()
+            .is_resource()
+    );
+    assert_eq!(coverage.sources().as_ptr(), contributors);
+    assert_eq!(coverage.sources().len(), 1);
+    assert_eq!(execution.used(), held);
+    assert!(!coverage.reasons().is_complete());
+}
+
 #[test]
 fn qualified_coverage_retains_sources_and_never_accepts_unusable_time() {
     // Only applicable, current, conflict-free absence may add reasons. The
@@ -594,16 +672,14 @@ fn qualified_coverage_retains_sources_and_never_accepts_unusable_time() {
         panic!("first scope missing");
     };
     let first_absence = facts.absence().unwrap();
+    assert!(core::ptr::eq(first_absence.target(), &raw const target));
+    assert_eq!(first_absence.evaluated_at(), time.now);
     let CompleteEvidence::Facts(facts) = second_proof.evaluate(&target, &time).unwrap() else {
         panic!("second scope missing");
     };
     let second_absence = facts.absence().unwrap();
+    assert_current_crl_query(first_proof, &target, &time);
     let retained = execution.used();
-    assert!(
-        Coverage::new(first_absence, &memory(0, 10_000_000))
-            .unwrap_err()
-            .is_resource()
-    );
     let mut coverage = Coverage::new(first_absence, &execution).unwrap();
     assert!(!coverage.reasons().is_complete());
     assert_eq!(
@@ -611,6 +687,12 @@ fn qualified_coverage_retains_sources_and_never_accepts_unusable_time() {
             .add(second_absence, &memory(0, 10_000_000))
             .unwrap(),
         CoverageAdmission::DifferentExecution
+    );
+    assert_current_coverage_growth(
+        &mut coverage,
+        &second_absence,
+        target.as_bytes().len(),
+        &execution,
     );
     assert_eq!(
         coverage.add(second_absence, &execution).unwrap(),

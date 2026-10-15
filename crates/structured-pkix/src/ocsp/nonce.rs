@@ -3,7 +3,7 @@
 use super::{BasicResponse, end};
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::oid;
-use structured_asn1::memory::{Memory, MemoryError};
+use structured_asn1::memory::{MemoryError, Work};
 
 /// Caller-generated nonce for a new RFC9654 request. Construction validates
 /// size only; the caller must use a cryptographically strong random generator.
@@ -72,9 +72,12 @@ pub enum NonceBinding {
     Differs,
 }
 
-pub(super) fn read<'a>(extension: &crate::Extension<'a>, execution: &Memory) -> Result<&'a [u8]> {
+pub(super) fn read<'a, W: Work>(
+    extension: &crate::Extension<'a>,
+    execution: &W,
+) -> Result<&'a [u8]> {
     const FIELD: &str = "ocspResponse.nonce";
-    let mut reader = extension.reader(execution).field(FIELD)?;
+    let mut reader = extension.reader_scoped(execution).field(FIELD)?;
     let value = reader
         .expect(structured_asn1::Tag::primitive(
             structured_asn1::universal::OCTET_STRING,
@@ -94,10 +97,10 @@ pub(super) fn read<'a>(extension: &crate::Extension<'a>, execution: &Memory) -> 
     Ok(bytes)
 }
 
-pub(super) fn bind(
+pub(super) fn bind<W: Work>(
     request: Option<RequestNonce<'_>>,
     response: Option<&[u8]>,
-    execution: &Memory,
+    execution: &W,
     at: u64,
 ) -> Result<NonceBinding> {
     let (request, response) = match (request, response) {
@@ -125,7 +128,7 @@ impl<'a> BasicResponse<'a> {
     /// Decode a response nonce, retaining the producing parser's local work and
     /// depth ceilings. Received nonce syntax accepts 1..128 octets, including
     /// legacy short nonces; this does not relax new-request construction.
-    pub fn nonce(&self, execution: &Memory) -> Result<Option<&'a [u8]>> {
+    pub fn nonce<W: Work>(&self, execution: &W) -> Result<Option<&'a [u8]>> {
         match self.extensions.get(oid::OCSP_NONCE, execution)? {
             Some(extension) => read(extension, execution).map(Some),
             None => Ok(None),
@@ -135,10 +138,10 @@ impl<'a> BasicResponse<'a> {
     /// Compare the actual request nonce only after authenticating this response.
     /// Missing/unsolicited values are preserved for the caller's replay policy;
     /// they are never replaced by a generated or default nonce.
-    pub fn bind_nonce(
+    pub fn bind_nonce<W: Work>(
         &self,
         request: Option<RequestNonce<'_>>,
-        execution: &Memory,
+        execution: &W,
     ) -> Result<NonceBinding> {
         bind(request, self.nonce(execution)?, execution, self.span.start)
     }

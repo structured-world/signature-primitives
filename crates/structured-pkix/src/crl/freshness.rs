@@ -3,7 +3,7 @@
 use super::Authenticated;
 use crate::error::{Error, Result};
 use crate::temporal::{LeapTable, Reading, Uncertainty};
-use structured_asn1::memory::Memory;
+use structured_asn1::memory::Work;
 
 /// Freshness of an authenticated source, independently of target scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,12 +25,12 @@ pub enum Freshness {
     Uncertain(Uncertainty),
 }
 
-pub(crate) fn update_window(
+pub(crate) fn update_window<W: Work>(
     this: crate::Time,
     next: Option<crate::Time>,
     now: Reading,
     utc: &LeapTable<'_>,
-    execution: &Memory,
+    execution: &W,
     origin: (&'static str, u64),
 ) -> Result<Freshness> {
     let (field, at) = origin;
@@ -90,11 +90,11 @@ impl Authenticated<'_, '_> {
     /// A subnanosecond remainder distinguishes exact nextUpdate from after it.
     /// All compared UTC labels are validated against the supplied table first.
     /// Missing coverage and contradicted leap labels remain uncertainty.
-    pub fn freshness(
+    pub fn freshness<W: Work>(
         &self,
         now: Reading,
         utc: &LeapTable<'_>,
-        execution: &Memory,
+        execution: &W,
     ) -> Result<Freshness> {
         update_window(
             self.crl().tbs().this_update(),

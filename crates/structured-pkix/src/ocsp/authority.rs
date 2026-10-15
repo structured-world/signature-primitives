@@ -4,7 +4,7 @@ use super::{DelegateFacts, Digest, Lookup, ResponderRevocation, SignedResponse};
 use crate::Certificate;
 use crate::error::{CallbackResult, Error, Result};
 use crate::path::WorkingKey;
-use structured_asn1::memory::{Memory, MemoryError};
+use structured_asn1::memory::{MemoryError, Work};
 
 /// How the caller-bound signer is related to the selected target issuer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +40,10 @@ pub enum AuthorityFailure {
 pub struct ScopedResponse<'r, 'a> {
     signed: SignedResponse<'r, 'a>,
     issuer: &'r Certificate<'a>,
+    // Keep the actual input SPKI provenance as well as inherited parameters.
+    // Rebuilding from an equal issuer certificate could change parser/source
+    // identity and its lazy-reading ceilings, even if its DER bytes agree.
+    issuing_key: Option<WorkingKey<'a>>,
     source: AuthoritySource,
 }
 
@@ -54,17 +58,24 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
     pub fn issuer(self) -> &'r Certificate<'a> {
         self.issuer
     }
+    /// Actual effective issuer key used by issuer-signature or delegation
+    /// authentication. Explicit configured-responder trust does not run that
+    /// operation and honestly returns None, never a fabricated standing key.
+    #[must_use]
+    pub fn issuing_key(self) -> Option<WorkingKey<'a>> {
+        self.issuing_key
+    }
     /// Explicit scope source, including unresolved delegated revocation.
     #[must_use]
     pub fn source(self) -> AuthoritySource {
         self.source
     }
     /// Select a target assertion using the same issuer as the signer binding.
-    pub fn find<D: Digest>(
+    pub fn find<D: Digest<E>, E: Work>(
         self,
         target: &Certificate<'_>,
         digest: &D,
-        execution: &Memory,
+        execution: &E,
     ) -> CallbackResult<Lookup<'r, 'a>, D::Error> {
         self.signed.find(target, self.issuer, digest, execution)
     }
@@ -72,6 +83,10 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
 
 /// Completed issuer-scope binding outcome.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "return the original response and actual issuing key in-place without a new allocation during authentication"
+)]
 pub enum AuthorityBinding<'r, 'a> {
     /// Scope established; this is not the final status-acceptance decision.
     Bound(ScopedResponse<'r, 'a>),
@@ -79,7 +94,7 @@ pub enum AuthorityBinding<'r, 'a> {
     Rejected(AuthorityFailure),
 }
 
-fn equal_bytes(left: &[u8], right: &[u8], execution: &Memory, at: u64) -> Result<bool> {
+fn equal_bytes<E: Work>(left: &[u8], right: &[u8], execution: &E, at: u64) -> Result<bool> {
     let work = u64::try_from(left.len().max(right.len()))
         .ok()
         .and_then(|n| n.checked_mul(2))
@@ -91,10 +106,10 @@ fn equal_bytes(left: &[u8], right: &[u8], execution: &Memory, at: u64) -> Result
     Ok(left == right)
 }
 
-fn equal_key(
+fn equal_key<E: Work>(
     left: WorkingKey<'_>,
     right: WorkingKey<'_>,
-    execution: &Memory,
+    execution: &E,
     at: u64,
 ) -> Result<bool> {
     if !equal_bytes(left.key().as_bytes(), right.key().as_bytes(), execution, at)? {
@@ -107,7 +122,7 @@ fn equal_key(
     }
 }
 
-pub(super) fn signing_usage(certificate: &Certificate<'_>, execution: &Memory) -> Result<bool> {
+pub(super) fn signing_usage<E: Work>(certificate: &Certificate<'_>, execution: &E) -> Result<bool> {
     // RFC5280 §§4.2.1.3/4.2.1.12: OCSP is neither a certificate nor a CRL
     // signature; digitalSignature and/or contentCommitment are applicable.
     // <https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.12>
@@ -123,11 +138,11 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
     /// key, including inherited parameters. Caller supplies issuer trust and
     /// current validity from its target path; a matching DN alone is inadequate.
     /// RFC6960 §4.2.2.2: <https://www.rfc-editor.org/rfc/rfc6960#section-4.2.2.2>
-    pub fn bind_issuer(
+    pub fn bind_issuer<E: Work>(
         self,
         issuer: &'r Certificate<'a>,
         issuing_key: WorkingKey<'a>,
-        execution: &Memory,
+        execution: &E,
     ) -> Result<AuthorityBinding<'r, 'a>> {
         let at = self.response().span().start;
         if !equal_bytes(
@@ -162,16 +177,17 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
         Ok(AuthorityBinding::Bound(ScopedResponse {
             signed: self,
             issuer,
+            issuing_key: Some(issuing_key),
             source: AuthoritySource::Issuer,
         }))
     }
 
     /// Attach completed direct local delegation to this exact actual signer.
     /// An unresolved revocation fact remains unresolved in the returned source.
-    pub fn bind_delegate(
+    pub fn bind_delegate<E: Work>(
         self,
         facts: DelegateFacts<'a>,
-        execution: &Memory,
+        execution: &E,
     ) -> Result<AuthorityBinding<'r, 'a>>
     where
         'a: 'r,
@@ -191,6 +207,7 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
         Ok(AuthorityBinding::Bound(ScopedResponse {
             signed: self,
             issuer: facts.issuer(),
+            issuing_key: Some(facts.issuing_key()),
             source: AuthoritySource::Delegate {
                 revocation: facts.revocation(),
             },
@@ -206,6 +223,7 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
         ScopedResponse {
             signed: self,
             issuer,
+            issuing_key: None,
             source: AuthoritySource::Configured,
         }
     }

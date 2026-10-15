@@ -16,7 +16,7 @@ use crate::oid;
 #[cfg(test)]
 use alloc::vec::Vec;
 use structured_asn1::memory::{Memory, OwnedString, OwnedVec, Work};
-use structured_asn1::{Class, Element, Oid, Reader, Tag, universal};
+use structured_asn1::{Class, Element, Oid, ScopedReader as Reader, Tag, universal};
 use unicode_bidi::BidiClass;
 
 mod fold;
@@ -143,10 +143,10 @@ impl<'a> Name<'a> {
     /// Each search step is admitted in the current execution domain. A refusal
     /// is yielded once, after which repeated `next()` calls do no further work.
     /// Returned references borrow the name, independently of the budget borrow.
-    pub fn attributes_of<'n, 'q>(
+    pub fn attributes_of<'n, 'q, W: structured_asn1::memory::Work>(
         &'n self,
         kind: Oid<'q>,
-        execution: &'q Memory,
+        execution: &'q W,
     ) -> impl Iterator<Item = Result<&'n Attribute<'a>>> + 'q
     where
         'n: 'q,
@@ -172,19 +172,29 @@ impl<'a> Name<'a> {
     }
 
     /// The first attribute of one kind.
-    pub fn attribute(&self, kind: Oid<'_>, execution: &Memory) -> Result<Option<&Attribute<'a>>> {
+    pub fn attribute<W: structured_asn1::memory::Work>(
+        &self,
+        kind: Oid<'_>,
+        execution: &W,
+    ) -> Result<Option<&Attribute<'a>>> {
         self.attributes_of(kind, execution).next().transpose()
     }
 
     /// The common name, which describes the subject and does not identify it.
-    pub fn common_name(&self, execution: &Memory) -> Result<Option<&Attribute<'a>>> {
+    pub fn common_name<W: structured_asn1::memory::Work>(
+        &self,
+        execution: &W,
+    ) -> Result<Option<&Attribute<'a>>> {
         self.attribute(oid::COMMON_NAME, execution)
     }
 
     /// The organization identifier, which is how a legal entity is identified
     /// rather than described, and is the attribute an attribution decision may
     /// rest on where the common name is not.
-    pub fn organization_identifier(&self, execution: &Memory) -> Result<Option<&Attribute<'a>>> {
+    pub fn organization_identifier<W: structured_asn1::memory::Work>(
+        &self,
+        execution: &W,
+    ) -> Result<Option<&Attribute<'a>>> {
         self.attribute(oid::ORGANIZATION_IDENTIFIER, execution)
     }
 
@@ -208,7 +218,11 @@ impl<'a> Name<'a> {
     ///
     /// # Errors
     /// Returns a located resource error before unfunded comparison work.
-    pub fn matches(&self, other: &Name<'_>, execution: &Memory) -> Result<bool> {
+    pub fn matches<W: structured_asn1::memory::Work>(
+        &self,
+        other: &Name<'_>,
+        execution: &W,
+    ) -> Result<bool> {
         self.matches_with(other, execution, None)
     }
 
@@ -218,7 +232,7 @@ impl<'a> Name<'a> {
     /// stays on its original account; normalization/comparison scratch and
     /// deferred string decoding use the query's local and aggregate ceilings.
     /// This is a comparison, not permission to reparse a foreign certificate.
-    pub fn matches_in(&self, other: &Name<'_>, parent: &Reader<'_>) -> Result<bool> {
+    pub fn matches_in(&self, other: &Name<'_>, parent: &Reader<'_, '_>) -> Result<bool> {
         self.matches_with(other, &parent.execution(), Some(parent))
     }
 
@@ -226,7 +240,7 @@ impl<'a> Name<'a> {
         &self,
         other: &Name<'_>,
         execution: &W,
-        parent: Option<&Reader<'_>>,
+        parent: Option<&Reader<'_, '_>>,
     ) -> Result<bool> {
         if self.parts.len() != other.parts.len() {
             return Ok(false);
@@ -272,7 +286,11 @@ impl<'a> Name<'a> {
     ///
     /// # Errors
     /// Returns a located resource error before unfunded preparation or comparison.
-    pub fn order(&self, other: &Name<'_>, execution: &Memory) -> Result<core::cmp::Ordering> {
+    pub fn order<W: structured_asn1::memory::Work>(
+        &self,
+        other: &Name<'_>,
+        execution: &W,
+    ) -> Result<core::cmp::Ordering> {
         self.order_with(other, execution, None)
     }
 
@@ -280,7 +298,7 @@ impl<'a> Name<'a> {
         &self,
         other: &Name<'_>,
         execution: &W,
-        parent: Option<&Reader<'_>>,
+        parent: Option<&Reader<'_, '_>>,
     ) -> Result<core::cmp::Ordering> {
         let order = self.parts.len().cmp(&other.parts.len());
         if order != core::cmp::Ordering::Equal {
@@ -308,7 +326,10 @@ impl<'a> Name<'a> {
     ///
     /// # Errors
     /// Returns a located resource error if preparation cannot be financed.
-    pub fn ordered(&self, execution: &Memory) -> Result<Ordered<'a>> {
+    pub fn ordered<W: structured_asn1::memory::Work>(
+        &self,
+        execution: &W,
+    ) -> Result<Ordered<'a, W>> {
         Ok(Ordered {
             prepared: prepared::PreparedName::of(&self.parts, execution)?,
             offset: self.offset,
@@ -324,7 +345,7 @@ impl<'a> Name<'a> {
     /// This is the same semantic order as [`Name::ordered`], with scoped funding.
     pub fn ordered_in<'p>(
         &self,
-        parent: &'p Reader<'_>,
+        parent: &'p Reader<'_, '_>,
     ) -> Result<Ordered<'a, structured_asn1::memory::Execution<'p>>> {
         Ok(Ordered {
             prepared: prepared::PreparedName::of_in(
@@ -347,7 +368,11 @@ impl<'a> Name<'a> {
     ///
     /// # Errors
     /// Returns a located resource error before unfunded prefix preparation.
-    pub fn starts_with(&self, base: &Name<'_>, execution: &Memory) -> Result<bool> {
+    pub fn starts_with<W: structured_asn1::memory::Work>(
+        &self,
+        base: &Name<'_>,
+        execution: &W,
+    ) -> Result<bool> {
         if base.parts.len() > self.parts.len() {
             return Ok(false);
         }
@@ -398,7 +423,7 @@ pub(crate) fn matches_composed<const ENCODED: bool>(
     left_suffix: Option<&RelativeName<'_>>,
     right: &Name<'_>,
     right_suffix: Option<&RelativeName<'_>>,
-    execution: &Memory,
+    execution: &impl structured_asn1::memory::Work,
 ) -> Result<bool> {
     if left_suffix.is_none() && right_suffix.is_none() {
         if ENCODED {
@@ -458,7 +483,7 @@ fn encoded_bytes_match(
     left: &[u8],
     right: &[u8],
     source: &Name<'_>,
-    execution: &Memory,
+    execution: &impl structured_asn1::memory::Work,
 ) -> Result<bool> {
     let work = u64::try_from(left.len().max(right.len()))
         .ok()
@@ -475,7 +500,7 @@ fn encoded_parts_match(
     left: &RelativeName<'_>,
     right: &RelativeName<'_>,
     source: &Name<'_>,
-    execution: &Memory,
+    execution: &impl structured_asn1::memory::Work,
 ) -> Result<bool> {
     if left.attributes.len() != right.attributes.len() {
         return Ok(false);
@@ -696,7 +721,7 @@ pub(crate) fn well_formed(attribute: &Attribute<'_>) -> bool {
 /// Schema validation of retained string bytes, admitted before scanning.
 pub(crate) fn well_formed_in(
     attribute: &Attribute<'_>,
-    parent: &Reader<'_>,
+    parent: &Reader<'_, '_>,
     field: &'static str,
 ) -> Result<bool> {
     let work = (attribute.kind.as_bytes().len() as u64)
@@ -1616,7 +1641,7 @@ const CHARACTER_STRING: u32 = 29;
 /// one. This is the shape, which is what deciding it is a value of the type
 /// asks for. The walk that follows holds each member to its own rules.
 fn associated_sequence_fits<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     number: u32,
@@ -1717,7 +1742,7 @@ fn reads<T>(outcome: structured_asn1::Result<T>, field: &'static str) -> Result<
 /// all. A tag with the wrong contents under it is the same defect as a
 /// container with the wrong members, one level down.
 fn identification_fits<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     alternative: &Element<'a>,
     field: &'static str,
 ) -> Result<bool> {
@@ -1725,7 +1750,7 @@ fn identification_fits<'a>(
     /// they are: the syntaxes are two identifiers, the negotiation is a
     /// context and the syntax to encode it in.
     fn pair<'a>(
-        parent: &Reader<'a>,
+        parent: &Reader<'a, '_>,
         alternative: &Element<'a>,
         field: &'static str,
         numbered: bool,
@@ -1803,7 +1828,7 @@ pub(crate) enum Strings {
 /// alone leaves the same second spelling of a value one level lower, where it
 /// arrives at the same reader by the same route.
 pub(crate) fn walk_der<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     strings: Strings,
@@ -1816,7 +1841,7 @@ pub(crate) fn walk_der<'a>(
     // machine stack frame per element would turn a limit into a crash for
     // whoever raised it. On this stack the same input is the refusal the
     // limit describes.
-    let mut open = parent.execution().vector::<Open<'a>>();
+    let mut open = parent.execution().vector::<Open<'a, '_>>();
     open.try_push(Open::of(parent.enter(element).field(field)?, element.tag()))
         .map_err(|reason| Error::resource(reason, field, element.span().start))?;
     while let Some(level) = open.last_mut() {
@@ -1862,8 +1887,8 @@ pub(crate) fn walk_der<'a>(
 }
 
 /// One container the walk is inside, and what deciding its members needs.
-struct Open<'a> {
-    reader: Reader<'a>,
+struct Open<'a: 'operation, 'operation> {
+    reader: Reader<'a, 'operation>,
     /// Whether this container's members are ordered by their encodings,
     /// which is the case for a set and for nothing else.
     ordered: bool,
@@ -1871,8 +1896,8 @@ struct Open<'a> {
     previous: Option<&'a [u8]>,
 }
 
-impl<'a> Open<'a> {
-    fn of(reader: Reader<'a>, tag: Tag) -> Self {
+impl<'a: 'operation, 'operation> Open<'a, 'operation> {
+    fn of(reader: Reader<'a, 'operation>, tag: Tag) -> Self {
         let ordered = reader.encoding().is_der()
             && tag.class() == Class::Universal
             && tag.number() == Some(universal::SET);
@@ -1887,7 +1912,7 @@ impl<'a> Open<'a> {
 /// Holds one element to the rules its tag names, and says whether it has
 /// children the caller still has to walk.
 fn check_der<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     strings: Strings,
@@ -2071,7 +2096,11 @@ fn check_der<'a>(
     Ok(true)
 }
 
-fn useful_time_fits(parent: &Reader<'_>, element: &Element<'_>, field: &'static str) -> Result<()> {
+fn useful_time_fits(
+    parent: &Reader<'_, '_>,
+    element: &Element<'_>,
+    field: &'static str,
+) -> Result<()> {
     let generalized = element.tag().number() == Some(universal::GENERALIZED_TIME);
     let bytes = element.contents();
     if parent.encoding().is_der() {
@@ -2216,7 +2245,7 @@ fn display_text(
 /// Reports encoding faults or resource refusals with the original field and
 /// source position.
 pub fn read<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<Name<'a>> {
@@ -2257,7 +2286,7 @@ pub fn read<'a>(
 /// The tag belongs to the caller: here it is the set the schema names, and in
 /// a distribution point it is the number that position gives it.
 pub(crate) fn read_relative<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<RelativeName<'a>> {
@@ -2307,7 +2336,7 @@ pub(crate) fn read_relative<'a>(
 }
 
 fn read_attribute<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<Attribute<'a>> {

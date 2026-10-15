@@ -164,8 +164,30 @@ impl Parser {
         outer: u32,
         execution: &Memory,
     ) -> Result<Reader<'a>> {
+        self.read_depth_in(data, base, encoding, outer.checked_add(1), execution)
+    }
+
+    pub(crate) fn read_source_in<'a>(
+        &'a self,
+        data: &'a [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+        execution: &Memory,
+    ) -> Result<Reader<'a>> {
+        self.read_depth_in(data, base, encoding, Some(depth), execution)
+    }
+
+    fn read_depth_in<'a>(
+        &'a self,
+        data: &'a [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: Option<u32>,
+        execution: &Memory,
+    ) -> Result<Reader<'a>> {
         let mut reader = self.read_as_in(data, base, encoding, execution)?;
-        let depth = outer.checked_add(1).ok_or_else(|| {
+        let depth = depth.ok_or_else(|| {
             Error::new(
                 ErrorCode::LimitExceeded(Limit::Depth),
                 base,
@@ -194,26 +216,87 @@ impl Parser {
         encoding: Encoding,
         outer: u32,
     ) -> Result<Reader<'a>> {
-        let depth = outer.checked_add(1).ok_or_else(|| {
-            Error::new(
-                ErrorCode::LimitExceeded(Limit::Depth),
-                base,
-                Path::default(),
-            )
-        })?;
-        let operation = query.budget().operation();
+        self.read_nested_operation_in(
+            data,
+            base,
+            encoding,
+            outer,
+            query.budget().operation(),
+            query.memory(),
+        )
+    }
+
+    /// Reads an original source window at its actual depth under a current query.
+    ///
+    /// A fresh ASN.1 document carried by another format, such as XML base64,
+    /// starts at depth zero: that carrier is not an ASN.1 enclosing element.
+    /// Existing nested windows retain their actual inherited depth instead.
+    /// Source and current-operation cumulative work/depth ceilings both apply;
+    /// storage and new work use the current account, charged once. This does
+    /// not create a parser or reset either session's prior work. The caller
+    /// supplies the original source provenance, as for `read_nested_query_in`.
+    pub fn read_query_in<'a>(
+        &'a self,
+        query: &Reader<'a>,
+        data: &'a [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+    ) -> Result<Reader<'a>> {
+        self.read_query_budget_in(
+            data,
+            base,
+            encoding,
+            depth,
+            query.budget().operation(),
+            query.memory(),
+        )
+    }
+
+    pub(crate) fn read_nested_operation_in<'a>(
+        &'a self,
+        data: &'a [u8],
+        base: u64,
+        encoding: Encoding,
+        outer: u32,
+        operation: &'a Budget,
+        execution: &Memory,
+    ) -> Result<Reader<'a>> {
+        let depth = nested_depth(outer, base)?;
+        self.read_query_budget_in(data, base, encoding, depth, operation, execution)
+    }
+
+    pub(crate) fn read_query_budget_in<'a>(
+        &'a self,
+        data: &'a [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+        operation: &'a Budget,
+        execution: &Memory,
+    ) -> Result<Reader<'a>> {
         let budget = BudgetView::query(&self.budget, operation);
         budget
             .depth(depth)
             .map_err(|limit| Error::new(ErrorCode::LimitExceeded(limit), base, Path::default()))?;
         budget
-            .work_in(1, query.memory())
+            .work_in(1, execution)
             .map_err(|limit| Error::new(ErrorCode::LimitExceeded(limit), base, Path::default()))?;
-        let mut reader = self.read_as_in(data, base, encoding, query.memory())?;
+        let mut reader = self.read_as_in(data, base, encoding, execution)?;
         reader.query = Some(operation);
         reader.depth = depth;
         Ok(reader)
     }
+}
+
+fn nested_depth(outer: u32, base: u64) -> Result<u32> {
+    outer.checked_add(1).ok_or_else(|| {
+        Error::new(
+            ErrorCode::LimitExceeded(Limit::Depth),
+            base,
+            Path::default(),
+        )
+    })
 }
 
 /// Where in a document one run of bytes sits.

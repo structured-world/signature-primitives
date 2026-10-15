@@ -143,10 +143,10 @@ impl<'a> Name<'a> {
     /// Each search step is admitted in the current execution domain. A refusal
     /// is yielded once, after which repeated `next()` calls do no further work.
     /// Returned references borrow the name, independently of the budget borrow.
-    pub fn attributes_of<'n, 'q>(
+    pub fn attributes_of<'n, 'q, W: structured_asn1::memory::Work>(
         &'n self,
         kind: Oid<'q>,
-        execution: &'q Memory,
+        execution: &'q W,
     ) -> impl Iterator<Item = Result<&'n Attribute<'a>>> + 'q
     where
         'n: 'q,
@@ -172,19 +172,29 @@ impl<'a> Name<'a> {
     }
 
     /// The first attribute of one kind.
-    pub fn attribute(&self, kind: Oid<'_>, execution: &Memory) -> Result<Option<&Attribute<'a>>> {
+    pub fn attribute<W: structured_asn1::memory::Work>(
+        &self,
+        kind: Oid<'_>,
+        execution: &W,
+    ) -> Result<Option<&Attribute<'a>>> {
         self.attributes_of(kind, execution).next().transpose()
     }
 
     /// The common name, which describes the subject and does not identify it.
-    pub fn common_name(&self, execution: &Memory) -> Result<Option<&Attribute<'a>>> {
+    pub fn common_name<W: structured_asn1::memory::Work>(
+        &self,
+        execution: &W,
+    ) -> Result<Option<&Attribute<'a>>> {
         self.attribute(oid::COMMON_NAME, execution)
     }
 
     /// The organization identifier, which is how a legal entity is identified
     /// rather than described, and is the attribute an attribution decision may
     /// rest on where the common name is not.
-    pub fn organization_identifier(&self, execution: &Memory) -> Result<Option<&Attribute<'a>>> {
+    pub fn organization_identifier<W: structured_asn1::memory::Work>(
+        &self,
+        execution: &W,
+    ) -> Result<Option<&Attribute<'a>>> {
         self.attribute(oid::ORGANIZATION_IDENTIFIER, execution)
     }
 
@@ -208,7 +218,11 @@ impl<'a> Name<'a> {
     ///
     /// # Errors
     /// Returns a located resource error before unfunded comparison work.
-    pub fn matches(&self, other: &Name<'_>, execution: &Memory) -> Result<bool> {
+    pub fn matches<W: structured_asn1::memory::Work>(
+        &self,
+        other: &Name<'_>,
+        execution: &W,
+    ) -> Result<bool> {
         self.matches_with(other, execution, None)
     }
 
@@ -272,7 +286,11 @@ impl<'a> Name<'a> {
     ///
     /// # Errors
     /// Returns a located resource error before unfunded preparation or comparison.
-    pub fn order(&self, other: &Name<'_>, execution: &Memory) -> Result<core::cmp::Ordering> {
+    pub fn order<W: structured_asn1::memory::Work>(
+        &self,
+        other: &Name<'_>,
+        execution: &W,
+    ) -> Result<core::cmp::Ordering> {
         self.order_with(other, execution, None)
     }
 
@@ -308,7 +326,10 @@ impl<'a> Name<'a> {
     ///
     /// # Errors
     /// Returns a located resource error if preparation cannot be financed.
-    pub fn ordered(&self, execution: &Memory) -> Result<Ordered<'a>> {
+    pub fn ordered<W: structured_asn1::memory::Work>(
+        &self,
+        execution: &W,
+    ) -> Result<Ordered<'a, W>> {
         Ok(Ordered {
             prepared: prepared::PreparedName::of(&self.parts, execution)?,
             offset: self.offset,
@@ -347,7 +368,11 @@ impl<'a> Name<'a> {
     ///
     /// # Errors
     /// Returns a located resource error before unfunded prefix preparation.
-    pub fn starts_with(&self, base: &Name<'_>, execution: &Memory) -> Result<bool> {
+    pub fn starts_with<W: structured_asn1::memory::Work>(
+        &self,
+        base: &Name<'_>,
+        execution: &W,
+    ) -> Result<bool> {
         if base.parts.len() > self.parts.len() {
             return Ok(false);
         }
@@ -398,7 +423,7 @@ pub(crate) fn matches_composed<const ENCODED: bool>(
     left_suffix: Option<&RelativeName<'_>>,
     right: &Name<'_>,
     right_suffix: Option<&RelativeName<'_>>,
-    execution: &Memory,
+    execution: &impl structured_asn1::memory::Work,
 ) -> Result<bool> {
     if left_suffix.is_none() && right_suffix.is_none() {
         if ENCODED {
@@ -458,7 +483,7 @@ fn encoded_bytes_match(
     left: &[u8],
     right: &[u8],
     source: &Name<'_>,
-    execution: &Memory,
+    execution: &impl structured_asn1::memory::Work,
 ) -> Result<bool> {
     let work = u64::try_from(left.len().max(right.len()))
         .ok()
@@ -475,7 +500,7 @@ fn encoded_parts_match(
     left: &RelativeName<'_>,
     right: &RelativeName<'_>,
     source: &Name<'_>,
-    execution: &Memory,
+    execution: &impl structured_asn1::memory::Work,
 ) -> Result<bool> {
     if left.attributes.len() != right.attributes.len() {
         return Ok(false);

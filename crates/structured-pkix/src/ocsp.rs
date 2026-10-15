@@ -48,7 +48,9 @@ mod extensions;
 pub use extensions::ExtensionProcessing;
 
 mod evidence;
-pub use evidence::{Evaluation, Evidence, RecipientBinding, Request, TargetEvidence};
+pub use evidence::{
+    BoundEvidence, Evaluation, Evidence, RecipientBinding, Request, TargetEvidence, TargetReading,
+};
 
 /// Unsigned protocol failure from RFC6960 §4.2.1, never a certificate verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +107,36 @@ impl<'a> ResponseBytes<'a> {
     #[must_use]
     pub fn span(&self) -> Span {
         self.span
+    }
+    /// Borrows the original basic-response payload under a current operation.
+    /// The envelope is not consumed or cloned. Its original producing parser,
+    /// source offsets and actual depth remain active, while the supplied query
+    /// funds new decoding, catalogue growth and lazy certificate processing.
+    /// `None` is only an unsupported response syntax, never a malformed known
+    /// basic response or a source/current-operation resource refusal.
+    pub fn basic_in<'query>(&self, query: &Reader<'query>) -> Result<Option<BasicResponse<'query>>>
+    where
+        'a: 'query,
+    {
+        let mut nested = self
+            .reader
+            .parser()
+            .read_nested_query_in(
+                query,
+                self.payload,
+                self.span.start,
+                Encoding::Der,
+                self.reader.depth(),
+            )
+            .field(BASIC)?;
+        nested.charge(19).field(FIELD)?;
+        if self.kind != oid::OCSP_BASIC {
+            return Ok(None);
+        }
+        let root = required(&mut nested, BASIC)?;
+        let basic = read_basic(&nested, &root)?;
+        end(&nested, BASIC)?;
+        Ok(Some(basic))
     }
     /// Decode the mandatory basic response syntax using current execution.
     /// `None` means unsupported syntax. The producing reader's cumulative
@@ -236,11 +268,11 @@ impl<'a> SingleResponse<'a> {
 
     /// UTC-qualified recorded revocation time, when this assertion is revoked.
     /// This never decides whether a future date may be ignored by the product.
-    pub fn revocation_relation(
+    pub fn revocation_relation<W: Work>(
         &self,
         now: crate::temporal::Reading,
         utc: &crate::temporal::LeapTable<'_>,
-        execution: &Memory,
+        execution: &W,
     ) -> Result<Option<crate::time::Relation>> {
         match self.status {
             RecordedStatus::Good | RecordedStatus::Unknown => Ok(None),

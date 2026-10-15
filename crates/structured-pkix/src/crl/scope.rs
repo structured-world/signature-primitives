@@ -7,7 +7,7 @@ use crate::general_name::GeneralName;
 use crate::name::{self, Name, RelativeName};
 use crate::{Certificate, Version, oid};
 use structured_asn1::BitString;
-use structured_asn1::memory::Memory;
+use structured_asn1::memory::Work;
 
 /// The eight revocation reasons in RFC 5280 §6.3.2, excluding unspecified
 /// and removeFromCRL. `ReasonFlags` unused(0) never contributes coverage.
@@ -67,12 +67,16 @@ pub enum ScopeOutcome {
     NotApplicable(ScopeFailure),
 }
 
-impl super::Authenticated<'_, '_> {
+impl<'a> super::Authenticated<'_, 'a> {
     /// Derive applicability from the target's own signed DP extension. Relative
     /// names are compared as borrowed composed RDN views, never encoded again.
     /// If no explicit DP applies, also consider the RFC 5280 §6.3.3 issuer-name
     /// fallback over supplied CRLs; this performs no fetching or discovery.
-    pub fn scope(&self, target: &Certificate<'_>, execution: &Memory) -> Result<ScopeOutcome> {
+    pub fn scope<W: Work + 'a>(
+        &self,
+        target: &Certificate<'a>,
+        execution: &W,
+    ) -> Result<ScopeOutcome> {
         const FIELD: &str = "certificateList.scope";
         let crl = self.crl();
         execution
@@ -150,11 +154,11 @@ impl super::Authenticated<'_, '_> {
     }
 }
 
-fn specified_scope(
+fn specified_scope<'a, W: Work + 'a>(
     issuer: &Name<'_>,
     idp: Option<&IssuingDistributionPoint<'_>>,
-    target: &Certificate<'_>,
-    execution: &Memory,
+    target: &Certificate<'a>,
+    execution: &W,
 ) -> Result<Option<ScopeOutcome>> {
     let mut coverage = Reasons::NONE;
     let mut failure = None;
@@ -193,7 +197,7 @@ fn specified_scope(
     Ok(failure.map(ScopeOutcome::NotApplicable))
 }
 
-fn reason_mask(flags: Option<BitString<'_>>, execution: &Memory, at: u64) -> Result<Reasons> {
+fn reason_mask(flags: Option<BitString<'_>>, execution: &impl Work, at: u64) -> Result<Reasons> {
     execution
         .charge_work(9)
         .map_err(|reason| Error::resource(reason, "certificateList.scope", at))?;
@@ -214,7 +218,7 @@ fn point_scope(
     idp: Option<&IssuingDistributionPoint<'_>>,
     target: &Certificate<'_>,
     point: &DistributionPoint<'_>,
-    execution: &Memory,
+    execution: &impl Work,
 ) -> Result<ScopeOutcome> {
     if !point.issuer().is_empty() {
         if !idp.is_some_and(IssuingDistributionPoint::is_indirect) {
@@ -280,7 +284,7 @@ fn point_scope(
 fn issuer_encoding_matches(
     issuer: &Name<'_>,
     named: &Name<'_>,
-    execution: &Memory,
+    execution: &impl Work,
 ) -> Result<bool> {
     // RFC5280 §4.2.1.13 requires exactly the same encoding for explicit
     // cRLIssuer; ordinary DN equality remains applicable to the default issuer.
@@ -302,7 +306,7 @@ fn point_name_matches_directory(
     idp: &IssuingDistributionPoint<'_>,
     issuer: &Name<'_>,
     directory: &Name<'_>,
-    execution: &Memory,
+    execution: &impl Work,
 ) -> Result<bool> {
     point_name_matches_composed::<false>(idp, issuer, directory, None, execution)
 }
@@ -312,7 +316,7 @@ fn point_name_matches_composed<const ENCODED: bool>(
     issuer: &Name<'_>,
     base: &Name<'_>,
     relative: Option<&RelativeName<'_>>,
-    execution: &Memory,
+    execution: &impl Work,
 ) -> Result<bool> {
     match &idp.name {
         Some(PointName::Relative(suffix)) => {
@@ -347,7 +351,7 @@ fn point_name_matches_names<const ENCODED: bool>(
     idp: &IssuingDistributionPoint<'_>,
     issuer: &Name<'_>,
     names: &[GeneralName<'_>],
-    execution: &Memory,
+    execution: &impl Work,
 ) -> Result<bool> {
     for right in names {
         execution
@@ -390,7 +394,7 @@ fn names_match<const ENCODED: bool>(
     left: &GeneralName<'_>,
     right: &GeneralName<'_>,
     source: &Name<'_>,
-    execution: &Memory,
+    execution: &impl Work,
 ) -> Result<bool> {
     if !ENCODED {
         return crate::general_name::matches_at(
@@ -511,7 +515,7 @@ impl<'a> IssuingDistributionPoint<'a> {
     }
 
     /// Decode through the extension's original parser with current execution.
-    pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.issuingDistributionPoint";
         let fail = |code, at| Error::new(code, FIELD, at);
         let mut reader = extension::sequence(extension, FIELD, execution)?;

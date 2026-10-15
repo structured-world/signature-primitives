@@ -76,7 +76,7 @@ impl<'a> KeyUsage<'a> {
     }
 
     /// Reads the value of a key usage extension.
-    pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.keyUsage";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
@@ -197,7 +197,7 @@ impl<'a> ExtendedKeyUsage<'a> {
     /// everything here: whether it does is a policy question, and answering it
     /// in the parser would hide the difference between a certificate that
     /// names a purpose and one that names none.
-    pub fn has(&self, purpose: Oid<'_>, execution: &Memory) -> Result<bool> {
+    pub fn has<W: Work>(&self, purpose: Oid<'_>, execution: &W) -> Result<bool> {
         for candidate in &self.purposes {
             let work = 1 + candidate.as_bytes().len().max(purpose.as_bytes().len()) as u64;
             execution
@@ -211,10 +211,10 @@ impl<'a> ExtendedKeyUsage<'a> {
     }
 
     /// Reads the value of an extended key usage extension.
-    pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         Self::read_members(
             extension::sequence(extension, "extensions.extKeyUsage", execution)?,
-            execution,
+            execution.memory(),
             extension.span().start,
         )
     }

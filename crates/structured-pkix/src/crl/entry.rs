@@ -5,7 +5,7 @@ use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
 use crate::general_name::{self, GeneralName};
 use crate::{Certificate, Time, oid};
-use structured_asn1::memory::{Memory, OwnedVec};
+use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Oid, Reader, Span, Tag, universal};
 
 /// Entry search over an authenticated source. This is not a freshness or
@@ -36,10 +36,10 @@ impl<'r, 'a> Authenticated<'r, 'a> {
     /// Search by issuer plus serial, retaining indirect issuer inheritance.
     /// Unknown critical extensions anywhere in the list invalidate use for all
     /// statuses, including demands on entries unrelated to this target.
-    pub fn entry(
+    pub fn entry<W: Work + 'a>(
         &self,
         target: &Certificate<'_>,
-        execution: &Memory,
+        execution: &W,
     ) -> Result<EntryLookup<'r, 'a>> {
         const FIELD: &str = "certificateList.entryLookup";
         let crl = self.crl();
@@ -151,10 +151,10 @@ impl<'r, 'a> Authenticated<'r, 'a> {
     }
 }
 
-fn validate_status_extensions(
-    entry: &RevokedCertificate<'_>,
+fn validate_status_extensions<'a, W: Work + 'a>(
+    entry: &RevokedCertificate<'a>,
     delta: bool,
-    execution: &Memory,
+    execution: &W,
 ) -> Result<()> {
     // RFC5280 §5.3.1: removeFromCRL may only appear in deltas, including
     // when the malformed entry is unrelated to the requested certificate.
@@ -170,7 +170,7 @@ fn validate_status_extensions(
     Ok(())
 }
 
-fn delta_source(crl: &super::CertificateList<'_>, execution: &Memory) -> Result<bool> {
+fn delta_source<'a, W: Work + 'a>(crl: &super::CertificateList<'a>, execution: &W) -> Result<bool> {
     let Some(indicator) = crl
         .tbs()
         .extensions()
@@ -189,10 +189,10 @@ fn delta_source(crl: &super::CertificateList<'_>, execution: &Memory) -> Result<
     Ok(true)
 }
 
-fn check_source_metadata<'r, 'a>(
+fn check_source_metadata<'r, 'a, W: Work + 'a>(
     crl: &'r super::CertificateList<'a>,
     is_delta: bool,
-    execution: &Memory,
+    execution: &W,
 ) -> Result<Option<&'r Extension<'a>>> {
     const FIELD: &str = "certificateList.extensions";
     for extension in crl.tbs().extensions().iter(execution) {
@@ -263,10 +263,10 @@ fn check_source_metadata<'r, 'a>(
     Ok(None)
 }
 
-fn validated_issuer<'a>(
+fn validated_issuer<'a, W: Work + 'a>(
     entry: &RevokedCertificate<'a>,
     indirect: bool,
-    execution: &Memory,
+    execution: &W,
 ) -> Result<Option<OwnedVec<GeneralName<'a>>>> {
     const FIELD: &str = "extensions.certificateIssuer";
     let Some(extension) = entry.extensions.get(oid::CERTIFICATE_ISSUER, execution)? else {
@@ -300,7 +300,7 @@ fn validated_issuer<'a>(
     Ok(Some(names))
 }
 
-fn equal_bytes(left: &[u8], right: &[u8], execution: &Memory, at: u64) -> Result<bool> {
+fn equal_bytes(left: &[u8], right: &[u8], execution: &impl Work, at: u64) -> Result<bool> {
     let work = (left.len().max(right.len()) as u64)
         .checked_mul(2)
         .and_then(|n| n.checked_add(1))
@@ -346,7 +346,7 @@ pub enum Reason {
 impl<'a> RevokedCertificate<'a> {
     /// Stated reason, independently of whether this CRL is a valid complete or
     /// delta list. An omitted extension stays absent rather than rewritten.
-    pub fn reason(&self, execution: &Memory) -> Result<Option<Reason>> {
+    pub fn reason<W: Work + 'a>(&self, execution: &W) -> Result<Option<Reason>> {
         self.extensions
             .get(oid::CRL_REASON, execution)?
             .map(|extension| read_reason(extension, execution))
@@ -354,7 +354,7 @@ impl<'a> RevokedCertificate<'a> {
     }
 
     /// When the issuer believes invalidity began, distinct from revocationDate.
-    pub fn invalidity_date(&self, execution: &Memory) -> Result<Option<Time>> {
+    pub fn invalidity_date<W: Work + 'a>(&self, execution: &W) -> Result<Option<Time>> {
         const FIELD: &str = "extensions.invalidityDate";
         let Some(extension) = self.extensions.get(oid::INVALIDITY_DATE, execution)? else {
             return Ok(None);
@@ -369,9 +369,9 @@ impl<'a> RevokedCertificate<'a> {
 
     /// Explicit issuer names on this entry. None means inheritance from the
     /// previous entry (or CRL issuer on the first), never an absent identity.
-    pub fn certificate_issuer(
+    pub fn certificate_issuer<W: Work + 'a>(
         &self,
-        execution: &Memory,
+        execution: &W,
     ) -> Result<Option<OwnedVec<GeneralName<'a>>>> {
         const FIELD: &str = "extensions.certificateIssuer";
         let Some(extension) = self.extensions.get(oid::CERTIFICATE_ISSUER, execution)? else {
@@ -382,7 +382,7 @@ impl<'a> RevokedCertificate<'a> {
     }
 }
 
-fn read_reason(extension: &Extension<'_>, execution: &Memory) -> Result<Reason> {
+fn read_reason<'a, W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Reason> {
     const FIELD: &str = "extensions.reasonCode";
     let mut reader = extension.reader(execution).field(FIELD)?;
     let element = reader.expect(Tag::primitive(10)).field(FIELD)?;

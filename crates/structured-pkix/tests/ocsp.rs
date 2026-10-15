@@ -74,6 +74,155 @@ fn decode_basic<'a>(
 }
 
 #[test]
+fn borrowed_basic_query_preserves_original_bytes_and_uses_the_current_capacity_owner() {
+    // A lazy query may belong to a different operation. Its results retain the
+    // new storage charge, while original payload/offsets remain borrowed in place.
+    let original = memory(100_000, 1_000_000);
+    let source = Parser::der(original.clone());
+    let bytes = response(&data(&assertion(&[0x80, 0])));
+    let Response::Successful(envelope) = Response::read(&source, &bytes, 700).unwrap() else {
+        panic!("success fixture");
+    };
+    let held = original.used();
+    let execution = memory(100_000, 1_000_000);
+    let operation = Parser::der(execution.clone());
+    let query = operation.read(&[], 100).unwrap();
+    let parsed = envelope.basic_in(&query).unwrap().unwrap();
+    assert_eq!(parsed.as_bytes(), envelope.payload());
+    assert_eq!(parsed.as_bytes().as_ptr(), envelope.payload().as_ptr());
+    assert_eq!(parsed.span(), envelope.span());
+    assert_eq!(parsed.responses().len(), 1);
+    assert_eq!(original.used(), held);
+    assert!(execution.used() > 0);
+    drop(envelope);
+    assert_eq!(parsed.responses()[0].status(), Status::Good);
+    drop(parsed);
+    assert_eq!(execution.used(), 0);
+    assert_eq!(original.used(), 0);
+}
+
+#[test]
+fn borrowed_basic_query_preserves_current_local_aggregate_and_capacity_refusals() {
+    // Previously decoded envelope data is no credit for a new operation's lazy
+    // basic-response parse. Refusal is resource failure, not unsupported syntax.
+    let original = memory(100_000, 1_000_000);
+    let source = Parser::der(original.clone());
+    let bytes = response(&data(&assertion(&[0x80, 0])));
+    let Response::Successful(envelope) = Response::read(&source, &bytes, 700).unwrap() else {
+        panic!("success fixture");
+    };
+    let held = original.used();
+    for (storage, work, local) in [
+        (100_000, 1_000_000, 0),
+        (100_000, 0, 1_000_000),
+        (0, 1_000_000, 1_000_000),
+    ] {
+        let execution = memory(storage, work);
+        let operation = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: local,
+                ..Limits::default()
+            },
+            execution.clone(),
+        );
+        let query = operation.read(&[], 100).unwrap();
+        let error = envelope.basic_in(&query).unwrap_err();
+        assert!(error.is_resource(), "{error:?}");
+        assert!(error.offset() >= envelope.span().start);
+        assert_eq!(execution.used(), 0);
+        assert_eq!(original.used(), held);
+    }
+}
+
+#[test]
+fn borrowed_basic_query_does_not_turn_unknown_or_malformed_payloads_into_each_other() {
+    // Unknown syntax is retained without interpreting opaque payload bytes.
+    // The same bytes under id-pkix-ocsp-basic must produce the real schema error.
+    let execution = memory(100_000, 1_000_000);
+    let source = Parser::der(execution.clone());
+    let query = source.read(&[], 0).unwrap();
+    let unknown = envelope(&[0x25, 0], &[0x2a, 3, 4]);
+    let Response::Successful(payload) = Response::read(&source, &unknown, 700).unwrap() else {
+        panic!("success fixture");
+    };
+    assert!(payload.basic_in(&query).unwrap().is_none());
+    let known = envelope(&[0x25, 0], structured_pkix::oid::OCSP_BASIC.as_bytes());
+    let Response::Successful(payload) = Response::read(&source, &known, 900).unwrap() else {
+        panic!("success fixture");
+    };
+    let error = payload.basic_in(&query).unwrap_err();
+    assert!(!error.is_resource());
+    assert_eq!(error.offset(), payload.span().start);
+}
+
+#[test]
+fn borrowed_basic_query_inherits_exact_original_and_current_depth_without_a_new_root() {
+    // The OCTET-carried BasicOCSPResponse remains nested under its actual
+    // envelope depth. Neither a foreign operation nor a fresh root can reset it.
+    let bytes = response(&data(&assertion(&[0x80, 0])));
+    for origin_limited in [false, true] {
+        let original = memory(100_000, 1_000_000);
+        let source = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_depth: if origin_limited { 3 } else { 100 },
+                ..Limits::default()
+            },
+            original.clone(),
+        );
+        let Response::Successful(envelope) = Response::read(&source, &bytes, 700).unwrap() else {
+            panic!("success fixture");
+        };
+        let execution = memory(100_000, 1_000_000);
+        let operation = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_depth: if origin_limited { 100 } else { 3 },
+                ..Limits::default()
+            },
+            execution.clone(),
+        );
+        let query = operation.read(&[], 100).unwrap();
+        let error = envelope.basic_in(&query).unwrap_err();
+        assert_eq!(
+            error.code(),
+            ErrorCode::Encoding(structured_asn1::ErrorCode::LimitExceeded(
+                structured_asn1::Limit::Depth
+            ))
+        );
+        assert_eq!(error.offset(), envelope.span().start);
+        assert_eq!(execution.used(), 0);
+    }
+    let source = Parser::der(memory(100_000, 1_000_000));
+    let Response::Successful(envelope) = Response::read(&source, &bytes, 700).unwrap() else {
+        panic!("success fixture");
+    };
+    for depth in [9, 10] {
+        let operation = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_depth: depth,
+                ..Limits::default()
+            },
+            memory(100_000, 1_000_000),
+        );
+        let query = operation.read(&[], 100).unwrap();
+        let result = envelope.basic_in(&query);
+        if depth == 9 {
+            assert_eq!(
+                result.unwrap_err().code(),
+                ErrorCode::Encoding(structured_asn1::ErrorCode::LimitExceeded(
+                    structured_asn1::Limit::Depth
+                ))
+            );
+        } else {
+            assert_eq!(result.unwrap().unwrap().as_bytes(), envelope.payload());
+        }
+    }
+}
+
+#[test]
 fn nonce_binding_preserves_missing_unsolicited_and_exact_bytes() {
     // RFC9654 uses an encoded inner OCTET STRING, accepts legacy received
     // lengths, and requires new requester nonces to have at least 32 bytes.

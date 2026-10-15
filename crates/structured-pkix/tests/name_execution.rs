@@ -9,6 +9,49 @@ fn memory() -> Memory {
 }
 
 #[test]
+fn retained_segmented_name_query_keeps_current_element_ceiling() {
+    // Retained queries have no producing Reader argument. A new bounded source
+    // for BER string preparation must still debit the current query's element
+    // ceiling, rather than using aggregate availability alone.
+    let segmented = [
+        0x30, 14, 0x31, 12, 0x30, 10, 6, 3, 0x55, 4, 3, 0x2c, 3, 4, 1, b'a',
+    ];
+    let primitive = [0x30, 12, 0x31, 10, 0x30, 8, 6, 3, 0x55, 4, 3, 12, 1, b'A'];
+    let left_parser = Parser::ber(memory());
+    let right_parser = Parser::der(memory());
+    let left = {
+        let mut reader = left_parser.read(&segmented, 400).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        structured_pkix::name::read(&reader, &element, "subject").unwrap()
+    };
+    let right = {
+        let mut reader = right_parser.read(&primitive, 800).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        structured_pkix::name::read(&reader, &element, "issuer").unwrap()
+    };
+    let funded = memory();
+    assert!(left.matches(&right, &funded).unwrap());
+    assert_eq!(funded.used(), 0);
+    let current = memory();
+    let parser = Parser::new(
+        Encoding::Ber,
+        Limits {
+            max_elements: 0,
+            ..Limits::default()
+        },
+        current.clone(),
+    );
+    let reader = parser.read(&[], 900).unwrap();
+    let error = left
+        .matches(&right, &reader.execution())
+        .expect_err("a fresh retained source cannot bypass the current query element ceiling");
+    assert!(error.is_resource());
+    assert_eq!(error.offset(), 411);
+    drop(reader);
+    assert_eq!(current.used(), 0);
+}
+
+#[test]
 fn issuer_name_storage_cannot_use_aggregate_slack_past_local_work() {
     // CMS IssuerAndSerial calls this same PKIX core. Measure the exact admitted
     // work of a successful parse, then tighten only the original local ceiling.

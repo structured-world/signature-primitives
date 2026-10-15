@@ -239,10 +239,11 @@ fn canonical<'a, W: Work>(
                 .field("name.attribute")?;
             return canonical_segmented(attribute, memory, reader);
         }
-        // A retained query has no producing parser ceiling. Physical input
-        // size bounds possible headers/nesting; current aggregate availability
-        // bounds all work. No default parser profile may silently reject a
-        // previously accepted deep value, and the account is never reset.
+        // A retained query has no producing parser argument. Physical input
+        // size bounds this temporary source's headers/nesting; the Work bridge
+        // also preserves any current operation ceiling, not just its account.
+        // No default profile may silently reject a previously accepted deep
+        // value, and neither account nor current operation is reset.
         let length = u64::try_from(value.der.len()).map_err(|_| fail(MemoryError::WorkExceeded))?;
         let max_work = u64::try_from(memory.memory().work_remaining())
             .map_err(|_| fail(MemoryError::WorkExceeded))?;
@@ -257,8 +258,14 @@ fn canonical<'a, W: Work>(
             },
             memory.memory().clone(),
         );
-        let reader = parser
-            .read(value.der, value.offset)
+        let reader = memory
+            .read_source(
+                &parser,
+                value.der,
+                value.offset,
+                structured_asn1::Encoding::Ber,
+                0,
+            )
             .field("name.attribute")?;
         return canonical_segmented(attribute, memory, reader);
     }

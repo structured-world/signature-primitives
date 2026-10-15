@@ -9,7 +9,7 @@
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
 use crate::general_name::{self, GeneralName};
-use structured_asn1::memory::{Memory, OwnedVec};
+use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Element, Integer, Reader, Tag, universal};
 
 /// An identifier for the key this certificate carries.
@@ -28,7 +28,7 @@ impl<'a> SubjectKeyIdentifier<'a> {
     }
 
     /// Reads the value of a subject key identifier extension.
-    pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         Self::read_value(
             extension,
             extension
@@ -110,7 +110,7 @@ impl<'a> AuthorityKeyIdentifier<'a> {
     }
 
     /// Reads the value of an authority key identifier extension.
-    pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.authorityKeyIdentifier";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 

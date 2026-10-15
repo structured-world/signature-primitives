@@ -81,17 +81,17 @@ impl<'a> Extension<'a> {
     /// hundred times what the caller allowed, and the offsets a reader made
     /// this way reports are offsets in the whole document. The wrapped value
     /// sits below extnValue and retains the certificate's depth allowance.
-    pub fn reader(self, execution: &Memory) -> structured_asn1::Result<Reader<'a>> {
+    pub fn reader<W: Work + 'a>(self, execution: &W) -> structured_asn1::Result<Reader<'a>> {
         // Always DER: the value lives inside the certificate, which RFC 5280
         // section 4.1 defines in DER, whatever encoding the envelope was
         // read in. A caller that read a BER envelope must not have its
         // leniency reach into the certificate's own structures.
-        self.parser.read_nested_in(
+        execution.read_nested(
+            self.parser,
             self.value,
             self.value_span.start,
             structured_asn1::Encoding::Der,
             self.outer,
-            execution,
         )
     }
 
@@ -214,10 +214,10 @@ impl<'a> Extensions<'a> {
     /// error is a spent budget and only that: it says this run gave up before
     /// the question was answered, which must not be reported as a demand
     /// nobody understood.
-    pub fn unhandled_critical<'r, E>(
+    pub fn unhandled_critical<'r, E, W: Work + 'a>(
         &'r self,
-        recognizer: &impl Recognizer<Error = E>,
-        execution: &Memory,
+        recognizer: &impl Recognizer<W, Error = E>,
+        execution: &W,
     ) -> CallbackResult<OwnedVec<&'r Extension<'a>>, E> {
         let mut unhandled = execution.vector();
         for item in self.criticals(execution) {
@@ -228,7 +228,7 @@ impl<'a> Extensions<'a> {
                     .map_err(|reason| Error::resource(reason, "extensions", item.span().start))?;
             }
         }
-        Ok(unhandled)
+        Ok(unhandled.into_owned())
     }
 
     /// The critical extensions, in the order the certificate wrote them and
@@ -255,9 +255,9 @@ impl<'a> Extensions<'a> {
     ///     }
     /// }
     /// ```
-    pub fn criticals<'r, 'e>(
+    pub fn criticals<'r, 'e, W: Work + 'e>(
         &'r self,
-        execution: &'e Memory,
+        execution: &'e W,
     ) -> impl Iterator<Item = Result<&'r Extension<'a>>> + 'e
     where
         'r: 'e,
@@ -284,11 +284,11 @@ impl<'a> Extensions<'a> {
     /// key usage whose value never parsed was never understood, and taking
     /// it by identifier alone would leave a validator seeing no blocker for
     /// a demand the certificate marked as one.
-    pub fn understands<E>(
+    pub fn understands<E, W: Work + 'a>(
         &self,
         item: &Extension<'a>,
-        recognizer: &impl Recognizer<Error = E>,
-        execution: &Memory,
+        recognizer: &impl Recognizer<W, Error = E>,
+        execution: &W,
     ) -> CallbackResult<bool, E> {
         let work = (item.kind.as_bytes().len() as u64)
             .checked_mul(64)
@@ -318,7 +318,7 @@ impl<'a> Extensions<'a> {
     /// it written the way the encoding writes it. Without this a critical
     /// demand carrying bytes that are a value of no type would clear the
     /// gate on an identifier alone.
-    fn holds_one_value(item: &Extension<'a>, execution: &Memory) -> Result<bool> {
+    fn holds_one_value<W: Work + 'a>(item: &Extension<'a>, execution: &W) -> Result<bool> {
         const FIELD: &str = "extensions";
         let read = || -> Result<()> {
             let at = |code| Error::new(code, FIELD, item.value_span.start);
@@ -339,10 +339,10 @@ impl<'a> Extensions<'a> {
 
     /// Whether a known extension's value actually parses. An error is a spent
     /// budget, never a malformed value.
-    fn decodes<E>(
+    fn decodes<E, W: Work + 'a>(
         item: &Extension<'a>,
-        recognizer: &impl Recognizer<Error = E>,
-        execution: &Memory,
+        recognizer: &impl Recognizer<W, Error = E>,
+        execution: &W,
     ) -> CallbackResult<bool, E> {
         let kind = item.kind;
         Ok(if kind == oid::BASIC_CONSTRAINTS {
@@ -494,7 +494,7 @@ macro_rules! typed_accessors {
     ($($(#[$doc:meta])* $name:ident, $oid:path => $reader:path, $result:ty;)+) => {
         $(
             $(#[$doc])*
-            pub fn $name(&self, execution: &Memory) -> Result<Option<$result>> {
+            pub fn $name<W: Work + 'a>(&self, execution: &W) -> Result<Option<$result>> {
                 match self.get($oid, execution)? {
                     Some(item) => $reader(item, execution).map(Some),
                     None => Ok(None),
@@ -605,10 +605,10 @@ fn method_location_fits(method: Oid<'_>, location: &GeneralName<'_>) -> bool {
     }
 }
 
-pub(crate) fn other_name_known<E>(
+pub(crate) fn other_name_known<E, W: Work>(
     name: &GeneralName<'_>,
-    recognizer: &impl Recognizer<Error = E>,
-    execution: &Memory,
+    recognizer: &impl Recognizer<W, Error = E>,
+    execution: &W,
 ) -> CallbackResult<bool, E> {
     match name {
         GeneralName::Other { type_id, .. } => recognizer
@@ -618,10 +618,10 @@ pub(crate) fn other_name_known<E>(
     }
 }
 
-fn all<T, E>(
+fn all<T, E, W: Work>(
     values: impl Iterator<Item = T>,
     item: &Extension<'_>,
-    execution: &Memory,
+    execution: &W,
     mut understood: impl FnMut(T) -> CallbackResult<bool, E>,
 ) -> CallbackResult<bool, E> {
     for value in values {
@@ -643,22 +643,18 @@ fn all<T, E>(
 /// it knows. It cannot decode anything, and nothing here gives it a way to
 /// reach the network. Each role defaults to no, the direction that blocks
 /// rather than vouches.
-pub trait Recognizer {
+pub trait Recognizer<W: Work = Memory> {
     /// The original policy, provider or resource error of this implementation.
     type Error;
 
     /// Whether this scheme understands the extension.
-    fn recognizes(
-        &self,
-        kind: Oid<'_>,
-        execution: &Memory,
-    ) -> core::result::Result<bool, Self::Error>;
+    fn recognizes(&self, kind: Oid<'_>, execution: &W) -> core::result::Result<bool, Self::Error>;
 
     /// Whether this scheme can interpret an other-name of this type.
     fn recognizes_other_name(
         &self,
         _type_id: Oid<'_>,
-        _execution: &Memory,
+        _execution: &W,
     ) -> core::result::Result<bool, Self::Error> {
         Ok(false)
     }
@@ -675,7 +671,7 @@ pub trait Recognizer {
     fn recognizes_name_constraint(
         &self,
         _type_id: Oid<'_>,
-        _execution: &Memory,
+        _execution: &W,
     ) -> core::result::Result<bool, Self::Error> {
         Ok(false)
     }
@@ -685,7 +681,7 @@ pub trait Recognizer {
     fn recognizes_access_method(
         &self,
         _method: Oid<'_>,
-        _execution: &Memory,
+        _execution: &W,
     ) -> core::result::Result<bool, Self::Error> {
         Ok(false)
     }
@@ -695,31 +691,27 @@ pub trait Recognizer {
     fn recognizes_statement(
         &self,
         _kind: Oid<'_>,
-        _execution: &Memory,
+        _execution: &W,
     ) -> core::result::Result<bool, Self::Error> {
         Ok(false)
     }
 }
 
 /// Nothing beyond what this crate itself understands.
-impl Recognizer for () {
+impl<W: Work> Recognizer<W> for () {
     type Error = core::convert::Infallible;
     fn recognizes(
         &self,
         _kind: Oid<'_>,
-        _execution: &Memory,
+        _execution: &W,
     ) -> core::result::Result<bool, Self::Error> {
         Ok(false)
     }
 }
 
-impl Recognizer for [Oid<'_>] {
+impl<W: Work> Recognizer<W> for [Oid<'_>] {
     type Error = MemoryError;
-    fn recognizes(
-        &self,
-        kind: Oid<'_>,
-        execution: &Memory,
-    ) -> core::result::Result<bool, Self::Error> {
+    fn recognizes(&self, kind: Oid<'_>, execution: &W) -> core::result::Result<bool, Self::Error> {
         for candidate in self {
             execution
                 .charge_work(1 + candidate.as_bytes().len().max(kind.as_bytes().len()) as u64)?;
@@ -737,20 +729,16 @@ impl Recognizer for [Oid<'_>] {
 /// too: each default answers no, so a role left behind silently drops the
 /// scheme's knowledge for callers holding it behind a reference, which is
 /// how a generic wrapper and a `&dyn Recognizer` both arrive.
-impl<T: Recognizer + ?Sized> Recognizer for &T {
+impl<W: Work, T: Recognizer<W> + ?Sized> Recognizer<W> for &T {
     type Error = T::Error;
-    fn recognizes(
-        &self,
-        kind: Oid<'_>,
-        execution: &Memory,
-    ) -> core::result::Result<bool, Self::Error> {
+    fn recognizes(&self, kind: Oid<'_>, execution: &W) -> core::result::Result<bool, Self::Error> {
         (*self).recognizes(kind, execution)
     }
 
     fn recognizes_other_name(
         &self,
         type_id: Oid<'_>,
-        execution: &Memory,
+        execution: &W,
     ) -> core::result::Result<bool, Self::Error> {
         (*self).recognizes_other_name(type_id, execution)
     }
@@ -758,7 +746,7 @@ impl<T: Recognizer + ?Sized> Recognizer for &T {
     fn recognizes_name_constraint(
         &self,
         type_id: Oid<'_>,
-        execution: &Memory,
+        execution: &W,
     ) -> core::result::Result<bool, Self::Error> {
         (*self).recognizes_name_constraint(type_id, execution)
     }
@@ -766,7 +754,7 @@ impl<T: Recognizer + ?Sized> Recognizer for &T {
     fn recognizes_access_method(
         &self,
         method: Oid<'_>,
-        execution: &Memory,
+        execution: &W,
     ) -> core::result::Result<bool, Self::Error> {
         (*self).recognizes_access_method(method, execution)
     }
@@ -774,7 +762,7 @@ impl<T: Recognizer + ?Sized> Recognizer for &T {
     fn recognizes_statement(
         &self,
         kind: Oid<'_>,
-        execution: &Memory,
+        execution: &W,
     ) -> core::result::Result<bool, Self::Error> {
         (*self).recognizes_statement(kind, execution)
     }
@@ -808,10 +796,10 @@ pub fn is_known(kind: Oid<'_>) -> bool {
 
 /// A reader over the members of the one sequence an extension's value holds,
 /// which is the shape of most of them.
-pub(crate) fn sequence<'a>(
+pub(crate) fn sequence<'a, W: Work + 'a>(
     extension: &Extension<'a>,
     field: &'static str,
-    execution: &Memory,
+    execution: &W,
 ) -> Result<Reader<'a>> {
     sequence_reader(
         extension.reader(execution).field(field)?,

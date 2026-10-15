@@ -119,7 +119,7 @@ pub fn matches(
 pub(crate) fn matches_at(
     left: &GeneralName<'_>,
     right: &GeneralName<'_>,
-    execution: &Memory,
+    execution: &impl structured_asn1::memory::Work,
     at: u64,
     field: &'static str,
 ) -> Result<bool> {
@@ -194,9 +194,9 @@ fn read_list_as<'a>(
 
 /// Reads the value of an alternative name extension, which is a list of names
 /// and nothing else.
-pub fn read_alternative<'a>(
+pub fn read_alternative<'a, W: structured_asn1::memory::Work + 'a>(
     extension: &Extension<'a>,
-    execution: &Memory,
+    execution: &W,
 ) -> Result<OwnedVec<GeneralName<'a>>> {
     let field = if extension.kind() == crate::oid::ISSUER_ALT_NAME {
         "extensions.issuerAltName"

@@ -2,6 +2,7 @@
 
 use super::{HashWork, Memory, MemoryError, OwnedMap, OwnedVec, allocator};
 use crate::limits::BudgetView;
+use crate::{Encoding, Parser, Reader};
 
 mod private {
     pub trait Sealed {}
@@ -34,6 +35,75 @@ pub trait Work: Clone + private::Sealed {
 
     /// Admits work before execution, against every applicable ceiling.
     fn charge_work(&self, amount: u64) -> Result<(), MemoryError>;
+
+    /// Opens original nested bytes without discarding this execution boundary.
+    /// Memory retains its existing source-plus-aggregate admission; Execution
+    /// additionally preserves the current root operation before any decode.
+    /// Source parser/data/base/encoding and actual `outer + 1` depth remain
+    /// original. A transition replaces a previous foreign source ceiling,
+    /// never the operation owner. A fresh document uses depth zero through
+    /// [`Work::read_source`], rather than inventing a nested carrier level.
+    ///
+    /// `Self: 'source` retains the real budget lifetimes, not the borrow of a
+    /// temporary Execution wrapper. The returned reader owns its account handle;
+    /// no parser/diagnostic clone, new domain or budget reset is introduced.
+    /// It still cannot outlive either actual parser budget:
+    ///
+    /// ```compile_fail
+    /// use std::sync::Arc;
+    /// use structured_asn1::{Parser, Encoding, memory::{Memory,MemoryAccount,Work}};
+    /// let memory = Memory::new(Arc::new(MemoryAccount::new(4096,4096)));
+    /// let source = Parser::ber(memory.clone());
+    /// let mut lazy;
+    /// {
+    ///     let operation = Parser::ber(memory);
+    ///     let query = operation.read(&[],900).unwrap();
+    ///     lazy = query.execution().read_nested(&source,&[2,1,7],400,Encoding::Ber,0).unwrap();
+    /// }
+    /// lazy.next_element().unwrap();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use std::sync::Arc;
+    /// use structured_asn1::{Parser, Encoding, memory::{Memory,MemoryAccount,Work}};
+    /// let memory = Memory::new(Arc::new(MemoryAccount::new(4096,4096)));
+    /// let operation = Parser::ber(memory.clone());
+    /// let query = operation.read(&[],900).unwrap();
+    /// let mut lazy;
+    /// {
+    ///     let source = Parser::ber(memory);
+    ///     lazy = query.execution().read_nested(&source,&[2,1,7],400,Encoding::Ber,0).unwrap();
+    /// }
+    /// lazy.next_element().unwrap();
+    /// ```
+    fn read_nested<'source>(
+        &self,
+        parser: &'source Parser,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        outer: u32,
+    ) -> crate::Result<Reader<'source>>
+    where
+        Self: 'source;
+
+    /// Opens an original source window at its actual ASN.1 depth.
+    ///
+    /// This has the same source/account and lifetime guarantees as
+    /// [`Work::read_nested`], without adding a carrier level. A fresh document
+    /// begins at zero; an already nested window must supply its original depth.
+    /// Current operation ceilings remain in force even when a retained query
+    /// uses a new source parser bounded by the retained input size.
+    fn read_source<'source>(
+        &self,
+        parser: &'source Parser,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+    ) -> crate::Result<Reader<'source>>
+    where
+        Self: 'source;
 
     /// Creates empty accounted scratch retaining this execution boundary.
     ///
@@ -90,6 +160,34 @@ impl Work for Memory {
 
     fn charge_work(&self, amount: u64) -> Result<(), MemoryError> {
         Memory::charge_work(self, amount)
+    }
+
+    fn read_nested<'source>(
+        &self,
+        parser: &'source Parser,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        outer: u32,
+    ) -> crate::Result<Reader<'source>>
+    where
+        Self: 'source,
+    {
+        parser.read_nested_in(data, base, encoding, outer, self)
+    }
+
+    fn read_source<'source>(
+        &self,
+        parser: &'source Parser,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+    ) -> crate::Result<Reader<'source>>
+    where
+        Self: 'source,
+    {
+        parser.read_source_in(data, base, encoding, depth, self)
     }
 }
 
@@ -150,5 +248,47 @@ impl Work for Execution<'_> {
         self.budget
             .work_in(amount, self.memory)
             .map_err(|_| MemoryError::WorkExceeded)
+    }
+
+    fn read_nested<'source>(
+        &self,
+        parser: &'source Parser,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        outer: u32,
+    ) -> crate::Result<Reader<'source>>
+    where
+        Self: 'source,
+    {
+        parser.read_nested_operation_in(
+            data,
+            base,
+            encoding,
+            outer,
+            self.budget.operation(),
+            self.memory,
+        )
+    }
+
+    fn read_source<'source>(
+        &self,
+        parser: &'source Parser,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+    ) -> crate::Result<Reader<'source>>
+    where
+        Self: 'source,
+    {
+        parser.read_query_budget_in(
+            data,
+            base,
+            encoding,
+            depth,
+            self.budget.operation(),
+            self.memory,
+        )
     }
 }

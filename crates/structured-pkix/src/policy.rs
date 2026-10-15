@@ -7,7 +7,7 @@
 
 use crate::error::{Error, ErrorCode, Located, Result, gate};
 use crate::extension::{self, Extension};
-use structured_asn1::memory::{Memory, OwnedVec, Work};
+use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Oid, Parser, Tag, universal};
 
 /// One policy, and whatever was written beside it.
@@ -78,7 +78,7 @@ impl<'a> CertificatePolicies<'a> {
     /// The identifier that stands for any policy is not treated as matching
     /// everything: whether it does depends on where in a path this certificate
     /// sits, which is not a question this layer can answer.
-    pub fn has(&self, policy: Oid<'_>, execution: &Memory) -> Result<bool> {
+    pub fn has<W: Work>(&self, policy: Oid<'_>, execution: &W) -> Result<bool> {
         for information in &self.policies {
             let work = 1 + information
                 .policy
@@ -96,12 +96,12 @@ impl<'a> CertificatePolicies<'a> {
     }
 
     /// Reads the value of a certificate policies extension.
-    pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.certificatePolicies";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
         let mut inside = extension::sequence(extension, FIELD, execution)?;
-        let work = inside.execution_in(execution);
+        let work = inside.execution_in(execution.memory());
         let mut policies = work.vector();
         let mut identifiers = work.map::<Oid<'a>, ()>();
 
@@ -229,12 +229,12 @@ impl<'a> PolicyMappings<'a> {
     }
 
     /// Reads the value of a policy mappings extension.
-    pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.policyMappings";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
         let mut inside = extension::sequence(extension, FIELD, execution)?;
-        let work = inside.execution_in(execution);
+        let work = inside.execution_in(execution.memory());
         let mut mappings = work.vector();
         let mut seen = work.map::<(Oid<'a>, Oid<'a>), ()>();
 
@@ -297,7 +297,7 @@ impl CertificatePolicies<'_> {
     /// pointer and the user notice. A kind outside those, or a known kind
     /// whose payload does not have its shape, is a critical qualifier this
     /// run never understood. An error is a spent budget and only that.
-    pub(crate) fn understood(&self, parser: &Parser, execution: &Memory) -> Result<bool> {
+    pub(crate) fn understood<W: Work>(&self, parser: &Parser, execution: &W) -> Result<bool> {
         for qualifier in self.policies.iter().flat_map(PolicyInformation::qualifiers) {
             execution
                 .charge_work(1)
@@ -313,22 +313,22 @@ impl CertificatePolicies<'_> {
 /// The field the qualifier gates below report a spent budget in.
 const QUALIFIER_FIELD: &str = "extensions.certificatePolicies";
 
-fn retained_qualifier_understood(
+fn retained_qualifier_understood<W: Work>(
     parser: &Parser,
     qualifier: PolicyQualifier<'_>,
-    execution: &Memory,
+    execution: &W,
 ) -> Result<bool> {
     // Re-parsed from where the value sits, so the one error that leaves
     // here, a spent budget, carries a document offset as the error type
     // promises. Malformation still answers no.
     let Some(mut reader) = gate(
-        parser
-            .read_nested_in(
+        execution
+            .read_nested(
+                parser,
                 qualifier.value,
                 qualifier.at,
                 structured_asn1::Encoding::Der,
                 qualifier.outer,
-                execution,
             )
             .field(QUALIFIER_FIELD),
     )?

@@ -39,7 +39,7 @@ use crate::error::Result;
 use crate::extension::Recognizer;
 use crate::key::PublicKeyInfo;
 use crate::name::Name;
-use structured_asn1::memory::{Memory, OwnedMap, OwnedVec};
+use structured_asn1::memory::{Memory, OwnedMap, OwnedVec, Work};
 use structured_asn1::{BitString, Oid};
 
 /// What the caller trusts, as the trust context named it.
@@ -215,7 +215,7 @@ impl<'a> WorkingKey<'a> {
     /// # Panics
     /// Only if the internal unit-meter invariant is violated: that meter
     /// always admits local work and cannot produce a truncated transition.
-    pub fn subject(self, certificate: &'a Certificate<'a>, execution: &Memory) -> Result<Self> {
+    pub fn subject<E: Work>(self, certificate: &'a Certificate<'a>, execution: &E) -> Result<Self> {
         execution
             .charge_work(1)
             .map_err(|reason| certificate.tbs().subject().resource(reason))?;
@@ -230,10 +230,10 @@ impl<'a> WorkingKey<'a> {
     ///
     /// The algorithm those parameters belong to travels with them, since a
     /// key further down inherits only from a key of its own algorithm.
-    fn below(
+    fn below<E: Work>(
         self,
         certificate: &'a Certificate<'a>,
-        execution: &Memory,
+        execution: &E,
         meter: &mut impl Meter,
     ) -> Result<Option<Self>> {
         let key = certificate.tbs().public_key();
@@ -297,7 +297,7 @@ impl<'a> WorkingKey<'a> {
 /// than to this crate, so the check is asked for rather than performed here.
 /// A caller that supplies no verifier gets no path: nothing else in a path
 /// binds one certificate to the next.
-pub trait Verify {
+pub trait Verify<E: Work = Memory> {
     /// The original policy, provider or resource failure of this implementation.
     type Error;
 
@@ -322,12 +322,12 @@ pub trait Verify {
         key: WorkingKey<'_>,
         signed: &[u8],
         signature: BitString<'_>,
-        execution: &Memory,
+        execution: &E,
     ) -> core::result::Result<Verified, Self::Error>;
 }
 
 /// Nothing is verified, which is what a caller without a registry has.
-impl Verify for () {
+impl<E: Work> Verify<E> for () {
     type Error = core::convert::Infallible;
     fn verify(
         &self,
@@ -335,7 +335,7 @@ impl Verify for () {
         _key: WorkingKey<'_>,
         _signed: &[u8],
         _signature: BitString<'_>,
-        _execution: &Memory,
+        _execution: &E,
     ) -> core::result::Result<Verified, Self::Error> {
         Ok(Verified::Unsupported)
     }

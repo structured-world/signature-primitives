@@ -14,7 +14,7 @@ use crate::error::CallbackError;
 use crate::extension::Recognizer;
 use crate::{Certificate, Name, oid};
 use structured_asn1::Oid;
-use structured_asn1::memory::MemoryError;
+use structured_asn1::memory::{MemoryError, Work};
 
 enum Stop<'a, V, R> {
     Error(BuildError<V, R>),
@@ -70,9 +70,9 @@ fn read<T, V, R>(
     }
 }
 
-struct Processing<'a> {
-    policies: policy::Processing<'a>,
-    space: NameSpace<'a, ConstraintSource>,
+struct Processing<'a, E: Work> {
+    policies: policy::Processing<'a, E>,
+    space: NameSpace<'a, ConstraintSource, E>,
     working: WorkingKey<'a>,
     issuer: &'a Name<'a>,
     allowed: u32,
@@ -82,11 +82,11 @@ struct Processing<'a> {
     non_self_issued_intermediates: u32,
 }
 
-impl<'a> Processing<'a> {
-    fn new<R: Recognizer, D: Driver<'a, R>>(
+impl<'a, E: Work + 'a> Processing<'a, E> {
+    fn new<R: Recognizer<E>, D: Driver<'a, R, E>>(
         chain: &[&'a Certificate<'a>],
         effective: &EffectiveAnchor<'a>,
-        settings: &Settings<'a, '_, R>,
+        settings: &Settings<'a, '_, R, E>,
         driver: &mut D,
     ) -> Result<'a, Self, D::VerificationError, R::Error> {
         let anchor = effective.anchor();
@@ -149,12 +149,12 @@ impl<'a> Processing<'a> {
         })
     }
 
-    fn certificate<R: Recognizer, D: Driver<'a, R>>(
+    fn certificate<R: Recognizer<E>, D: Driver<'a, R, E>>(
         &mut self,
         certificate: &'a Certificate<'a>,
         index: usize,
         proven: bool,
-        settings: &Settings<'a, '_, R>,
+        settings: &Settings<'a, '_, R, E>,
         driver: &mut D,
     ) -> Result<'a, (), D::VerificationError, R::Error> {
         let at = ConstraintSource::Certificate(index);
@@ -227,10 +227,10 @@ impl<'a> Processing<'a> {
         Ok(())
     }
 
-    fn same_anchor_key<R: Recognizer, D: Driver<'a, R>>(
+    fn same_anchor_key<R: Recognizer<E>, D: Driver<'a, R, E>>(
         &self,
         certificate: &Certificate<'_>,
-        settings: &Settings<'a, '_, R>,
+        settings: &Settings<'a, '_, R, E>,
         driver: &mut D,
     ) -> Result<'a, bool, D::VerificationError, R::Error> {
         let key = certificate.tbs().public_key().as_bytes();
@@ -257,11 +257,11 @@ impl<'a> Processing<'a> {
         Ok(key == anchor)
     }
 
-    fn names<R: Recognizer, D: Driver<'a, R>>(
+    fn names<R: Recognizer<E>, D: Driver<'a, R, E>>(
         &self,
         certificate: &'a Certificate<'a>,
         at: ConstraintSource,
-        settings: &Settings<'a, '_, R>,
+        settings: &Settings<'a, '_, R, E>,
         driver: &mut D,
     ) -> Result<'a, (), D::VerificationError, R::Error> {
         let alternatives = read(driver, at, oid::SUBJECT_ALT_NAME, || {
@@ -304,12 +304,12 @@ impl<'a> Processing<'a> {
         ))
     }
 
-    fn policy<R: Recognizer, D: Driver<'a, R>>(
+    fn policy<R: Recognizer<E>, D: Driver<'a, R, E>>(
         &mut self,
         certificate: &'a Certificate<'a>,
         index: usize,
         facts: CertificateFacts<'a>,
-        settings: &Settings<'a, '_, R>,
+        settings: &Settings<'a, '_, R, E>,
         driver: &mut D,
     ) -> Result<'a, (), D::VerificationError, R::Error> {
         let at = ConstraintSource::Certificate(index);
@@ -378,9 +378,9 @@ impl<'a> Processing<'a> {
         Ok(())
     }
 
-    fn finish<R: Recognizer, D: Driver<'a, R>>(
+    fn finish<R: Recognizer<E>, D: Driver<'a, R, E>>(
         self,
-        settings: &Settings<'a, '_, R>,
+        settings: &Settings<'a, '_, R, E>,
         driver: &mut D,
     ) -> Result<'a, ValidationFacts<'a>, D::VerificationError, R::Error> {
         let settled = graph(self.policies.settle(
@@ -402,10 +402,10 @@ impl<'a> Processing<'a> {
     }
 }
 
-fn inner<'a, R: Recognizer, D: Driver<'a, R>>(
+fn inner<'a, R: Recognizer<E>, D: Driver<'a, R, E>, E: Work + 'a>(
     input: Chain<'a, '_>,
     anchor: &EffectiveAnchor<'a>,
-    settings: &Settings<'a, '_, R>,
+    settings: &Settings<'a, '_, R, E>,
     driver: &mut D,
 ) -> Result<'a, ValidationFacts<'a>, D::VerificationError, R::Error> {
     let (chain, proven) = match input {
@@ -419,10 +419,10 @@ fn inner<'a, R: Recognizer, D: Driver<'a, R>>(
     state.finish(settings, driver)
 }
 
-pub(super) fn process<'a, R: Recognizer, D: Driver<'a, R>>(
+pub(super) fn process<'a, R: Recognizer<E>, D: Driver<'a, R, E>, E: Work + 'a>(
     input: Chain<'a, '_>,
     anchor: &EffectiveAnchor<'a>,
-    settings: &Settings<'a, '_, R>,
+    settings: &Settings<'a, '_, R, E>,
     driver: &mut D,
 ) -> BuildResult<Validation<'a>, D::VerificationError, R::Error> {
     match inner(input, anchor, settings, driver) {

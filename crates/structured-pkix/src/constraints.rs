@@ -3,7 +3,7 @@
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
 use crate::general_name::{self, GeneralName};
-use structured_asn1::memory::{Memory, OwnedVec, Work};
+use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Tag, universal};
 
 /// A count of certificates a constraint names.
@@ -63,7 +63,7 @@ impl BasicConstraints {
     }
 
     /// Reads the value of a basic constraints extension.
-    pub fn read(extension: &Extension<'_>, execution: &Memory) -> Result<Self> {
+    pub fn read<'a, W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.basicConstraints";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
@@ -160,12 +160,12 @@ impl<'a> NameConstraints<'a> {
     }
 
     /// Reads the value of a name constraints extension.
-    pub fn read(extension: &Extension<'a>, execution: &Memory) -> Result<Self> {
+    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.nameConstraints";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
         let mut inside = extension::sequence(extension, FIELD, execution)?;
-        let work = inside.execution_in(execution);
+        let work = inside.execution_in(execution.memory());
         let mut permitted = work.vector();
         let mut excluded = work.vector();
 
@@ -236,7 +236,7 @@ impl PolicyConstraints {
     }
 
     /// Reads the value of a policy constraints extension.
-    pub fn read(extension: &Extension<'_>, execution: &Memory) -> Result<Self> {
+    pub fn read<'a, W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.policyConstraints";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
@@ -294,7 +294,7 @@ impl InhibitAnyPolicy {
     }
 
     /// Reads the value of an inhibit-any-policy extension.
-    pub fn read(extension: &Extension<'_>, execution: &Memory) -> Result<Self> {
+    pub fn read<'a, W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.inhibitAnyPolicy";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 

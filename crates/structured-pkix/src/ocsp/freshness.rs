@@ -3,7 +3,7 @@
 use super::SingleResponse;
 use crate::crl::{Freshness, update_window};
 use crate::temporal::{LeapTable, Reading, Uncertainty};
-use structured_asn1::memory::Memory;
+use structured_asn1::memory::Work;
 
 /// The current UTC label's relation to one assertion's update window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,11 +29,11 @@ impl SingleResponse<'_> {
     /// criteria; §3.2(6) requires nextUpdate, when present, greater than now.
     /// This result never supplies a maximum age, clock or clock-skew allowance.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-3.2>
-    pub fn update_window(
+    pub fn update_window<W: Work>(
         &self,
         now: Reading,
         utc: &LeapTable<'_>,
-        execution: &Memory,
+        execution: &W,
     ) -> crate::Result<UpdateWindow> {
         Ok(
             match update_window(

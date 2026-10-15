@@ -10,7 +10,7 @@ use crate::extension::{self, Extensions};
 use crate::name::{self, Name};
 use crate::path::{Verified, Verify, WorkingKey};
 use crate::time::{self, Time};
-use structured_asn1::memory::{Memory, OwnedVec, Work};
+use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{BitString, Element, Integer, Parser, Reader, Span, Tag, universal};
 
 mod scope;
@@ -121,11 +121,11 @@ impl<'a> RevokedCertificate<'a> {
     /// Establish the recorded date's relation to an explicit UTC reading.
     /// Caller decides how that fact affects historical/current acceptance;
     /// this never silently makes a future-dated entry an absence statement.
-    pub fn time_relation(
+    pub fn time_relation<W: Work>(
         &self,
         now: crate::temporal::Reading,
         utc: &crate::temporal::LeapTable<'_>,
-        execution: &Memory,
+        execution: &W,
     ) -> Result<crate::time::Relation> {
         crate::time::relation_in(
             self.revocation_date.instant(),
@@ -235,12 +235,12 @@ impl<'a> CertificateList<'a> {
     /// The verifier must account its own transitive work and allocations in
     /// `execution`. Passing this domain is not evidence that an opaque provider
     /// backend enforces the accounting contract.
-    pub fn authenticate<'r, V: Verify>(
+    pub fn authenticate<'r, V: Verify<E>, E: Work + 'a>(
         &'r self,
         issuer: &'r crate::Certificate<'a>,
         key: WorkingKey<'a>,
         verifier: &V,
-        execution: &Memory,
+        execution: &E,
     ) -> crate::error::CallbackResult<Authentication<'r, 'a>, V::Error> {
         use crate::error::CallbackError;
         let encoded_key = key.key().as_bytes();

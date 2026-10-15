@@ -6,7 +6,7 @@ use crate::extension::{Extension, Extensions};
 use crate::identifier::AuthorityKeyIdentifier;
 use crate::oid;
 use core::cmp::Ordering;
-use structured_asn1::memory::Memory;
+use structured_asn1::memory::Work;
 use structured_asn1::{Integer, Oid, Span};
 
 /// Required metadata that was absent, rather than a mismatched value.
@@ -107,10 +107,10 @@ impl<'b, 'r, 'a> BoundDelta<'b, 'r, 'a> {
     /// leaks between lists. Critical demands and conflicting duplicates are
     /// checked in both sources before selecting a delta override.
     /// <https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3>
-    pub fn entry(
+    pub fn entry<W: Work + 'a>(
         self,
         target: &crate::Certificate<'_>,
-        execution: &Memory,
+        execution: &W,
     ) -> Result<CombinedEntry<'r, 'a>> {
         let base = match usable(self.base.entry(target, execution)?, EntryOrigin::Complete) {
             Ok(entry) => entry,
@@ -184,10 +184,10 @@ impl<'r, 'a> Authenticated<'r, 'a> {
     /// Bind a candidate delta to this complete CRL without copying entries.
     /// The caller supplies both issuer paths' same-anchor trust provenance.
     /// Each comparison and lazy read uses the current execution account.
-    pub fn bind_delta<'b>(
+    pub fn bind_delta<'b, W: Work + 'a>(
         &'b self,
         delta: &'b Self,
-        execution: &Memory,
+        execution: &W,
     ) -> Result<DeltaBinding<'b, 'r, 'a>> {
         const FIELD: &str = "certificateList.deltaBinding";
         let at = delta.crl().span().start;
@@ -280,10 +280,10 @@ enum AuthorityMatch {
     Rejected(DeltaFailure),
 }
 
-fn authority_pair(
-    base: &Extensions<'_>,
-    delta: &Extensions<'_>,
-    execution: &Memory,
+fn authority_pair<'a, W: Work + 'a>(
+    base: &Extensions<'a>,
+    delta: &Extensions<'a>,
+    execution: &W,
     at: u64,
 ) -> Result<AuthorityMatch> {
     let Some(base) = base.get(oid::AUTHORITY_KEY_IDENTIFIER, execution)? else {
@@ -333,7 +333,10 @@ fn authority_pair(
     )
 }
 
-pub(super) fn number<'a>(extension: &Extension<'a>, execution: &Memory) -> Result<Integer<'a>> {
+pub(super) fn number<'a, W: Work + 'a>(
+    extension: &Extension<'a>,
+    execution: &W,
+) -> Result<Integer<'a>> {
     const FIELD: &str = "extensions.cRLNumber";
     let mut reader = extension.reader(execution).field(FIELD)?;
     let value = reader.read_integer().field(FIELD)?;
@@ -351,7 +354,7 @@ pub(super) fn number<'a>(extension: &Extension<'a>, execution: &Memory) -> Resul
 fn compare(
     left: Integer<'_>,
     right: Integer<'_>,
-    execution: &Memory,
+    execution: &impl Work,
     field: &'static str,
     at: u64,
 ) -> Result<Ordering> {
@@ -372,7 +375,7 @@ fn magnitude(bytes: &[u8]) -> &[u8] {
 fn optional_equal(
     left: Option<&[u8]>,
     right: Option<&[u8]>,
-    execution: &Memory,
+    execution: &impl Work,
     field: &'static str,
     at: u64,
 ) -> Result<bool> {
@@ -389,7 +392,7 @@ fn optional_equal(
 fn equal(
     left: &[u8],
     right: &[u8],
-    execution: &Memory,
+    execution: &impl Work,
     field: &'static str,
     at: u64,
 ) -> Result<bool> {
@@ -397,7 +400,7 @@ fn equal(
     Ok(left == right)
 }
 
-fn admit(width: usize, execution: &Memory, field: &'static str, at: u64) -> Result<()> {
+fn admit(width: usize, execution: &impl Work, field: &'static str, at: u64) -> Result<()> {
     let work = (width as u64)
         .checked_mul(2)
         .and_then(|n| n.checked_add(1))

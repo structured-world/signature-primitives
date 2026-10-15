@@ -7,7 +7,7 @@ use crate::path::{
     WorkingKey,
 };
 use crate::{Certificate, oid};
-use structured_asn1::memory::Memory;
+use structured_asn1::memory::Work;
 use structured_asn1::{Tag, universal};
 
 /// The responder certificate's revocation-checking fact, not a trust decision.
@@ -19,7 +19,10 @@ pub enum ResponderRevocation {
     Unresolved,
 }
 
-pub(crate) fn read_no_check(extension: &Extension<'_>, execution: &Memory) -> Result<()> {
+pub(crate) fn read_no_check<'a, W: Work + 'a>(
+    extension: &Extension<'a>,
+    execution: &W,
+) -> Result<()> {
     const FIELD: &str = "extensions.ocspNoCheck";
     let mut reader = extension.reader(execution).field(FIELD)?;
     let element = reader
@@ -48,6 +51,7 @@ pub enum DelegationFailure {
 pub struct DelegateFacts<'a> {
     responder: &'a Certificate<'a>,
     issuer: &'a Certificate<'a>,
+    issuing_key: WorkingKey<'a>,
     key: WorkingKey<'a>,
     revocation: ResponderRevocation,
 }
@@ -63,6 +67,13 @@ impl<'a> DelegateFacts<'a> {
     pub fn issuer(self) -> &'a Certificate<'a> {
         self.issuer
     }
+    /// Actual effective issuing key used for the delegate certificate check.
+    /// Inherited parameters keep their original source; rebuilding a standing
+    /// key from `issuer()` would lose this validated-path association.
+    #[must_use]
+    pub fn issuing_key(self) -> WorkingKey<'a> {
+        self.issuing_key
+    }
     /// Responder effective key projected by the common path processor.
     #[must_use]
     pub fn key(self) -> WorkingKey<'a> {
@@ -77,6 +88,10 @@ impl<'a> DelegateFacts<'a> {
 
 /// Completed local delegation result; resource/provider failures stay Result.
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "fixed-size local facts retain both original issuer and responder parameter sources; avoid boxing solely for enum layout"
+)]
 pub enum Delegation<'a> {
     /// Direct local path, explicit OCSP purpose and keyUsage established.
     Accepted(DelegateFacts<'a>),
@@ -98,11 +113,11 @@ pub enum Delegation<'a> {
 /// callers requiring those must validate the complete responder path as well.
 /// `context.interval` is the caller's response-acceptance interval, not an
 /// untrusted producedAt clock. A noCheck exemption never skips this validity.
-pub fn check_delegate<'a, V: Verify, W: Watch, R: Recognizer>(
+pub fn check_delegate<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work + 'a>(
     responder: &'a Certificate<'a>,
     issuer: &'a Certificate<'a>,
     issuing_key: WorkingKey<'a>,
-    context: &ValidationContext<'a, '_, V, W, R>,
+    context: &ValidationContext<'a, '_, V, W, R, E>,
 ) -> BuildResult<Delegation<'a>, V::Error, R::Error> {
     let execution = context.execution;
     let Some(anchor) =
@@ -132,6 +147,7 @@ pub fn check_delegate<'a, V: Verify, W: Watch, R: Recognizer>(
             Validation::Accepted(facts) => Delegation::Accepted(DelegateFacts {
                 responder,
                 issuer,
+                issuing_key,
                 key: facts.key,
                 revocation,
             }),

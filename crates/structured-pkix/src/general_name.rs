@@ -11,7 +11,7 @@ use crate::extension::{self, Extension};
 use crate::name::{self, Name};
 use core::net::{Ipv4Addr, Ipv6Addr};
 use structured_asn1::memory::{Memory, OwnedVec};
-use structured_asn1::{Class, Element, Oid, Reader, Tag, universal};
+use structured_asn1::{Class, Element, Oid, ScopedReader as Reader, Tag, universal};
 
 mod equality;
 mod ldap;
@@ -107,7 +107,7 @@ impl GeneralName<'_> {
 /// # Ok::<(), structured_pkix::Error>(())
 /// ```
 pub fn matches(
-    parent: &Reader<'_>,
+    parent: &Reader<'_, '_>,
     left: &GeneralName<'_>,
     right: &GeneralName<'_>,
     at: u64,
@@ -128,7 +128,7 @@ pub(crate) fn matches_at(
 
 /// Reads a sequence of names.
 pub(crate) fn read_all<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<OwnedVec<GeneralName<'a>>> {
@@ -138,7 +138,7 @@ pub(crate) fn read_all<'a>(
 
 /// Reads the names of a container already entered.
 pub(crate) fn read_list<'a>(
-    inside: &mut Reader<'a>,
+    inside: &mut Reader<'a, '_>,
     field: &'static str,
     offset: u64,
 ) -> Result<OwnedVec<GeneralName<'a>>> {
@@ -149,7 +149,7 @@ pub(crate) fn read_list<'a>(
 /// rules. RFC5280 §4.2.1.13 permits hostless LDAP URLs with the required DN
 /// and CRL attribute, e.g. `ldap:///cn=CA?certificateRevocationList;binary`.
 pub(crate) fn read_locations<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<OwnedVec<GeneralName<'a>>> {
@@ -163,7 +163,7 @@ pub(crate) fn read_locations<'a>(
 }
 
 fn read_list_as<'a>(
-    inside: &mut Reader<'a>,
+    inside: &mut Reader<'a, '_>,
     field: &'static str,
     offset: u64,
     form: AddressForm,
@@ -194,7 +194,7 @@ fn read_list_as<'a>(
 
 /// Reads the value of an alternative name extension, which is a list of names
 /// and nothing else.
-pub fn read_alternative<'a, W: structured_asn1::memory::Work + 'a>(
+pub fn read_alternative<'a, W: structured_asn1::memory::Work>(
     extension: &Extension<'a>,
     execution: &W,
 ) -> Result<OwnedVec<GeneralName<'a>>> {
@@ -245,7 +245,7 @@ impl AddressForm {
 ///
 /// Reports malformed name syntax, encoding faults and exhausted limits.
 pub fn read<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<GeneralName<'a>> {
@@ -290,7 +290,7 @@ fn domain_fits(text: &str, address_form: AddressForm) -> bool {
 }
 
 pub(crate) fn read_as<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     address_form: AddressForm,
@@ -437,7 +437,11 @@ pub(crate) fn read_as<'a>(
 /// that schema too, because a critical name extension carrying members
 /// outside it must not read as parsed; the address as a whole still stays
 /// encoded, since nothing in this product routes to a messaging system.
-fn read_x400<'a>(parent: &Reader<'a>, element: &Element<'a>, field: &'static str) -> Result<()> {
+fn read_x400<'a>(
+    parent: &Reader<'a, '_>,
+    element: &Element<'a>,
+    field: &'static str,
+) -> Result<()> {
     let fail = |code| Error::new(code, field, element.span().start);
 
     let mut inside = parent.enter(element).field(field)?;
@@ -614,7 +618,11 @@ fn x400_bare_country(value: &Element<'_>, field: &'static str) -> Result<()> {
 }
 
 /// Requires a wrapper to hold exactly one country choice.
-fn x400_country<'a>(parent: &Reader<'a>, wrapper: &Element<'a>, field: &'static str) -> Result<()> {
+fn x400_country<'a>(
+    parent: &Reader<'a, '_>,
+    wrapper: &Element<'a>,
+    field: &'static str,
+) -> Result<()> {
     let fail = |code| Error::new(code, field, wrapper.span().start);
     let mut inside = parent.enter(wrapper).field(field)?;
     let value = inside
@@ -630,7 +638,7 @@ fn x400_country<'a>(parent: &Reader<'a>, wrapper: &Element<'a>, field: &'static 
 /// Requires a wrapper to hold exactly one string of a two-way choice, sized
 /// as the schema sizes each side of that choice.
 fn x400_choice<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     wrapper: &Element<'a>,
     field: &'static str,
     numeric: (usize, usize),
@@ -661,7 +669,7 @@ fn x400_choice<'a>(
 /// each at most once, in schema order, with the strings held to their
 /// repertoires and the appendix's upper bounds.
 fn read_standard_attributes<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<()> {
@@ -756,7 +764,7 @@ fn read_standard_attributes<'a>(
 /// surname required. The built-in form holds printable parts; the teletex
 /// extension attribute holds the same shape in teletex strings.
 fn read_personal_name<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     repertoire: X400Repertoire,
@@ -804,7 +812,7 @@ fn read_personal_name<'a>(
 /// The domain-defined attributes of X.411: one to four pairs of a type and a
 /// value, each a printable string.
 fn read_domain_defined<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<()> {
@@ -814,7 +822,7 @@ fn read_domain_defined<'a>(
 /// One to four pairs of a type and a value: printable strings in the
 /// built-in form, teletex strings in the teletex extension attribute.
 fn read_defined_pairs<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     teletex: bool,
@@ -869,7 +877,7 @@ fn read_defined_pairs<'a>(
 /// explicitly wrapped value that number defines, decoded by that number
 /// below.
 fn read_extension_attributes<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<()> {
@@ -962,7 +970,7 @@ fn read_extension_attributes<'a>(
 /// value this crate cannot decode, and a name built on one must not read as
 /// parsed.
 fn read_extension_value<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     value: &Element<'a>,
     number: u32,
     field: &'static str,
@@ -1062,7 +1070,7 @@ fn x400_bare_choice(
 /// The postal-delivery parameter of X.411: an optional printable and an
 /// optional teletex string, each at most once, each within one size.
 fn read_pds_parameter<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     value: &Element<'a>,
     field: &'static str,
     most: usize,
@@ -1106,7 +1114,7 @@ fn read_pds_parameter<'a>(
 /// The unformatted postal address of X.411: up to six printable lines and
 /// an optional teletex rendering, each part at most once.
 fn read_unformatted_address<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     value: &Element<'a>,
     field: &'static str,
 ) -> Result<()> {
@@ -1158,7 +1166,7 @@ fn read_unformatted_address<'a>(
 
 /// The E.163/E.164 alternative: a number and an optional sub-address.
 fn read_e163_address<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     value: &Element<'a>,
     field: &'static str,
 ) -> Result<()> {
@@ -1192,7 +1200,7 @@ fn read_e163_address<'a>(
 /// optional sub-address, or a presentation address of wrapped selectors and
 /// the mandatory network addresses.
 fn read_extended_network_address<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     value: &Element<'a>,
     field: &'static str,
 ) -> Result<()> {
@@ -1300,7 +1308,7 @@ fn read_extended_network_address<'a>(
 /// The tags wrap rather than replace, because a directory string is a choice
 /// and RFC 5280 appendix A keeps a choice's own tag.
 fn read_edi_party<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<()> {
@@ -1334,7 +1342,7 @@ fn read_edi_party<'a>(
 
 /// Requires a wrapper to hold exactly one non-empty directory string.
 fn require_directory_string<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     wrapper: &Element<'a>,
     field: &'static str,
 ) -> Result<()> {
@@ -1398,7 +1406,7 @@ fn require_directory_string<'a>(
 }
 
 fn read_other<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<GeneralName<'a>> {
@@ -1654,7 +1662,7 @@ pub(crate) fn is_cps_uri(text: &str) -> bool {
 }
 
 fn location_uri(
-    parent: &Reader<'_>,
+    parent: &Reader<'_, '_>,
     element: &Element<'_>,
     text: &str,
     field: &'static str,
@@ -1791,7 +1799,7 @@ fn is_contiguous_mask(mask: &[u8]) -> bool {
 }
 
 fn text<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     contents: &'a [u8],
     field: &'static str,
     element: &Element<'a>,

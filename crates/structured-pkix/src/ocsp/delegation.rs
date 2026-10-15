@@ -19,12 +19,9 @@ pub enum ResponderRevocation {
     Unresolved,
 }
 
-pub(crate) fn read_no_check<'a, W: Work + 'a>(
-    extension: &Extension<'a>,
-    execution: &W,
-) -> Result<()> {
+pub(crate) fn read_no_check<W: Work>(extension: &Extension<'_>, execution: &W) -> Result<()> {
     const FIELD: &str = "extensions.ocspNoCheck";
-    let mut reader = extension.reader(execution).field(FIELD)?;
+    let mut reader = extension.reader_scoped(execution).field(FIELD)?;
     let element = reader
         .expect(Tag::primitive(universal::NULL))
         .field(FIELD)?;
@@ -113,7 +110,7 @@ pub enum Delegation<'a> {
 /// callers requiring those must validate the complete responder path as well.
 /// `context.interval` is the caller's response-acceptance interval, not an
 /// untrusted producedAt clock. A noCheck exemption never skips this validity.
-pub fn check_delegate<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work + 'a>(
+pub fn check_delegate<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>(
     responder: &'a Certificate<'a>,
     issuer: &'a Certificate<'a>,
     issuing_key: WorkingKey<'a>,

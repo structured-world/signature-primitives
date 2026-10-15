@@ -107,7 +107,7 @@ impl<'b, 'r, 'a> BoundDelta<'b, 'r, 'a> {
     /// leaks between lists. Critical demands and conflicting duplicates are
     /// checked in both sources before selecting a delta override.
     /// <https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3>
-    pub fn entry<W: Work + 'a>(
+    pub fn entry<W: Work>(
         self,
         target: &crate::Certificate<'_>,
         execution: &W,
@@ -184,7 +184,7 @@ impl<'r, 'a> Authenticated<'r, 'a> {
     /// Bind a candidate delta to this complete CRL without copying entries.
     /// The caller supplies both issuer paths' same-anchor trust provenance.
     /// Each comparison and lazy read uses the current execution account.
-    pub fn bind_delta<'b, W: Work + 'a>(
+    pub fn bind_delta<'b, W: Work>(
         &'b self,
         delta: &'b Self,
         execution: &W,
@@ -280,7 +280,7 @@ enum AuthorityMatch {
     Rejected(DeltaFailure),
 }
 
-fn authority_pair<'a, W: Work + 'a>(
+fn authority_pair<'a, W: Work>(
     base: &Extensions<'a>,
     delta: &Extensions<'a>,
     execution: &W,
@@ -333,12 +333,9 @@ fn authority_pair<'a, W: Work + 'a>(
     )
 }
 
-pub(super) fn number<'a, W: Work + 'a>(
-    extension: &Extension<'a>,
-    execution: &W,
-) -> Result<Integer<'a>> {
+pub(super) fn number<'a, W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Integer<'a>> {
     const FIELD: &str = "extensions.cRLNumber";
-    let mut reader = extension.reader(execution).field(FIELD)?;
+    let mut reader = extension.reader_scoped(execution).field(FIELD)?;
     let value = reader.read_integer().field(FIELD)?;
     super::end(&reader, FIELD, extension.span().start)?;
     if value.is_negative() {

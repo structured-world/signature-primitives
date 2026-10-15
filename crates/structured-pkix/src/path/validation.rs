@@ -331,8 +331,8 @@ pub(super) fn spend_names(
     meter.spend(work)
 }
 
-fn critical_policy<'a, E: Work + 'a>(
-    item: &Extension<'a>,
+fn critical_policy<E: Work>(
+    item: &Extension<'_>,
     execution: &E,
 ) -> Option<(Oid<'static>, crate::Result<bool>)> {
     // Known path extensions retain decoder failures even when critical.
@@ -366,7 +366,7 @@ fn critical_policy<'a, E: Work + 'a>(
     }
 }
 
-pub(super) fn certificate_facts<'a, E, R: Recognizer<Q>, M: Meter, Q: Work + 'a>(
+pub(super) fn certificate_facts<'a, E, R: Recognizer<Q>, M: Meter, Q: Work>(
     certificate: &'a Certificate<'a>,
     settings: &Settings<'a, '_, R, Q>,
     meter: &mut M,
@@ -475,7 +475,7 @@ fn rejection(at: ConstraintSource, reason: RejectionReason<'_>) -> Validation<'_
     })
 }
 
-pub(super) fn process<'a, R: Recognizer<E>, D: Driver<'a, R, E>, E: Work + 'a>(
+pub(super) fn process<'a, R: Recognizer<E>, D: Driver<'a, R, E>, E: Work>(
     input: Chain<'a, '_>,
     anchor: Anchor<'a>,
     settings: &Settings<'a, '_, R, E>,
@@ -518,7 +518,7 @@ impl<V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work> Meter for Supplied<'_, '
     }
 }
 
-impl<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work + 'a> Driver<'a, R, E>
+impl<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work> Driver<'a, R, E>
     for Supplied<'a, '_, V, W, R, E>
 {
     type VerificationError = V::Error;
@@ -583,7 +583,7 @@ impl<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work + 'a> Driver<'a, R, E
 ///     path::validate(chain, anchor, &context)
 /// }
 /// ```
-pub fn validate<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work + 'a>(
+pub fn validate<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>(
     chain: &[&'a Certificate<'a>],
     anchor: Anchor<'a>,
     context: &ValidationContext<'a, '_, V, W, R, E>,
@@ -596,7 +596,7 @@ pub fn validate<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work + 'a>(
 /// certificate's name constraints. It does not resume constraints or policy
 /// state inherited from a previously validated ancestor path. For original-root
 /// validation, pass that complete path and its original anchor instead.
-pub fn validate_effective<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work + 'a>(
+pub fn validate_effective<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>(
     chain: &[&'a Certificate<'a>],
     effective: EffectiveAnchor<'a>,
     context: &ValidationContext<'a, '_, V, W, R, E>,

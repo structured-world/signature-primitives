@@ -10,7 +10,7 @@ use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
 use crate::general_name::{self, GeneralName};
 use structured_asn1::memory::{OwnedVec, Work};
-use structured_asn1::{Element, Integer, Reader, Tag, universal};
+use structured_asn1::{Element, Integer, Reader, ScopedReader, Tag, universal};
 
 /// An identifier for the key this certificate carries.
 #[derive(Debug, Clone, Copy)]
@@ -28,11 +28,11 @@ impl<'a> SubjectKeyIdentifier<'a> {
     }
 
     /// Reads the value of a subject key identifier extension.
-    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         Self::read_value(
             extension,
             extension
-                .reader(execution)
+                .reader_scoped(execution)
                 .field("extensions.subjectKeyIdentifier")?,
         )
     }
@@ -51,7 +51,7 @@ impl<'a> SubjectKeyIdentifier<'a> {
         )
     }
 
-    fn read_value(extension: &Extension<'a>, mut reader: Reader<'_>) -> Result<Self> {
+    fn read_value(extension: &Extension<'a>, mut reader: ScopedReader<'_, '_>) -> Result<Self> {
         const FIELD: &str = "extensions.subjectKeyIdentifier";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
@@ -110,7 +110,7 @@ impl<'a> AuthorityKeyIdentifier<'a> {
     }
 
     /// Reads the value of an authority key identifier extension.
-    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.authorityKeyIdentifier";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 

@@ -12,7 +12,7 @@ use crate::general_name::{self, GeneralName};
 use crate::name::{self, RelativeName};
 use crate::oid;
 use structured_asn1::memory::{OwnedVec, Work};
-use structured_asn1::{BitString, Element, Oid, Reader, Tag, universal};
+use structured_asn1::{BitString, Element, Oid, ScopedReader as Reader, Tag, universal};
 
 /// One published service or document, and where it is.
 #[derive(Debug)]
@@ -88,7 +88,7 @@ impl<'a> InfoAccess<'a> {
 
     /// Reads the value of an authority or subject information access
     /// extension, which have the same shape.
-    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         let field = if extension.kind() == oid::SUBJECT_INFO_ACCESS {
             "extensions.subjectInfoAccess"
         } else {
@@ -194,7 +194,7 @@ impl<'a> DistributionPoints<'a> {
 
     /// Reads the value of a distribution points extension, which the freshest
     /// revocation list is published in the same shape as.
-    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         let field = if extension.kind() == oid::FRESHEST_CRL {
             "extensions.freshestCRL"
         } else {
@@ -224,7 +224,7 @@ impl<'a> DistributionPoints<'a> {
 }
 
 fn read_point<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<DistributionPoint<'a>> {
@@ -364,7 +364,7 @@ pub(crate) enum PointName<'a> {
 
 /// Shared `DistributionPointName` grammar for certificate DPs and CRL IDPs.
 pub(crate) fn read_distribution_name<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<PointName<'a>> {
@@ -398,7 +398,7 @@ pub(crate) fn read_distribution_name<'a>(
 }
 
 fn read_point_name<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     point: &mut DistributionPoint<'a>,

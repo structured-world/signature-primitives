@@ -17,13 +17,13 @@ struct Provider<'a> {
     hashes: Cell<usize>,
     fail: Cell<bool>,
 }
-impl Digest for Provider<'_> {
+impl<E: Work> Digest<E> for Provider<'_> {
     type Handle = ();
     type Error = &'static str;
     fn resolve(
         &self,
         _: DigestAlgorithm<'_>,
-        _: &Memory,
+        _: &E,
     ) -> core::result::Result<Option<ResolvedDigest<()>>, Self::Error> {
         if self.fail.get() {
             return Err("hash refusal");
@@ -38,7 +38,7 @@ impl Digest for Provider<'_> {
         (): (),
         input: &[u8],
         expected: &[u8],
-        _: &Memory,
+        _: &E,
     ) -> core::result::Result<bool, Self::Error> {
         self.hashes.set(self.hashes.get() + 1);
         let original = if expected == [0x11; 20] {
@@ -176,13 +176,23 @@ fn target_reading_retains_actual_binding_without_request_or_rehashing() {
         let before = provider.hashes.get();
         let held = time.execution.used();
         let bound = {
+            // Even the current operation's parser/cursor can end here. The
+            // returned target result retains original sources, not its budget.
+            let operation = Parser::der(time.execution.clone());
+            let query = operation.read(&[], 1200).unwrap();
+            let work = query.execution();
+            let scoped = Evaluation {
+                now: time.now,
+                utc: time.utc,
+                execution: &work,
+            };
             let request = Request {
                 target,
                 nonce: None,
                 intended_signer: None,
             };
             let reading = source
-                .evaluate_with_target(&request, &time, provider)
+                .evaluate_with_target(&request, &scoped, provider)
                 .unwrap();
             assert!(core::ptr::eq(reading.target(), target));
             assert_eq!(reading.evaluated_at(), time.now);

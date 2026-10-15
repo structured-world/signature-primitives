@@ -6,7 +6,7 @@ use crate::extension::{self, Extension};
 use crate::general_name::{self, GeneralName};
 use crate::{Certificate, Time, oid};
 use structured_asn1::memory::{OwnedVec, Work};
-use structured_asn1::{Oid, Reader, Span, Tag, universal};
+use structured_asn1::{Oid, Span, Tag, universal};
 
 /// Entry search over an authenticated source. This is not a freshness or
 /// distribution-point applicability decision.
@@ -36,7 +36,7 @@ impl<'r, 'a> Authenticated<'r, 'a> {
     /// Search by issuer plus serial, retaining indirect issuer inheritance.
     /// Unknown critical extensions anywhere in the list invalidate use for all
     /// statuses, including demands on entries unrelated to this target.
-    pub fn entry<W: Work + 'a>(
+    pub fn entry<W: Work>(
         &self,
         target: &Certificate<'_>,
         execution: &W,
@@ -151,8 +151,8 @@ impl<'r, 'a> Authenticated<'r, 'a> {
     }
 }
 
-fn validate_status_extensions<'a, W: Work + 'a>(
-    entry: &RevokedCertificate<'a>,
+fn validate_status_extensions<W: Work>(
+    entry: &RevokedCertificate<'_>,
     delta: bool,
     execution: &W,
 ) -> Result<()> {
@@ -170,7 +170,7 @@ fn validate_status_extensions<'a, W: Work + 'a>(
     Ok(())
 }
 
-fn delta_source<'a, W: Work + 'a>(crl: &super::CertificateList<'a>, execution: &W) -> Result<bool> {
+fn delta_source<W: Work>(crl: &super::CertificateList<'_>, execution: &W) -> Result<bool> {
     let Some(indicator) = crl
         .tbs()
         .extensions()
@@ -189,7 +189,7 @@ fn delta_source<'a, W: Work + 'a>(crl: &super::CertificateList<'a>, execution: &
     Ok(true)
 }
 
-fn check_source_metadata<'r, 'a, W: Work + 'a>(
+fn check_source_metadata<'r, 'a, W: Work>(
     crl: &'r super::CertificateList<'a>,
     is_delta: bool,
     execution: &W,
@@ -263,7 +263,7 @@ fn check_source_metadata<'r, 'a, W: Work + 'a>(
     Ok(None)
 }
 
-fn validated_issuer<'a, W: Work + 'a>(
+fn validated_issuer<'a, W: Work>(
     entry: &RevokedCertificate<'a>,
     indirect: bool,
     execution: &W,
@@ -346,7 +346,7 @@ pub enum Reason {
 impl<'a> RevokedCertificate<'a> {
     /// Stated reason, independently of whether this CRL is a valid complete or
     /// delta list. An omitted extension stays absent rather than rewritten.
-    pub fn reason<W: Work + 'a>(&self, execution: &W) -> Result<Option<Reason>> {
+    pub fn reason<W: Work>(&self, execution: &W) -> Result<Option<Reason>> {
         self.extensions
             .get(oid::CRL_REASON, execution)?
             .map(|extension| read_reason(extension, execution))
@@ -354,12 +354,12 @@ impl<'a> RevokedCertificate<'a> {
     }
 
     /// When the issuer believes invalidity began, distinct from revocationDate.
-    pub fn invalidity_date<W: Work + 'a>(&self, execution: &W) -> Result<Option<Time>> {
+    pub fn invalidity_date<W: Work>(&self, execution: &W) -> Result<Option<Time>> {
         const FIELD: &str = "extensions.invalidityDate";
         let Some(extension) = self.extensions.get(oid::INVALIDITY_DATE, execution)? else {
             return Ok(None);
         };
-        let mut reader = extension.reader(execution).field(FIELD)?;
+        let mut reader = extension.reader_scoped(execution).field(FIELD)?;
         let element = reader
             .expect(Tag::primitive(universal::GENERALIZED_TIME))
             .field(FIELD)?;
@@ -369,7 +369,7 @@ impl<'a> RevokedCertificate<'a> {
 
     /// Explicit issuer names on this entry. None means inheritance from the
     /// previous entry (or CRL issuer on the first), never an absent identity.
-    pub fn certificate_issuer<W: Work + 'a>(
+    pub fn certificate_issuer<W: Work>(
         &self,
         execution: &W,
     ) -> Result<Option<OwnedVec<GeneralName<'a>>>> {
@@ -382,9 +382,9 @@ impl<'a> RevokedCertificate<'a> {
     }
 }
 
-fn read_reason<'a, W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Reason> {
+fn read_reason<W: Work>(extension: &Extension<'_>, execution: &W) -> Result<Reason> {
     const FIELD: &str = "extensions.reasonCode";
-    let mut reader = extension.reader(execution).field(FIELD)?;
+    let mut reader = extension.reader_scoped(execution).field(FIELD)?;
     let element = reader.expect(Tag::primitive(10)).field(FIELD)?;
     super::end(&reader, FIELD, extension.span().start)?;
     reason_element(&reader, &element, FIELD)
@@ -392,7 +392,7 @@ fn read_reason<'a, W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Re
 
 /// Shared reasonCode schema for CRL entries and OCSP `RevokedInfo`.
 pub(crate) fn reason_element(
-    parent: &Reader<'_>,
+    parent: &structured_asn1::ScopedReader<'_, '_>,
     element: &structured_asn1::Element<'_>,
     field: &'static str,
 ) -> Result<Reason> {

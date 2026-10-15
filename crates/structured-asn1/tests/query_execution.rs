@@ -10,6 +10,36 @@ fn memory() -> Memory {
     Memory::new(Arc::new(MemoryAccount::new(65536, 65536)))
 }
 
+fn oid_after_temporary_operation<'source>(
+    source: &'source Parser,
+    bytes: &'source [u8],
+    current: &Memory,
+) -> structured_asn1::Oid<'source> {
+    let operation = Parser::der(current.clone());
+    let query = operation.read(&[], 900).unwrap();
+    let execution = query.execution();
+    let mut reader = execution
+        .read_scoped_source(source, bytes, 400, Encoding::Der, 0)
+        .unwrap();
+    reader.read_oid().unwrap()
+}
+
+#[test]
+fn original_input_view_outlives_scoped_reader_and_operation_without_copy_or_reparse() {
+    // The bytes remain original while the operation/source parser budget
+    // borrows end independently. No owning budget clone or input projection
+    // allocation is required to return a parsed scalar from a local operation.
+    let bytes = [6, 2, 42, 3];
+    let source = Parser::der(memory());
+    let current = memory();
+    let oid = oid_after_temporary_operation(&source, &bytes, &current);
+    assert_eq!(oid.as_bytes(), &[42, 3]);
+    assert_eq!(oid.as_bytes().as_ptr(), bytes[2..].as_ptr());
+    assert!(current.work_used() > 0);
+    assert_eq!(source.memory().work_used(), 0);
+    assert_eq!(current.used(), 0);
+}
+
 #[test]
 fn metadata_query_preserves_both_work_ceilings_without_payload_depth_or_old_sources() {
     // Metadata does not descend into ASN.1. It still funds source+current work,

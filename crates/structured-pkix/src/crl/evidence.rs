@@ -145,7 +145,7 @@ impl<'r, 'a> Authenticated<'r, 'a> {
     /// Compose applicability, time and full-list entry semantics over this
     /// original complete source. Caller supplies authenticated issuer path and
     /// same-anchor provenance as required by RFC5280 §6.3.3(f).
-    pub fn evaluate<'b, E: Work + 'a>(
+    pub fn evaluate<'b, E: Work>(
         &'b self,
         target: &'r Certificate<'a>,
         time: &Evaluation<'_, E>,
@@ -250,7 +250,7 @@ pub enum DeltaEvidence<'b, 'r, 'a> {
 impl<'b, 'r, 'a> BoundDelta<'b, 'r, 'a> {
     /// Compose bound-pair scope, both source metadata/entries and temporal facts.
     /// No base expiry is silently used as the delta's expiry or vice versa.
-    pub fn evaluate<E: Work + 'a>(
+    pub fn evaluate<E: Work>(
         self,
         target: &'r Certificate<'a>,
         time: &Evaluation<'_, E>,

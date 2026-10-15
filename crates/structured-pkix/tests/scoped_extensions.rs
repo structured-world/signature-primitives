@@ -16,6 +16,72 @@ fn tlv(tag: u8, contents: &[u8]) -> Vec<u8> {
     result
 }
 
+fn constraints_with_temporary_operation<'source>(
+    extensions: &Extensions<'source>,
+    current: &Memory,
+) -> structured_pkix::constraints::NameConstraints<'source> {
+    let operation = Parser::der(current.clone());
+    let query = operation.read(&[], 900).unwrap();
+    extensions
+        .name_constraints(&query.execution())
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn retained_directory_constraint_keeps_original_name_after_current_operation_ends() {
+    // A lazy DirectoryName owns catalogue capacity but borrows original bytes
+    // and the original parser, independently of a completed decoding operation.
+    let attribute = tlv(
+        0x30,
+        &[tlv(6, oid::COMMON_NAME.as_bytes()), tlv(12, b"A")].concat(),
+    );
+    let name = tlv(0x30, &tlv(0x31, &attribute));
+    let constraints = tlv(0x30, &tlv(0xa0, &tlv(0x30, &tlv(0xa4, &name))));
+    let extension = tlv(
+        0x30,
+        &[
+            tlv(6, oid::NAME_CONSTRAINTS.as_bytes()),
+            tlv(4, &constraints),
+        ]
+        .concat(),
+    );
+    let bytes = tlv(0x30, &extension);
+    let source = Parser::der(memory());
+    let mut parent = source.read(&bytes, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let extensions = Extensions::read_element(&parent, &element, "extensions").unwrap();
+    let old = source.memory().work_used();
+    let current = memory();
+    let retained = constraints_with_temporary_operation(&extensions, &current);
+    let structured_pkix::general_name::GeneralName::Directory(directory) =
+        retained.permitted()[0].base()
+    else {
+        panic!("original directory constraint")
+    };
+    assert_eq!(directory.as_bytes(), name);
+    assert!((bytes.as_ptr_range()).contains(&directory.as_bytes().as_ptr()));
+    assert!(current.used() > 0);
+    assert_eq!(source.memory().work_used(), old);
+    let denied = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 0,
+            ..Limits::default()
+        },
+        current.clone(),
+    );
+    let query = denied.read(&[], 1200).unwrap();
+    assert!(
+        directory
+            .matches(directory, &query.execution())
+            .unwrap_err()
+            .is_resource()
+    );
+    drop(retained);
+    assert_eq!(current.used(), 0);
+}
+
 struct Roles;
 
 impl<W: Work> Recognizer<W> for Roles {

@@ -96,7 +96,7 @@ impl<'a> CertificatePolicies<'a> {
     }
 
     /// Reads the value of a certificate policies extension.
-    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.certificatePolicies";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
@@ -229,7 +229,7 @@ impl<'a> PolicyMappings<'a> {
     }
 
     /// Reads the value of a policy mappings extension.
-    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.policyMappings";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
@@ -363,7 +363,7 @@ enum QualifierKind {
 /// # Errors
 /// Resource refusals remain located errors, separately from `false`.
 pub fn qualifier_understood<'a>(
-    parent: &structured_asn1::Reader<'a>,
+    parent: &structured_asn1::ScopedReader<'a, '_>,
     kind: Oid<'_>,
     value: &structured_asn1::Element<'a>,
 ) -> Result<bool> {
@@ -409,7 +409,7 @@ pub fn qualifier_understood<'a>(
 }
 
 fn qualifier_charge(
-    reader: &structured_asn1::Reader<'_>,
+    reader: &structured_asn1::ScopedReader<'_, '_>,
     value: &structured_asn1::Element<'_>,
     work: u64,
 ) -> Result<()> {
@@ -423,7 +423,7 @@ fn qualifier_charge(
 }
 
 fn qualifier_schema(
-    reader: &structured_asn1::Reader<'_>,
+    reader: &structured_asn1::ScopedReader<'_, '_>,
     kind: QualifierKind,
     value: &structured_asn1::Element<'_>,
 ) -> Result<bool> {
@@ -462,7 +462,7 @@ fn qualifier_schema(
 /// the empty sequence says nothing, but it is inside the schema, and
 /// refusing it would block an otherwise valid critical policy.
 fn user_notice_understood(
-    parent: &structured_asn1::Reader<'_>,
+    parent: &structured_asn1::ScopedReader<'_, '_>,
     value: &structured_asn1::Element<'_>,
 ) -> Result<bool> {
     if value.tag() != Tag::constructed(universal::SEQUENCE) {
@@ -496,7 +496,7 @@ fn user_notice_understood(
 /// The reference half of a user notice: the organization's display text,
 /// then a sequence of notice numbers (which may be empty).
 fn notice_reference_understood(
-    parent: &structured_asn1::Reader<'_>,
+    parent: &structured_asn1::ScopedReader<'_, '_>,
     reference: &structured_asn1::Element<'_>,
 ) -> Result<bool> {
     let Some(mut inside) = gate(parent.enter(reference).field(QUALIFIER_FIELD))? else {
@@ -543,7 +543,7 @@ fn notice_reference_understood(
 /// characters, the SIZE (1..200) the schema puts on every choice. Bytes that
 /// do not decode wear the tag without being the type.
 fn is_display_text(
-    reader: &structured_asn1::Reader<'_>,
+    reader: &structured_asn1::ScopedReader<'_, '_>,
     element: &structured_asn1::Element<'_>,
 ) -> Result<bool> {
     let tag = element.tag();

@@ -733,7 +733,7 @@ fn required<'a>(reader: &mut Reader<'a>, field: &'static str) -> Result<Element<
         .field(field)?
         .ok_or_else(|| Error::new(ErrorCode::MissingField, field, at))
 }
-fn end(reader: &Reader<'_>, field: &'static str) -> Result<()> {
+fn end(reader: &structured_asn1::ScopedReader<'_, '_>, field: &'static str) -> Result<()> {
     if reader.is_empty() {
         Ok(())
     } else {

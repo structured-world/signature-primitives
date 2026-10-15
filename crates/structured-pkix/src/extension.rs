@@ -23,10 +23,12 @@ use crate::policy::{CertificatePolicies, PolicyMappings};
 use crate::qualified::QcStatements;
 use crate::usage::{ExtendedKeyUsage, KeyUsage};
 use structured_asn1::memory::{Memory, MemoryError, OwnedVec, Work};
-use structured_asn1::{Element, Oid, Parser, Reader, Span, Tag, universal};
+use structured_asn1::{Element, Oid, Parser, Reader, ScopedReader, Span, Tag, universal};
 
 mod entry;
-pub use entry::{ExtensionFields, ExtensionHeader, ExtensionValue, open, read_with};
+pub use entry::{
+    ExtensionFields, ExtensionHeader, ExtensionValue, ScopedExtensionFields, open, read_with,
+};
 
 /// One extension: what it is, whether it must be understood, and its value.
 #[derive(Debug, Clone, Copy)]
@@ -87,6 +89,25 @@ impl<'a> Extension<'a> {
         // read in. A caller that read a BER envelope must not have its
         // leniency reach into the certificate's own structures.
         execution.read_nested(
+            self.parser,
+            self.value,
+            self.value_span.start,
+            structured_asn1::Encoding::Der,
+            self.outer,
+        )
+    }
+
+    /// Opens original payload bytes under a shorter current operation. Parsed
+    /// input views keep their source lifetime, while only the cursor/scratch
+    /// borrows this execution. Depth, source and query admission are unchanged.
+    pub fn reader_scoped<'operation, W: Work>(
+        self,
+        execution: &'operation W,
+    ) -> structured_asn1::Result<ScopedReader<'a, 'operation>>
+    where
+        'a: 'operation,
+    {
+        execution.read_scoped_nested(
             self.parser,
             self.value,
             self.value_span.start,
@@ -214,7 +235,7 @@ impl<'a> Extensions<'a> {
     /// error is a spent budget and only that: it says this run gave up before
     /// the question was answered, which must not be reported as a demand
     /// nobody understood.
-    pub fn unhandled_critical<'r, E, W: Work + 'a>(
+    pub fn unhandled_critical<'r, E, W: Work>(
         &'r self,
         recognizer: &impl Recognizer<W, Error = E>,
         execution: &W,
@@ -284,7 +305,7 @@ impl<'a> Extensions<'a> {
     /// key usage whose value never parsed was never understood, and taking
     /// it by identifier alone would leave a validator seeing no blocker for
     /// a demand the certificate marked as one.
-    pub fn understands<E, W: Work + 'a>(
+    pub fn understands<E, W: Work>(
         &self,
         item: &Extension<'a>,
         recognizer: &impl Recognizer<W, Error = E>,
@@ -318,11 +339,11 @@ impl<'a> Extensions<'a> {
     /// it written the way the encoding writes it. Without this a critical
     /// demand carrying bytes that are a value of no type would clear the
     /// gate on an identifier alone.
-    fn holds_one_value<W: Work + 'a>(item: &Extension<'a>, execution: &W) -> Result<bool> {
+    fn holds_one_value<W: Work>(item: &Extension<'a>, execution: &W) -> Result<bool> {
         const FIELD: &str = "extensions";
         let read = || -> Result<()> {
             let at = |code| Error::new(code, FIELD, item.value_span.start);
-            let mut reader = item.reader(execution).field(FIELD)?;
+            let mut reader = item.reader_scoped(execution).field(FIELD)?;
             let element = reader
                 .next_element()
                 .field(FIELD)?
@@ -339,7 +360,7 @@ impl<'a> Extensions<'a> {
 
     /// Whether a known extension's value actually parses. An error is a spent
     /// budget, never a malformed value.
-    fn decodes<E, W: Work + 'a>(
+    fn decodes<E, W: Work>(
         item: &Extension<'a>,
         recognizer: &impl Recognizer<W, Error = E>,
         execution: &W,
@@ -494,7 +515,7 @@ macro_rules! typed_accessors {
     ($($(#[$doc:meta])* $name:ident, $oid:path => $reader:path, $result:ty;)+) => {
         $(
             $(#[$doc])*
-            pub fn $name<W: Work + 'a>(&self, execution: &W) -> Result<Option<$result>> {
+            pub fn $name<W: Work>(&self, execution: &W) -> Result<Option<$result>> {
                 match self.get($oid, execution)? {
                     Some(item) => $reader(item, execution).map(Some),
                     None => Ok(None),
@@ -515,7 +536,7 @@ impl<'a> Extensions<'a> {
     /// invariants: nonempty, no duplicate OIDs, primitive extnValue, and the
     /// producing encoding's DEFAULT rules. This does not recognize/trust values.
     pub fn read_element(
-        parent: &Reader<'a>,
+        parent: &ScopedReader<'a, '_>,
         element: &Element<'a>,
         field: &'static str,
     ) -> Result<Self> {
@@ -529,7 +550,7 @@ impl<'a> Extensions<'a> {
     /// Original source/depth and producing local/current aggregate work survive.
     /// <https://www.rfc-editor.org/rfc/rfc3161#section-2.4.1>
     pub fn read_implicit(
-        parent: &Reader<'a>,
+        parent: &ScopedReader<'a, '_>,
         element: &Element<'a>,
         number: u32,
         field: &'static str,
@@ -796,23 +817,23 @@ pub fn is_known(kind: Oid<'_>) -> bool {
 
 /// A reader over the members of the one sequence an extension's value holds,
 /// which is the shape of most of them.
-pub(crate) fn sequence<'a, W: Work + 'a>(
+pub(crate) fn sequence<'a: 'operation, 'operation, W: Work>(
     extension: &Extension<'a>,
     field: &'static str,
-    execution: &W,
-) -> Result<Reader<'a>> {
+    execution: &'operation W,
+) -> Result<ScopedReader<'a, 'operation>> {
     sequence_reader(
-        extension.reader(execution).field(field)?,
+        extension.reader_scoped(execution).field(field)?,
         field,
         extension.span().start,
     )
 }
 
-pub(crate) fn sequence_reader<'a>(
-    mut reader: Reader<'a>,
+pub(crate) fn sequence_reader<'a: 'operation, 'operation>(
+    mut reader: ScopedReader<'a, 'operation>,
     field: &'static str,
     at: u64,
-) -> Result<Reader<'a>> {
+) -> Result<ScopedReader<'a, 'operation>> {
     let fail = |code| Error::new(code, field, at);
     let element = reader
         .next_element()
@@ -850,7 +871,7 @@ pub(crate) fn context_of(tag: Tag) -> Option<(u32, bool)> {
 /// of its value is charged to the budget the certificate was read with, and
 /// no other parser can be handed in beside the reader.
 pub(crate) fn read<'a>(
-    parent: &Reader<'a>,
+    parent: &ScopedReader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<Extensions<'a>> {
@@ -863,7 +884,7 @@ pub(crate) fn read<'a>(
 }
 
 fn read_tagged<'a>(
-    parent: &Reader<'a>,
+    parent: &ScopedReader<'a, '_>,
     element: &Element<'a>,
     expected: Tag,
     field: &'static str,

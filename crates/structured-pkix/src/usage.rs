@@ -3,7 +3,7 @@
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
 use structured_asn1::memory::{Memory, OwnedVec, Work};
-use structured_asn1::{BitString, Element, Oid, Reader, Tag, universal};
+use structured_asn1::{BitString, Element, Oid, Reader, ScopedReader, Tag, universal};
 
 /// The purposes a key may be used for, as the bits the certificate set.
 #[derive(Debug, Clone, Copy)]
@@ -76,11 +76,11 @@ impl<'a> KeyUsage<'a> {
     }
 
     /// Reads the value of a key usage extension.
-    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.keyUsage";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
-        let mut reader = extension.reader(execution).field(FIELD)?;
+        let mut reader = extension.reader_scoped(execution).field(FIELD)?;
         let bits = reader.read_bit_string().field(FIELD)?;
         if !reader.is_empty() {
             return Err(fail(ErrorCode::TrailingData));
@@ -140,7 +140,7 @@ impl<'a> ExtendedKeyUsage<'a> {
     /// # Errors
     /// Returns malformed or empty EKU syntax, inherited depth refusal, or a
     /// located resource error before unfunded catalogue growth or copying.
-    pub fn read_value(parent: &Reader<'a>, value: &Element<'a>) -> Result<Self> {
+    pub fn read_value(parent: &ScopedReader<'a, '_>, value: &Element<'a>) -> Result<Self> {
         const FIELD: &str = "extensions.extKeyUsage";
         let fail = |code| Error::new(code, FIELD, value.span().start);
         if value.tag() != Tag::constructed(universal::SEQUENCE) {
@@ -155,7 +155,7 @@ impl<'a> ExtendedKeyUsage<'a> {
         )
     }
 
-    fn read_members(mut inside: Reader<'a>, execution: &Memory, at: u64) -> Result<Self> {
+    fn read_members(mut inside: ScopedReader<'a, '_>, execution: &Memory, at: u64) -> Result<Self> {
         const FIELD: &str = "extensions.extKeyUsage";
         let work = inside.execution_in(execution);
         let mut purposes = work.vector();
@@ -211,7 +211,7 @@ impl<'a> ExtendedKeyUsage<'a> {
     }
 
     /// Reads the value of an extended key usage extension.
-    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         Self::read_members(
             extension::sequence(extension, "extensions.extKeyUsage", execution)?,
             execution.memory(),

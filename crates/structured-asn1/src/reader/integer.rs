@@ -1,6 +1,6 @@
 //! Explicit recovery of numeric value without repairing the received encoding.
 
-use super::{Element, Reader};
+use super::{Element, ScopedReader};
 use crate::{Error, ErrorCode, Integer, Limit, Result, value};
 
 /// An INTEGER's original contents, numeric view and encoding diagnostic.
@@ -45,7 +45,7 @@ impl<'a> IntegerReading<'a> {
     }
 }
 
-impl<'a> Reader<'a> {
+impl<'a: 'operation, 'operation> ScopedReader<'a, 'operation> {
     /// Recover the unique numeric value while retaining nonminimal spelling.
     ///
     /// Unlike [`Self::integer`], this explicit diagnostic operation reads

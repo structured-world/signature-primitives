@@ -63,7 +63,7 @@ impl BasicConstraints {
     }
 
     /// Reads the value of a basic constraints extension.
-    pub fn read<'a, W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'_>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.basicConstraints";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
@@ -160,7 +160,7 @@ impl<'a> NameConstraints<'a> {
     }
 
     /// Reads the value of a name constraints extension.
-    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.nameConstraints";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
@@ -236,7 +236,7 @@ impl PolicyConstraints {
     }
 
     /// Reads the value of a policy constraints extension.
-    pub fn read<'a, W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'_>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.policyConstraints";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
@@ -294,11 +294,11 @@ impl InhibitAnyPolicy {
     }
 
     /// Reads the value of an inhibit-any-policy extension.
-    pub fn read<'a, W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'_>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.inhibitAnyPolicy";
         let fail = |code| Error::new(code, FIELD, extension.span().start);
 
-        let mut reader = extension.reader(execution).field(FIELD)?;
+        let mut reader = extension.reader_scoped(execution).field(FIELD)?;
         let element = reader
             .next_element()
             .field(FIELD)?
@@ -318,7 +318,7 @@ impl InhibitAnyPolicy {
 }
 
 fn read_subtree<'a>(
-    parent: &structured_asn1::Reader<'a>,
+    parent: &structured_asn1::ScopedReader<'a, '_>,
     element: &structured_asn1::Element<'a>,
     field: &'static str,
 ) -> Result<Subtree<'a>> {
@@ -377,7 +377,7 @@ fn read_subtree<'a>(
 
 /// Reads a count of certificates, which is never negative.
 fn read_count(
-    parent: &structured_asn1::Reader<'_>,
+    parent: &structured_asn1::ScopedReader<'_, '_>,
     element: &structured_asn1::Element<'_>,
     field: &'static str,
 ) -> Result<CertificateCount> {

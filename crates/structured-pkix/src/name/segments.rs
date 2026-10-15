@@ -2,10 +2,10 @@
 
 use super::{AttributeValue, Encoding, Error, ErrorCode, Located, OwnedVec, Result, Strings};
 use structured_asn1::memory::Work;
-use structured_asn1::{Class, Element, Reader, Tag, universal};
+use structured_asn1::{Class, Element, ScopedReader as Reader, Tag, universal};
 
 pub(super) fn implicit<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     bits: bool,
@@ -22,7 +22,7 @@ pub(super) fn implicit<'a>(
 }
 
 pub(super) fn validate<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     strings: Strings,
@@ -74,8 +74,8 @@ pub(super) fn validate<'a>(
     Ok(())
 }
 
-struct Frame<'a> {
-    reader: Reader<'a>,
+struct Frame<'a: 'operation, 'operation> {
+    reader: Reader<'a, 'operation>,
     unused: u8,
 }
 
@@ -85,7 +85,7 @@ struct Frame<'a> {
 /// a following empty child does not make earlier padding permissible.
 /// <https://www.itu.int/rec/T-REC-X.690-202102-I/en>
 fn walk<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     bits: bool,
@@ -96,7 +96,7 @@ fn walk<'a>(
 /// Uses the same walker with parser-bound scratch admission when preparation
 /// belongs to the producing parse, rather than an independent retained query.
 pub(crate) fn walk_in<'a, W: Work>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
     bits: bool,

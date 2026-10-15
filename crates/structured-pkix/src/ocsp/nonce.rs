@@ -72,12 +72,12 @@ pub enum NonceBinding {
     Differs,
 }
 
-pub(super) fn read<'a, W: Work + 'a>(
+pub(super) fn read<'a, W: Work>(
     extension: &crate::Extension<'a>,
     execution: &W,
 ) -> Result<&'a [u8]> {
     const FIELD: &str = "ocspResponse.nonce";
-    let mut reader = extension.reader(execution).field(FIELD)?;
+    let mut reader = extension.reader_scoped(execution).field(FIELD)?;
     let value = reader
         .expect(structured_asn1::Tag::primitive(
             structured_asn1::universal::OCTET_STRING,
@@ -128,7 +128,7 @@ impl<'a> BasicResponse<'a> {
     /// Decode a response nonce, retaining the producing parser's local work and
     /// depth ceilings. Received nonce syntax accepts 1..128 octets, including
     /// legacy short nonces; this does not relax new-request construction.
-    pub fn nonce<W: Work + 'a>(&self, execution: &W) -> Result<Option<&'a [u8]>> {
+    pub fn nonce<W: Work>(&self, execution: &W) -> Result<Option<&'a [u8]>> {
         match self.extensions.get(oid::OCSP_NONCE, execution)? {
             Some(extension) => read(extension, execution).map(Some),
             None => Ok(None),
@@ -138,7 +138,7 @@ impl<'a> BasicResponse<'a> {
     /// Compare the actual request nonce only after authenticating this response.
     /// Missing/unsolicited values are preserved for the caller's replay policy;
     /// they are never replaced by a generated or default nonce.
-    pub fn bind_nonce<W: Work + 'a>(
+    pub fn bind_nonce<W: Work>(
         &self,
         request: Option<RequestNonce<'_>>,
         execution: &W,

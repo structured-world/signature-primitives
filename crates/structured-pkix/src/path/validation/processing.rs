@@ -82,7 +82,7 @@ struct Processing<'a, E: Work> {
     non_self_issued_intermediates: u32,
 }
 
-impl<'a, E: Work + 'a> Processing<'a, E> {
+impl<'a, E: Work> Processing<'a, E> {
     fn new<R: Recognizer<E>, D: Driver<'a, R, E>>(
         chain: &[&'a Certificate<'a>],
         effective: &EffectiveAnchor<'a>,
@@ -402,7 +402,7 @@ impl<'a, E: Work + 'a> Processing<'a, E> {
     }
 }
 
-fn inner<'a, R: Recognizer<E>, D: Driver<'a, R, E>, E: Work + 'a>(
+fn inner<'a, R: Recognizer<E>, D: Driver<'a, R, E>, E: Work>(
     input: Chain<'a, '_>,
     anchor: &EffectiveAnchor<'a>,
     settings: &Settings<'a, '_, R, E>,
@@ -419,7 +419,7 @@ fn inner<'a, R: Recognizer<E>, D: Driver<'a, R, E>, E: Work + 'a>(
     state.finish(settings, driver)
 }
 
-pub(super) fn process<'a, R: Recognizer<E>, D: Driver<'a, R, E>, E: Work + 'a>(
+pub(super) fn process<'a, R: Recognizer<E>, D: Driver<'a, R, E>, E: Work>(
     input: Chain<'a, '_>,
     anchor: &EffectiveAnchor<'a>,
     settings: &Settings<'a, '_, R, E>,

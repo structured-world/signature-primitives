@@ -72,11 +72,7 @@ impl<'a> super::Authenticated<'_, 'a> {
     /// names are compared as borrowed composed RDN views, never encoded again.
     /// If no explicit DP applies, also consider the RFC 5280 §6.3.3 issuer-name
     /// fallback over supplied CRLs; this performs no fetching or discovery.
-    pub fn scope<W: Work + 'a>(
-        &self,
-        target: &Certificate<'a>,
-        execution: &W,
-    ) -> Result<ScopeOutcome> {
+    pub fn scope<W: Work>(&self, target: &Certificate<'a>, execution: &W) -> Result<ScopeOutcome> {
         const FIELD: &str = "certificateList.scope";
         let crl = self.crl();
         execution
@@ -154,10 +150,10 @@ impl<'a> super::Authenticated<'_, 'a> {
     }
 }
 
-fn specified_scope<'a, W: Work + 'a>(
+fn specified_scope<W: Work>(
     issuer: &Name<'_>,
     idp: Option<&IssuingDistributionPoint<'_>>,
-    target: &Certificate<'a>,
+    target: &Certificate<'_>,
     execution: &W,
 ) -> Result<Option<ScopeOutcome>> {
     let mut coverage = Reasons::NONE;
@@ -515,7 +511,7 @@ impl<'a> IssuingDistributionPoint<'a> {
     }
 
     /// Decode through the extension's original parser with current execution.
-    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.issuingDistributionPoint";
         let fail = |code, at| Error::new(code, FIELD, at);
         let mut reader = extension::sequence(extension, FIELD, execution)?;

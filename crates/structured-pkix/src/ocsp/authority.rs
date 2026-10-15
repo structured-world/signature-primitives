@@ -122,10 +122,7 @@ fn equal_key<E: Work>(
     }
 }
 
-pub(super) fn signing_usage<'a, E: Work + 'a>(
-    certificate: &Certificate<'a>,
-    execution: &E,
-) -> Result<bool> {
+pub(super) fn signing_usage<E: Work>(certificate: &Certificate<'_>, execution: &E) -> Result<bool> {
     // RFC5280 §§4.2.1.3/4.2.1.12: OCSP is neither a certificate nor a CRL
     // signature; digitalSignature and/or contentCommitment are applicable.
     // <https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.12>
@@ -141,7 +138,7 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
     /// key, including inherited parameters. Caller supplies issuer trust and
     /// current validity from its target path; a matching DN alone is inadequate.
     /// RFC6960 §4.2.2.2: <https://www.rfc-editor.org/rfc/rfc6960#section-4.2.2.2>
-    pub fn bind_issuer<E: Work + 'a>(
+    pub fn bind_issuer<E: Work>(
         self,
         issuer: &'r Certificate<'a>,
         issuing_key: WorkingKey<'a>,

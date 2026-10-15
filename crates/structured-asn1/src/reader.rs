@@ -275,6 +275,21 @@ impl Parser {
         operation: &'a Budget,
         execution: &Memory,
     ) -> Result<Reader<'a>> {
+        self.read_scoped_source_in(data, base, encoding, depth, Some(operation), execution)
+    }
+
+    pub(crate) fn read_scoped_source_in<'source: 'operation, 'operation>(
+        &'source self,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+        operation: Option<&'operation Budget>,
+        execution: &Memory,
+    ) -> Result<ScopedReader<'source, 'operation>> {
+        let Some(operation) = operation else {
+            return self.read_depth_in(data, base, encoding, Some(depth), execution);
+        };
         let budget = BudgetView::query(&self.budget, operation);
         budget
             .depth(depth)
@@ -282,10 +297,19 @@ impl Parser {
         budget
             .work_in(1, execution)
             .map_err(|limit| Error::new(ErrorCode::LimitExceeded(limit), base, Path::default()))?;
-        let mut reader = self.read_as_in(data, base, encoding, execution)?;
-        reader.query = Some(operation);
-        reader.depth = depth;
-        Ok(reader)
+        let reader = self.read_as_in(data, base, encoding, execution)?;
+        Ok(ScopedReader {
+            data: reader.data,
+            pos: reader.pos,
+            base: reader.base,
+            depth,
+            next_index: reader.next_index,
+            path: reader.path,
+            encoding: reader.encoding,
+            parser: reader.parser,
+            execution: reader.execution,
+            query: Some(operation),
+        })
     }
 }
 
@@ -395,7 +419,7 @@ impl<'a> Element<'a> {
 /// come back to a container later can put the reader aside rather than start
 /// again from the document and count the nesting as one.
 #[derive(Debug)]
-pub struct Reader<'a> {
+pub struct ScopedReader<'a: 'operation, 'operation> {
     data: &'a [u8],
     pos: usize,
     base: u64,
@@ -405,10 +429,15 @@ pub struct Reader<'a> {
     encoding: Encoding,
     parser: &'a Parser,
     execution: Memory,
-    query: Option<&'a Budget>,
+    query: Option<&'operation Budget>,
 }
 
-impl<'a> Reader<'a> {
+/// Source reader whose input and operation have the same lifetime.
+/// Scoped schema processing can instead use [`ScopedReader`] to return input
+/// views independently of the current operation's borrowed budget.
+pub type Reader<'a> = ScopedReader<'a, 'a>;
+
+impl<'a: 'operation, 'operation> ScopedReader<'a, 'operation> {
     /// Current domain for deferred work, copies and new storage.
     #[must_use]
     pub fn memory(&self) -> &Memory {
@@ -448,6 +477,7 @@ impl<'a> Reader<'a> {
     pub fn execution_in<'work>(&self, memory: &'work Memory) -> crate::memory::Execution<'work>
     where
         'a: 'work,
+        'operation: 'work,
     {
         crate::memory::Execution::new(memory, self.budget())
     }
@@ -507,7 +537,7 @@ impl<'a> Reader<'a> {
                 Path::default(),
             )
         })?;
-        Ok(Reader {
+        Ok(ScopedReader {
             data: self.data,
             pos: self.pos,
             base: self.base,
@@ -556,7 +586,7 @@ impl<'a> Reader<'a> {
     }
 
     /// The shared budget, by way of the parser.
-    fn budget(&self) -> BudgetView<'a> {
+    fn budget(&self) -> BudgetView<'operation> {
         match self.query {
             Some(operation) => BudgetView::query(&self.parser.budget, operation),
             None => BudgetView::root(&self.parser.budget),
@@ -621,10 +651,10 @@ impl<'a> Reader<'a> {
     /// element's header is read again under the chosen rules, so a header
     /// only the lenient encoding accepts is refused too. Offsets stay offsets
     /// in the document and the budget stays the shared one.
-    pub fn reread(&self, element: &Element<'a>, encoding: Encoding) -> Result<Reader<'a>> {
+    pub fn reread(&self, element: &Element<'a>, encoding: Encoding) -> Result<Self> {
         self.admit_path(0)
             .map_err(|reason| Error::resource(reason, element.whole.start))?;
-        Ok(Reader {
+        Ok(Self {
             data: element.bytes,
             pos: 0,
             base: element.whole.start,
@@ -688,7 +718,7 @@ impl<'a> Reader<'a> {
     /// further elements, and reading them as elements is how a parser is
     /// talked into finding structure inside an octet string that nobody put
     /// there.
-    pub fn enter(&self, element: &Element<'a>) -> Result<Reader<'a>> {
+    pub fn enter(&self, element: &Element<'a>) -> Result<Self> {
         if !element.tag.is_constructed() {
             return Err(self.fail_under(ErrorCode::WrongConstruction, element));
         }
@@ -718,7 +748,7 @@ impl<'a> Reader<'a> {
         path.push(self.memory(), element.index)
             .map_err(|reason| Error::resource(reason, element.contents_span.start))?;
 
-        Ok(Reader {
+        Ok(Self {
             data: element.contents,
             pos: 0,
             base: element.contents_span.start,

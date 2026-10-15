@@ -96,13 +96,16 @@ impl<'a> QcStatements<'a> {
 
     /// Re-read information at its original offset and depth under the same
     /// document budget. Every lazy decoder goes through this boundary.
-    fn info_reader<W: Work + 'a>(
+    fn info_reader<'operation, W: Work>(
         &self,
         info: &'a [u8],
         statement: &QcStatement<'a>,
-        execution: &W,
-    ) -> structured_asn1::Result<structured_asn1::Reader<'a>> {
-        execution.read_nested(
+        execution: &'operation W,
+    ) -> structured_asn1::Result<structured_asn1::ScopedReader<'a, 'operation>>
+    where
+        'a: 'operation,
+    {
+        execution.read_scoped_nested(
             self.parser,
             info,
             statement.at,
@@ -148,7 +151,7 @@ impl<'a> QcStatements<'a> {
     ///
     /// This is what separates a signature made by a person from a seal made by
     /// an organization, which is a difference the report must never collapse.
-    pub fn types<W: Work + 'a>(&self, execution: &W) -> Result<OwnedVec<QualifiedType>> {
+    pub fn types<W: Work>(&self, execution: &W) -> Result<OwnedVec<QualifiedType>> {
         const FIELD: &str = "extensions.qcStatements.qcType";
         // Statement information lives inside the DER certificate like every
         // extension value, so its re-parses below are DER whatever parser
@@ -201,7 +204,7 @@ impl<'a> QcStatements<'a> {
 
     /// How long the issuer says it keeps what is needed to check this
     /// certificate, in years.
-    pub fn retention_period<W: Work + 'a>(&self, execution: &W) -> Result<Option<RetentionPeriod>> {
+    pub fn retention_period<W: Work>(&self, execution: &W) -> Result<Option<RetentionPeriod>> {
         const FIELD: &str = "extensions.qcStatements.qcRetentionPeriod";
         let Some(statement) = self.get(oid::QC_RETENTION_PERIOD, execution)? else {
             return Ok(None);
@@ -232,7 +235,7 @@ impl<'a> QcStatements<'a> {
     /// Says how to read an organization identifier or a serial number in the
     /// subject's name, and getting it wrong turns an organization into a
     /// person or the reverse.
-    pub fn semantics<W: Work + 'a>(&self, execution: &W) -> Result<Option<Oid<'a>>> {
+    pub fn semantics<W: Work>(&self, execution: &W) -> Result<Option<Oid<'a>>> {
         // Both versions may be present, each saying which profile the
         // certificate claims conformance with (RFC 3739 3.2.6), and each may
         // carry an identifier. Two that differ say the subject's identifiers
@@ -264,7 +267,7 @@ impl<'a> QcStatements<'a> {
     /// prefers the newer statement, but where both appear each is validated on
     /// its own: a well-formed preferred statement must not vouch for the other.
     #[allow(clippy::type_complexity)]
-    fn semantics_parts<W: Work + 'a>(
+    fn semantics_parts<W: Work>(
         &self,
         statement: &QcStatement<'a>,
         execution: &W,
@@ -322,7 +325,7 @@ impl<'a> QcStatements<'a> {
     }
 
     /// Reads the value of a qualified statements extension.
-    pub fn read<W: Work + 'a>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
+    pub fn read<W: Work>(extension: &Extension<'a>, execution: &W) -> Result<Self> {
         const FIELD: &str = "extensions.qcStatements";
 
         let mut inside = extension::sequence(extension, FIELD, execution)?;
@@ -418,7 +421,7 @@ impl<'a> QcStatements<'a> {
     /// decides what a critical extension blocked: each identifier is one
     /// this crate names, and each structured payload has its shape. An error
     /// is a spent budget and only that.
-    pub(crate) fn understood<E, W: Work + 'a>(
+    pub(crate) fn understood<E, W: Work>(
         &self,
         recognizer: &impl crate::extension::Recognizer<W, Error = E>,
         execution: &W,
@@ -516,7 +519,7 @@ impl<'a> QcStatements<'a> {
     /// carry the meaning, and a critical list declaring a purpose nobody here
     /// can name was not understood (RFC 3739, 3.2.6: applications that do not
     /// understand a statement in a critical extension reject the certificate).
-    fn qc_types_understood<W: Work + 'a>(
+    fn qc_types_understood<W: Work>(
         &self,
         statement: &QcStatement<'a>,
         execution: &W,
@@ -545,7 +548,7 @@ impl<'a> QcStatements<'a> {
 
     /// The monetary limit of ETSI EN 319 412-5: a currency as a three-letter
     /// code or a number, then the amount and the exponent.
-    fn limit_value_understood<W: Work + 'a>(
+    fn limit_value_understood<W: Work>(
         &self,
         statement: &QcStatement<'a>,
         execution: &W,
@@ -587,11 +590,7 @@ impl<'a> QcStatements<'a> {
 
     /// The disclosure locations of ETSI EN 319 412-5: at least one pair of a
     /// location and a two-letter language. Locations are read, never fetched.
-    fn pds_understood<W: Work + 'a>(
-        &self,
-        statement: &QcStatement<'a>,
-        execution: &W,
-    ) -> Result<bool> {
+    fn pds_understood<W: Work>(&self, statement: &QcStatement<'a>, execution: &W) -> Result<bool> {
         let Some(mut inside) = self.payload_sequence(statement, execution)? else {
             return Ok(false);
         };
@@ -643,7 +642,7 @@ impl<'a> QcStatements<'a> {
 
     /// The legislation countries of ETSI EN 319 412-5: at least one
     /// two-letter country code.
-    fn legislation_understood<W: Work + 'a>(
+    fn legislation_understood<W: Work>(
         &self,
         statement: &QcStatement<'a>,
         execution: &W,
@@ -674,11 +673,14 @@ impl<'a> QcStatements<'a> {
 
     /// The one sequence a structured payload holds, or `None` where the
     /// information is absent or not that. An error is a spent budget.
-    fn payload_sequence<W: Work + 'a>(
+    fn payload_sequence<'operation, W: Work>(
         &self,
         statement: &QcStatement<'a>,
-        execution: &W,
-    ) -> Result<Option<structured_asn1::Reader<'a>>> {
+        execution: &'operation W,
+    ) -> Result<Option<structured_asn1::ScopedReader<'a, 'operation>>>
+    where
+        'a: 'operation,
+    {
         let Some(info) = statement.info else {
             return Ok(None);
         };
@@ -719,7 +721,7 @@ fn is_known_statement(kind: Oid<'_>) -> bool {
 /// non-empty sequence of names. The names are validated as names, since a
 /// value that merely wears the sequence tag is the same malformed statement.
 fn require_authorities<'a>(
-    parent: &structured_asn1::Reader<'a>,
+    parent: &structured_asn1::ScopedReader<'a, '_>,
     element: &structured_asn1::Element<'a>,
 ) -> Result<OwnedVec<crate::general_name::GeneralName<'a>>> {
     const FIELD: &str = "extensions.qcStatements.semanticsInformation";

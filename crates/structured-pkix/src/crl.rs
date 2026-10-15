@@ -235,7 +235,7 @@ impl<'a> CertificateList<'a> {
     /// The verifier must account its own transitive work and allocations in
     /// `execution`. Passing this domain is not evidence that an opaque provider
     /// backend enforces the accounting contract.
-    pub fn authenticate<'r, V: Verify<E>, E: Work + 'a>(
+    pub fn authenticate<'r, V: Verify<E>, E: Work>(
         &'r self,
         issuer: &'r crate::Certificate<'a>,
         key: WorkingKey<'a>,
@@ -394,7 +394,7 @@ fn required<'a>(reader: &mut Reader<'a>, field: &'static str, at: u64) -> Result
         .ok_or_else(|| Error::new(ErrorCode::MissingField, field, at))
 }
 
-fn end(reader: &Reader<'_>, field: &'static str, at: u64) -> Result<()> {
+fn end(reader: &structured_asn1::ScopedReader<'_, '_>, field: &'static str, at: u64) -> Result<()> {
     if reader.is_empty() {
         return Ok(());
     }

@@ -2,7 +2,7 @@
 
 use super::{HashWork, Memory, MemoryError, OwnedMap, OwnedVec, allocator};
 use crate::limits::BudgetView;
-use crate::{Encoding, Parser, Reader};
+use crate::{Encoding, Parser, Reader, ScopedReader};
 
 mod private {
     pub trait Sealed {}
@@ -35,6 +35,53 @@ pub trait Work: Clone + private::Sealed {
 
     /// Admits work before execution, against every applicable ceiling.
     fn charge_work(&self, amount: u64) -> Result<(), MemoryError>;
+
+    /// Opens original input while borrowing this operation only for decoding.
+    /// Parsed elements and scalar views retain the longer original input
+    /// lifetime; no result needs to keep a completed operation alive merely
+    /// because it borrows input. Source and current ceilings still apply to
+    /// every read, scratch allocation and copy before that work.
+    /// A cursor itself cannot escape a local operation:
+    ///
+    /// ```compile_fail
+    /// use structured_asn1::{Encoding, Parser, ScopedReader, memory::Work};
+    /// fn escape<'source>(source: &'source Parser, data: &'source [u8])
+    ///     -> ScopedReader<'source, 'source>
+    /// {
+    ///     let operation = Parser::der(source.memory().clone());
+    ///     let query = operation.read(&[], 900).unwrap();
+    ///     let execution = query.execution();
+    ///     execution.read_scoped_source(source, data, 400, Encoding::Der, 0).unwrap()
+    /// }
+    /// ```
+    fn read_scoped_source<'source: 'operation, 'operation>(
+        &'operation self,
+        parser: &'source Parser,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+    ) -> crate::Result<ScopedReader<'source, 'operation>>;
+
+    /// Nested form of [`Work::read_scoped_source`], retaining actual outer+1
+    /// depth. Only decoding borrows this operation; returned input views do not.
+    fn read_scoped_nested<'source: 'operation, 'operation>(
+        &'operation self,
+        parser: &'source Parser,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        outer: u32,
+    ) -> crate::Result<ScopedReader<'source, 'operation>> {
+        let depth = outer.checked_add(1).ok_or_else(|| {
+            crate::Error::new(
+                crate::ErrorCode::LimitExceeded(crate::Limit::Depth),
+                base,
+                crate::Path::default(),
+            )
+        })?;
+        self.read_scoped_source(parser, data, base, encoding, depth)
+    }
 
     /// Opens original nested bytes without discarding this execution boundary.
     /// Memory retains its existing source-plus-aggregate admission; Execution
@@ -162,6 +209,17 @@ impl Work for Memory {
         Memory::charge_work(self, amount)
     }
 
+    fn read_scoped_source<'source: 'operation, 'operation>(
+        &'operation self,
+        parser: &'source Parser,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+    ) -> crate::Result<ScopedReader<'source, 'operation>> {
+        parser.read_scoped_source_in(data, base, encoding, depth, None, self)
+    }
+
     fn read_nested<'source>(
         &self,
         parser: &'source Parser,
@@ -248,6 +306,24 @@ impl Work for Execution<'_> {
         self.budget
             .work_in(amount, self.memory)
             .map_err(|_| MemoryError::WorkExceeded)
+    }
+
+    fn read_scoped_source<'source: 'operation, 'operation>(
+        &'operation self,
+        parser: &'source Parser,
+        data: &'source [u8],
+        base: u64,
+        encoding: Encoding,
+        depth: u32,
+    ) -> crate::Result<ScopedReader<'source, 'operation>> {
+        parser.read_scoped_source_in(
+            data,
+            base,
+            encoding,
+            depth,
+            Some(self.budget.operation()),
+            self.memory,
+        )
     }
 
     fn read_nested<'source>(

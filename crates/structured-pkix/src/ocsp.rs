@@ -118,6 +118,18 @@ impl<'a> ResponseBytes<'a> {
     where
         'a: 'query,
     {
+        // RFC6960 §4.2.1 leaves an unsupported responseType's octets opaque.
+        // Classifying its OID consumes metadata work, not a payload nesting
+        // level. Keep both source and current query work ceilings before the
+        // comparison; only the known basic syntax opens a nested reader.
+        // https://www.rfc-editor.org/rfc/rfc6960.html#section-4.2.1
+        self.reader
+            .execution_query(query)
+            .charge_work(19)
+            .map_err(|reason| Error::resource(reason, FIELD, self.span.start))?;
+        if self.kind != oid::OCSP_BASIC {
+            return Ok(None);
+        }
         let mut nested = self
             .reader
             .parser()
@@ -129,10 +141,6 @@ impl<'a> ResponseBytes<'a> {
                 self.reader.depth(),
             )
             .field(BASIC)?;
-        nested.charge(19).field(FIELD)?;
-        if self.kind != oid::OCSP_BASIC {
-            return Ok(None);
-        }
         let root = required(&mut nested, BASIC)?;
         let basic = read_basic(&nested, &root)?;
         end(&nested, BASIC)?;

@@ -10,6 +10,80 @@ fn memory() -> Memory {
     Memory::new(Arc::new(MemoryAccount::new(65536, 65536)))
 }
 
+#[test]
+fn metadata_query_preserves_both_work_ceilings_without_payload_depth_or_old_sources() {
+    // Metadata does not descend into ASN.1. It still funds source+current work,
+    // deduplicates one session and cannot retain an old foreign source instead
+    // of the actual root operation.
+    for (source_work, query_work, succeeds) in [(0, 100, false), (100, 0, false), (100, 100, true)]
+    {
+        let original = memory();
+        let current = memory();
+        let source = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: source_work,
+                max_depth: 0,
+                ..Limits::default()
+            },
+            original.clone(),
+        );
+        let operation = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: query_work,
+                max_depth: 0,
+                ..Limits::default()
+            },
+            current.clone(),
+        );
+        let origin = source.read(&[], 400).unwrap();
+        let query = operation.read(&[], 900).unwrap();
+        assert_eq!(
+            origin.execution_query(&query).charge_work(7).is_ok(),
+            succeeds
+        );
+        assert_eq!(original.work_used(), 0);
+        assert_eq!(current.work_used(), if succeeds { 7 } else { 0 });
+        assert_eq!(current.used(), 0);
+    }
+    let current = memory();
+    let root = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 7,
+            ..Limits::default()
+        },
+        current.clone(),
+    );
+    let original = root.read(&[], 400).unwrap();
+    let query = root.read(&[], 900).unwrap();
+    original.execution_query(&query).charge_work(7).unwrap();
+    assert!(original.execution_query(&query).charge_work(1).is_err());
+    assert_eq!(current.work_used(), 7);
+
+    let current = memory();
+    let root = Parser::der(current.clone());
+    let root_query = root.read(&[], 900).unwrap();
+    let past = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 1,
+            ..Limits::default()
+        },
+        memory(),
+    );
+    let past_query = past
+        .read_query_in(&root_query, &[], 800, Encoding::Der, 0)
+        .unwrap();
+    let fresh = Parser::der(memory());
+    let origin = fresh.read(&[], 400).unwrap();
+    origin.execution_query(&past_query).charge_work(7).unwrap();
+    assert_eq!(current.work_used(), 8);
+    assert_eq!(past.memory().work_used(), 0);
+    assert_eq!(fresh.memory().work_used(), 0);
+}
+
 fn lazy_from_work<'source, W: Work + 'source>(
     execution: &W,
     source: &'source Parser,

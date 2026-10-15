@@ -157,6 +157,56 @@ fn borrowed_basic_query_does_not_turn_unknown_or_malformed_payloads_into_each_ot
 }
 
 #[test]
+fn unsupported_basic_query_pays_classification_without_entering_opaque_payload() {
+    // Unknown response syntax has no BasicOCSPResponse nesting to inspect.
+    // Exact envelope depth must still allow classification; current and source
+    // work ceilings apply to the OID comparison without any payload allocation.
+    let original = memory(100_000, 1_000_000);
+    let source = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_depth: 3,
+            ..Limits::default()
+        },
+        original.clone(),
+    );
+    let bytes = envelope(&[0x25, 0], &[0x2a, 3, 4]);
+    let Response::Successful(payload) = Response::read(&source, &bytes, 700).unwrap() else {
+        panic!("successful unknown response envelope")
+    };
+    let held = original.used();
+    let before = original.work_used();
+    let current = memory(0, 1_000_000);
+    let operation = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_depth: 0,
+            ..Limits::default()
+        },
+        current.clone(),
+    );
+    let query = operation.read(&[], 100).unwrap();
+    assert!(payload.basic_in(&query).unwrap().is_none());
+    assert_eq!(current.work_used(), 19);
+    assert_eq!(original.work_used(), before);
+    assert_eq!(original.used(), held);
+    assert_eq!(current.used(), 0);
+    let denied = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 0,
+            ..Limits::default()
+        },
+        current.clone(),
+    );
+    let query = denied.read(&[], 100).unwrap();
+    let error = payload.basic_in(&query).unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!(error.offset(), payload.span().start);
+    assert_eq!(current.work_used(), 19);
+}
+
+#[test]
 fn borrowed_basic_query_inherits_exact_original_and_current_depth_without_a_new_root() {
     // The OCTET-carried BasicOCSPResponse remains nested under its actual
     // envelope depth. Neither a foreign operation nor a fresh root can reset it.

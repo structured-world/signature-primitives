@@ -452,6 +452,28 @@ impl<'a> Reader<'a> {
         crate::memory::Execution::new(memory, self.budget())
     }
 
+    /// Borrows original-source and current root-operation work ceilings for
+    /// metadata queries that do not enter a payload or advance a cursor.
+    ///
+    /// Construction allocates nothing, copies no diagnostic path and does not
+    /// inspect bytes or require an additional ASN.1 nesting level. Work and
+    /// collection admission still checks both cumulative ceilings, charging
+    /// the current query's aggregate account once. A prior foreign source is
+    /// replaced by this source, never by a wider ancestor operation.
+    #[must_use]
+    pub fn execution_query<'query>(
+        &self,
+        query: &'query Reader<'_>,
+    ) -> crate::memory::Execution<'query>
+    where
+        'a: 'query,
+    {
+        crate::memory::Execution::new(
+            query.memory(),
+            BudgetView::query(&self.parser.budget, query.budget().operation()),
+        )
+    }
+
     /// Selects the domain for subsequent execution without moving existing
     /// storage charges. Offsets, depth and parser-session cumulative limits
     /// remain unchanged; a new domain does not reset that session ceiling.

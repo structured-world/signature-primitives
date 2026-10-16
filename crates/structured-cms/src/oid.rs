@@ -37,3 +37,5 @@ pub const SHA1: Oid<'static> = Oid::from_bytes(&[0x2b, 0x0e, 3, 2, 26]);
 /// Encapsulated timestamp information, `id-ct-TSTInfo` (RFC3161 §2.4.2).
 pub const TST_INFO: Oid<'static> =
     Oid::from_bytes(&[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 1, 9, 16, 1, 4]);
+/// Whole OCSP response in CMS `OtherRevocationInfoFormat` (RFC5940 §3).
+pub const OCSP_RESPONSE: Oid<'static> = Oid::from_bytes(&[0x2b, 6, 1, 5, 5, 7, 16, 2]);

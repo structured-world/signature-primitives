@@ -106,7 +106,7 @@ impl<'a, W: Work> Prepared<'a, W> {
         Self::of_in(attribute, memory, None)
     }
 
-    fn of_in(
+    pub(super) fn of_in(
         attribute: Attribute<'a>,
         memory: &W,
         parent: Option<&structured_asn1::ScopedReader<'_, '_>>,

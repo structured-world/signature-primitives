@@ -29,7 +29,8 @@ pub struct Evaluation<'p, E: Work = Memory> {
     pub origin: SourceOrigin,
 }
 
-/// Original sources behind established absence coverage.
+/// Original authenticated complete/delta sources. This source descriptor alone
+/// does not assert applicability, freshness or established absence coverage.
 #[derive(Debug, Clone, Copy)]
 pub enum EvidenceSource<'r, 'a> {
     /// Authenticated complete source.
@@ -94,6 +95,17 @@ pub struct CompleteFacts<'b, 'r, 'a> {
     entry: EntryLookup<'r, 'a>,
 }
 impl<'b, 'r, 'a> CompleteFacts<'b, 'r, 'a> {
+    /// Original certificate whose applicability and entries were evaluated,
+    /// including negative, stale or conflicting outcomes without absence.
+    #[must_use]
+    pub fn target(self) -> &'r Certificate<'a> {
+        self.target
+    }
+    /// Exact original evaluation label, independent of its temporary context.
+    #[must_use]
+    pub fn evaluated_at(self) -> Reading {
+        self.now
+    }
     /// Original authenticated source.
     #[must_use]
     pub fn source(self) -> &'b Authenticated<'r, 'a> {
@@ -192,6 +204,17 @@ pub struct DeltaFacts<'b, 'r, 'a> {
     entry: CombinedEntry<'r, 'a>,
 }
 impl<'b, 'r, 'a> DeltaFacts<'b, 'r, 'a> {
+    /// Original certificate processed by this metadata-bound source pair,
+    /// independently of whether its entry/window establishes absence.
+    #[must_use]
+    pub fn target(&self) -> &'r Certificate<'a> {
+        self.target
+    }
+    /// Exact original evaluation label, without borrowing the evaluation context.
+    #[must_use]
+    pub fn evaluated_at(&self) -> Reading {
+        self.now
+    }
     /// Original metadata-bound pair.
     #[must_use]
     pub fn pair(&self) -> BoundDelta<'b, 'r, 'a> {

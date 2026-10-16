@@ -594,6 +594,8 @@ fn assert_current_crl_query<'r, 'a>(
             let CompleteEvidence::Facts(facts) = outcome.unwrap() else {
                 panic!("same applicable original CRL required")
             };
+            assert!(core::ptr::eq(facts.target(), target));
+            assert_eq!(facts.evaluated_at(), scoped.now);
             assert!(facts.absence().is_some());
         } else {
             assert!(outcome.unwrap_err().is_resource());
@@ -1290,6 +1292,8 @@ fn composed_delta_uses_delta_expiry_and_preserves_entry_failures() {
             panic!("pair scope failed");
         };
         assert_eq!(facts.base_freshness(), Freshness::Stale);
+        assert!(core::ptr::eq(facts.target(), &raw const target));
+        assert_eq!(facts.evaluated_at(), time.now);
         assert_eq!(facts.delta_freshness(), Freshness::Current);
         assert_eq!(facts.absence().is_some(), absence);
         time.now = end.into();
@@ -1298,6 +1302,8 @@ fn composed_delta_uses_delta_expiry_and_preserves_entry_failures() {
             panic!("expired pair scope failed");
         };
         assert_eq!(facts.delta_freshness(), Freshness::AtNextUpdate);
+        assert!(core::ptr::eq(facts.target(), &raw const target));
+        assert_eq!(facts.evaluated_at(), time.now);
         assert!(facts.absence().is_none());
         let unfunded = memory(0, 0);
         time.execution = &unfunded;

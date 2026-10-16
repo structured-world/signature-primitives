@@ -18,3 +18,8 @@ name = "structured-cms"
 git_tag_name = "v{{ version }}"
 version_group = "primitives"
 changelog_include = ["structured-asn1", "structured-pkix"]
+
+# Enable after the separate first-publication setup is complete.
+[[package]]
+name = "structured-xades"
+release = false

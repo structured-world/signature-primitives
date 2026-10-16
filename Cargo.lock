@@ -697,6 +697,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "structured-xades"
+version = "0.3.0"
+dependencies = [
+ "p256",
+ "sha2",
+ "structured-asn1",
+ "structured-cms",
+ "structured-pkix",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

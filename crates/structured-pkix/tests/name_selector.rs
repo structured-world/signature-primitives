@@ -11,6 +11,100 @@ fn memory(storage: usize, work: usize) -> Memory {
 }
 
 #[test]
+fn scoped_selector_owns_storage_and_reuses_retained_semantics() {
+    // XML DN references must fund lexical/OID/BER conversion through their
+    // current operation, while an independently retained selector outlives it.
+    let execution = memory(65536, 1_000_000);
+    let selector = {
+        let parser = Parser::ber(execution.clone());
+        let query = parser.read(&[], 900).unwrap();
+        Selector::parse_in("2.5.4.3=#2C800401C30401A90000,O=Example", &query).unwrap()
+    };
+    assert!(execution.used() > 0);
+    let expected = Selector::parse("CN=é,O=example", &execution).unwrap();
+    let query_account = memory(65536, 1_000_000);
+    let parser = Parser::der(query_account.clone());
+    let query = parser.read(&[], 800).unwrap();
+    let held = execution.used();
+    let paid = execution.work_used();
+    assert!(selector.matches(&expected, &query.execution()).unwrap());
+    assert_eq!(query_account.used(), 0);
+    assert_eq!(execution.used(), held);
+    assert_eq!(execution.work_used(), paid);
+    drop(expected);
+    drop(selector);
+    assert_eq!(execution.used(), 0);
+}
+
+#[test]
+fn scoped_selector_admits_local_work_capacity_and_ber_element_traversal() {
+    // Aggregate slack cannot pay for a zero-local query, and #BER's fresh
+    // decoded source must not bypass the query's element ceiling.
+    use structured_asn1::{Encoding, Limits};
+    for (capacity, limits) in [
+        (
+            65536,
+            Limits {
+                max_work: 0,
+                ..Limits::default()
+            },
+        ),
+        (0, Limits::default()),
+        (
+            65536,
+            Limits {
+                max_elements: 0,
+                ..Limits::default()
+            },
+        ),
+    ] {
+        let account = memory(capacity, 1_000_000);
+        let parser = Parser::new(Encoding::Ber, limits, account.clone());
+        let query = parser.read(&[], 900).unwrap();
+        let error = Selector::parse_in("2.5.4.3=#2C800401C30401A90000", &query).unwrap_err();
+        assert!(error.is_resource(), "{error:?}");
+        assert_eq!(account.used(), 0);
+    }
+}
+
+#[test]
+fn scoped_selector_name_comparison_keeps_deferred_ber_query_limits() {
+    // A retained constructed Name requires actual decoded-string traversal;
+    // normalization and temporary bytes stay under the current reader.
+    use structured_asn1::{Encoding, Limits};
+    let execution = memory(65536, 1_000_000);
+    let selected = Selector::parse("CN=A", &execution).unwrap();
+    let encoded = [
+        0x30, 14, 0x31, 12, 0x30, 10, 6, 3, 0x55, 4, 3, 0x2c, 3, 4, 1, b'a',
+    ];
+    let origin = Parser::ber(execution.clone());
+    let mut original = origin.read(&encoded, 400).unwrap();
+    let element = original.next_element().unwrap().unwrap();
+    let name = name::read(&original, &element, "issuer").unwrap();
+    let query_account = memory(65536, 1_000_000);
+    let parser = Parser::ber(query_account.clone());
+    let query = parser.read(&[], 900).unwrap();
+    assert!(selected.matches_name_in(&name, &query).unwrap());
+    assert_eq!(query_account.used(), 0);
+    let held = execution.used();
+    let paid = execution.work_used();
+    let denied = Parser::new(
+        Encoding::Ber,
+        Limits {
+            max_elements: 0,
+            ..Limits::default()
+        },
+        query_account.clone(),
+    );
+    let query = denied.read(&[], 900).unwrap();
+    let error = selected.matches_name_in(&name, &query).unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!(query_account.used(), 0);
+    assert_eq!(execution.used(), held);
+    assert_eq!(execution.work_used(), paid);
+}
+
+#[test]
 fn singleton_comparisons_need_no_projection_allocation() {
     // Repeated certificate/selector matching must not materialize a borrowed
     // AVA catalogue. An ASCII singleton works with zero execution storage.

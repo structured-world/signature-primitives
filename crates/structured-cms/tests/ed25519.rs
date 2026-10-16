@@ -806,6 +806,191 @@ fn malformed_timestamp_info_is_refused_before_crypto_or_covered_source() {
 }
 
 #[test]
+fn timestamp_profile_refusal_preserves_source_before_crypto_or_covered_input() {
+    // A profile examines the already decoded original CMS/ESS/TSTInfo fields.
+    // Its refusal is terminal, has an explicit coordinate role, and must not
+    // start provider operations, read caller content or mint common evidence.
+    use structured_cms::timestamp::{ProfileCheckError, ProfileSource};
+    let memory = Memory::new(Arc::new(MemoryAccount::new(1_000_000, 10_000_000)));
+    let failures = profile_refusals(&memory);
+    // Every parser/token/provider and both joined buffers have gone; only the
+    // original independent error maps may retain accounted capacity.
+    assert!(memory.used() > 0);
+    for (failure, physical) in &failures {
+        let ProfileCheckError::Profile { source, context } = failure else {
+            panic!("profile cause changed")
+        };
+        if source.source == ProfileSource::Envelope {
+            assert_eq!(source.cause.start, *physical);
+        } else {
+            assert_eq!(source.cause.start, 0);
+            assert_eq!(
+                context.coordinates(),
+                structured_cms::content_source::Coordinates::Logical
+            );
+            assert_eq!(
+                context.project_offset(source.cause.start, &memory).unwrap(),
+                *physical
+            );
+        }
+    }
+    drop(failures);
+    assert_eq!(memory.used(), 0);
+}
+
+type ProfileRefusal = (
+    structured_cms::timestamp::ProfileCheckError<(), Failure, (), structured_asn1::Span>,
+    u64,
+);
+
+fn profile_refusals(memory: &Memory) -> [ProfileRefusal; 2] {
+    // Both contexts are derived by one existing structural kernel. A successful
+    // profile then executes the same real signature exactly once.
+    use structured_cms::timestamp::{CheckContext, ProfileFailure, ProfileSource, Token};
+    use structured_pkix::{
+        Certificate,
+        temporal::{Instant, LeapTable},
+    };
+    let signing = SigningKey::from_bytes(&hex(
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    ));
+    let (bytes, certificate_bytes) = timestamp_fixture(&signing, true, false);
+    let parser = Parser::ber(memory.clone());
+    let token = Token::read(&parser, &bytes, 400).unwrap();
+    let parent = parser.read(&[], 400).unwrap();
+    let cert_parser = Parser::der(memory.clone());
+    let certificate = Certificate::read(&cert_parser, &certificate_bytes, 900).unwrap();
+    let certificate_parent = cert_parser.read(&[], 900).unwrap();
+    let utc = LeapTable::new(0, 2_000_000_000, &[]).unwrap();
+    let provider = Oracle {
+        key: signing.verifying_key(),
+        digest_resolutions: Cell::new(0),
+        digest_starts: Cell::new(0),
+        raw_starts: Cell::new(0),
+        raw_finishes: Cell::new(0),
+    };
+    let context = CheckContext {
+        certificate: &certificate,
+        certificate_parent: &certificate_parent,
+        key: WorkingKey::standing(certificate.tbs().public_key()),
+        requested: None,
+        utc: &utc,
+        reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
+        window: None,
+    };
+    let failures = [ProfileSource::Envelope, ProfileSource::Information]
+        .map(|source| refuse_profile(&token, &parent, &context, &provider, source));
+    let calls = Cell::new(0);
+    let accepted = token
+        .check_with_profile(
+            &provider,
+            &parent,
+            &context,
+            &mut [&b"document"[..]],
+            |_, _| Ok::<_, ()>(false),
+            |input| {
+                calls.set(calls.get() + 1);
+                assert!(!input.info.has_faults());
+                Ok::<_, ProfileFailure<()>>(())
+            },
+        )
+        .unwrap();
+    assert!(accepted.evidence().is_some());
+    assert_eq!(calls.get(), 1);
+    assert_eq!(provider.raw_starts.get(), 1);
+    assert_eq!(provider.raw_finishes.get(), 1);
+    failures
+}
+
+fn refuse_profile(
+    token: &structured_cms::timestamp::Token<'_>,
+    parent: &Reader<'_>,
+    context: &structured_cms::timestamp::CheckContext<'_, '_>,
+    provider: &Oracle,
+    source: structured_cms::timestamp::ProfileSource,
+) -> ProfileRefusal {
+    // No provider, covered Source or recognizer side effect may follow refusal.
+    use structured_cms::timestamp::{ProfileCheckError, ProfileFailure, ProfileSource};
+    struct Untouched;
+    impl structured_cms::stream::Source for Untouched {
+        type Error = ();
+        fn stream<W: Work>(
+            &mut self,
+            _: &mut impl structured_cms::stream::Receiver,
+            _: &W,
+        ) -> Result<(), ()> {
+            panic!("profile refusal read covered content")
+        }
+    }
+    let calls = Cell::new(0);
+    let answer = token.check_with_profile(
+        provider,
+        parent,
+        context,
+        &mut Untouched,
+        |_, _| -> Result<bool, ()> { panic!("profile refusal invoked recognizer") },
+        |input| {
+            calls.set(calls.get() + 1);
+            assert!(!input.info.has_faults());
+            assert!(input.ess.v2().is_some());
+            assert!(core::ptr::eq(input.parent.parser(), parent.parser()));
+            let digest = input.token.signer().digest_algorithm();
+            input
+                .parent
+                .execution()
+                .charge_work(SHA512.len() as u64)
+                .unwrap();
+            assert_eq!(digest.algorithm().as_bytes(), SHA512);
+            digest
+                .parameters_reader_in(input.parent, "profile.outer")
+                .unwrap();
+            let span = if source == ProfileSource::Envelope {
+                input.token.message().span()
+            } else {
+                input.info.span()
+            };
+            Err(ProfileFailure {
+                source,
+                cause: span,
+            })
+        },
+    );
+    let Err(ProfileCheckError::Profile {
+        source: refusal,
+        context: information,
+    }) = answer
+    else {
+        panic!("profile refusal lost its distinct cause/context")
+    };
+    assert_eq!(refusal.source, source);
+    let physical = if source == ProfileSource::Envelope {
+        assert_eq!(refusal.cause, token.message().span());
+        refusal.cause.start
+    } else {
+        assert_eq!(refusal.cause.start, 0);
+        assert_eq!(
+            information.coordinates(),
+            structured_cms::content_source::Coordinates::Logical
+        );
+        token.message().content().content().unwrap().pieces()[0]
+            .span()
+            .start
+    };
+    assert_eq!(calls.get(), 1);
+    assert_eq!(provider.digest_resolutions.get(), 0);
+    assert_eq!(provider.digest_starts.get(), 0);
+    assert_eq!(provider.raw_starts.get(), 0);
+    assert_eq!(provider.raw_finishes.get(), 0);
+    (
+        ProfileCheckError::Profile {
+            source: refusal,
+            context: information,
+        },
+        physical,
+    )
+}
+
+#[test]
 fn readable_timestamp_tail_stays_nonconforming_before_crypto_and_evidence() {
     // This CMS signature authenticates the actual malformed carried bytes.
     // Readable recovery must not authorize crypto work or successful evidence.
@@ -977,6 +1162,7 @@ fn nested_timestamp_check_preserves_physical_evidence_and_error_frames() {
     ));
     for malformed in [false, true] {
         let memory = Memory::new(Arc::new(MemoryAccount::new(1_000_000, 10_000_000)));
+        let mut profiles = None;
         let result = {
             let (bytes, certificate_bytes) = timestamp_fixture(&signing, true, malformed);
             let date = bytes
@@ -1019,6 +1205,14 @@ fn nested_timestamp_check_preserves_physical_evidence_and_error_frames() {
                     window: None,
                 };
                 assert_mapped_session_preflight(&token, &provider, map, &context);
+                if !malformed {
+                    profiles = Some(mapped_profile_refusals(
+                        &token,
+                        &provider,
+                        (&producing, map),
+                        &context,
+                    ));
+                }
                 token
                     .check_mapped(
                         &provider,
@@ -1032,8 +1226,94 @@ fn nested_timestamp_check_preserves_physical_evidence_and_error_frames() {
             })
         };
         assert_nested_result(result, malformed, &memory);
+        if let Some(profiles) = profiles {
+            assert!(memory.used() > 0);
+            for failure in profiles {
+                assert_mapped_profile(failure, &memory);
+            }
+        }
         assert_eq!(memory.used(), 0);
     }
+}
+
+type MappedProfileRefusal = (
+    structured_cms::timestamp::MappedProfileCheckError<
+        structured_cms::stream::RangesError,
+        Failure,
+        (),
+        structured_asn1::Span,
+    >,
+    u64,
+);
+
+fn mapped_profile_refusals(
+    token: &structured_cms::timestamp::Token<'_>,
+    provider: &Oracle,
+    source: (&Reader<'_>, &structured_cms::content_source::SourceMap),
+    context: &structured_cms::timestamp::CheckContext<'_, '_>,
+) -> [MappedProfileRefusal; 2] {
+    // The exact same outer and inner joins serve profile inspection and the
+    // ordinary successful execution. Profile refusal must not start crypto.
+    use structured_cms::timestamp::{ProfileFailure, ProfileSource};
+    [ProfileSource::Envelope, ProfileSource::Information].map(|role| {
+        let physical = Cell::new(0);
+        let answer = token.check_mapped_with_profile(
+            provider,
+            source,
+            context,
+            &mut [&b"document"[..]],
+            |_, _| -> Result<bool, ()> { panic!("profile refusal invoked recognizer") },
+            |input| {
+                assert!(input.envelope.is_some());
+                let span = if role == ProfileSource::Envelope {
+                    input.token.message().span()
+                } else {
+                    input.info.span()
+                };
+                let (map, execution) = if role == ProfileSource::Envelope {
+                    (input.envelope.unwrap(), input.parent.execution())
+                } else {
+                    (input.source, input.reader.execution())
+                };
+                physical.set(map.project_offset(span.start, &execution).unwrap());
+                Err(ProfileFailure {
+                    source: role,
+                    cause: span,
+                })
+            },
+        );
+        assert_eq!(provider.digest_resolutions.get(), 0);
+        assert_eq!(provider.raw_starts.get(), 0);
+        let Err(failure) = answer else {
+            panic!("profile refusal produced checked facts")
+        };
+        (failure, physical.get())
+    })
+}
+
+fn assert_mapped_profile((failure, expected): MappedProfileRefusal, memory: &Memory) {
+    // All parsers, source joins and the token have dropped. The two retained
+    // maps must still project their own domain to original physical fragments.
+    use structured_cms::timestamp::{MappedProfileCheckError, ProfileCheckError, ProfileSource};
+    let MappedProfileCheckError::Execution { envelope, source } = failure else {
+        panic!("mapped profile refusal lost the outer frame")
+    };
+    let ProfileCheckError::Profile { source, context } = source else {
+        panic!("mapped profile refusal changed its cause")
+    };
+    let map = if source.source == ProfileSource::Envelope {
+        envelope
+    } else {
+        context
+    };
+    assert_eq!(
+        map.coordinates(),
+        structured_cms::content_source::Coordinates::Logical
+    );
+    let physical = map.project_offset(source.cause.start, memory).unwrap();
+    assert_eq!(physical, expected);
+    assert!(physical > 2000);
+    assert_ne!(physical, source.cause.start);
 }
 
 fn assert_mapped_session_preflight(
@@ -1066,6 +1346,27 @@ fn assert_mapped_session_preflight(
         error.code(),
         structured_cms::ErrorCode::Pkix(structured_pkix::ErrorCode::ForeignReader)
     );
+    let profile = token.check_mapped_with_profile(
+        provider,
+        (&foreign, map),
+        context,
+        &mut [&b"document"[..]],
+        |_, _| Ok::<_, ()>(false),
+        |_| -> Result<(), structured_cms::timestamp::ProfileFailure<()>> {
+            panic!("foreign session invoked profile")
+        },
+    );
+    let Err(structured_cms::timestamp::MappedProfileCheckError::Preflight(
+        structured_cms::timestamp::CheckError::Processing(error),
+    )) = profile
+    else {
+        panic!("profile route admitted a foreign session")
+    };
+    assert_eq!(
+        error.code(),
+        structured_cms::ErrorCode::Pkix(structured_pkix::ErrorCode::ForeignReader)
+    );
+    assert_eq!(memory.work_used(), before);
     assert_eq!(provider.digest_resolutions.get(), 0);
     assert_eq!(memory.used(), 0);
 }

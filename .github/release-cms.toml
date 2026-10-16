@@ -13,3 +13,8 @@ release = false
 [[package]]
 name = "structured-pkix"
 release = false
+
+# Never expose a later package to the CMS bootstrap credential.
+[[package]]
+name = "structured-xades"
+release = false

@@ -92,6 +92,125 @@ impl<'a> IssuerSerial<'a> {
     pub fn span(&self) -> Span {
         self.element.span()
     }
+
+    fn matches_with<'c, 'p>(
+        &self,
+        certificate: &structured_pkix::Certificate<'c>,
+        parent: &'p Reader<'_>,
+        prepared: &mut Option<structured_pkix::Ordered<'c, structured_asn1::memory::Execution<'p>>>,
+        field: &'static str,
+        metadata_at: u64,
+    ) -> Result<IssuerAgreement> {
+        let execution = parent.execution();
+        execution
+            .charge_work(1)
+            .map_err(|reason| Error::resource(reason, field, metadata_at))?;
+        let at = self.element.span().start;
+        let serial = self.serial.as_bytes();
+        let actual = certificate.tbs().serial().as_bytes();
+        execution
+            .charge_work(1 + serial.len().max(actual.len()) as u64)
+            .map_err(|reason| Error::resource(reason, field, at))?;
+        if serial != actual {
+            return Ok(IssuerAgreement::Differs);
+        }
+        for name in &self.names {
+            execution
+                .charge_work(1)
+                .map_err(|reason| Error::resource(reason, field, at))?;
+            if let GeneralName::Directory(name) = name {
+                let actual = match &*prepared {
+                    Some(actual) => actual,
+                    None => prepared.insert(
+                        certificate
+                            .tbs()
+                            .issuer()
+                            .ordered_in(parent)
+                            .map_err(Error::pkix)?,
+                    ),
+                };
+                let asked = name.ordered_in(parent).map_err(Error::pkix)?;
+                if asked.order(actual, &execution).map_err(Error::pkix)?
+                    == core::cmp::Ordering::Equal
+                {
+                    return Ok(IssuerAgreement::Matches);
+                }
+            }
+        }
+        Ok(IssuerAgreement::Differs)
+    }
+}
+
+/// Original standalone ESS issuer hint and independently retained diagnostics.
+///
+/// This reads the `IssuerSerial` type referenced by RFC5035 §4 and by
+/// `SigningCertificateV2/IssuerSerialV2` in ETSI EN319132-1 §5.2.2. It shares
+/// the signing-certificate reader's kernel. A readable value with faults is
+/// inspection data, not a conforming issuer assertion or certificate proof.
+/// <https://www.rfc-editor.org/rfc/rfc5035#section-4>
+#[derive(Debug)]
+pub struct IssuerSerialReading<'a> {
+    field: &'static str,
+    value: IssuerSerial<'a>,
+    faults: OwnedVec<Error>,
+}
+
+impl<'a> IssuerSerialReading<'a> {
+    /// Reads the original element using its producing reader and current budget.
+    ///
+    /// `field` identifies the original enclosing protocol field. No replacement
+    /// parser, manufactured signing-certificate container or re-encoding is
+    /// needed. Syntax that cannot produce a reading and resource/processing
+    /// refusals are errors; readable cardinality/trailing violations remain
+    /// located faults. Every fault must be considered before acceptance.
+    pub fn read(parent: &Reader<'a>, element: &Element<'a>, field: &'static str) -> Result<Self> {
+        let mut faults = parent.execution().vector();
+        let value = read_issuer_serial(parent, element, field, &mut faults)?;
+        Ok(Self {
+            field,
+            value,
+            faults: faults.into_owned(),
+        })
+    }
+
+    /// Original parsed issuer hint; obtaining it performs no new traversal.
+    #[must_use]
+    pub fn value(&self) -> &IssuerSerial<'a> {
+        &self.value
+    }
+
+    /// All original diagnostics, distinct from resource/processing failures.
+    #[must_use]
+    pub fn faults(&self) -> &[Error] {
+        &self.faults
+    }
+
+    /// Compares the original standalone hint through the existing ESS core.
+    /// The current query funds comparison; original Name sources retain their
+    /// lazy-decoding limits. It need not be the earlier hint/certificate session.
+    /// Original diagnostics, digest/key binding, path and trust stay separate.
+    pub fn matches_certificate(
+        &self,
+        certificate: &structured_pkix::Certificate<'_>,
+        parent: &Reader<'_>,
+    ) -> Result<IssuerAgreement> {
+        self.value.matches_with(
+            certificate,
+            parent,
+            &mut None,
+            self.field,
+            self.value.element.span().start,
+        )
+    }
+
+    /// Moves the original view and diagnostic ownership without copying storage.
+    ///
+    /// The borrowed hint keeps its source lifetime; diagnostics independently
+    /// retain their allocation charge until freed, even after the parser drops.
+    #[must_use]
+    pub fn into_parts(self) -> (IssuerSerial<'a>, OwnedVec<Error>) {
+        (self.value, self.faults)
+    }
 }
 
 /// One readable certificate identifier; hash verification is a separate step.
@@ -147,49 +266,23 @@ impl<'a> CertificateId<'a> {
         parent: &'p Reader<'_>,
         prepared: &mut Option<structured_pkix::Ordered<'c, structured_asn1::memory::Execution<'p>>>,
     ) -> Result<IssuerAgreement> {
-        let execution = parent.execution();
-        let field = self.field;
-        execution
+        if let IssuerReading::Present(issuer) = &self.issuer {
+            return issuer.matches_with(
+                certificate,
+                parent,
+                prepared,
+                self.field,
+                self.element.span().start,
+            );
+        }
+        parent
+            .execution()
             .charge_work(1)
-            .map_err(|reason| Error::resource(reason, field, self.element.span().start))?;
-        let issuer = match &self.issuer {
-            IssuerReading::Absent => return Ok(IssuerAgreement::Unstated),
-            IssuerReading::Unreadable(_) => return Ok(IssuerAgreement::Unreadable),
-            IssuerReading::Present(issuer) => issuer,
-        };
-        let at = issuer.element.span().start;
-        let serial = issuer.serial.as_bytes();
-        let actual = certificate.tbs().serial().as_bytes();
-        execution
-            .charge_work(1 + serial.len().max(actual.len()) as u64)
-            .map_err(|reason| Error::resource(reason, field, at))?;
-        if serial != actual {
-            return Ok(IssuerAgreement::Differs);
-        }
-        for name in &issuer.names {
-            execution
-                .charge_work(1)
-                .map_err(|reason| Error::resource(reason, field, at))?;
-            if let GeneralName::Directory(name) = name {
-                let actual = match &*prepared {
-                    Some(actual) => actual,
-                    None => prepared.insert(
-                        certificate
-                            .tbs()
-                            .issuer()
-                            .ordered_in(parent)
-                            .map_err(Error::pkix)?,
-                    ),
-                };
-                let asked = name.ordered_in(parent).map_err(Error::pkix)?;
-                if asked.order(actual, &execution).map_err(Error::pkix)?
-                    == core::cmp::Ordering::Equal
-                {
-                    return Ok(IssuerAgreement::Matches);
-                }
-            }
-        }
-        Ok(IssuerAgreement::Differs)
+            .map_err(|reason| Error::resource(reason, self.field, self.element.span().start))?;
+        Ok(match self.issuer {
+            IssuerReading::Absent => IssuerAgreement::Unstated,
+            _ => IssuerAgreement::Unreadable,
+        })
     }
 }
 

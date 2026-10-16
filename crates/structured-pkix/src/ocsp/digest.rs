@@ -1,6 +1,7 @@
 //! Provider-injected digest matching without materializing a second output.
 
 use super::CertId;
+use super::ResponderId;
 use crate::AlgorithmIdentifier;
 use crate::Certificate;
 use crate::error::{CallbackError, CallbackResult, Error};
@@ -63,6 +64,75 @@ pub enum CertMatch {
     MalformedHashWidth,
     /// The consumer does not support the encoded hash algorithm/parameters.
     UnsupportedHash,
+}
+
+/// Responder identity alone, without signature, authority or status acceptance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponderMatch {
+    /// Subject Name or imposed SHA-1 public-key hash identifies this certificate.
+    Matches,
+    /// Completed name or complete digest comparison differs.
+    Differs,
+    /// Written hash or provider-advertised SHA-1 width contradicts twenty octets.
+    MalformedHashWidth,
+    /// Protocol-imposed SHA-1 is unsupported by the selected provider/policy.
+    UnsupportedHash,
+}
+
+impl ResponderId<'_> {
+    /// Compare an original responder selector with the actual signer certificate.
+    /// RFC6960 §4.2.1 hashes subjectPublicKey contents with SHA-1, excluding
+    /// BIT STRING tag, length and unused-bits count. Name comparison reuses the
+    /// shared PKIX Name kernel. No signature recheck or standing-key fabrication.
+    /// <https://www.rfc-editor.org/rfc/rfc6960#section-4.2.1>
+    ///
+    /// `field` and `at` identify the real enclosing selector in the caller's
+    /// source; callbacks preserve their own original processing/resource cause.
+    pub fn matches_certificate<D: Digest<E>, E: Work>(
+        &self,
+        certificate: &Certificate<'_>,
+        digest: &D,
+        execution: &E,
+        field: &'static str,
+        at: u64,
+    ) -> CallbackResult<ResponderMatch, D::Error> {
+        let charge = |work| {
+            execution
+                .charge_work(work)
+                .map_err(|reason| Error::resource(reason, field, at))
+        };
+        charge(1)?;
+        let same = match self {
+            Self::Name(name) => name.matches(certificate.tbs().subject(), execution)?,
+            Self::KeyHash(expected) => {
+                if expected.len() != 20 {
+                    return Ok(ResponderMatch::MalformedHashWidth);
+                }
+                let Some(resolved) = digest
+                    .resolve(DigestAlgorithm::Sha1, execution)
+                    .map_err(CallbackError::Callback)?
+                else {
+                    return Ok(ResponderMatch::UnsupportedHash);
+                };
+                if resolved.width.get() != 20 {
+                    return Ok(ResponderMatch::MalformedHashWidth);
+                }
+                digest
+                    .matches(
+                        resolved.handle,
+                        certificate.tbs().public_key().key().as_bytes(),
+                        expected,
+                        execution,
+                    )
+                    .map_err(CallbackError::Callback)?
+            }
+        };
+        Ok(if same {
+            ResponderMatch::Matches
+        } else {
+            ResponderMatch::Differs
+        })
+    }
 }
 
 impl CertId<'_> {

@@ -31,9 +31,13 @@ mod signature;
 pub use authority::{AuthorityError, AuthorityFacts, AuthoritySource, TsaIdentity, TsaUsage};
 pub use signature::{SignatureError, TokenSignature};
 mod check;
+mod profile;
 pub use check::{
     CheckContext, CheckError, CheckedTimestamp, Evidence, EvidenceCopyError, InfoCheckError,
     MappedCheckError, Requested,
+};
+pub use profile::{
+    MappedProfileCheckError, ProfileCheckError, ProfileFailure, ProfileInput, ProfileSource,
 };
 mod retained;
 pub use retained::{RetainedFacts, RetainedImprint};

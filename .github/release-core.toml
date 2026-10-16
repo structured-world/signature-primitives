@@ -6,3 +6,8 @@ git_release_enable = true
 [[package]]
 name = "structured-cms"
 release = false
+
+# XAdES needs its own first-publication configuration.
+[[package]]
+name = "structured-xades"
+release = false

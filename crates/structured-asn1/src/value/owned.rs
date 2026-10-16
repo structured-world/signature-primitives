@@ -26,7 +26,16 @@ impl OwnedOid {
     /// Returns `MalformedOid` at the offending text offset, or a distinct
     /// resource error before unfunded conversion/allocation.
     pub fn parse(text: &str, execution: &Memory) -> Result<Self> {
-        let work = (text.len() as u64)
+        Self::parse_in(text, execution)
+    }
+
+    /// Parses using the current operation's work and storage admission.
+    /// The returned allocation retains its original account, not a borrowed
+    /// parser/execution scope. Grammar and conversion share [`Self::parse`]'s
+    /// kernel; aggregate and local refusal remain distinct resource errors.
+    pub fn parse_in<W: Work>(text: &str, execution: &W) -> Result<Self> {
+        let work = u64::try_from(text.len())
+            .map_err(|_| Error::resource(MemoryError::WorkExceeded, 0))?
             .checked_mul(4)
             .and_then(|work| work.checked_add(1))
             .ok_or_else(|| Error::resource(MemoryError::WorkExceeded, 0))?;
@@ -66,7 +75,9 @@ impl OwnedOid {
             }
             offset += component.len() as u64 + 1;
         }
-        Ok(Self { bytes })
+        Ok(Self {
+            bytes: bytes.into_owned(),
+        })
     }
 
     /// Copies an already validated identifier into the supplied storage domain.
@@ -139,7 +150,7 @@ fn validate(text: &str) -> Result<u8> {
     Ok(root)
 }
 
-fn admit(groups: &OwnedVec<u8>, execution: &Memory, offset: u64) -> Result<()> {
+fn admit<W: Work>(groups: &OwnedVec<u8, W>, execution: &W, offset: u64) -> Result<()> {
     let work = (groups.len() as u64)
         .checked_mul(3)
         .and_then(|work| work.checked_add(1))
@@ -149,7 +160,12 @@ fn admit(groups: &OwnedVec<u8>, execution: &Memory, offset: u64) -> Result<()> {
         .map_err(|reason| Error::resource(reason, offset))
 }
 
-fn multiply(groups: &mut OwnedVec<u8>, digit: u8, execution: &Memory, offset: u64) -> Result<()> {
+fn multiply<W: Work>(
+    groups: &mut OwnedVec<u8, W>,
+    digit: u8,
+    execution: &W,
+    offset: u64,
+) -> Result<()> {
     admit(groups, execution, offset)?;
     let mut carry = u16::from(digit);
     for group in &mut **groups {
@@ -166,7 +182,12 @@ fn multiply(groups: &mut OwnedVec<u8>, digit: u8, execution: &Memory, offset: u6
     Ok(())
 }
 
-fn add_root(groups: &mut OwnedVec<u8>, root: u8, execution: &Memory, offset: u64) -> Result<()> {
+fn add_root<W: Work>(
+    groups: &mut OwnedVec<u8, W>,
+    root: u8,
+    execution: &W,
+    offset: u64,
+) -> Result<()> {
     admit(groups, execution, offset)?;
     let mut carry = u16::from(root);
     for group in &mut **groups {
@@ -193,6 +214,44 @@ mod tests {
 
     fn memory(storage: usize, work: usize) -> Memory {
         Memory::new(Arc::new(MemoryAccount::new(storage, work)))
+    }
+
+    #[test]
+    fn decimal_conversion_uses_current_local_work_and_retains_only_its_allocation() {
+        // Wide decimal conversion must not escape a producing local ceiling
+        // through Memory. Returning the owner cannot retain the borrowed Reader.
+        use crate::{Encoding, Limits, Parser};
+        let account = memory(4096, 1_000_000);
+        let text = "2.1844674407370955161618446744073709551616";
+        {
+            let parser = Parser::new(
+                Encoding::Der,
+                Limits {
+                    max_work: 350,
+                    ..Limits::default()
+                },
+                account.clone(),
+            );
+            let reader = parser.read(&[], 700).unwrap();
+            let error = OwnedOid::parse_in(text, &reader.execution()).unwrap_err();
+            assert_eq!(error.code(), ErrorCode::LimitExceeded(crate::Limit::Work));
+            assert_eq!(account.used(), 0);
+        }
+        let value = {
+            let parser = Parser::der(account.clone());
+            let reader = parser.read(&[], 700).unwrap();
+            OwnedOid::parse_in(text, &reader.execution()).unwrap()
+        };
+        assert_eq!(account.used(), value.bytes.capacity());
+        assert!(account.used() > 0);
+        let aggregate = memory(4096, 350);
+        let parser = Parser::der(aggregate.clone());
+        let reader = parser.read(&[], 900).unwrap();
+        let error = OwnedOid::parse_in(text, &reader.execution()).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::LimitExceeded(crate::Limit::Work));
+        assert_eq!(aggregate.used(), 0);
+        drop(value);
+        assert_eq!(account.used(), 0);
     }
 
     #[test]

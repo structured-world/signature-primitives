@@ -16,6 +16,9 @@ use crate::temporal::Instant;
 use core::fmt;
 use structured_asn1::{Element, Reader, Tag, universal};
 
+mod xsd10;
+pub use xsd10::Xsd10Label;
+
 /// UTC-qualified relation of a source label to the caller's lossless reading.
 /// This is a temporal fact, not a rule for application acceptance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,11 +110,89 @@ pub struct Time {
     form: Form,
 }
 
+/// Gregorian calendar components of a labelled time, not an elapsed-time proof.
+/// The year uses astronomical numbering (zero denotes 1 BCE); callers of other
+/// calendar contracts must apply their own specified year-numbering convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Calendar {
+    /// Signed astronomical Gregorian year.
+    pub year: i64,
+    /// Month, one through twelve.
+    pub month: u8,
+    /// Day within the month.
+    pub day: u8,
+    /// Hour, zero through twenty-three.
+    pub hour: u8,
+    /// Minute, zero through fifty-nine.
+    pub minute: u8,
+    /// Labelled second, including sixty for an inserted second.
+    pub second: u8,
+    /// Fractional nanoseconds retained by this `Time` value.
+    pub nanos: u32,
+}
+
 /// The moment `99991231235959Z` names, which the profile uses to say that a
 /// certificate has no well defined expiry rather than that it expires then.
 pub const NO_WELL_DEFINED_EXPIRY: i64 = 253_402_300_799;
 
 impl Time {
+    /// Project the original UTC label into XSD1.0 year numbering.
+    /// This retains second sixty; [`Xsd10Label::at_utc`] performs the separate
+    /// XSD value normalization. It does not change this time's UTC identity.
+    pub fn xsd10_label<W: structured_asn1::memory::Work>(
+        self,
+        execution: &W,
+    ) -> core::result::Result<Xsd10Label, structured_asn1::memory::MemoryError> {
+        let calendar = self.calendar_at_minutes(0, execution)?;
+        Ok(Xsd10Label {
+            year: if calendar.year <= 0 {
+                calendar.year - 1
+            } else {
+                calendar.year
+            },
+            month: calendar.month,
+            day: calendar.day,
+            hour: calendar.hour,
+            minute: calendar.minute,
+            second: calendar.second,
+            nanos: calendar.nanos,
+        })
+    }
+
+    /// Project the original label at a signed calendar offset.
+    /// Offset minutes need not describe a valid wire timezone; this also permits
+    /// inspecting the previous local date of a midnight label without a second
+    /// calendar implementation. No UTC correction history is inferred.
+    /// The same inverse Gregorian core serves [`Self`]'s text rendering.
+    ///
+    /// # Panics
+    /// Only if that private Gregorian core violates its bounded component
+    /// invariants; parsed time labels and any i16-minute offset preserve them.
+    pub fn calendar_at_minutes<W: structured_asn1::memory::Work>(
+        self,
+        minutes: i16,
+        execution: &W,
+    ) -> core::result::Result<Calendar, structured_asn1::memory::MemoryError> {
+        execution.charge_work(64)?;
+        // Parsed Time years are 0000..9999. The complete i16-minute offset
+        // changes this bounded label by less than 23 days, so no i64 overflow.
+        let (year, month, day, hour, minute, second) =
+            civil_from_seconds(self.seconds() + i64::from(minutes) * 60);
+        Ok(Calendar {
+            year,
+            month: u8::try_from(month).expect("Gregorian month"),
+            day: u8::try_from(day).expect("Gregorian day"),
+            hour: u8::try_from(hour).expect("Gregorian hour"),
+            minute: u8::try_from(minute).expect("Gregorian minute"),
+            second: if self.is_leap_second() {
+                60
+            } else {
+                u8::try_from(second).expect("Gregorian second")
+            },
+            nanos: self.instant.nanos(),
+        })
+    }
+
     /// POSIX label, negative before the epoch. For an inserted second this
     /// is the preceding ordinary second's label. Use [`Self::instant`] for
     /// comparisons and [`crate::temporal::LeapTable`] for elapsed arithmetic.

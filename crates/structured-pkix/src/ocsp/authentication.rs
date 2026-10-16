@@ -1,6 +1,7 @@
 //! Actual signer binding and response signature authentication.
 
-use super::{BasicResponse, Digest, DigestAlgorithm, ResponderId};
+use super::{BasicResponse, Digest, ResponderMatch};
+use crate::error::CallbackError;
 use crate::path::{Verified, Verify, WorkingKey};
 use crate::{Certificate, Error};
 use core::fmt;
@@ -132,37 +133,28 @@ impl<'a> BasicResponse<'a> {
                 SignatureFailure::KeyBinding,
             ));
         }
-        let matches = match &self.responder {
-            ResponderId::Name(name) => name.matches(signer.tbs().subject(), execution)?,
-            ResponderId::KeyHash(expected) => {
-                charge(1)?;
-                let Some(resolved) = digest
-                    .resolve(DigestAlgorithm::Sha1, execution)
-                    .map_err(SignatureError::Digest)?
-                else {
-                    return Ok(SignatureAuthentication::UnsupportedDigest);
-                };
-                // RFC6960 §4.2.2.2 imposes SHA-1 and exactly 20 bytes here.
-                // Never hash malformed width or substitute a signature hash.
-                if resolved.width.get() != 20 || expected.len() != 20 {
-                    return Ok(SignatureAuthentication::Rejected(
-                        SignatureFailure::DigestWidth,
-                    ));
-                }
-                digest
-                    .matches(
-                        resolved.handle,
-                        key.key().key().as_bytes(),
-                        expected,
-                        execution,
-                    )
-                    .map_err(SignatureError::Digest)?
+        let identity = self
+            .responder
+            .matches_certificate(signer, digest, execution, FIELD, self.span.start)
+            .map_err(|cause| match cause {
+                CallbackError::Processing(cause) => SignatureError::Processing(cause),
+                CallbackError::Callback(cause) => SignatureError::Digest(cause),
+            })?;
+        match identity {
+            ResponderMatch::Matches => {}
+            ResponderMatch::Differs => {
+                return Ok(SignatureAuthentication::Rejected(
+                    SignatureFailure::ResponderIdentity,
+                ));
             }
-        };
-        if !matches {
-            return Ok(SignatureAuthentication::Rejected(
-                SignatureFailure::ResponderIdentity,
-            ));
+            ResponderMatch::MalformedHashWidth => {
+                return Ok(SignatureAuthentication::Rejected(
+                    SignatureFailure::DigestWidth,
+                ));
+            }
+            ResponderMatch::UnsupportedHash => {
+                return Ok(SignatureAuthentication::UnsupportedDigest);
+            }
         }
         charge(1)?;
         match verifier
@@ -184,6 +176,7 @@ impl<'a> BasicResponse<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::DigestAlgorithm;
     use super::*;
     use crate::fixtures::{CertificateParts, bits, context, extension, octets, seq, tlv};
     use core::{cell::Cell, num::NonZeroUsize};
@@ -246,6 +239,58 @@ mod tests {
             assert_eq!(signed, self.signed);
             Ok(self.signature_answer)
         }
+    }
+
+    #[test]
+    fn responder_identity_query_reuses_original_key_bits_without_signature_or_output_copy() {
+        // XAdES byKey identifiers need the same RFC6960 identity check outside
+        // signature authentication. A malformed width cannot call the provider,
+        // and current query refusal remains located processing failure.
+        use crate::error::CallbackError;
+        use crate::ocsp::{ResponderId, ResponderMatch};
+        let bytes = CertificateParts::default().build();
+        let memory = crate::fixtures::memory();
+        let parser = Parser::der(memory.clone());
+        let certificate = Certificate::read(&parser, &bytes, 100).unwrap();
+        let mut provider = Provider {
+            key: certificate.tbs().public_key().key().as_bytes(),
+            signed: &[],
+            hashes: Cell::new(0),
+            signatures: Cell::new(0),
+            width: 20,
+            digest_answer: Some(true),
+            signature_answer: Verified::Yes,
+            failure: false,
+        };
+        let selector = ResponderId::KeyHash(&[0x33; 20]);
+        let held = memory.used();
+        assert_eq!(
+            selector
+                .matches_certificate(&certificate, &provider, &memory, "original.byKey", 900)
+                .unwrap(),
+            ResponderMatch::Matches
+        );
+        assert_eq!((provider.hashes.get(), provider.signatures.get()), (1, 0));
+        assert_eq!(memory.used(), held);
+        provider.failure = true;
+        assert_eq!(
+            ResponderId::KeyHash(&[0x33; 19])
+                .matches_certificate(&certificate, &provider, &memory, "original.byKey", 900)
+                .unwrap(),
+            ResponderMatch::MalformedHashWidth
+        );
+        assert!(matches!(
+            selector.matches_certificate(&certificate, &provider, &memory, "original.byKey", 900),
+            Err(CallbackError::Callback("digest refusal"))
+        ));
+        let stopped = Memory::new(alloc::sync::Arc::new(
+            structured_asn1::memory::MemoryAccount::new(0, 0),
+        ));
+        assert!(
+            matches!(selector.matches_certificate(&certificate,&provider,&stopped,"original.byKey",900),Err(CallbackError::Processing(error)) if error.is_resource() && error.offset()==900)
+        );
+        assert_eq!((provider.hashes.get(), provider.signatures.get()), (1, 0));
+        assert_eq!(memory.used(), held);
     }
 
     #[test]

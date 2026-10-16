@@ -140,3 +140,174 @@ fn original_local_budget_refuses_catalogue_growth_before_success() {
     assert_eq!(memory.used(), 0);
     assert!(memory.work_used() <= 40);
 }
+
+#[test]
+fn revocation_query_retains_original_window_depth_and_current_execution() {
+    // A query from another document funds the original CMS choice, without a
+    // new parser, copied bytes or a fabricated depth-zero revocation document.
+    let encoded = message(1, oid::DATA.as_bytes(), &tlv(0xa1, &[0x30, 0]), &[]);
+    let origin_memory = memory();
+    let parser = Parser::ber(origin_memory.clone());
+    let value = SignedData::read(&parser, &encoded, 400).unwrap();
+    let current = memory();
+    let operation = Parser::ber(current.clone());
+    let query = operation.read(&[], 900).unwrap();
+    let before = origin_memory.work_used();
+    let mut reader = value.revocation_reader_in(&query, 0).unwrap().unwrap();
+    assert_eq!(reader.depth(), 4);
+    assert!(core::ptr::eq(reader.parser(), &raw const parser));
+    assert!(reader.memory().same_account(&current));
+    let entry = reader.next_element().unwrap().unwrap();
+    assert_eq!(entry.span(), value.revocations()[0].span());
+    assert_eq!(
+        entry.as_bytes().as_ptr(),
+        value.revocations()[0].as_bytes().as_ptr()
+    );
+    assert!(reader.is_empty());
+    assert_eq!(origin_memory.work_used(), before);
+    assert!(current.work_used() > 0);
+    assert!(value.revocation_reader_in(&query, 1).unwrap().is_none());
+}
+
+#[test]
+fn revocation_query_enforces_current_depth_and_local_work_before_use() {
+    // Original catalogue admission is not credit for a later operation, even
+    // when its aggregate account still has enough capacity and work.
+    let encoded = message(1, oid::DATA.as_bytes(), &tlv(0xa1, &[0x30, 0]), &[]);
+    let parser = Parser::ber(memory());
+    let value = SignedData::read(&parser, &encoded, 400).unwrap();
+    for limits in [
+        Limits {
+            max_depth: 3,
+            ..Limits::default()
+        },
+        Limits {
+            max_work: 0,
+            ..Limits::default()
+        },
+    ] {
+        let current = memory();
+        let operation = Parser::new(Encoding::Ber, limits, current.clone());
+        let query = operation.read(&[], 900).unwrap();
+        let error = value.revocation_reader_in(&query, 0).unwrap_err();
+        assert!(error.is_terminal());
+        assert!(error.is_resource());
+        let at = if limits.max_work == 0 {
+            value.revocation_field().unwrap().start
+        } else {
+            value.revocations()[0].span().start
+        };
+        assert_eq!(error.offset(), at);
+        drop(error);
+        assert_eq!(current.used(), 0);
+    }
+}
+
+#[test]
+fn revocation_query_preserves_exhausted_origin_and_paid_absence() {
+    // A fresh external query cannot reset the already spent CMS source limit;
+    // an empty catalogue likewise cannot bypass current metadata admission.
+    let encoded = message(1, oid::DATA.as_bytes(), &tlv(0xa1, &[0x30, 0]), &[]);
+    let measure = memory();
+    let measuring_parser = Parser::ber(measure.clone());
+    drop(SignedData::read(&measuring_parser, &encoded, 400).unwrap());
+    let parser = Parser::new(
+        Encoding::Ber,
+        Limits {
+            max_work: u64::try_from(measure.work_used()).unwrap(),
+            ..Limits::default()
+        },
+        memory(),
+    );
+    let value = SignedData::read(&parser, &encoded, 400).unwrap();
+    let operation = Parser::ber(memory());
+    let query = operation.read(&[], 900).unwrap();
+    let error = value.revocation_reader_in(&query, 0).unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!(error.offset(), value.revocations()[0].span().start);
+
+    let empty = message(1, oid::DATA.as_bytes(), &[], &[]);
+    let empty_parser = Parser::ber(memory());
+    let value = SignedData::read(&empty_parser, &empty, 400).unwrap();
+    let denied = Parser::new(
+        Encoding::Ber,
+        Limits {
+            max_work: 0,
+            ..Limits::default()
+        },
+        memory(),
+    );
+    assert!(
+        value
+            .revocation_reader_in(&denied.read(&[], 0).unwrap(), 0)
+            .unwrap_err()
+            .is_resource()
+    );
+    assert!(value.revocation_reader_in(&query, 0).unwrap().is_none());
+}
+
+#[test]
+fn carried_ocsp_requires_the_whole_successful_envelope_not_a_basic_response() {
+    // RFC5940 §3 requires successful OCSPResponse + responseBytes. The shared
+    // envelope reader preserves an unknown inner response type, without trust.
+    let mut response_bytes = tlv(6, &[42]);
+    response_bytes.extend_from_slice(&tlv(4, &[7, 8]));
+    let mut response = vec![10, 1, 0];
+    response.extend_from_slice(&tlv(0xa0, &tlv(0x30, &response_bytes)));
+    for kind in [oid::OCSP_RESPONSE.as_bytes(), &[42][..]] {
+        let mut fields = tlv(6, kind);
+        fields.extend_from_slice(&tlv(0x30, &response));
+        let encoded = message(
+            5,
+            oid::DATA.as_bytes(),
+            &tlv(0xa1, &tlv(0xa1, &fields)),
+            &[],
+        );
+        let parser = Parser::ber(memory());
+        let signed = SignedData::read(&parser, &encoded, 400).unwrap();
+        let query = parser.read(&[], 900).unwrap();
+        let mut reader = signed.revocation_reader_in(&query, 0).unwrap().unwrap();
+        let entry = reader.next_element().unwrap().unwrap();
+        let other = structured_cms::signed::OtherRevocationInfo::read(&reader, &entry).unwrap();
+        assert_eq!(other.kind().as_bytes(), kind);
+        let original = other.value();
+        let payload = other.ocsp().unwrap();
+        if kind == oid::OCSP_RESPONSE.as_bytes() {
+            let payload = payload.unwrap();
+            assert_eq!(payload.payload(), &[7, 8]);
+            assert!(payload.span().start > original.span().start);
+            assert!(payload.payload().as_ptr() >= original.as_bytes().as_ptr());
+        } else {
+            assert!(payload.is_none());
+        }
+    }
+}
+
+#[test]
+fn carried_ocsp_failure_and_malformed_known_payload_are_not_opaque_absence() {
+    // An unsigned responder error cannot satisfy RFC5940's successful carried
+    // response rule; malformed known syntax must also retain a located failure.
+    for response in [vec![0x30, 3, 10, 1, 3], vec![5, 0], vec![0x30, 3, 10, 1, 0]] {
+        let mut fields = tlv(6, oid::OCSP_RESPONSE.as_bytes());
+        fields.extend_from_slice(&response);
+        let encoded = message(
+            5,
+            oid::DATA.as_bytes(),
+            &tlv(0xa1, &tlv(0xa1, &fields)),
+            &[],
+        );
+        let memory = memory();
+        let parser = Parser::ber(memory.clone());
+        let signed = SignedData::read(&parser, &encoded, 400).unwrap();
+        let query = parser.read(&[], 900).unwrap();
+        let mut reader = signed.revocation_reader_in(&query, 0).unwrap().unwrap();
+        let entry = reader.next_element().unwrap().unwrap();
+        let other = structured_cms::signed::OtherRevocationInfo::read(&reader, &entry).unwrap();
+        let at = other.value().span().start;
+        let error = other.ocsp().unwrap_err();
+        assert!(error.offset() >= at);
+        assert!(!error.is_resource());
+        drop((error, signed));
+        assert_eq!(memory.used(), 0);
+    }
+}

@@ -18,11 +18,13 @@ mod map;
 mod shared_string;
 mod sort;
 mod string;
+mod text;
 mod work;
 pub use map::{HashWork, OwnedMap, RetainError};
 pub use shared_string::SharedString;
 pub use sort::SortError;
 pub use string::OwnedString;
+pub use text::{OwnedText, TextError, TextErrorKind};
 pub use work::{Execution, Work};
 
 /// A failed storage operation, distinct from malformed input.

@@ -10,7 +10,9 @@ use allocator_api2::alloc::{AllocError, Allocator, Global, Layout};
 use super::{Memory, MemoryError, Work};
 
 mod shared;
+mod text;
 pub(super) use shared::SharedText;
+pub(super) use text::ValidatedText;
 
 /// Transfers storage from sealed work to its existing account owner.
 pub(super) fn retain<T, W: Work>(

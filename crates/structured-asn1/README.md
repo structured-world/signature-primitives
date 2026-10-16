@@ -145,6 +145,24 @@ implementation lets `OwnedMap` admit key hashing/comparison before traversal.
 Pointer/count/UTF-8 view operations remain inside the allocator's narrow unsafe
 boundary; public construction and borrowing are safe.
 
+`OwnedText::from_utf8(bytes)` closes an existing `OwnedVec<u8, W>` into
+single-owner immutable text. It admits a complete UTF-8 scan under the buffer's
+original execution and validates once; `TextError::kind` distinguishes resource
+refusal from invalid UTF-8, and `into_bytes` returns the unchanged buffer on
+failure. Success retains its pointer, capacity and original account without
+allocation or copying. `try_from_str(text, &work)` instead uses the existing
+accounted copy path for already-valid UTF-8. `into_owned` moves a scoped buffer
+into independently retained storage, with no extra copy, validation or charge.
+
+`OwnedText::as_str`, `as_bytes`, `Borrow<str>` and `Deref<Target = str>` are O(1).
+Mutable bytes are available only by consuming the text with `into_bytes`;
+subsequent reconstruction validates again. There is no reference count or
+infallible allocating clone. Memory-owned text is `Send + Sync` through the
+existing vector/account types, with no unsafe thread-safety implementation.
+As with shared text, callers fund Hash/Eq/formatting scans; `HashWork` enables
+paid borrowed map lookup. Its validated immutable UTF-8 view is confined to
+the narrowly scoped allocator boundary.
+
 The source uses allocator-api2 0.4.0 for vectors and hashbrown 0.17.1 for maps.
 Hashbrown's published allocator interface still requires allocator-api2 0.2.21;
 that interface forwards to the same account allocator. Both container families

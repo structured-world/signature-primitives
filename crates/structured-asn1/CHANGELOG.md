@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.4.0...structured-asn1-v0.4.1) - 2026-10-16
+
+### Added
+
+- *(memory)* add fallible map filtering ([#79](https://github.com/structured-world/signature-primitives/pull/79))
+
 ## [0.4.0](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.3.0...structured-asn1-v0.4.0) - 2026-10-16
 
 ### Added

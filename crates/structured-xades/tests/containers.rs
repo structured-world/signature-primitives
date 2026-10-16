@@ -6262,6 +6262,19 @@ fn certificate_catalogue_from_another_signature_is_rejected_before_provider_work
         calls: Cell::new(0),
         pointer: Cell::new(0),
     };
+    // Even a foreign catalogue cannot perform its identity comparison for free.
+    // Admission must precede ForeignCatalogue and all provider callbacks.
+    for budget in [0, 1] {
+        let current = Memory::new(Arc::new(MemoryAccount::new(0, budget)));
+        assert!(matches!(
+            certificate::check(&xml, &bound, &refs, &candidate, &provider, &current),
+            Err(certificate::CheckError::Access(AccessError::Resource {
+                node, cause: MemoryError::WorkExceeded
+            })) if node == refs.node()
+        ));
+        assert_eq!(current.used(), 0);
+        assert_eq!(provider.calls.get(), 0);
+    }
     assert!(
         matches!(certificate::check(&xml, &bound, &refs, &candidate, &provider, &memory), Err(certificate::CheckError::ForeignCatalogue { signature, .. }) if signature == other_signature)
     );

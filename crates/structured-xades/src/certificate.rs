@@ -603,13 +603,27 @@ fn bind_key<X: CertificateXml, PE, W: Work>(
     execution: &W,
 ) -> CertificateResult<KeyAssociation, X, PE> {
     let source = bound.containers();
-    if reference.snapshot != source.snapshot() || reference.signature != source.signature() {
+    if reference.snapshot != source.snapshot() {
         return Err(CheckError::ForeignCatalogue {
             signature: source.signature(),
             property: reference.node,
         });
     }
     let access = Access::new(xml, source.snapshot(), execution);
+    if !access
+        .equal_id(reference.signature, source.signature())
+        .map_err(|cause| {
+            CheckError::Access(AccessError::Resource {
+                node: reference.node,
+                cause,
+            })
+        })?
+    {
+        return Err(CheckError::ForeignCatalogue {
+            signature: source.signature(),
+            property: reference.node,
+        });
+    }
     for index in 0..reference.entries.len() {
         access
             .query(reference.node, |_, _, work| Ok(work.charge_work(1)))

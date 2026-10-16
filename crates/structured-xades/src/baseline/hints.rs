@@ -1,4 +1,4 @@
-//! One shared issuer/serial grammar across all original certificate catalogues.
+//! DER syntax checks for optional certificate retrieval hints, not binding.
 
 use super::{BasicError, Hint, HintSource, ProcessingResult};
 use crate::{
@@ -13,14 +13,16 @@ use structured_asn1::{
     memory::{OwnedVec, Work},
 };
 
-pub(super) struct Checked<N, D, G> {
+pub(super) struct EncodingChecks<N, D, G> {
     pub(super) items: OwnedVec<Hint<N, D, G>>,
-    pub(super) clean: bool,
+    pub(super) all_conformant: bool,
 }
-type ResultFor<X> =
-    ProcessingResult<Checked<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>, X>;
+type ResultFor<X> = ProcessingResult<
+    EncodingChecks<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>,
+    X,
+>;
 
-pub(super) fn check<X: BinaryXml>(
+pub(super) fn check_encodings<X: BinaryXml>(
     prepared: &Prepared<X>,
     xml: &X,
     operation: &Reader<'_>,
@@ -28,7 +30,11 @@ pub(super) fn check<X: BinaryXml>(
     let work = operation.execution();
     let signature = prepared.bound().containers().signature();
     let mut items = work.vector();
-    let mut clean = true;
+    // EN319132-1 §5.2.2 Note2 makes the digest authoritative; IssuerSerialV2
+    // is only a retrieval hint. Do not import CMS ESS's identifier-binding
+    // requirements just because that ASN.1 type supplies the common decoder.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
+    let mut all_conformant = true;
     for (index, reference) in prepared.certificates().entries().iter().enumerate() {
         let resource = |cause| BasicError::Resource {
             node: reference.node(),
@@ -49,7 +55,7 @@ pub(super) fn check<X: BinaryXml>(
         .map_err(BasicError::Hint)?
         .ok_or(BasicError::Foreign { signature })?;
         if !hint.value.is_empty() {
-            clean = false;
+            all_conformant = false;
         }
         items
             .try_push(Hint {
@@ -91,7 +97,7 @@ pub(super) fn check<X: BinaryXml>(
             .map_err(BasicError::Hint)?
             .ok_or(BasicError::Foreign { signature })?;
             if !hint.value.is_empty() {
-                clean = false;
+                all_conformant = false;
             }
             items
                 .try_push(Hint {
@@ -102,8 +108,8 @@ pub(super) fn check<X: BinaryXml>(
                 .map_err(resource)?;
         }
     }
-    Ok(Checked {
+    Ok(EncodingChecks {
         items: items.into_owned(),
-        clean,
+        all_conformant,
     })
 }

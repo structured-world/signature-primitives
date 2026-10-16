@@ -151,7 +151,7 @@ fn basic_assembly_links_original_facts_and_preserves_inclusion_digest_and_hint_f
     // or root scalar processing just to combine already checked receipts.
     use structured_xades::{baseline, certificate, hashes, pki, prepare, properties, unsigned};
     with_checked_path(|path, leaf, root, memory| {
-        for mode in 0..8 {
+        for mode in 0..9 {
             let mut xml = super::attribute_checks::fixture();
             xml.date_time = properties::DateTimeFact::Valid {
                 timezone_minutes: Some(0),
@@ -190,6 +190,25 @@ fn basic_assembly_links_original_facts_and_preserves_inclusion_digest_and_hint_f
             .unwrap();
             let parser = structured_asn1::Parser::der(memory.clone());
             let operation = parser.read(&[], 900).unwrap();
+            if mode == 8 {
+                // EN319132-1 §5.2.2 Note2: the signed digest binds the actual
+                // certificate even when a well-formed retrieval hint differs.
+                // Confirm this is a real mismatch, not an accidentally matching
+                // fixture; malformed DER remains covered by modes3/4/6.
+                let hint = certificate::with_issuer_serial(
+                    &xml,
+                    prepared.certificates(),
+                    0,
+                    &operation,
+                    |reading| {
+                        reading.matches_certificate(selected.selected().certificate(), &operation)
+                    },
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(hint.value, structured_cms::ess::IssuerAgreement::Differs);
+                assert!(selected.is_bound());
+            }
             let scalar_calls = xml.scalar_calls.get();
             let held = memory.used();
             let input = baseline::BasicInput {
@@ -203,7 +222,7 @@ fn basic_assembly_links_original_facts_and_preserves_inclusion_digest_and_hint_f
             assert!(core::ptr::eq(checked.inputs().fields, &raw const fields));
             assert_eq!(
                 checked.all_root_requirements_met(),
-                matches!(mode, 0 | 5 | 7)
+                matches!(mode, 0 | 5 | 7 | 8)
             );
             assert_eq!(checked.included().is_some(), mode != 1);
             assert_eq!(checked.inputs().certificate.is_bound(), mode != 2);
@@ -255,13 +274,16 @@ fn assert_basic_hints(
                 }
             }
         );
-    } else if mode == 5 || mode == 7 {
+    } else if mode == 5 || mode == 7 || mode == 8 {
         assert_eq!(checked.hints().len(), 1);
         assert!(checked.hints()[0].faults().is_empty());
+        if mode == 8 {
+            assert_eq!(checked.hints()[0].source(), HintSource::Protected(0));
+        }
     } else {
         assert!(checked.hints().is_empty());
     }
-    if mode >= 4 {
+    if (4..8).contains(&mode) {
         let references = &prepared.validation_references()[0];
         assert_eq!(
             references.role(),
@@ -351,6 +373,14 @@ pub(super) fn basic_binary_routes(xml: &mut Tree, leaf: &[u8], root: &[u8], mode
     if mode == 3 {
         xml.binary_routes
             .push((issuer, vec![0x30, 5, 0x30, 0, 2, 1, 7]));
+    } else if mode == 8 {
+        xml.binary_routes.push((
+            issuer,
+            vec![
+                0x30, 21, 0x30, 16, 0xa4, 14, 0x30, 12, 0x31, 10, 0x30, 8, 6, 3, 0x55, 4, 3, 0x0c,
+                1, b'z', 2, 1, 9,
+            ],
+        ));
     } else {
         xml.nodes[issuer].parent = None;
     }

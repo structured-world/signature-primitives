@@ -84,9 +84,12 @@ trust inputs and decides whether the resulting evidence meets its policy.
 4. `baseline::basic` joins the checked fields, exact signing certificate,
    effective key, counter paths and actual hash uses. Every written protected,
    ordinary and attribute certificate-reference issuer hint uses the same DER
-   reader. Located readable faults prevent a positive basic predicate; original
+   reader. Located readable encoding faults prevent a positive basic predicate; original
    catalogue ordinals remain available through `HintSource`. A hint never replaces
-   certificate digest binding.
+   certificate digest binding. As specified in §5.2.2 Note 2, optional
+   `IssuerSerialV2` contents are retrieval hints: their agreement is not an
+   additional binding requirement. The hint reports describe DER syntax,
+   rather than asserting that their issuer/serial matches a selected certificate.
 5. `baseline::timestamped` requires the complete token census and records each
    root signature timestamp's static time association.
 6. `material::check_participants` and `material::credentials::check` examine

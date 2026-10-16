@@ -46,7 +46,9 @@ pub enum HintSource {
     },
 }
 
-/// Original DER `IssuerSerialV2` hint diagnostics, retaining source and capacity.
+/// Original DER `IssuerSerialV2` syntax diagnostics, retaining source and capacity.
+/// This report does not assert hint/certificate agreement. The digest remains
+/// authoritative for binding; optional retrieval hints do not replace it.
 pub struct Hint<N, D, G> {
     location: Location<N, D, G>,
     faults: OwnedVec<structured_cms::Error>,
@@ -63,7 +65,8 @@ impl<N: Copy, D: Copy, G: Copy> Hint<N, D, G> {
     pub fn location(&self) -> Location<N, D, G> {
         self.location
     }
-    /// Complete common hint diagnostics, without cloning or discarding them.
+    /// Complete encoding/schema diagnostics, without cloning or discarding them.
+    /// An empty slice does not assert matching issuer/serial or certificate trust.
     #[must_use]
     pub fn faults(&self) -> &[structured_cms::Error] {
         &self.faults
@@ -78,7 +81,7 @@ pub struct Basic<'receipt, 'prepared, 'path, 'document, N, D, G> {
     input: BasicInput<'receipt, 'prepared, 'path, 'document, N, D, G>,
     included: Option<Location<N, D, G>>,
     hints: OwnedVec<Hint<N, D, G>>,
-    hints_clean: bool,
+    hint_encodings_conform: bool,
 }
 
 impl<'r, 'p, 'v, 'd, N: Copy, D: Copy, G: Copy> Basic<'r, 'p, 'v, 'd, N, D, G> {
@@ -93,16 +96,19 @@ impl<'r, 'p, 'v, 'd, N: Copy, D: Copy, G: Copy> Basic<'r, 'p, 'v, 'd, N, D, G> {
         self.included
     }
     /// Every present original protected/ordinary/attribute issuer hint and its
-    /// retained diagnostics. Catalogue roles remain available through its source.
+    /// retained syntax diagnostics. Catalogue roles remain available through its
+    /// source; issuer/serial agreement is not claimed by these encoding reports.
     #[must_use]
     pub fn hints(&self) -> &[Hint<N, D, G>] {
         &self.hints
     }
     /// Only the completed field/header/selected-key/digest conditions above.
+    /// Optional hints must have conforming DER syntax; their contents do not
+    /// replace the actual certificate digest binding (EN319132-1 §5.2.2 Note2).
     /// This constant-time getter does not scan attacker-sized hint catalogues.
     #[must_use]
     pub fn all_root_requirements_met(&self) -> bool {
-        self.input.certificate.is_bound() && self.included.is_some() && self.hints_clean
+        self.input.certificate.is_bound() && self.included.is_some() && self.hint_encodings_conform
     }
 }
 
@@ -180,7 +186,7 @@ pub fn basic<'r, 'p, 'v, 'd, X: BinaryXml + AttributeXml + ScalarXml>(
         &work,
     )
     .map_err(BasicError::Inclusion)?;
-    let hints = hints::check(prepared, xml, operation)?;
+    let hints = hints::check_encodings(prepared, xml, operation)?;
     access
         .query(signature, |_, _, _| Ok(()))
         .map_err(BasicError::Access)?;
@@ -188,7 +194,7 @@ pub fn basic<'r, 'p, 'v, 'd, X: BinaryXml + AttributeXml + ScalarXml>(
         input,
         included,
         hints: hints.items,
-        hints_clean: hints.clean,
+        hint_encodings_conform: hints.all_conformant,
     })
 }
 

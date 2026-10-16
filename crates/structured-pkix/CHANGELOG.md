@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.4.3...structured-pkix-v0.4.4) - 2026-10-16
+
+### Added
+
+- *(memory)* reserve validated text capacity ([#97](https://github.com/structured-world/signature-primitives/pull/97))
+- *(memory)* drain reusable accounted buffers ([#94](https://github.com/structured-world/signature-primitives/pull/94))
+- *(memory)* append validated UTF-8 text ([#92](https://github.com/structured-world/signature-primitives/pull/92))
+
 ## [0.4.3](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.4.2...structured-pkix-v0.4.3) - 2026-10-16
 
 ### Added

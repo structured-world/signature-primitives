@@ -111,6 +111,15 @@ current execution account; iteration prepays control buckets, including sparse
 holes. Rebuilding a collection in another domain requires an explicit fallible
 copy; retained allocations are never silently rebound.
 
+`OwnedMap::get_key_value_borrowed(query, &current_work)` looks up an owned key
+through its `Borrow<Q>` view and returns the canonical stored key and value.
+This avoids allocating a temporary owned query or doing a second lookup to
+recover its owner. `HashWork` is implemented for `str`; owned and borrowed forms
+must have identical Hash/Eq semantics. The stored key's work bound must also
+cover its non-allocating Borrow operation. Query hashing, control probes and
+every actual candidate comparison use current work before execution. Refusal
+is an error, never successful absence. The original account and table stay put.
+
 `OwnedMap::try_retain(&current_work, predicate)` filters in place without copying
 keys or allocating another table. It admits the sparse control scan before
 calling the predicate and erase metadata before removing an entry. The first

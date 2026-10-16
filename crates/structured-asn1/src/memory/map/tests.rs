@@ -10,6 +10,176 @@ fn memory(storage: usize, work: usize) -> Memory {
     Memory::new(Arc::new(MemoryAccount::new(storage, work)))
 }
 
+#[derive(Default)]
+struct BorrowedCounters {
+    hashes: Cell<usize>,
+    borrows: Cell<usize>,
+    equals: Cell<usize>,
+}
+
+impl BorrowedCounters {
+    fn reset(&self) {
+        self.hashes.set(0);
+        self.borrows.set(0);
+        self.equals.set(0);
+    }
+}
+
+struct BorrowedQuery<'a> {
+    value: usize,
+    calls: &'a BorrowedCounters,
+}
+
+impl Hash for BorrowedQuery<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.calls.hashes.set(self.calls.hashes.get() + 1);
+        // Deliberately collide: every stored candidate must be paid before Eq.
+        0usize.hash(state);
+    }
+}
+impl PartialEq for BorrowedQuery<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.calls.equals.set(self.calls.equals.get() + 1);
+        self.value == other.value
+    }
+}
+impl Eq for BorrowedQuery<'_> {}
+impl HashWork for BorrowedQuery<'_> {
+    fn hash_work(&self) -> Result<u64, MemoryError> {
+        Ok(1)
+    }
+}
+
+struct BorrowedKey<'a>(BorrowedQuery<'a>);
+impl<'a> core::borrow::Borrow<BorrowedQuery<'a>> for BorrowedKey<'a> {
+    fn borrow(&self) -> &BorrowedQuery<'a> {
+        self.0.calls.borrows.set(self.0.calls.borrows.get() + 1);
+        &self.0
+    }
+}
+impl Hash for BorrowedKey<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+impl PartialEq for BorrowedKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl Eq for BorrowedKey<'_> {}
+impl HashWork for BorrowedKey<'_> {
+    fn hash_work(&self) -> Result<u64, MemoryError> {
+        Ok(1)
+    }
+}
+
+#[test]
+fn borrowed_lookup_admits_hash_borrow_and_each_collision_before_side_effects() {
+    // Refusal before hashing or during a collision chain must stop before
+    // Borrow/Eq, never expose the synthetic match or retry the query hash.
+    let calls = BorrowedCounters::default();
+    let storage = memory(4096, 100_000);
+    let mut map = storage.map();
+    for value in 0..4 {
+        map.try_insert(
+            BorrowedKey(BorrowedQuery {
+                value,
+                calls: &calls,
+            }),
+            (),
+        )
+        .unwrap();
+    }
+    let query = BorrowedQuery {
+        value: 99,
+        calls: &calls,
+    };
+    let hash_cost = 1 + usize::try_from(map.control_work().unwrap()).unwrap();
+    let capacity = storage.used();
+    let original_work = storage.work_used();
+    for (work, comparisons, success) in [
+        (0, 0, false),
+        (hash_cost, 0, false),
+        (hash_cost + 7, 3, false),
+        (hash_cost + 8, 4, true),
+    ] {
+        calls.reset();
+        let current = memory(0, work);
+        let result = map.get_key_value_borrowed(&query, &current);
+        if success {
+            assert!(result.unwrap().is_none());
+        } else {
+            assert!(matches!(result, Err(MemoryError::WorkExceeded)));
+        }
+        assert_eq!(calls.hashes.get(), usize::from(work > 0));
+        assert_eq!(calls.borrows.get(), comparisons);
+        assert_eq!(calls.equals.get(), comparisons);
+        assert_eq!(map.len(), 4);
+        assert_eq!(storage.used(), capacity);
+        assert_eq!(storage.work_used(), original_work);
+        assert_eq!(current.used(), 0);
+    }
+    // The original &K route shares this kernel without calling Borrow<Query>.
+    calls.reset();
+    let key = BorrowedKey(BorrowedQuery {
+        value: 2,
+        calls: &calls,
+    });
+    assert_eq!(map.get(&key, &memory(0, 4096)).unwrap(), Some(&()));
+    assert_eq!(calls.hashes.get(), 1);
+    assert_eq!(calls.borrows.get(), 0);
+}
+
+#[test]
+fn borrowed_lookup_exact_parser_ceiling_is_not_bypassed_by_current_account() {
+    // Probe/hash admission is not enough for unpaid candidate equality. A
+    // local refusal and an aggregate refusal must preserve the same boundary.
+    let calls = BorrowedCounters::default();
+    let storage = memory(4096, 100_000);
+    let mut map = storage.map();
+    map.try_insert(
+        BorrowedKey(BorrowedQuery {
+            value: 7,
+            calls: &calls,
+        }),
+        (),
+    )
+    .unwrap();
+    let needed = 1 + map.control_work().unwrap() + 2;
+    for (local, aggregate, success) in [
+        (needed - 1, 1000, false),
+        (1000, needed - 1, false),
+        (needed, needed, true),
+    ] {
+        calls.reset();
+        let current = memory(0, usize::try_from(aggregate).unwrap());
+        let parser = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: local,
+                ..Limits::default()
+            },
+            current.clone(),
+        );
+        let reader = parser.read(&[], 0).unwrap();
+        let query = BorrowedQuery {
+            value: 7,
+            calls: &calls,
+        };
+        let result = map.get_key_value_borrowed(&query, &reader.execution());
+        if success {
+            assert_eq!(result.unwrap().unwrap().0.0.value, 7);
+        } else {
+            assert!(matches!(result, Err(MemoryError::WorkExceeded)));
+        }
+        assert_eq!(calls.hashes.get(), 1);
+        assert_eq!(calls.borrows.get(), usize::from(success));
+        assert_eq!(calls.equals.get(), usize::from(success));
+        assert_eq!(current.used(), 0);
+    }
+}
+
 #[test]
 fn retain_empty_and_sparse_maps_keep_storage_and_charge_current_scan() {
     // Sparse holes are work too; deletion never allocates a second key list

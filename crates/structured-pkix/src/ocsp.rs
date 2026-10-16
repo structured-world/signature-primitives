@@ -19,7 +19,7 @@ const DATA: &str = "ocspResponse.responseData";
 const SINGLE: &str = "ocspResponse.singleResponse";
 
 mod digest;
-pub use digest::{CertMatch, Digest, DigestAlgorithm, ResolvedDigest};
+pub use digest::{CertMatch, Digest, DigestAlgorithm, ResolvedDigest, ResponderMatch};
 
 mod nonce;
 pub use nonce::{NonceBinding, NonceSizeError, RequestNonce};
@@ -86,6 +86,7 @@ pub enum Response<'a> {
 /// failures or unsupported types; decoding moves the existing reader.
 #[derive(Debug)]
 pub struct ResponseBytes<'a> {
+    encoded: &'a [u8],
     kind: Oid<'a>,
     payload: &'a [u8],
     span: Span,
@@ -93,6 +94,15 @@ pub struct ResponseBytes<'a> {
 }
 
 impl<'a> ResponseBytes<'a> {
+    /// Whole original successful `OCSPResponse` DER, including status and
+    /// `responseBytes` wrapper. RFC6960 §4.2.1 separates this envelope from the
+    /// signed `BasicOCSPResponse` payload. Reference digests must not substitute
+    /// the payload or a re-encoded envelope for these original bytes.
+    /// <https://www.rfc-editor.org/rfc/rfc6960#section-4.2.1>
+    #[must_use]
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.encoded
+    }
     /// Original response syntax identifier.
     #[must_use]
     pub fn kind(&self) -> Oid<'a> {
@@ -180,6 +190,17 @@ pub enum ResponderId<'a> {
     /// SHA-1 of original subjectPublicKey contents, excluding ASN.1 wrapper
     /// and the BIT STRING unused-bits count (RFC6960 verified errata6165–6167).
     KeyHash(&'a [u8]),
+}
+
+impl<'a> ResponderId<'a> {
+    /// Decode one original RFC6960 §4.2.1 `ResponderID` choice using its
+    /// producing reader, including the EXPLICIT context wrapper and fixed
+    /// SHA-1 key-hash width. Source profile encoding is supplied by that reader;
+    /// no new parser, normalized copy or budget reset is introduced.
+    /// <https://www.rfc-editor.org/rfc/rfc6960.html#section-4.2.1>
+    pub fn read_element(parent: &Reader<'a>, element: &Element<'a>) -> Result<Self> {
+        read_responder(parent, element)
+    }
 }
 
 /// Certificate identity retains its original encoded hash algorithm and octets.
@@ -453,6 +474,7 @@ impl<'a> Response<'a> {
             .field(FIELD)?;
         end(&bytes_reader, FIELD)?;
         Ok(Self::Successful(ResponseBytes {
+            encoded: element.as_bytes(),
             kind,
             payload: payload.contents(),
             span: payload.contents_span(),

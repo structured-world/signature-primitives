@@ -9,6 +9,24 @@ filter = "test(table_resize_admits_collision_probe_fanout_before_rehashing)"
 slow-timeout = { period = "60s", terminate-after = 5 }
 
 [[profile.default-miri.overrides]]
+# These authority-binding tests create and verify real P-256 certificates and
+# CRLs, then check original-source/time and reason-union association. These are
+# bounded fixed-curve calculations with no I/O or blocking; allow interpreter
+# time for this exact workload, keeping its native 60-second deadline. A
+# diagnostic run completed the target/root2 checks and reached root4 generation
+# at 300 seconds; the interpreter was CPU-bound, not waiting on external state.
+filter = "test(crl_authority_paths_require_same_anchor_and_full_evaluation_reading) | test(crl_reason_union_binds_every_original_authority_without_partial_receipts)"
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[[profile.default-miri.overrides]]
+# This source-lifetime regression still generates two P-256 certificates and
+# verifies the original path. The previous token-producing fixture timed out
+# at 60s under the interpreter; it now avoids all unused CMS/token generation.
+# The remaining fixed-curve computation has no I/O or input-sized recursion.
+filter = "test(checked_actor_path_outlives_operation_and_keeps_original_key_and_charge)"
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[[profile.default-miri.overrides]]
 # The unchanged workload appends 32,768 scalars and proves linear work/capacity.
 # Each iteration uses bounded reserve/copy operations, with no blocking or
 # unbounded traversal. Permit interpreter overhead only; native deadline stays.

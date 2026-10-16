@@ -61,6 +61,32 @@ fn memory() -> Memory {
 }
 
 #[test]
+fn timestamp_reader_entry_preserves_existing_session_and_exact_original_bytes() {
+    // Carried XML/ASN content must not create a default-budget replacement parser.
+    let bytes = message(
+        oid::TST_INFO.as_bytes(),
+        Some(&info()),
+        &signer(8, false),
+        false,
+    );
+    let account = memory();
+    let parser = Parser::ber(account.clone());
+    let mut root = parser.read(&bytes, 400).unwrap();
+    let token = Token::read_from(&mut root).unwrap();
+    assert!(root.is_empty());
+    assert_eq!(token.message().span().start, 415);
+    assert_eq!(token.signer().as_bytes(), signer(8, false));
+    let spent = account.work_used();
+    drop(token);
+    assert_eq!(account.used(), 0);
+    let other_account = memory();
+    let other = Parser::ber(other_account.clone());
+    let token = Token::read(&other, &bytes, 400).unwrap();
+    assert_eq!(other_account.work_used(), spent);
+    assert_eq!(token.message().span().start, 415);
+}
+
+#[test]
 fn carried_info_tail_keeps_readable_facts_and_original_source_projection() {
     // A bounded readable first TSTInfo is inspection data, with an adverse fault;
     // trailing garbage must not suppress its callback or lose physical location.

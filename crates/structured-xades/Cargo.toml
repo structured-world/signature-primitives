@@ -1,0 +1,26 @@
+[package]
+name = "structured-xades"
+description = "XAdES mechanisms over caller-owned XML and explicit resource accounting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+std = ["structured-asn1/std", "structured-pkix/std", "structured-cms/std"]
+alloc = ["structured-asn1/alloc", "structured-pkix/alloc", "structured-cms/alloc"]
+
+[dependencies]
+structured-asn1 = { version = "0.3.0", path = "../structured-asn1", default-features = false }
+structured-pkix = { version = "0.3.0", path = "../structured-pkix", default-features = false }
+structured-cms = { version = "0.3.0", path = "../structured-cms", default-features = false }
+
+[dev-dependencies]
+# Test-only fixed-curve oracle, using the same pinned engines as CMS tests.
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
+sha2 = { version = "=0.11.1", default-features = false }
+
+[lints]
+workspace = true

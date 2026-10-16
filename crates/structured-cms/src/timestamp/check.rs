@@ -1,5 +1,8 @@
 //! Complete common timestamp checks; path/status/policy acceptance stays external.
 
+use super::profile::{
+    self, MappedProfileCheckError, ProfileCheckError, ProfileFailure, ProfileInput,
+};
 use super::{
     AuthorityFacts, ImprintAgreement, RecognitionError, Request, RequestAgreement, RequestFields,
     RequestWindow, RetainedFacts, SignatureError, Timeliness, Token, TokenExtension,
@@ -13,6 +16,7 @@ use crate::{
     stream::Source,
     verify,
 };
+use core::convert::Infallible;
 use structured_asn1::{
     Reader,
     memory::{Execution, OwnedVec, Work},
@@ -429,7 +433,46 @@ impl<'doc> Token<'doc> {
         'doc: 'a,
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
     {
-        self.check_in(provider, (parent, None), context, covered, recognizes)
+        self.check_with_profile(provider, parent, context, covered, recognizes, |_| {
+            Ok::<(), ProfileFailure<Infallible>>(())
+        })
+        .map_err(ProfileCheckError::into_common)
+    }
+
+    /// Checks the same common timestamp once, with a scoped profile inspection
+    /// before any ESS binding, provider resolution, signature/content execution
+    /// or extension-recognition callback. Original syntax faults still refuse
+    /// first. The profile sees original fields, both producing readers and
+    /// their coordinate contexts; it must fund its own work before execution.
+    /// Refusal is terminal and cannot borrow a temporary information buffer.
+    /// The common core does not roll back external side effects of the profile.
+    #[expect(
+        clippy::result_large_err,
+        reason = "keep opaque common/profile refusal and its source context without allocating while returning an error"
+    )]
+    pub fn check_with_profile<'a, P, S: Source, PE, RE, FE>(
+        &'a self,
+        provider: &'a P,
+        parent: &Reader<'a>,
+        context: &CheckContext<'a, '_>,
+        covered: &mut S,
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+        profile: impl for<'view, 'scope> FnOnce(
+            ProfileInput<'view, 'doc, 'a, 'scope>,
+        ) -> Result<(), ProfileFailure<FE>>,
+    ) -> Result<CheckedTimestamp<'a>, ProfileCheckError<S::Error, PE, RE, FE>>
+    where
+        'doc: 'a,
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+    {
+        self.check_in(
+            provider,
+            (parent, None),
+            context,
+            covered,
+            recognizes,
+            profile,
+        )
     }
 
     /// Checks a token decoded in another joined source using the same core.
@@ -452,40 +495,73 @@ impl<'doc> Token<'doc> {
         'doc: 'a,
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
     {
+        self.check_mapped_with_profile(provider, source, context, covered, recognizes, |_| {
+            Ok::<(), ProfileFailure<Infallible>>(())
+        })
+        .map_err(MappedProfileCheckError::into_common)
+    }
+
+    /// Same profile/core kernel for a logically joined CMS envelope. Both
+    /// independent maps survive refusal; an outer profile location must use
+    /// the envelope map rather than the inner information map. Reader/session
+    /// misuse is refused before map admission or profile/provider dispatch.
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserve both independently retained source frames and the original opaque refusal without a fallible error allocation"
+    )]
+    pub fn check_mapped_with_profile<'a, P, S: Source, PE, RE, FE>(
+        &'a self,
+        provider: &'a P,
+        source: (&Reader<'a>, &SourceMap),
+        context: &CheckContext<'a, '_>,
+        covered: &mut S,
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+        profile: impl for<'view, 'scope> FnOnce(
+            ProfileInput<'view, 'doc, 'a, 'scope>,
+        ) -> Result<(), ProfileFailure<FE>>,
+    ) -> Result<CheckedTimestamp<'a>, MappedProfileCheckError<S::Error, PE, RE, FE>>
+    where
+        'doc: 'a,
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+    {
         let (parent, source) = source;
         preflight_sessions(self, parent, context)
-            .map_err(|error| MappedCheckError::Preflight(error.into()))?;
+            .map_err(|error| MappedProfileCheckError::Preflight(error.into()))?;
         let envelope = source
             .try_copy_in(&parent.execution())
-            .map_err(MappedCheckError::Provenance)?;
+            .map_err(MappedProfileCheckError::Provenance)?;
         self.check_in(
             provider,
             (parent, Some(source)),
             context,
             covered,
             recognizes,
+            profile,
         )
-        .map_err(|source| MappedCheckError::Execution { envelope, source })
+        .map_err(|source| MappedProfileCheckError::Execution { envelope, source })
     }
 
     #[expect(
         clippy::result_large_err,
         reason = "retain original cause and accounted source context on refusal"
     )]
-    fn check_in<'a, P, S: Source, PE, RE>(
+    fn check_in<'a, P, S: Source, PE, RE, FE>(
         &'a self,
         provider: &'a P,
         origin: (&Reader<'a>, Option<&SourceMap>),
         context: &CheckContext<'a, '_>,
         covered: &mut S,
         mut recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
-    ) -> Result<CheckedTimestamp<'a>, CheckError<S::Error, PE, RE>>
+        profile: impl for<'view, 'scope> FnOnce(
+            ProfileInput<'view, 'doc, 'a, 'scope>,
+        ) -> Result<(), ProfileFailure<FE>>,
+    ) -> Result<CheckedTimestamp<'a>, ProfileCheckError<S::Error, PE, RE, FE>>
     where
         'doc: 'a,
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
     {
         let (parent, source) = origin;
-        preflight(self, parent, context)?;
+        preflight(self, parent, context).map_err(CheckError::from)?;
         let certificate = context.certificate;
         let identifier =
             directory::matches_certificate_in(self.signer().sid(), certificate, parent)
@@ -514,12 +590,26 @@ impl<'doc> Token<'doc> {
         {
             return Err(CheckError::Nonconforming {
                 span: self.message().span(),
-            });
-        }
-        let inspect = |info: &super::TokenInfo<'_>, inside: &Reader<'_>, source: &SourceMap| {
-            if info.has_faults() {
-                return Err(InfoCheckError::Nonconforming { span: info.span() });
             }
+            .into());
+        }
+        let inspect = |info: &super::TokenInfo<'_>,
+                       inside: &Reader<'_>,
+                       information: &SourceMap|
+         -> Result<_, profile::InformationFailure<S::Error, PE, RE, FE>> {
+            if info.has_faults() {
+                return Err(InfoCheckError::Nonconforming { span: info.span() }.into());
+            }
+            profile(ProfileInput {
+                token: self,
+                parent,
+                envelope: source,
+                ess: &ess,
+                info,
+                reader: inside,
+                source: information,
+            })
+            .map_err(profile::InformationFailure::Profile)?;
             let bindings = ess
                 .bind_certificate(provider, certificate, parent)
                 .map_err(InfoCheckError::Ess)?;
@@ -534,14 +624,14 @@ impl<'doc> Token<'doc> {
                 recognizes: &mut recognizes,
                 common_holds,
             };
-            let information = inspection.inspect(info, inside, source)?;
-            Ok((signature, bindings, information))
+            let checked = inspection.inspect(info, inside, information)?;
+            Ok((signature, bindings, checked))
         };
         let (signature, bindings, information) = match source {
             Some(source) => self.with_info_mapped(parent, source, inspect),
             None => self.with_info(parent, inspect),
         }
-        .map_err(CheckError::Information)?;
+        .map_err(profile::information_error)?;
         Ok(CheckedTimestamp {
             signature,
             identifier,

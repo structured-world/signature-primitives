@@ -4,7 +4,7 @@ use crate::content::{ContentInfo, Encapsulated};
 use crate::signer::{SignerInfo, required};
 use crate::{Error, ErrorCode, Result, oid};
 use structured_asn1::memory::{OwnedVec, Work};
-use structured_asn1::{Element, Parser, Reader, Span, Tag, universal};
+use structured_asn1::{Element, Encoding, Oid, Parser, Reader, Span, Tag, universal};
 use structured_pkix::{AlgorithmIdentifier, Certificate};
 
 /// One original certificate CHOICE (RFC5652 §10.2.2).
@@ -25,9 +25,77 @@ pub enum CertificateChoice<'a> {
     Other(Element<'a>),
 }
 
+/// Original CMS other-revocation format and its untouched ANY value. Decoding
+/// a recognized format establishes no signature, authorization or freshness.
+#[derive(Debug)]
+pub struct OtherRevocationInfo<'a> {
+    reader: Reader<'a>,
+    kind: Oid<'a>,
+    value: Element<'a>,
+}
+
+impl<'a> OtherRevocationInfo<'a> {
+    /// Reads an original context [1] IMPLICIT `OtherRevocationInfoFormat` using
+    /// the same field kernel as `SignedData`'s structural catalogue validation.
+    pub fn read(parent: &Reader<'a>, element: &Element<'a>) -> Result<Self> {
+        const FIELD: &str = "signedData.crls.other";
+        if element.tag() != Tag::context(true, 1) {
+            return Err(Error::schema(
+                ErrorCode::UnexpectedTag,
+                FIELD,
+                element.span().start,
+            ));
+        }
+        let (reader, kind, value) = other_fields(parent, element, FIELD)?;
+        Ok(Self {
+            reader,
+            kind,
+            value,
+        })
+    }
+
+    /// Original open-format identifier, without provider/default normalization.
+    #[must_use]
+    pub fn kind(&self) -> Oid<'a> {
+        self.kind
+    }
+
+    /// Whole original ANY element, not its contents or a re-encoded value.
+    #[must_use]
+    pub fn value(&self) -> Element<'a> {
+        self.value
+    }
+
+    /// Decodes the successful whole `OCSPResponse` required by RFC5940 §3.
+    /// An unknown format returns None; a known malformed response or unsigned
+    /// protocol failure returns an error. Unsupported inner response syntax is
+    /// preserved by the shared envelope, rather than promoted to a basic body.
+    /// <https://www.rfc-editor.org/rfc/rfc5940#section-3>
+    pub fn ocsp(self) -> Result<Option<structured_pkix::ocsp::ResponseBytes<'a>>> {
+        const FIELD: &str = "signedData.crls.other";
+        self.reader
+            .charge(9)
+            .map_err(|error| Error::encoding(error, FIELD))?;
+        if self.kind != oid::OCSP_RESPONSE {
+            return Ok(None);
+        }
+        match structured_pkix::ocsp::Response::read_element(&self.reader, &self.value)
+            .map_err(Error::pkix)?
+        {
+            structured_pkix::ocsp::Response::Successful(response) => Ok(Some(response)),
+            structured_pkix::ocsp::Response::Failure { span, .. } => {
+                Err(Error::schema(ErrorCode::MalformedValue, FIELD, span.start))
+            }
+        }
+    }
+}
+
 /// Original CMS `SignedData` with independently accounted metadata and faults.
 #[derive(Debug)]
 pub struct SignedData<'a> {
+    parser: &'a Parser,
+    encoding: Encoding,
+    outer: u32,
     version: u64,
     required_version: u64,
     algorithms: OwnedVec<AlgorithmIdentifier<'a>>,
@@ -142,19 +210,11 @@ impl<'a> SignedData<'a> {
                 inside.offset(),
             ));
         }
-        let mut faults = execution.vector();
-        if version != required_version {
-            faults
-                .try_push(Error::schema(
-                    ErrorCode::VersionMismatch,
-                    "signedData.version",
-                    version_element.span().start,
-                ))
-                .map_err(|reason| {
-                    Error::resource(reason, "signedData.version", version_element.span().start)
-                })?;
-        }
+        let faults = version_fault(&execution, version, required_version, &version_element)?;
         Ok(Self {
+            parser: parent.parser(),
+            encoding: parent.encoding(),
+            outer: inside.depth(),
             version,
             required_version,
             algorithms,
@@ -165,7 +225,7 @@ impl<'a> SignedData<'a> {
             revocations,
             revocation_field,
             signers,
-            faults: faults.into_owned(),
+            faults,
             element: *element,
         })
     }
@@ -219,6 +279,42 @@ impl<'a> SignedData<'a> {
     pub fn revocations(&self) -> &[Element<'a>] {
         &self.revocations
     }
+    /// Opens one original revocation CHOICE under the current query operation.
+    ///
+    /// The reader contains the whole original CRL or other-format CHOICE, not
+    /// its contents. Original parser, encoding, location and set-member depth
+    /// are preserved; the query may come from another document and pays all
+    /// new work/storage while both source and operation ceilings remain active.
+    /// No bytes are copied and no new parser or authentication is introduced.
+    /// An absent ordinal returns `None` only after paid metadata admission.
+    pub fn revocation_reader_in<'query>(
+        &self,
+        query: &Reader<'query>,
+        ordinal: usize,
+    ) -> Result<Option<Reader<'query>>>
+    where
+        'a: 'query,
+    {
+        const FIELD: &str = "signedData.crls";
+        let at = self.revocation_field.unwrap_or(self.element.span()).start;
+        query
+            .execution()
+            .charge_work(1)
+            .map_err(|reason| Error::resource(reason, FIELD, at))?;
+        let Some(entry) = self.revocations.get(ordinal) else {
+            return Ok(None);
+        };
+        self.parser
+            .read_nested_query_in(
+                query,
+                entry.as_bytes(),
+                entry.span().start,
+                self.encoding,
+                self.outer,
+            )
+            .map(Some)
+            .map_err(|error| Error::encoding(error, FIELD))
+    }
     /// Independent signers in their original order, without an all-signers verdict.
     #[must_use]
     pub fn signers(&self) -> &[SignerInfo<'a>] {
@@ -239,6 +335,27 @@ impl<'a> SignedData<'a> {
     pub fn as_bytes(&self) -> &'a [u8] {
         self.element.as_bytes()
     }
+}
+
+fn version_fault(
+    execution: &impl Work,
+    version: u64,
+    required: u64,
+    element: &Element<'_>,
+) -> Result<OwnedVec<Error>> {
+    let mut faults = execution.vector();
+    if version != required {
+        faults
+            .try_push(Error::schema(
+                ErrorCode::VersionMismatch,
+                "signedData.version",
+                element.span().start,
+            ))
+            .map_err(|reason| {
+                Error::resource(reason, "signedData.version", element.span().start)
+            })?;
+    }
+    Ok(faults.into_owned())
 }
 
 fn ordered<'a>(
@@ -264,13 +381,21 @@ fn ordered<'a>(
 }
 
 fn other_format(parent: &Reader<'_>, element: &Element<'_>, field: &'static str) -> Result<()> {
+    other_fields(parent, element, field).map(|_| ())
+}
+
+fn other_fields<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    field: &'static str,
+) -> Result<(Reader<'a>, Oid<'a>, Element<'a>)> {
     let mut inside = parent
         .enter(element)
         .map_err(|error| Error::encoding(error, field))?;
-    inside
+    let kind = inside
         .read_oid()
         .map_err(|error| Error::encoding(error, field))?;
-    required(&mut inside, field)?;
+    let value = required(&mut inside, field)?;
     if !inside.is_empty() {
         return Err(Error::schema(
             ErrorCode::TrailingData,
@@ -278,7 +403,7 @@ fn other_format(parent: &Reader<'_>, element: &Element<'_>, field: &'static str)
             inside.offset(),
         ));
     }
-    Ok(())
+    Ok((inside, kind, value))
 }
 
 fn catalogue<'a, T>(

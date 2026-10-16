@@ -5,8 +5,8 @@ use crate::error::{Error, ErrorCode, Located, Result};
 use crate::oid;
 use core::cmp::Ordering;
 use core::ops::Range;
-use structured_asn1::memory::{Memory, OwnedVec};
-use structured_asn1::{Class, Oid, OwnedOid, Parser, Tag, universal};
+use structured_asn1::memory::{Memory, OwnedVec, Work};
+use structured_asn1::{Class, Oid, OwnedOid, Parser, ScopedReader as Reader, Tag, universal};
 
 const FIELD: &str = "name.selector";
 
@@ -72,6 +72,23 @@ impl Selector {
     /// # Ok::<(), structured_pkix::Error>(())
     /// ```
     pub fn parse(text: &str, execution: &Memory) -> Result<Self> {
+        Self::parse_with(text, execution, None)
+    }
+
+    /// Parses original RFC4514 text under the current producing operation.
+    /// Lexical/OID conversion, BER-valued assertions, scratch and retained
+    /// capacity all use that operation's local and aggregate ceilings. Returned
+    /// storage owns its account independently of the borrowed reader.
+    /// Error offsets identify the textual selector, not a physical XML byte.
+    pub fn parse_in(text: &str, parent: &Reader<'_, '_>) -> Result<Self> {
+        Self::parse_with(text, &parent.execution(), Some(parent))
+    }
+
+    fn parse_with<W: Work>(
+        text: &str,
+        execution: &W,
+        parent: Option<&Reader<'_, '_>>,
+    ) -> Result<Self> {
         // Lexical validation precedes allocation. This admits all fixed
         // descriptor comparisons and both source passes before scanning.
         let work = (text.len() as u64)
@@ -84,16 +101,16 @@ impl Selector {
             .charge_work(work)
             .map_err(|reason| Error::resource(reason, FIELD, 0))?;
         scan::<true>(text, |_, _, _, _| Ok(()))?;
-        let parser = Parser::ber(execution.clone());
+        let parser = Parser::ber(execution.memory().clone());
         let mut parts = execution.vector();
         let mut current = execution.vector();
         scan::<true>(text, |label, value, offset, last| {
             current
-                .try_push(selected(label, value, offset, &parser, execution)?)
+                .try_push(selected(label, value, offset, &parser, execution, parent)?)
                 .map_err(|reason| Error::resource(reason, FIELD, offset))?;
             if last {
                 parts
-                    .try_push(core::mem::replace(&mut current, execution.vector()))
+                    .try_push(core::mem::replace(&mut current, execution.vector()).into_owned())
                     .map_err(|reason| Error::resource(reason, FIELD, offset))?;
             }
             Ok(())
@@ -102,13 +119,30 @@ impl Selector {
             .charge_work(parts.len() as u64)
             .map_err(|reason| Error::resource(reason, FIELD, 0))?;
         parts.reverse(); // RFC 4514 §2.1: textual last RDN is ASN.1 first.
-        Ok(Self { parts })
+        Ok(Self {
+            parts: parts.into_owned(),
+        })
     }
 
     /// Compares directly with a certificate Name without serializing it.
     /// Unknown LDAP assertion syntax returns `UnsupportedNameSyntax` when
     /// semantic preparation is needed; it is never guessed as `UTF8String`.
-    pub fn matches_name(&self, name: &Name<'_>, execution: &Memory) -> Result<bool> {
+    pub fn matches_name<W: Work>(&self, name: &Name<'_>, execution: &W) -> Result<bool> {
+        self.matches_name_with(name, execution, None)
+    }
+
+    /// Compares the assertion to a retained Name under the current reader,
+    /// including deferred constructed-string decoding and normalization.
+    pub fn matches_name_in(&self, name: &Name<'_>, parent: &Reader<'_, '_>) -> Result<bool> {
+        self.matches_name_with(name, &parent.execution(), Some(parent))
+    }
+
+    fn matches_name_with<W: Work>(
+        &self,
+        name: &Name<'_>,
+        execution: &W,
+        parent: Option<&Reader<'_, '_>>,
+    ) -> Result<bool> {
         if self.parts.len() != name.parts().len() {
             return Ok(false);
         }
@@ -122,7 +156,7 @@ impl Selector {
                 part.attributes()
                     .iter()
                     .copied()
-                    .map(|attribute| prepared::Prepared::of(attribute, execution)),
+                    .map(|attribute| prepared::Prepared::of_in(attribute, execution, parent)),
                 execution,
                 fail,
             )?;
@@ -134,7 +168,7 @@ impl Selector {
     }
 
     /// Compares two independently owned selectors under the same Name rules.
-    pub fn matches(&self, other: &Self, execution: &Memory) -> Result<bool> {
+    pub fn matches<W: Work>(&self, other: &Self, execution: &W) -> Result<bool> {
         if self.parts.len() != other.parts.len() {
             return Ok(false);
         }
@@ -156,16 +190,17 @@ impl Selector {
     }
 }
 
-fn selected(
+fn selected<W: Work>(
     label: &str,
     value: &str,
     offset: u64,
     parser: &Parser,
-    execution: &Memory,
+    execution: &W,
+    parent: Option<&Reader<'_, '_>>,
 ) -> Result<Selected> {
     let kind = match descriptor(label) {
         Some(kind) => Kind::Known(kind),
-        None => Kind::Numeric(OwnedOid::parse(label, execution).map_err(|error| {
+        None => Kind::Numeric(OwnedOid::parse_in(label, execution).map_err(|error| {
             Error::new(
                 ErrorCode::Encoding(error.code()),
                 FIELD,
@@ -183,7 +218,7 @@ fn selected(
                 )
                 .map_err(|reason| Error::resource(reason, FIELD, offset))?;
         }
-        ber(&bytes, kind.as_oid(), parser, execution).map_err(|error| {
+        ber(&bytes, kind.as_oid(), parser, execution, parent).map_err(|error| {
             Error::new(
                 error.code(),
                 FIELD,
@@ -214,14 +249,24 @@ fn selected(
     };
     Ok(Selected {
         kind,
-        bytes,
+        bytes: bytes.into_owned(),
         value,
         offset,
     })
 }
 
-fn ber(bytes: &[u8], kind: Oid<'_>, parser: &Parser, execution: &Memory) -> Result<Value> {
-    let mut reader = parser.read(bytes, 0).field(FIELD)?;
+fn ber<W: Work>(
+    bytes: &[u8],
+    kind: Oid<'_>,
+    parser: &Parser,
+    execution: &W,
+    parent: Option<&Reader<'_, '_>>,
+) -> Result<Value> {
+    let mut reader = match parent {
+        Some(parent) => parser.read_query_in(parent, bytes, 0, structured_asn1::Encoding::Ber, 0),
+        None => parser.read(bytes, 0),
+    }
+    .field(FIELD)?;
     let element = reader
         .next_element()
         .field(FIELD)?
@@ -274,7 +319,7 @@ fn ber(bytes: &[u8], kind: Oid<'_>, parser: &Parser, execution: &Memory) -> Resu
             Some(&mut joined),
             execution,
         )?;
-        Some(joined)
+        Some(joined.into_owned())
     } else {
         None
     };
@@ -285,7 +330,7 @@ fn ber(bytes: &[u8], kind: Oid<'_>, parser: &Parser, execution: &Memory) -> Resu
     })
 }
 
-fn project<'a>(item: &'a Selected, execution: &Memory) -> Result<prepared::Prepared<'a>> {
+fn project<'a, W: Work>(item: &'a Selected, execution: &W) -> Result<prepared::Prepared<'a, W>> {
     let kind = item.kind.as_oid();
     let value = match &item.value {
         Value::Assertion => {

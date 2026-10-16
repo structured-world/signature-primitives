@@ -26,6 +26,12 @@ impl HashWork for usize {
     }
 }
 
+impl HashWork for u8 {
+    fn hash_work(&self) -> Result<u64, MemoryError> {
+        Ok(1)
+    }
+}
+
 impl HashWork for (usize, usize, usize) {
     fn hash_work(&self) -> Result<u64, MemoryError> {
         Ok(3)

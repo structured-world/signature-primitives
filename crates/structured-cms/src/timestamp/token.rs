@@ -33,7 +33,16 @@ impl<'a> Token<'a> {
         let mut root = parser
             .read(document, base)
             .map_err(|error| Error::encoding(error, "contentInfo"))?;
-        let (envelope, parent) = ContentInfo::read(&mut root)?;
+        Self::read_from(&mut root)
+    }
+
+    /// Reads a complete token from its original scoped source reader.
+    ///
+    /// Source encoding, offsets, inherited depth, parser session and current
+    /// operation ceilings are preserved. No replacement parser, retagging or
+    /// copy is performed. Trailing bytes in this source window are refused.
+    pub fn read_from(root: &mut Reader<'a>) -> Result<Self> {
+        let (envelope, parent) = ContentInfo::read(root)?;
         parent
             .execution()
             .charge_work(envelope.kind().as_bytes().len() as u64)

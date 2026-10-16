@@ -13,6 +13,144 @@ fn time_of(der: &[u8]) -> crate::error::Result<Time> {
 }
 
 #[test]
+fn calendar_projection_reuses_gregorian_core_and_preserves_leap_labels() {
+    // XAdES identifier times may use offsets and end-of-day notation. The
+    // shared projection must cross date/year boundaries without reparsing text
+    // or discarding an inserted-second label.
+    let work = crate::fixtures::memory();
+    for (encoded, offset, expected) in [
+        ("20260101000000Z", -1440, (2025, 12, 31, 0, 0, 0)),
+        ("99991231235959Z", 1, (10000, 1, 1, 0, 0, 59)),
+        ("00000101000000Z", -1, (-1, 12, 31, 23, 59, 0)),
+        ("20161231235960Z", 150, (2017, 1, 1, 2, 29, 60)),
+    ] {
+        let time = time_of(&generalized_time(encoded)).unwrap();
+        let projected = time.calendar_at_minutes(offset, &work).unwrap();
+        assert_eq!(
+            (
+                projected.year,
+                projected.month,
+                projected.day,
+                projected.hour,
+                projected.minute,
+                projected.second
+            ),
+            expected
+        );
+        assert_eq!(projected.nanos, 0);
+    }
+    let fractional = Time {
+        instant: crate::temporal::Instant::new(1_767_225_600, 123_456_789).unwrap(),
+        form: Form::Generalized,
+    };
+    assert_eq!(
+        fractional.calendar_at_minutes(0, &work).unwrap().nanos,
+        123_456_789
+    );
+}
+
+#[test]
+fn calendar_projection_admits_fixed_work_before_conversion() {
+    // Metadata conversion still requires the CURRENT operation's CPU budget;
+    // no output allocation or source-account credit is necessary.
+    use alloc::sync::Arc;
+    use structured_asn1::memory::{Memory, MemoryAccount, MemoryError};
+    let time = time_of(&generalized_time("20260101000000Z")).unwrap();
+    let denied = Memory::new(Arc::new(MemoryAccount::new(0, 63)));
+    assert_eq!(
+        time.calendar_at_minutes(0, &denied),
+        Err(MemoryError::WorkExceeded)
+    );
+    assert_eq!(denied.work_used(), 0);
+    let exact = Memory::new(Arc::new(MemoryAccount::new(0, 64)));
+    assert_eq!(time.calendar_at_minutes(0, &exact).unwrap().year, 2026);
+    assert_eq!(exact.work_used(), 64);
+    assert_eq!(exact.used(), 0);
+}
+
+#[test]
+fn xsd10_normalization_has_its_own_calendar_value_contract() {
+    // XSD1.0 Appendix E uses signed-year leap arithmetic, no year zero and
+    // overflow normalization for second60; UTC identity remains unchanged.
+    use super::Xsd10Label;
+    let work = crate::fixtures::memory();
+    let label = Xsd10Label {
+        year: -1,
+        month: 3,
+        day: 1,
+        hour: 0,
+        minute: 30,
+        second: 0,
+        nanos: 0,
+    };
+    let utc = label.at_utc(60, &work).unwrap().unwrap();
+    assert_eq!(
+        (utc.year, utc.month, utc.day, utc.hour, utc.minute),
+        (-1, 2, 28, 23, 30)
+    );
+    let leap = time_of(&generalized_time("20161231235960Z")).unwrap();
+    let utc = leap
+        .xsd10_label(&work)
+        .unwrap()
+        .at_utc(0, &work)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            utc.year, utc.month, utc.day, utc.hour, utc.minute, utc.second
+        ),
+        (2017, 1, 1, 0, 0, 0)
+    );
+    assert!(leap.is_leap_second());
+    for (year, month, day, expected) in [(-1, 2, 29, false), (-4, 2, 29, true), (0, 1, 1, false)] {
+        assert_eq!(
+            Xsd10Label {
+                year,
+                month,
+                day,
+                ..label
+            }
+            .at_utc(0, &work)
+            .unwrap()
+            .is_some(),
+            expected
+        );
+    }
+    let end = Xsd10Label {
+        year: -1,
+        month: 12,
+        day: 31,
+        hour: 24,
+        minute: 0,
+        ..label
+    };
+    assert_eq!(end.at_utc(0, &work).unwrap().unwrap().year, 1);
+}
+
+#[test]
+fn xsd10_normalization_refusal_precedes_any_conversion() {
+    // A previously decoded label is not CPU credit for the current query.
+    use alloc::sync::Arc;
+    use structured_asn1::memory::{Memory, MemoryAccount, MemoryError};
+    let label = super::Xsd10Label {
+        year: 2026,
+        month: 1,
+        day: 1,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        nanos: 0,
+    };
+    let denied = Memory::new(Arc::new(MemoryAccount::new(0, 127)));
+    assert_eq!(label.at_utc(0, &denied), Err(MemoryError::WorkExceeded));
+    assert_eq!(denied.work_used(), 0);
+    let exact = Memory::new(Arc::new(MemoryAccount::new(0, 128)));
+    assert_eq!(label.at_utc(0, &exact).unwrap(), Some(label));
+    assert_eq!(exact.work_used(), 128);
+    assert_eq!(exact.used(), 0);
+}
+
+#[test]
 fn both_forms_name_the_same_moment() {
     let two_digit = time_of(&utc_time("240701091500Z")).unwrap();
     let four_digit = time_of(&generalized_time("20240701091500Z")).unwrap();

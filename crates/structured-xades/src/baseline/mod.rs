@@ -1,0 +1,44 @@
+//! Composition of source-bound baseline facts, separate from caller trust.
+//!
+//! Start with [`crate::prepare::check_fields`], the complete original counter
+//! paths and actual-use hash census, then bind the selected original signing
+//! certificate and all signed certificate digests to the checked path.
+//! [`basic`] joins those receipts, exact original header inclusion and every
+//! optional issuer hint without repeating root scalar or cryptographic work.
+//!
+//! [`timestamped`] requires [`crate::timestamp::TimestampPaths`] for the entire
+//! original root/counter token census. Its static time findings cover EACH root
+//! signature timestamp's full generation interval. A later source query still
+//! needs its own execution allowance; retained facts are not prepaid work.
+//!
+//! [`long_term`] links all X.509 presence/placement findings and every actual
+//! credential's format-material findings to that SAME participant/status input
+//! closure. Equal document/node IDs cannot replace receipt identity. For each
+//! archive, use [`crate::material::archived_participants`] and
+//! [`crate::material::credentials::Scope::before_archive`] with the same original
+//! input coverage and mathematical token evidence, then [`archive_material`]
+//! to join their exact scope and authenticated credential input. [`archives`]
+//! requires every original root archive, including those with material gaps;
+//! a successful subset or repeated proof cannot complete that census. Own/later
+//! material cannot repair an earlier archive. [`crate::renewed::check_prepared`]
+//! processes every written root renewal and retains every original pair through
+//! the same [`crate::renewed::check`] kernel, independently of incorporation.
+//!
+//! The requested structural profile remains on the original preparation.
+//! Additional containers never promote it. Inspect all detailed negative facts:
+//! material incorporation is not usable revocation, static validity is not
+//! pre-revocation chronology, and mathematical timestamps are not historical
+//! application trust or algorithm-longevity policy. These report components
+//! deliberately expose no unconditional attained-level or trust constructor.
+
+mod basic;
+pub use basic::{Basic, BasicError, BasicInput, BasicResult, Hint, HintSource, basic};
+mod timed;
+pub use timed::{SignatureTimeFact, TimeError, TimeResult, Timed, timestamped};
+mod material;
+pub use material::{LongTerm, MaterialResult, long_term};
+mod archive;
+pub use archive::{
+    ArchiveCensusError, ArchiveMaterial, ArchiveMaterialResult, Archives, ArchivesResult,
+    archive_material, archives,
+};

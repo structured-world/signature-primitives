@@ -4214,6 +4214,43 @@ fn timestamp_method_and_rfc3161_cardinality_are_not_defaulted_or_dropped() {
 }
 
 #[test]
+fn timestamp_preparation_funds_signature_identity_before_xml_traversal() {
+    use structured_asn1::{Encoding, Limits, Parser};
+
+    // The retained stamp/binding cannot pay for a new operation's identity
+    // comparison. Refusal belongs to the stamp before any child traversal.
+    for role in [Role::Signature, Role::Archive] {
+        let (xml, node, _) = Tree::stamped(role);
+        let memory = funded();
+        let access = Access::new(&xml, xml.snapshot(), &memory);
+        let bound = binding::bind(&access, &container::locate(&access, 0).unwrap()).unwrap();
+        let stamp = timestamp::read(&access, &bound, node).unwrap();
+        for budget in [0, 1] {
+            let current = Memory::new(Arc::new(MemoryAccount::new(0, budget)));
+            assert!(matches!(
+                Input::prepare(&xml, &bound, &stamp, &current),
+                Err(InputError::Resource { node: at, cause: MemoryError::WorkExceeded }) if at == node
+            ));
+            assert_eq!(current.used(), 0);
+        }
+        let parser = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: 1,
+                ..Limits::default()
+            },
+            funded(),
+        );
+        let reader = parser.read(&[], 0).unwrap();
+        assert!(matches!(
+            Input::prepare(&xml, &bound, &stamp, &reader.execution()),
+            Err(InputError::Resource { node: at, cause: MemoryError::WorkExceeded }) if at == node
+        ));
+        assert_eq!(xml.streamed.get(), 0);
+    }
+}
+
+#[test]
 fn stale_generation_and_capacity_refusal_precede_timestamp_side_effects() {
     // Plans cannot escape the original generation, and no C14N begins on refusal.
     let (xml, node, _) = Tree::stamped(Role::Archive);

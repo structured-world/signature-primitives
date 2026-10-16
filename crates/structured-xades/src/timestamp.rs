@@ -794,15 +794,21 @@ impl<'a, X: TimestampXml> Input<'a, X> {
         stamp: &Timestamp<X>,
         execution: &W,
     ) -> InputResult<Self, X> {
-        if stamp.snapshot != layout.snapshot() || stamp.signature != layout.signature() {
+        if stamp.snapshot != layout.snapshot() {
             return Err(InputError::Foreign { node: stamp.node });
         }
         let access = Access::new(xml, stamp.snapshot, execution);
-        let mut parts = execution.vector();
         let refusal = |cause| InputError::Resource {
             node: stamp.node,
             cause,
         };
+        if !access
+            .equal_id(stamp.signature, layout.signature())
+            .map_err(refusal)?
+        {
+            return Err(InputError::Foreign { node: stamp.node });
+        }
+        let mut parts = execution.vector();
         match stamp.role {
             Role::Signature => {
                 let value = singleton(&access, stamp.signature, DS, "SignatureValue")?;
@@ -837,7 +843,7 @@ impl<'a, X: TimestampXml> Input<'a, X> {
                 let mut reached = false;
                 for child in access.children(stamp.parent) {
                     let node = child.map_err(InputError::Child)?;
-                    if node == stamp.node {
+                    if access.equal_id(node, stamp.node).map_err(refusal)? {
                         reached = true;
                         break;
                     }
@@ -848,7 +854,9 @@ impl<'a, X: TimestampXml> Input<'a, X> {
                 }
                 for child in access.children(stamp.signature) {
                     let node = child.map_err(InputError::Child)?;
-                    if node != layout.object() && named(&access, node, DS, "Object")? {
+                    if !access.equal_id(node, layout.object()).map_err(refusal)?
+                        && named(&access, node, DS, "Object")?
+                    {
                         parts.try_push(Part::Element(node)).map_err(refusal)?;
                     }
                 }
@@ -900,7 +908,7 @@ fn append_validation_references<X: TimestampXml, W: Work>(
     let mut reached = false;
     for child in access.children(stamp.parent) {
         let node = child.map_err(InputError::Child)?;
-        if node == stamp.node {
+        if access.equal_id(node, stamp.node).map_err(refusal)? {
             reached = true;
             break;
         }
@@ -989,9 +997,20 @@ fn append_includes<X: TimestampXml, W: Work>(
             })
             .map_err(InputError::Access)?;
         let reference = match resolved {
-            Resolution::Resolved((node, target, Status::Valid, coverage))
-                if target != Some(signed_properties) =>
-            {
+            Resolution::Resolved((node, target, Status::Valid, coverage)) => {
+                if let Some(target) = target
+                    && access
+                        .equal_id(target, signed_properties)
+                        .map_err(|cause| InputError::Resource {
+                            node: include,
+                            cause,
+                        })?
+                {
+                    return Err(InputError::Reference {
+                        node: include,
+                        resolution: Resolution::Resolved(()),
+                    });
+                }
                 Part::Reference {
                     node,
                     covered: if coverage == Coverage::ElementContent {
@@ -1001,34 +1020,10 @@ fn append_includes<X: TimestampXml, W: Work>(
                     },
                 }
             }
-            Resolution::Resolved(_) => {
+            other => {
                 return Err(InputError::Reference {
                     node: include,
-                    resolution: Resolution::Resolved(()),
-                });
-            }
-            Resolution::Missing => {
-                return Err(InputError::Reference {
-                    node: include,
-                    resolution: Resolution::Missing,
-                });
-            }
-            Resolution::Unresolved => {
-                return Err(InputError::Reference {
-                    node: include,
-                    resolution: Resolution::Unresolved,
-                });
-            }
-            Resolution::Unauthenticated => {
-                return Err(InputError::Reference {
-                    node: include,
-                    resolution: Resolution::Unauthenticated,
-                });
-            }
-            Resolution::Unsupported => {
-                return Err(InputError::Reference {
-                    node: include,
-                    resolution: Resolution::Unsupported,
+                    resolution: other.map(|_| ()),
                 });
             }
         };
@@ -1054,7 +1049,7 @@ fn append_references<X: TimestampXml, W: Work>(
         })
         .map_err(InputError::Access)?;
     for ordinal in 0..count {
-        let (part, skip) = access
+        let (part, target) = access
             .query(stamp.signature, |xml, snapshot, work| {
                 xml.reference(snapshot, stamp.signature, ordinal, work, |r| {
                     (
@@ -1068,12 +1063,19 @@ fn append_references<X: TimestampXml, W: Work>(
                                 None
                             },
                         },
-                        excluded.is_some() && r.target == excluded,
+                        r.target,
                     )
                 })
             })
             .map_err(InputError::Access)?;
-        if skip {
+        if let (Some(target), Some(excluded)) = (target, excluded)
+            && access
+                .equal_id(target, excluded)
+                .map_err(|cause| InputError::Resource {
+                    node: stamp.node,
+                    cause,
+                })?
+        {
             continue;
         }
         parts.try_push(part).map_err(|cause| InputError::Resource {

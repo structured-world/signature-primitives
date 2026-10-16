@@ -6,20 +6,21 @@ changelog_update = true
 [[package]]
 name = "structured-asn1"
 version_group = "primitives"
-changelog_include = ["structured-pkix", "structured-cms"]
+changelog_include = ["structured-pkix", "structured-cms", "structured-xades"]
 
 [[package]]
 name = "structured-pkix"
 version_group = "primitives"
-changelog_include = ["structured-asn1", "structured-cms"]
+changelog_include = ["structured-asn1", "structured-cms", "structured-xades"]
 
 [[package]]
 name = "structured-cms"
 git_tag_name = "v{{ version }}"
 version_group = "primitives"
-changelog_include = ["structured-asn1", "structured-pkix"]
+changelog_include = ["structured-asn1", "structured-pkix", "structured-xades"]
 
-# Enable after the separate first-publication setup is complete.
 [[package]]
 name = "structured-xades"
-release = false
+git_tag_name = "structured-xades-v{{ version }}"
+version_group = "primitives"
+changelog_include = ["structured-asn1", "structured-pkix", "structured-cms"]

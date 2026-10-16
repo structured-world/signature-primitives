@@ -129,6 +129,17 @@ impl<W: Work> OwnedText<W> {
         self.text.try_push_str(suffix)
     }
 
+    /// Prepares space for at least `additional` more UTF-8 bytes.
+    ///
+    /// Uses the existing vector's exact reservation strategy, without changing
+    /// length, scanning the prefix or adding amortized spare capacity. Actual
+    /// growth and its old/new storage peak use this owner's original execution.
+    /// Refusal preserves initialized bytes, pointer, capacity and storage charge;
+    /// consumed work is not refunded. Sufficient capacity requires no work.
+    pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), MemoryError> {
+        self.text.try_reserve_exact(additional)
+    }
+
     /// The original account retaining this allocation.
     #[must_use]
     pub fn memory(&self) -> &Memory {

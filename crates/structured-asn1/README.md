@@ -167,6 +167,10 @@ accounted vector. It pays suffix copying and actual growth under the original
 execution without rescanning the existing prefix. On refusal, the original
 text, allocation and storage charge remain intact; existing views must end
 before the exclusive append. Empty suffixes require no work.
+When the total output length is known, `try_reserve_exact(additional)` prepares
+space once through the same accounted vector, without changing text or scanning
+its prefix. Existing sufficient capacity needs no work; actual growth retains
+the same old/new peak admission and refusal rollback.
 Mutable bytes are available only by consuming the text with `into_bytes`;
 subsequent reconstruction validates again. There is no reference count or
 infallible allocating clone. Memory-owned text is `Send + Sync` through the

@@ -1,4 +1,4 @@
-# Signature primitives — Rust ASN.1, X.509 and CMS libraries
+# Signature primitives — Rust ASN.1, X.509, CMS and XAdES libraries
 
 [![CI](https://github.com/structured-world/signature-primitives/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/structured-world/signature-primitives/actions/workflows/ci.yml)
 [![Rust 1.92+](https://img.shields.io/badge/Rust-1.92%2B-93450a?logo=rust)](https://github.com/structured-world/signature-primitives/blob/main/Cargo.toml)
@@ -7,7 +7,9 @@
 Read ASN.1 BER/DER and X.509 certificates in Rust while preserving the original
 signed bytes. Build certification paths using your own cryptographic provider,
 trust inputs and resource budgets. Check CMS signatures and RFC 3161 timestamps
-through injected providers. The libraries support **`no_std + alloc`**.
+through injected providers. Process XAdES signed properties, timestamp/archive
+inputs and B-B/B-T/B-LT/B-LTA evidence through an explicit XML adapter.
+The libraries support **`no_std + alloc`**.
 
 Since version 0.1.1, PKIX also checks an already supplied leaf-first certificate chain
 through `structured_pkix::path::validate`, returning typed static facts or
@@ -25,45 +27,54 @@ time facts, published since version 0.1.3; see the
 | [**structured-asn1**](crates/structured-asn1/README.md) | Borrowed BER/DER parsing, OIDs, exact byte ranges and shared memory/work budgets | [![version](https://img.shields.io/crates/v/structured-asn1)](https://crates.io/crates/structured-asn1) [![downloads](https://img.shields.io/crates/d/structured-asn1)](https://crates.io/crates/structured-asn1) | [![docs.rs](https://img.shields.io/docsrs/structured-asn1)](https://docs.rs/structured-asn1) |
 | [**structured-pkix**](crates/structured-pkix/README.md) | Borrowed X.509 certificates, names, extensions, UTC time and provider-neutral path validation | [![version](https://img.shields.io/crates/v/structured-pkix)](https://crates.io/crates/structured-pkix) [![downloads](https://img.shields.io/crates/d/structured-pkix)](https://crates.io/crates/structured-pkix) | [![docs.rs](https://img.shields.io/docsrs/structured-pkix)](https://docs.rs/structured-pkix) |
 | [**structured-cms**](crates/structured-cms/README.md) | CMS SignedData, ESS certificate binding, countersignatures and RFC 3161 request/token checks | [![version](https://img.shields.io/crates/v/structured-cms)](https://crates.io/crates/structured-cms) [![downloads](https://img.shields.io/crates/d/structured-cms)](https://crates.io/crates/structured-cms) | [![docs.rs](https://img.shields.io/docsrs/structured-cms)](https://docs.rs/structured-cms) |
+| [**structured-xades**](crates/structured-xades/README.md) | XAdES signed properties, timestamp/archive inputs and baseline evidence through caller-supplied XML and cryptographic adapters | [![version](https://img.shields.io/crates/v/structured-xades)](https://crates.io/crates/structured-xades) [![downloads](https://img.shields.io/crates/d/structured-xades)](https://crates.io/crates/structured-xades) | [![docs.rs](https://img.shields.io/docsrs/structured-xades)](https://docs.rs/structured-xades) |
 
-Downloads are cumulative per crate. The three crates share a coordinated release
+Downloads are cumulative per crate. The four crates share a coordinated release
 version and can be used separately. CMS preserves original signed bytes and
 source mappings, while applications supply cryptographic providers and enforce
 certificate-path, status and trust policy. It contains no cryptographic engine.
-XAdES remains a separate planned mechanism, not a capability of these crates.
+XAdES is published as a separate mechanism crate. Its generic core contains no
+XML parser or canonicalizer; native XML adapter and interoperability qualification
+remain separate from the common mechanisms. See the
+[XAdES adapter boundary](crates/structured-xades/README.md#adapter-boundary).
 
 ## Install
 
-The snippets below target the coordinated **0.2 API family** and resolve only
-after that release is available on crates.io; the badges above show registry
-availability, not the development manifest. Before its publication, use the
-versioned [ASN.1](https://docs.rs/structured-asn1/0.1.6) and
-[PKIX](https://docs.rs/structured-pkix/0.1.6) guides for the existing 0.1 family.
-CMS starts with the coordinated 0.2 release; do not mix its parser/resource types
-with the 0.1 libraries.
+The snippets below use the published, coordinated **0.4 API family**. Keep the
+crates on the same family so their parser, resource and evidence types agree.
 
 For ASN.1 parsing:
 
 ```toml
 [dependencies]
-structured-asn1 = "0.2"
+structured-asn1 = "0.4"
 ```
 
 For certificate processing, add PKIX as well:
 
 ```toml
 [dependencies]
-structured-asn1 = "0.2"
-structured-pkix = "0.2"
+structured-asn1 = "0.4"
+structured-pkix = "0.4"
 ```
 
 For CMS and timestamp processing:
 
 ```toml
 [dependencies]
-structured-asn1 = "0.2"
-structured-pkix = "0.2"
-structured-cms = "0.2"
+structured-asn1 = "0.4"
+structured-pkix = "0.4"
+structured-cms = "0.4"
+```
+
+For XAdES, provide an XML adapter and add the XAdES mechanisms:
+
+```toml
+[dependencies]
+structured-asn1 = "0.4"
+structured-pkix = "0.4"
+structured-cms = "0.4"
+structured-xades = "0.4"
 ```
 
 Rust **1.92 or newer** is required. Default features use `no_std + alloc`;

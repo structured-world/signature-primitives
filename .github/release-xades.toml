@@ -1,0 +1,18 @@
+# The temporary credential can publish only this new crate, after its
+# registry dependencies have been delivered by the separate OIDC step.
+[workspace]
+release_always = true
+git_release_enable = true
+git_tag_name = "structured-xades-v{{ version }}"
+
+[[package]]
+name = "structured-asn1"
+release = false
+
+[[package]]
+name = "structured-pkix"
+release = false
+
+[[package]]
+name = "structured-cms"
+release = false

@@ -1,5 +1,6 @@
 //! Accounted storage and pre-admitted hashing for the existing hashbrown engine.
 
+use core::borrow::Borrow;
 use core::fmt;
 use core::hash::{BuildHasher, Hash};
 
@@ -61,6 +62,14 @@ impl HashWork for (usize, usize, usize) {
 impl HashWork for &[u8] {
     fn hash_work(&self) -> Result<u64, MemoryError> {
         Ok(self.len() as u64 + 1)
+    }
+}
+
+impl HashWork for str {
+    fn hash_work(&self) -> Result<u64, MemoryError> {
+        (self.len() as u64)
+            .checked_add(1)
+            .ok_or(MemoryError::WorkExceeded)
     }
 }
 
@@ -280,7 +289,11 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
             .ok_or(MemoryError::WorkExceeded)
     }
 
-    fn hash_key<E: Work>(&self, key: &K, execution: &E) -> Result<u64, MemoryError> {
+    fn hash_key<Q: HashWork + ?Sized, E: Work>(
+        &self,
+        key: &Q,
+        execution: &E,
+    ) -> Result<u64, MemoryError> {
         let work = key
             .hash_work()?
             .checked_add(self.control_work()?)
@@ -305,6 +318,40 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
     /// # Ok::<(), MemoryError>(())
     /// ```
     pub fn get(&self, key: &K, execution: &impl Work) -> Result<Option<&V>, MemoryError> {
+        self.get_key_value_borrowed(key, execution)
+            .map(|entry| entry.map(|(_, value)| value))
+    }
+
+    /// Finds the canonical stored key and value using an allocation-free query.
+    ///
+    /// Owned and borrowed forms must have identical Hash/Eq semantics, as
+    /// required by [`Borrow`]. Current work admits query hashing, table probes
+    /// and every candidate comparison before executing them. The stored key's
+    /// [`HashWork`] bound must also cover its `Borrow<Q>` operation, which must
+    /// not allocate. A refusal returns `Err`, never successful absence or a
+    /// synthetic match. No table/account is rebound and no query key is copied.
+    ///
+    /// Returning the canonical key lets an interner clone its existing shared
+    /// owner without a second lookup or a temporary owned query allocation.
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use structured_asn1::memory::{Memory, MemoryAccount};
+    /// let storage = Memory::new(Arc::new(MemoryAccount::new(4096, 4096)));
+    /// let mut map = storage.map();
+    /// map.try_insert(7usize, "retained")?;
+    /// let query = Memory::new(Arc::new(MemoryAccount::new(0, 1024)));
+    /// assert_eq!(map.get_key_value_borrowed(&7, &query)?, Some((&7, &"retained")));
+    /// # Ok::<(), structured_asn1::memory::MemoryError>(())
+    /// ```
+    pub fn get_key_value_borrowed<Q: HashWork + ?Sized>(
+        &self,
+        key: &Q,
+        execution: &impl Work,
+    ) -> Result<Option<(&K, &V)>, MemoryError>
+    where
+        K: Borrow<Q>,
+    {
         let hash = self.hash_key(key, execution)?;
         let mut failure = None;
         let entry = self.values.raw_entry().from_hash(hash, |candidate| {
@@ -313,7 +360,7 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
         if let Some(reason) = failure {
             return Err(reason);
         }
-        Ok(entry.map(|(_, value)| value))
+        Ok(entry)
     }
 
     /// Looks up an entry for mutation without exposing table growth.
@@ -452,9 +499,9 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
 /// A synthetic match stops hashbrown immediately on exhaustion. The caller
 /// checks failure before exposing or mutating the matched entry, so no false
 /// equality escapes and no expensive comparison runs after a refusal.
-fn equivalent<K: HashWork, W: Work>(
+fn equivalent<K: HashWork + Borrow<Q>, Q: HashWork + ?Sized, W: Work>(
     memory: &W,
-    query: &K,
+    query: &Q,
     candidate: &K,
     failure: &mut Option<MemoryError>,
 ) -> bool {
@@ -470,5 +517,5 @@ fn equivalent<K: HashWork, W: Work>(
         *failure = Some(reason);
         return true;
     }
-    query == candidate
+    query == candidate.borrow()
 }

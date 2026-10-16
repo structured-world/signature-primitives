@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.4.2...structured-asn1-v0.4.3) - 2026-10-16
+
+### Added
+
+- *(memory)* add immutable owned text ([#89](https://github.com/structured-world/signature-primitives/pull/89))
+
 ## [0.4.2](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.4.1...structured-asn1-v0.4.2) - 2026-10-16
 
 ### Added

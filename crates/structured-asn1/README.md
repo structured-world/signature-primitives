@@ -111,6 +111,14 @@ current execution account; iteration prepays control buckets, including sparse
 holes. Rebuilding a collection in another domain requires an explicit fallible
 copy; retained allocations are never silently rebound.
 
+`OwnedMap::try_retain(&current_work, predicate)` filters in place without copying
+keys or allocating another table. It admits the sparse control scan before
+calling the predicate and erase metadata before removing an entry. The first
+resource or predicate error stops further callbacks; earlier removals/value
+edits remain, while later entries are retained. `RetainError` preserves those
+two error classes. The original allocation/account stay attached, and future
+growth still uses the original execution; the predicate funds its own work.
+
 The source uses allocator-api2 0.4.0 for vectors and hashbrown 0.17.1 for maps.
 Hashbrown's published allocator interface still requires allocator-api2 0.2.21;
 that interface forwards to the same account allocator. Both container families

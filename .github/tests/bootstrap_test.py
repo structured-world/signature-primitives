@@ -29,10 +29,12 @@ class BootstrapPackages(unittest.TestCase):
             manifest = tomllib.loads((ROOT / member / "Cargo.toml").read_text())
             if manifest["package"].get("publish", True) is not False:
                 names.add(manifest["package"]["name"])
-        self.assertEqual(names, {"structured-asn1", "structured-pkix", "structured-cms"})
+        existing = {"structured-asn1", "structured-pkix", "structured-cms"}
+        self.assertEqual(names, existing | {"structured-xades"})
         for filename, expected in [
-            ("release-core.toml", names - {"structured-cms"}),
+            ("release-core.toml", existing - {"structured-cms"}),
             ("release-cms.toml", {"structured-cms"}),
+            ("../release-plz.toml", existing),
         ]:
             config = tomllib.loads((ROOT / ".github" / filename).read_text())
             self.assertIs(config["workspace"]["release_always"], False)

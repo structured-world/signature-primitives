@@ -473,13 +473,15 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, W: Work> Index<'source, 
             });
         }
         // Validate even empty/missing catalogues before deriving an absence.
-        if evidence.signature() != self.signature || evidence.token().snapshot != self.snapshot {
+        if evidence.token().snapshot != self.snapshot {
             return Err(ArchiveError::Index(IndexError::Foreign {
                 signature: self.signature,
             }));
         }
+        self.require_signature(evidence.signature(), access)
+            .map_err(ArchiveError::Index)?;
         coverage
-            .require_evidence(evidence, evidence.property())
+            .require_evidence(evidence, evidence.property(), access)
             .map_err(ArchiveError::Coverage)?;
         let key = artifact.identity();
         let copies = self
@@ -489,8 +491,10 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, W: Work> Index<'source, 
         for copy in copies {
             let copy = copy.map_err(ArchiveError::Index)?;
             found = true;
+            // The immutable coverage/evidence pair was bound once above;
+            // each occurrence still checks the current XML view and lookup.
             if coverage
-                .covers(evidence, copy.location.node, access)
+                .selects(copy.location.node, access)
                 .map_err(ArchiveError::Coverage)?
             {
                 return Ok(Archived::Present(copy));

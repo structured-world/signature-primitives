@@ -189,7 +189,7 @@ pub fn archived_participants<
         return Err(foreign());
     }
     coverage
-        .require_evidence(evidence, archive.node)
+        .require_evidence(evidence, archive.node, access)
         .map_err(|cause| ParticipantArchiveError::Material(ArchiveError::Coverage(cause)))?;
     let authorities = archived_authorities(inputs.authorities(), index, coverage, evidence, access)
         .map_err(ParticipantArchiveError::Material)?;

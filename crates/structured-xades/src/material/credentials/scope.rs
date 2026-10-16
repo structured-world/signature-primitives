@@ -67,7 +67,7 @@ impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, C: Work> Scope<'_, N, 
                     return Err(Error::Foreign { node });
                 }
                 coverage
-                    .require_evidence(evidence, node)
+                    .require_evidence(evidence, node, access)
                     .map_err(|cause| Error::Archive(ArchiveError::Coverage(cause)))
             }
             _ => Err(Error::Foreign { node }),

@@ -162,22 +162,122 @@ impl<N: Copy + Eq + structured_asn1::memory::HashWork, D: Copy + Eq, G: Copy + E
         node: N,
         access: &Access<'_, X, Q>,
     ) -> Result<bool, X> {
-        self.require_evidence(evidence, node)?;
+        self.require_evidence(evidence, node, access)?;
         self.selects(node, access)
     }
 
-    pub(crate) fn require_evidence<E>(
+    pub(crate) fn require_evidence<X: Xml<Id = N, Document = D, Generation = G>, Q: Work>(
         &self,
         evidence: &Verified<N, D, G>,
         node: N,
+        access: &Access<'_, X, Q>,
+    ) -> Result<(), X> {
+        if self.snapshot != access.snapshot() {
+            return Err(CoverageError::Foreign { node });
+        }
+        access
+            .query(node, |_, _, work| {
+                Ok(self.require_identity(
+                    evidence.token().snapshot,
+                    evidence.signature(),
+                    evidence.property(),
+                    evidence.role(),
+                    node,
+                    work,
+                ))
+            })
+            .map_err(CoverageError::Access)?
+    }
+
+    fn require_identity<E, Q: Work>(
+        &self,
+        snapshot: Snapshot<D, G>,
+        signature: N,
+        timestamp: N,
+        role: Role,
+        node: N,
+        execution: &Q,
     ) -> core::result::Result<(), CoverageError<E, N>> {
-        if evidence.token().snapshot != self.snapshot
-            || evidence.signature() != self.signature
-            || evidence.property() != self.timestamp
-            || evidence.role() != self.role
+        let resource = |cause| CoverageError::Resource { node, cause };
+        if snapshot != self.snapshot
+            || !crate::xml::equal_id(signature, self.signature, execution).map_err(resource)?
+            || !crate::xml::equal_id(timestamp, self.timestamp, execution).map_err(resource)?
+            || role != self.role
         {
             return Err(CoverageError::Foreign { node });
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use core::{
+        cell::Cell,
+        hash::{Hash, Hasher},
+    };
+    use structured_asn1::memory::{Memory, MemoryAccount};
+
+    #[derive(Clone, Copy, Debug)]
+    struct CountedId<'a>(&'a Cell<usize>, u8);
+
+    impl PartialEq for CountedId<'_> {
+        fn eq(&self, other: &Self) -> bool {
+            self.0.set(self.0.get() + 1);
+            self.1 == other.1
+        }
+    }
+    impl Eq for CountedId<'_> {}
+    impl Hash for CountedId<'_> {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.1.hash(state);
+        }
+    }
+    impl HashWork for CountedId<'_> {
+        fn hash_work(&self) -> core::result::Result<u64, MemoryError> {
+            Ok(64)
+        }
+    }
+
+    #[test]
+    fn evidence_identity_admits_each_comparison_before_equality() {
+        // Data-dependent Id equality must not execute under a zero/short
+        // current query budget, even though its retained map is already funded.
+        let calls = Cell::new(0);
+        let id = CountedId(&calls, 1);
+        let memory = Memory::new(Arc::new(MemoryAccount::new(1024, 1000)));
+        let snapshot = Snapshot {
+            document: 1u8,
+            generation: 1u8,
+        };
+        let coverage = ElementCoverage {
+            snapshot,
+            signature: id,
+            timestamp: id,
+            role: Role::Archive,
+            elements: memory.map(),
+        };
+        for (budget, expected_calls) in [(0, 0), (127, 0), (128, 1), (255, 1)] {
+            calls.set(0);
+            let current = Memory::new(Arc::new(MemoryAccount::new(0, budget)));
+            assert!(matches!(
+                coverage.require_identity::<(), _>(snapshot, id, id, Role::Archive, id, &current,),
+                Err(CoverageError::Resource {
+                    cause: MemoryError::WorkExceeded,
+                    ..
+                })
+            ));
+            assert_eq!(calls.get(), expected_calls);
+        }
+        calls.set(0);
+        let exact = Memory::new(Arc::new(MemoryAccount::new(0, 256)));
+        coverage
+            .require_identity::<(), _>(snapshot, id, id, Role::Archive, id, &exact)
+            .unwrap();
+        assert_eq!(calls.get(), 2);
+        assert_eq!(exact.charge_work(1), Err(MemoryError::WorkExceeded));
+        assert_eq!(exact.used(), 0);
     }
 }

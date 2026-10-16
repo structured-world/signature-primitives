@@ -246,12 +246,7 @@ impl<'a, X: Xml, W: Work> Access<'a, X, W> {
     }
 
     pub(crate) fn equal_id(&self, left: X::Id, right: X::Id) -> Result<bool, MemoryError> {
-        let cost = left
-            .hash_work()?
-            .checked_add(right.hash_work()?)
-            .ok_or(MemoryError::WorkExceeded)?;
-        self.execution.charge_work(cost)?;
-        Ok(left == right)
+        equal_id(left, right, self.execution)
     }
 
     pub(crate) fn trim_xml_whitespace<'value>(
@@ -335,6 +330,19 @@ impl<'a, X: Xml, W: Work> Access<'a, X, W> {
                 .next_sibling(self.snapshot, parent, node, self.execution)
         })
     }
+}
+
+pub(crate) fn equal_id<N: Copy + HashWork, W: Work>(
+    left: N,
+    right: N,
+    execution: &W,
+) -> Result<bool, MemoryError> {
+    let cost = left
+        .hash_work()?
+        .checked_add(right.hash_work()?)
+        .ok_or(MemoryError::WorkExceeded)?;
+    execution.charge_work(cost)?;
+    Ok(left == right)
 }
 
 /// An iterative, snapshot-checked direct-child traversal for property containers.

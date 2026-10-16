@@ -1402,6 +1402,14 @@ fn assert_verified_element_coverage(
     let value = xml.element_child(signature, DS, "SignatureValue");
     let key = xml.element_child(signature, DS, "KeyInfo");
     assert!(coverage.covers(verified, value, &access).unwrap());
+    // Retained timestamp evidence cannot spend its earlier account when a
+    // later coverage query has no work, even for the same original identities.
+    let denied = Memory::new(Arc::new(MemoryAccount::new(0, 0)));
+    let denied_access = Access::new(xml, xml.snapshot(), &denied);
+    assert!(matches!(
+        coverage.covers(verified, value, &denied_access),
+        Err(timestamp::CoverageError::Access(_))
+    ));
     assert_eq!(
         coverage.covers(verified, key, &access).unwrap(),
         stamp.role() == Role::Archive

@@ -64,12 +64,12 @@ impl Parser {
         }
         match self.context {
             Context::Comment { depth, escaped } => {
-                if byte == b'\r' {
+                if matches!(byte, b'\r' | b'\n') {
                     self.context = Context::Comment {
                         depth,
                         escaped: false,
                     };
-                    self.folding = 1;
+                    self.folding = if byte == b'\r' { 1 } else { 2 };
                 } else if escaped {
                     self.context = Context::Comment {
                         depth,
@@ -101,9 +101,9 @@ impl Parser {
                 true
             }
             Context::Quoted { escaped } => {
-                if byte == b'\r' {
+                if matches!(byte, b'\r' | b'\n') {
                     self.context = Context::Quoted { escaped: false };
-                    self.folding = 1;
+                    self.folding = if byte == b'\r' { 1 } else { 2 };
                 } else if escaped {
                     self.context = Context::Quoted { escaped: false };
                 } else if byte == b'\\' {
@@ -124,9 +124,12 @@ impl Parser {
                 self.gap();
                 true
             }
-            b'\r' => {
+            b'\r' | b'\n' => {
                 self.gap();
-                self.folding = 1;
+                // XML 1.0 §2.11 normalizes physical CRLF to LF before
+                // Node::Text; character references can still carry CRLF.
+                // https://www.w3.org/TR/REC-xml/#sec-line-ends
+                self.folding = if byte == b'\r' { 1 } else { 2 };
                 true
             }
             b'(' => {
@@ -283,6 +286,28 @@ mod tests {
             assert!(parser.complete(), "{input:?}");
         }
         assert_eq!(work.used(), 0);
+    }
+
+    #[test]
+    fn xml_normalized_folds_survive_fragment_boundaries() {
+        // XML 1.0 §2.11 replaces CRLF with LF before Node::Text. Folding
+        // still requires following whitespace, including inside MIME strings.
+        let work = Memory::new(Arc::new(MemoryAccount::new(0, 100_000)));
+        for fragments in [
+            ["text/plain;", "\n", " x=one"],
+            ["text/plain; x=\"one", "\n", " two\""],
+            ["text/plain (one", "\n", " two)"],
+        ] {
+            let mut parser = Parser::new();
+            for fragment in fragments {
+                assert!(parser.feed(fragment, &work).unwrap());
+            }
+            assert!(parser.complete());
+        }
+        for input in ["text/plain\n", "text/plain\nX", "text/plain\n\n x=one"] {
+            let mut parser = Parser::new();
+            assert!(!parser.feed(input, &work).unwrap() || !parser.complete());
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Immutable, independently retained UTF-8 over an existing accounted buffer.
+//! Independently retained UTF-8 over an existing accounted buffer.
 
 use super::{HashWork, Memory, MemoryError, OwnedVec, Work, allocator::ValidatedText};
 use core::{
@@ -49,10 +49,12 @@ impl<W: Work> fmt::Debug for TextError<W> {
     }
 }
 
-/// Single-owner immutable UTF-8 retaining its original capacity charge.
+/// Single-owner validated UTF-8 retaining its original capacity charge.
 ///
 /// Construction from bytes validates once under their execution before closing
-/// mutable access. Construction from a `str` copies its already validated bytes.
+/// raw mutable access. Construction from a `str` copies its already validated
+/// bytes. Exclusive [`Self::try_push_str`] appends preserve UTF-8 without
+/// revalidating the accumulated prefix.
 /// No reference count, extra allocation or unsafe thread-safety implementation
 /// is introduced. The default owned [`Memory`] form is `Send + Sync`; scoped
 /// forms retain their execution's actual lifetime and thread-safety bounds.
@@ -104,6 +106,27 @@ impl<W: Work> OwnedText<W> {
         Ok(Self {
             text: ValidatedText::from_str(text, execution)?,
         })
+    }
+
+    /// Appends valid UTF-8 under this owner's original execution.
+    ///
+    /// Admits copying the suffix and any actual capacity growth before mutation.
+    /// The existing prefix is not validated again; growth alone can require
+    /// moving it. Spare capacity still requires paying for the suffix copy.
+    /// On refusal the original bytes, pointer, capacity and storage charge remain
+    /// intact. Consumed work is not refunded. Empty suffixes require no work.
+    ///
+    /// Existing views must end before this exclusive mutation:
+    /// ```compile_fail
+    /// use structured_asn1::memory::OwnedText;
+    /// fn append(text: &mut OwnedText) {
+    ///     let view = text.as_str();
+    ///     text.try_push_str("suffix").unwrap();
+    ///     println!("{view}");
+    /// }
+    /// ```
+    pub fn try_push_str(&mut self, suffix: &str) -> Result<(), MemoryError> {
+        self.text.try_push_str(suffix)
     }
 
     /// The original account retaining this allocation.

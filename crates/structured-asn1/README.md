@@ -146,7 +146,7 @@ Pointer/count/UTF-8 view operations remain inside the allocator's narrow unsafe
 boundary; public construction and borrowing are safe.
 
 `OwnedText::from_utf8(bytes)` closes an existing `OwnedVec<u8, W>` into
-single-owner immutable text. It admits a complete UTF-8 scan under the buffer's
+single-owner validated text. It admits a complete UTF-8 scan under the buffer's
 original execution and validates once; `TextError::kind` distinguishes resource
 refusal from invalid UTF-8, and `into_bytes` returns the unchanged buffer on
 failure. Success retains its pointer, capacity and original account without
@@ -155,6 +155,11 @@ accounted copy path for already-valid UTF-8. `into_owned` moves a scoped buffer
 into independently retained storage, with no extra copy, validation or charge.
 
 `OwnedText::as_str`, `as_bytes`, `Borrow<str>` and `Deref<Target = str>` are O(1).
+`try_push_str(&mut self, suffix)` appends already valid UTF-8 through the same
+accounted vector. It pays suffix copying and actual growth under the original
+execution without rescanning the existing prefix. On refusal, the original
+text, allocation and storage charge remain intact; existing views must end
+before the exclusive append. Empty suffixes require no work.
 Mutable bytes are available only by consuming the text with `into_bytes`;
 subsequent reconstruction validates again. There is no reference count or
 infallible allocating clone. Memory-owned text is `Send + Sync` through the

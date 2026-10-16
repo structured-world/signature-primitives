@@ -1,9 +1,10 @@
-//! Validated immutable text; the only unchecked operation borrows sealed UTF-8.
+//! Validated text; the only unchecked operation borrows sealed UTF-8.
 
 use super::super::{Memory, MemoryError, OwnedVec, TextErrorKind, Work};
 
 // No mutable byte access escapes while this owner exists. Both constructors
-// establish UTF-8; moving the vector/account changes neither length nor bytes.
+// establish UTF-8; appending a valid str preserves it. Moving the vector/account
+// changes neither length nor bytes.
 pub(in super::super) struct ValidatedText<W: Work = Memory> {
     bytes: OwnedVec<u8, W>,
 }
@@ -36,11 +37,18 @@ impl<W: Work> ValidatedText<W> {
         &self.bytes
     }
 
+    pub(in super::super) fn try_push_str(&mut self, suffix: &str) -> Result<(), MemoryError> {
+        // Concatenating complete valid UTF-8 strings preserves the invariant.
+        // Copy/growth admission and rollback belong to the existing vector.
+        self.bytes.try_extend_from_slice(suffix.as_bytes())
+    }
+
     pub(in super::super) fn as_str(&self) -> &str {
         // SAFETY: constructors either validated these exact initialized bytes
-        // or copied them from a valid str. The vector is private and immutable;
-        // no method exposes &mut bytes, changes length, or aliases a mutable
-        // owner. into_bytes consumes self, so all str borrows must end first.
+        // or copied them from a valid str. The private vector can only grow by
+        // appending a complete valid str through an exclusive borrow; no method
+        // exposes &mut bytes or aliases a mutable owner. into_bytes consumes
+        // self, so all str borrows must end first.
         // Ordinary OwnedVec ownership keeps the allocation live for this borrow.
         unsafe { core::str::from_utf8_unchecked(&self.bytes) }
     }

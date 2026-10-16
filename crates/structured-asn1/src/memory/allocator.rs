@@ -1,4 +1,4 @@
-//! The only unsafe boundary: preserving allocation layouts and pointer ownership.
+//! The unsafe boundary for allocation layouts, ownership and shared text lifetime.
 
 #![allow(unsafe_code)]
 
@@ -8,6 +8,9 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use allocator_api2::alloc::{AllocError, Allocator, Global, Layout};
 
 use super::{Memory, MemoryError, Work};
+
+mod shared;
+pub(super) use shared::SharedText;
 
 /// Transfers storage from sealed work to its existing account owner.
 pub(super) fn retain<T, W: Work>(
@@ -78,6 +81,9 @@ impl<W: Work> AccountAllocator<W> {
     }
     pub(super) fn memory(&self) -> &Memory {
         self.execution.memory()
+    }
+    fn into_memory(self) -> Memory {
+        self.execution.into_storage_owner(self.storage)
     }
     pub(super) fn work(&self) -> &W {
         &self.execution

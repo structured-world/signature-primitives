@@ -119,6 +119,23 @@ edits remain, while later entries are retained. `RetainError` preserves those
 two error classes. The original allocation/account stay attached, and future
 growth still uses the original execution; the predicate funds its own work.
 
+`SharedString::try_from_str(text, &current_work)` creates independently retained
+immutable UTF-8 with one allocation for the bytes, non-atomic reference count
+and account owner. The complete allocator-visible layout (including padding)
+and copying work are admitted before allocation/copy. Quota, work and actual
+allocator refusal remain distinct. The last handle deallocates before releasing
+the storage charge; forgetting a handle leaks its charge along with its storage.
+Empty text also owns an accounted header.
+
+`Clone`, `as_str`, `Borrow<str>` and `Deref<Target = str>` are O(1), without
+allocation, revalidation, copying or extra account reference-count traffic.
+The type has no weak/mutable access and is neither `Send` nor `Sync`. Clone
+panics without changing the count if the count would overflow. Callers admit
+input-dependent handle fan-out and all Hash/Eq/formatting scans; its `HashWork`
+implementation lets `OwnedMap` admit key hashing/comparison before traversal.
+Pointer/count/UTF-8 view operations remain inside the allocator's narrow unsafe
+boundary; public construction and borrowing are safe.
+
 The source uses allocator-api2 0.4.0 for vectors and hashbrown 0.17.1 for maps.
 Hashbrown's published allocator interface still requires allocator-api2 0.2.21;
 that interface forwards to the same account allocator. Both container families

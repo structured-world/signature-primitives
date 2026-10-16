@@ -392,6 +392,30 @@ impl<T, W: Work> OwnedVec<T, W> {
         self.values.clear();
     }
 
+    /// Moves every element out in source order while retaining this allocation.
+    ///
+    /// Admits the larger of the element count and initialized byte size under
+    /// the original execution before changing length. Refusal leaves all values,
+    /// length, pointer, capacity and storage charge unchanged. No allocation,
+    /// clone or shifting of a remaining tail occurs. Iterator drop destroys any
+    /// unconsumed elements; the empty vector retains its original capacity.
+    /// Arbitrary work performed by element destructors remains their caller's
+    /// responsibility, separate from this prepaid collection traversal/movement.
+    ///
+    /// The iterator exclusively borrows the vector. Forgetting it can leak
+    /// unconsumed elements, as with the underlying vector's drain; the backing
+    /// allocation stays owned and charged until the vector is deallocated.
+    pub fn try_drain_all(
+        &mut self,
+    ) -> Result<
+        impl DoubleEndedIterator<Item = T> + ExactSizeIterator + core::iter::FusedIterator + '_,
+        MemoryError,
+    > {
+        let work = self.values.len().max(core::mem::size_of_val(&**self));
+        self.values.allocator().work().charge_work(work as u64)?;
+        Ok(self.values.drain(..))
+    }
+
     /// Sorts in place without allocating or recursion.
     ///
     /// Comparisons and moves are admitted before execution. The comparator

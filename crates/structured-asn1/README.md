@@ -127,6 +127,14 @@ cover its non-allocating Borrow operation. Query hashing, control probes and
 every actual candidate comparison use current work before execution. Refusal
 is an error, never successful absence. The original account and table stay put.
 
+`OwnedMap::get_mut_borrowed` and `remove_borrowed` query retained keys through
+`Borrow<Q>` under the supplied current Work. They share the canonical lookup's
+Hash/Eq and paid hashing/probing/comparison contract, with no owned query,
+shared-owner clone or second lookup. Removal additionally admits erase/movement
+before changing the table, retaining capacity and the original allocator/account.
+Refusal stays distinct from absence. The typed `get_mut`/`remove` paths delegate
+to the same kernels; arbitrary value mutation and destructors remain caller work.
+
 `OwnedMap::try_retain(&current_work, predicate)` filters in place without copying
 keys or allocating another table. It admits the sparse control scan before
 calling the predicate and erase metadata before removing an entry. The first

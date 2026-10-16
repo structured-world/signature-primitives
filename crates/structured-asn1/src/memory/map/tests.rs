@@ -181,6 +181,128 @@ fn borrowed_lookup_exact_parser_ceiling_is_not_bypassed_by_current_account() {
 }
 
 #[test]
+fn borrowed_mutation_collision_refusal_stops_before_unpaid_borrow_or_erase() {
+    // A synthetic raw-entry match on refusal must never escape as a mutable
+    // value or erase a colliding key. Reuse the existing paid equality kernel.
+    let calls = BorrowedCounters::default();
+    let storage = memory(4096, 100_000);
+    let mut map = storage.map();
+    for value in 0..4 {
+        map.try_insert(
+            BorrowedKey(BorrowedQuery {
+                value,
+                calls: &calls,
+            }),
+            (),
+        )
+        .unwrap();
+    }
+    let query = BorrowedQuery {
+        value: 99,
+        calls: &calls,
+    };
+    let hash_cost = 1 + usize::try_from(map.control_work().unwrap()).unwrap();
+    let capacity = storage.used();
+    let producer_work = storage.work_used();
+    for remove in [false, true] {
+        for (work, comparisons, success) in [
+            (0, 0, false),
+            (hash_cost, 0, false),
+            (hash_cost + 7, 3, false),
+            (hash_cost + 8, 4, true),
+        ] {
+            calls.reset();
+            let current = memory(0, work);
+            let result = if remove {
+                map.remove_borrowed(&query, &current)
+            } else {
+                map.get_mut_borrowed(&query, &current)
+                    .map(Option::<&mut ()>::copied)
+            };
+            if success {
+                assert_eq!(result, Ok(None));
+            } else {
+                assert_eq!(result, Err(MemoryError::WorkExceeded));
+            }
+            assert_eq!(calls.hashes.get(), usize::from(work > 0));
+            assert_eq!(calls.borrows.get(), comparisons);
+            assert_eq!(calls.equals.get(), comparisons);
+            assert_eq!(map.len(), 4);
+            assert_eq!(map.key_work, 4);
+            assert_eq!(storage.used(), capacity);
+            assert_eq!(storage.work_used(), producer_work);
+            assert_eq!(current.used(), 0);
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn borrowed_remove_key_drop_panic_keeps_remaining_key_metadata_consistent() {
+    // Erased-key accounting must settle before the removed key's destructor
+    // can unwind. Otherwise future rehashes retain a nonexistent key's work.
+    struct PanicKey<'a> {
+        value: &'static str,
+        panic: &'a Cell<bool>,
+    }
+    impl core::borrow::Borrow<str> for PanicKey<'_> {
+        fn borrow(&self) -> &str {
+            self.value
+        }
+    }
+    impl Hash for PanicKey<'_> {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.value.hash(state);
+        }
+    }
+    impl PartialEq for PanicKey<'_> {
+        fn eq(&self, other: &Self) -> bool {
+            self.value == other.value
+        }
+    }
+    impl Eq for PanicKey<'_> {}
+    impl HashWork for PanicKey<'_> {
+        fn hash_work(&self) -> Result<u64, MemoryError> {
+            Ok(self.value.len() as u64 + 1)
+        }
+    }
+    impl Drop for PanicKey<'_> {
+        fn drop(&mut self) {
+            assert!(!self.panic.replace(false), "deliberate key drop panic");
+        }
+    }
+    let panic = Cell::new(true);
+    let storage = memory(4096, 100_000);
+    let mut map = storage.map();
+    map.try_insert(
+        PanicKey {
+            value: "key",
+            panic: &panic,
+        },
+        1,
+    )
+    .unwrap();
+    let current = memory(0, 4096);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        map.remove_borrowed("key", &current)
+    }));
+    assert!(result.is_err());
+    assert!(map.is_empty());
+    assert_eq!(map.key_work, 0);
+    map.try_insert(
+        PanicKey {
+            value: "other",
+            panic: &panic,
+        },
+        2,
+    )
+    .unwrap();
+    assert_eq!(map.key_work, 6);
+    drop(map);
+    assert_eq!(storage.used(), 0);
+}
+
+#[test]
 fn retain_empty_and_sparse_maps_keep_storage_and_charge_current_scan() {
     // Sparse holes are work too; deletion never allocates a second key list
     // or refunds the backing table while it remains reusable.

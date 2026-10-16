@@ -383,6 +383,24 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
         key: &K,
         execution: &impl Work,
     ) -> Result<Option<&mut V>, MemoryError> {
+        self.get_mut_borrowed(key, execution)
+    }
+
+    /// Finds a mutable value using an allocation-free borrowed query.
+    ///
+    /// Uses the same Hash/Eq/`Borrow` and [`HashWork`] requirements as
+    /// [`Self::get_key_value_borrowed`]. Current work admits hashing, probes and
+    /// each candidate comparison before exposing a mutable value. Refusal is
+    /// `Err`, never absence or a synthetic match. No owned query, second lookup
+    /// or table/account rebinding is performed.
+    pub fn get_mut_borrowed<Q: HashWork + ?Sized>(
+        &mut self,
+        key: &Q,
+        execution: &impl Work,
+    ) -> Result<Option<&mut V>, MemoryError>
+    where
+        K: Borrow<Q>,
+    {
         let hash = self.hash_key(key, execution)?;
         let mut failure = None;
         let entry = self.values.raw_entry_mut().from_hash(hash, |candidate| {
@@ -468,6 +486,25 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
     /// # Ok::<(), MemoryError>(())
     /// ```
     pub fn remove(&mut self, key: &K, execution: &impl Work) -> Result<Option<V>, MemoryError> {
+        self.remove_borrowed(key, execution)
+    }
+
+    /// Removes a value using an allocation-free borrowed query.
+    ///
+    /// Uses the same Hash/Eq/`Borrow` and [`HashWork`] requirements as
+    /// [`Self::get_key_value_borrowed`]. Current work admits lookup and erase
+    /// metadata/value movement before mutation. Refusal leaves the entry intact.
+    /// The original table capacity and allocator remain retained; the removed
+    /// key is dropped and the value transfers its independent ownership.
+    /// Arbitrary key/value destructor work remains caller-owned.
+    pub fn remove_borrowed<Q: HashWork + ?Sized>(
+        &mut self,
+        key: &Q,
+        execution: &impl Work,
+    ) -> Result<Option<V>, MemoryError>
+    where
+        K: Borrow<Q>,
+    {
         let hash = self.hash_key(key, execution)?;
         let mut failure = None;
         let entry = self.values.raw_entry_mut().from_hash(hash, |candidate| {
@@ -486,8 +523,10 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
                     .ok_or(MemoryError::WorkExceeded)?;
                 let removed_work = entry.key().hash_work()?;
                 execution.charge_work(work)?;
-                let (_, value) = entry.remove_entry();
+                let (removed_key, value) = entry.remove_entry();
                 self.key_work -= removed_work;
+                // Settle metadata before caller-owned Drop can unwind.
+                drop(removed_key);
                 Some(value)
             }
             RawEntryMut::Vacant(_) => None,

@@ -43,9 +43,16 @@ impl<W: Work> ValidatedText<W> {
         self.bytes.try_extend_from_slice(suffix.as_bytes())
     }
 
+    pub(in super::super) fn try_reserve_exact(
+        &mut self,
+        additional: usize,
+    ) -> Result<(), MemoryError> {
+        self.bytes.try_reserve_exact(additional)
+    }
+
     pub(in super::super) fn as_str(&self) -> &str {
         // SAFETY: constructors either validated these exact initialized bytes
-        // or copied them from a valid str. The private vector can only grow by
+        // or copied them from a valid str. Initialized bytes can only grow by
         // appending a complete valid str through an exclusive borrow; no method
         // exposes &mut bytes or aliases a mutable owner. into_bytes consumes
         // self, so all str borrows must end first.

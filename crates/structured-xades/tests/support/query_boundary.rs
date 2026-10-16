@@ -119,3 +119,41 @@ impl Xml for Boundary<'_> {
         self.source.next_sibling(snapshot, parent, node, execution)
     }
 }
+
+impl super::SignatureXml for Boundary<'_> {
+    fn signature_status<W: Work>(
+        &self,
+        snapshot: Snapshot<u8, u8>,
+        signature: usize,
+        work: &W,
+    ) -> Result<super::Status, Cause> {
+        self.source.signature_status(snapshot, signature, work)
+    }
+    fn reference_count<W: Work>(
+        &self,
+        snapshot: Snapshot<u8, u8>,
+        signature: usize,
+        work: &W,
+    ) -> Result<usize, Cause> {
+        self.source.reference_count(snapshot, signature, work)
+    }
+    fn reference<R, W: Work>(
+        &self,
+        snapshot: Snapshot<u8, u8>,
+        signature: usize,
+        ordinal: usize,
+        work: &W,
+        visitor: impl for<'view> FnOnce(super::Reference<'view, usize>) -> R,
+    ) -> Result<R, Cause> {
+        self.source
+            .reference(snapshot, signature, ordinal, work, visitor)
+    }
+    fn qualifying_target<W: Work>(
+        &self,
+        snapshot: Snapshot<u8, u8>,
+        qualifying: usize,
+        work: &W,
+    ) -> Result<super::Target<usize>, Cause> {
+        self.source.qualifying_target(snapshot, qualifying, work)
+    }
+}

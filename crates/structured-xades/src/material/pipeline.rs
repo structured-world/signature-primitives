@@ -296,20 +296,9 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
         admit(&access, layout.signature())?;
         let catalogue = &prepared.material()[index];
         let node = catalogue.parent();
-        let cost = node
-            .hash_work()
-            .and_then(|cost| cost.checked_mul(4).ok_or(MemoryError::WorkExceeded))
-            .map_err(|cause| Error::Resource { node, cause })?;
-        execution
-            .charge_work(cost)
-            .map_err(|cause| Error::Resource { node, cause })?;
-        let placement = if parents[0] == Some(node) || parents[1] == Some(node) {
-            Placement::Signature(node)
-        } else if parents[2] == Some(node) || parents[3] == Some(node) {
-            Placement::Attribute(node)
-        } else {
-            return Err(Error::Foreign { node });
-        };
+        let placement = source_placement(parents, node, &execution)
+            .map_err(|cause| Error::Resource { node, cause })?
+            .ok_or(Error::Foreign { node })?;
         collect(
             xml,
             &access,
@@ -323,7 +312,14 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
     for index in 0..prepared.validation().len() {
         admit(&access, layout.signature())?;
         let data = &prepared.validation()[index];
-        if data.snapshot() != layout.snapshot() || data.signature() != layout.signature() {
+        if data.snapshot() != layout.snapshot()
+            || !access
+                .equal_id(data.signature(), layout.signature())
+                .map_err(|cause| Error::Resource {
+                    node: data.node(),
+                    cause,
+                })?
+        {
             return Err(Error::Foreign { node: data.node() });
         }
         collect_validation(xml, &access, data, operation, &mut sources, &mut opaque)?;
@@ -561,4 +557,58 @@ pub(super) fn admit<X: Xml, W: Work, VE>(
         .query(node, |_, _, work| Ok(work.charge_work(1)))
         .map_err(Error::Access)?
         .map_err(|cause| Error::Resource { node, cause })
+}
+
+fn source_placement<N: Copy + HashWork, W: Work>(
+    parents: [Option<N>; 4],
+    node: N,
+    work: &W,
+) -> Result<Option<Placement<N>>, MemoryError> {
+    for (index, parent) in parents.into_iter().enumerate() {
+        if let Some(parent) = parent
+            && crate::xml::equal_id(parent, node, work)?
+        {
+            return Ok(Some(if index < 2 {
+                Placement::Signature(node)
+            } else {
+                Placement::Attribute(node)
+            }));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::{Placement, source_placement};
+    use alloc::sync::Arc;
+    use structured_asn1::memory::{HashWork, Memory, MemoryAccount, MemoryError};
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    struct Identity(u8, u64);
+    impl HashWork for Identity {
+        fn hash_work(&self) -> Result<u64, MemoryError> {
+            Ok(self.1)
+        }
+    }
+
+    #[test]
+    fn placement_pays_the_retained_parent_operand_before_comparison() {
+        // The untrusted retained parent has a larger scan bound than the
+        // material node. Paying four node bounds cannot admit even one pair.
+        let node = Identity(1, 1);
+        let parent = Identity(2, 100);
+        let short = Memory::new(Arc::new(MemoryAccount::new(0, 4)));
+        assert!(matches!(
+            source_placement([Some(parent), None, None, None], node, &short),
+            Err(MemoryError::WorkExceeded)
+        ));
+        assert_eq!(short.work_remaining(), 4);
+        let exact = Memory::new(Arc::new(MemoryAccount::new(0, 2)));
+        assert!(matches!(
+            source_placement([None, None, Some(node), None], node, &exact),
+            Ok(Some(Placement::Attribute(_)))
+        ));
+        assert_eq!(exact.work_remaining(), 0);
+    }
 }

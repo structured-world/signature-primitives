@@ -122,7 +122,13 @@ pub fn read_store<X: Xml, W: Work>(
         .query(inventory.signature(), |_, _, _| Ok(()))
         .map_err(Error::Access)?;
     if let Some(policy) = policy
-        && (policy.snapshot != inventory.snapshot() || policy.signature != inventory.signature())
+        && (policy.snapshot != inventory.snapshot()
+            || !access
+                .equal_id(policy.signature, inventory.signature())
+                .map_err(|cause| Error::Resource {
+                    node: policy.node,
+                    cause,
+                })?)
     {
         return Err(Error::Access(AccessError::Changed { node: policy.node }));
     }

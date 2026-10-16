@@ -240,20 +240,24 @@ pub fn associate<X: ReferenceXml, W: Work>(
     original: &Original<X>,
 ) -> AssociationResult<OwnedVec<Object<X::Id>>, X> {
     let property = AssociationError::Property;
-    if access.snapshot() != original.snapshot
-        || bound.containers().snapshot() != original.snapshot
-        || bound.containers().signature() != original.signature
-    {
-        return Err(property(Error::Access(AccessError::Changed {
-            node: original.node,
-        })));
-    }
+    bind_original(access, bound, original)?;
     let mut output = access
         .query(original.node, |_, _, work| Ok(work.vector()))
         .map_err(|cause| property(Error::Access(cause)))?;
+    let is_properties = |r: crate::binding::Reference<'_, X::Id>| match r.target {
+        Some(target) => access
+            .equal_id(target, bound.containers().signed())
+            .map_err(|cause| {
+                property(Error::Resource {
+                    node: r.node,
+                    cause,
+                })
+            }),
+        None => Ok(false),
+    };
     let mut retain = |descriptor: Descriptor<'_, X::Id>| {
         let r = descriptor.reference;
-        if r.status != Status::Valid || r.target == Some(bound.containers().signed()) {
+        if r.status != Status::Valid {
             return Err(AssociationError::Ineligible { node: r.node });
         }
         output
@@ -281,7 +285,13 @@ pub fn associate<X: ReferenceXml, W: Work>(
                             node,
                             LexicalSource::SimpleContent,
                             work,
-                            &mut retain,
+                            |descriptor| {
+                                let r = descriptor.reference;
+                                if r.status != Status::Valid || is_properties(r)? {
+                                    return Err(AssociationError::Ineligible { node: r.node });
+                                }
+                                retain(descriptor)
+                            },
                         )
                     })
                     .map_err(|cause| property(Error::Access(cause)))?;
@@ -304,7 +314,7 @@ pub fn associate<X: ReferenceXml, W: Work>(
                         original.signature,
                         work,
                         |descriptor| {
-                            if descriptor.reference.target == Some(bound.containers().signed()) {
+                            if is_properties(descriptor.reference)? {
                                 return Ok(());
                             }
                             retain(descriptor)
@@ -328,6 +338,34 @@ pub fn associate<X: ReferenceXml, W: Work>(
         }
     }
     Ok(output.into_owned())
+}
+
+fn bind_original<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    bound: &Bound<X::Id, X::Document, X::Generation>,
+    original: &Original<X>,
+) -> AssociationResult<(), X> {
+    let property = AssociationError::Property;
+    if access.snapshot() != original.snapshot || bound.containers().snapshot() != original.snapshot
+    {
+        return Err(property(Error::Access(AccessError::Changed {
+            node: original.node,
+        })));
+    }
+    if !access
+        .equal_id(bound.containers().signature(), original.signature)
+        .map_err(|cause| {
+            property(Error::Resource {
+                node: original.node,
+                cause,
+            })
+        })?
+    {
+        return Err(property(Error::Access(AccessError::Changed {
+            node: original.node,
+        })));
+    }
+    Ok(())
 }
 
 /// Association result preserving this owner's processing and original node types.

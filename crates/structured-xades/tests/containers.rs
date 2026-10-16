@@ -5606,6 +5606,18 @@ fn role_credential_presence_conditions_attribute_material_without_authenticating
         matches!(unsigned::check_credential_material(&access, &inventory, None), Err(properties::Error::Forbidden { node }) if node == material)
     );
     let roles = role::read(&access, &signed).unwrap().unwrap();
+    // Credential presence is a new retained-source query: reject an unfunded
+    // signature equality before traversing roles or inventory entries.
+    let short = Memory::new(Arc::new(MemoryAccount::new(0, 1)));
+    let lower = Access::new(&xml, xml.snapshot(), &short);
+    assert!(matches!(
+        unsigned::check_credential_material(&lower, &inventory, Some(&roles)),
+        Err(properties::Error::Access(AccessError::Resource {
+            cause: MemoryError::WorkExceeded,
+            ..
+        }))
+    ));
+    assert_eq!(short.work_remaining(), 1);
     unsigned::check_credential_material(&access, &inventory, Some(&roles)).unwrap();
     let zero = self::memory(0);
     let access = Access::new(&xml, xml.snapshot(), &zero);
@@ -8379,6 +8391,18 @@ fn explicit_policy_store_preserves_embedded_or_local_source_without_acquisition(
         let layout = container::locate(&access, 0).unwrap();
         let bound = binding::bind(&access, &layout).unwrap();
         let unsigned = unsigned::read(&access, &bound, unsigned::Requirements::Basic).unwrap();
+        // The source dispatch consumes one unit; the retained policy pair
+        // still needs two. Preserve the last unit rather than entering fields.
+        let short = Memory::new(Arc::new(MemoryAccount::new(0, 2)));
+        let lower = Access::new(&xml, xml.snapshot(), &short);
+        assert!(matches!(
+            policy::read_store(&lower, &unsigned, Some(&declaration)),
+            Err(properties::Error::Resource {
+                cause: MemoryError::WorkExceeded,
+                ..
+            })
+        ));
+        assert_eq!(short.work_remaining(), 1);
         let source = policy::read_store(&access, &unsigned, Some(&declaration))
             .unwrap()
             .unwrap();
@@ -8540,6 +8564,20 @@ fn signed_commitment_all_and_explicit_manifest_share_original_reference_authorit
         let bound = binding::bind(&access, &layout).unwrap();
         let original = commitment::read(&access, &signed, 0).unwrap();
         assert_eq!(original.node(), node);
+        // Retained commitment evidence cannot spend an unadmitted comparison
+        // before this operation's first source query or output allocation.
+        let short = Memory::new(Arc::new(MemoryAccount::new(0, 1)));
+        let lower = Access::new(&xml, xml.snapshot(), &short);
+        assert!(matches!(
+            commitment::associate(&lower, &bound, &original),
+            Err(commitment::AssociationError::Property(
+                properties::Error::Resource {
+                    cause: MemoryError::WorkExceeded,
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(short.work_remaining(), 1);
         let objects = commitment::associate(&access, &bound, &original).unwrap();
         if all {
             assert_eq!(
@@ -9298,6 +9336,15 @@ fn validation_data_preserves_material_and_adjacent_timestamp_over_wrong_uri_hint
     let access = Access::new(&xml, xml.snapshot(), &memory);
     let layout = container::locate(&access, 0).unwrap();
     let bound = binding::bind(&access, &layout).unwrap();
+    // Membership follows a successful original child lookup. Leave too little
+    // for both identities and require refusal before deriving an adjacent hint.
+    let current = funded();
+    let observed = query_boundary::Boundary::after_inspection(&xml, node, &current, 1);
+    let lower = Access::new(&observed, xml.snapshot(), &current);
+    assert!(matches!(validation::read(&lower, &bound, node),
+        Err(validation::Error::Input(InputError::Resource {
+            node: at, cause: MemoryError::WorkExceeded })) if at == node));
+    assert_eq!(current.work_remaining(), 1);
     let data = validation::read(&access, &bound, node).unwrap();
     assert_eq!(data.role(), validation::Role::Timestamp);
     assert_eq!(data.node(), node);
@@ -9513,17 +9560,57 @@ fn enveloped_counter_binds_exact_parent_value_with_one_plain_dsig_reference() {
     let access = Access::new(&xml, xml.snapshot(), &memory);
     let layout = container::locate(&access, 0).unwrap();
     let bound = binding::bind(&access, &layout).unwrap();
+    // A complete child lookup does not include membership equality work.
+    let current = funded();
+    let observed = query_boundary::Boundary::after_inspection(&xml, node, &current, 1);
+    let lower = Access::new(&observed, xml.snapshot(), &current);
+    assert!(matches!(counter::read(&lower, &bound, node),
+        Err(counter::Error::Input(InputError::Resource {
+            node: at, cause: MemoryError::WorkExceeded })) if at == node));
+    assert_eq!(current.work_remaining(), 1);
     let original = counter::read(&access, &bound, node).unwrap();
     assert_eq!(original.node(), node);
     assert_eq!(original.child(), child);
     assert_eq!(original.parent(), 0);
     assert_eq!(original.value(), 12);
+    // The callback dispatch fits; matching its target is separate work. Both
+    // eligibility and selection reuse that same admitted comparison.
+    let short = funded();
+    let observed = query_boundary::Boundary::exhaust(&xml, 5, &short, 3);
+    let lower = Access::new(&observed, xml.snapshot(), &short);
+    assert!(matches!(counter::bind(&lower, original),
+        Err(counter::Error::Binding(BindingError::Access(AccessError::Resource {
+            node, cause: MemoryError::WorkExceeded }))) if node == reference));
+    assert_eq!(short.work_remaining(), 1);
+    let original = counter::read(&access, &bound, node).unwrap();
     let checked = counter::bind(&access, original).unwrap();
     assert_eq!(checked.reference(), reference);
     assert_eq!(checked.ordinal(), 0);
     assert_eq!(checked.original().snapshot(), xml.snapshot());
     assert_eq!(memory.used(), 0);
     assert_eq!(xml.streamed.get(), 0);
+}
+
+#[test]
+fn properties_binding_admits_target_after_reference_callback() {
+    // The eligible Reference has been read completely, but its target relation
+    // is still a new two-operand scan under the current operation.
+    let xml = Tree::normal();
+    let original = funded();
+    let access = Access::new(&xml, xml.snapshot(), &original);
+    let layout = container::locate(&access, 0).unwrap();
+    let short = funded();
+    let observed = query_boundary::Boundary::exhaust(&xml, 10, &short, 1);
+    let lower = Access::new(&observed, xml.snapshot(), &short);
+    assert!(matches!(
+        binding::bind(&lower, &layout),
+        Err(BindingError::Access(AccessError::Resource {
+            node: 11,
+            cause: MemoryError::WorkExceeded
+        }))
+    ));
+    assert_eq!(short.work_remaining(), 1);
+    assert_eq!(short.used(), 0);
 }
 
 fn append_nested_counter(

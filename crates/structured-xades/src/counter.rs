@@ -99,7 +99,11 @@ pub fn read<X: Xml, W: Work>(
     let parent = timestamp::unsigned_parent(access, bound, node).map_err(Error::Input)?;
     let mut found = false;
     for child in access.children(parent) {
-        if child.map_err(|cause| Error::Input(InputError::Child(cause)))? == node {
+        let child = child.map_err(|cause| Error::Input(InputError::Child(cause)))?;
+        if access
+            .equal_id(child, node)
+            .map_err(|cause| Error::Input(InputError::Resource { node: child, cause }))?
+        {
             found = true;
             break;
         }

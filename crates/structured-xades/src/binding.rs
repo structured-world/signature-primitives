@@ -216,7 +216,7 @@ pub(crate) fn covering_reference<X: SignatureXml, W: Work>(
                         // SignatureValue. It does not mandate a Type attribute for
                         // this enveloped form or turn it into SignedProperties.
                         // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
-                        Purpose::Counter(_) => Ok(r.target == Some(wanted)),
+                        Purpose::Counter(_) => Ok(true),
                     };
                     (r.node, r.target, r.status, r.coverage, eligible)
                 })
@@ -227,7 +227,19 @@ pub(crate) fn covering_reference<X: SignatureXml, W: Work>(
         if !eligible {
             continue;
         }
-        if target != Some(wanted) || status != Status::Valid {
+        let matches = match target {
+            Some(target) => access
+                .equal_id(target, wanted)
+                .map_err(|cause| BindingError::Access(AccessError::Resource { node, cause }))?,
+            None => false,
+        };
+        if !matches {
+            if let Purpose::Counter(_) = purpose {
+                continue;
+            }
+            return Err(BindingError::Reference { node });
+        }
+        if status != Status::Valid {
             return Err(BindingError::Reference { node });
         }
         if coverage != Coverage::ElementContent {
@@ -287,7 +299,16 @@ pub(crate) fn check_target<X: SignatureXml, W: Work>(
             xml.qualifying_target(snapshot, layout.qualifying(), work)
         })
         .map_err(BindingError::Access)?;
-    if target != Target::LocalBareName(signature) {
+    let matched = match target {
+        Target::LocalBareName(target) => access.equal_id(target, signature).map_err(|cause| {
+            BindingError::Access(AccessError::Resource {
+                node: layout.qualifying(),
+                cause,
+            })
+        })?,
+        Target::Missing | Target::Other => false,
+    };
+    if !matched {
         return Err(BindingError::Target {
             node: layout.qualifying(),
         });

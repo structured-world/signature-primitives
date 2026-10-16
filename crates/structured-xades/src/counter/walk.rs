@@ -112,7 +112,18 @@ pub fn walk<X: SignatureXml, W: Work, R, VE>(
             Err(ContainerError::Missing {
                 parent,
                 local: "QualifyingProperties",
-            }) if parent == child => None,
+            }) => {
+                if !access
+                    .equal_id(parent, child)
+                    .map_err(|cause| WalkError::Resource { node: child, cause })?
+                {
+                    return Err(WalkError::Container(ContainerError::Missing {
+                        parent,
+                        local: "QualifyingProperties",
+                    }));
+                }
+                None
+            }
             Err(cause) => return Err(WalkError::Container(cause)),
         };
         let pending = nested

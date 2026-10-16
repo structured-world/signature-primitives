@@ -196,7 +196,10 @@ pub fn read<X: Xml, W: Work>(
     let mut found = false;
     for child in access.children(parent) {
         let child = child.map_err(|cause| Error::Input(InputError::Child(cause)))?;
-        if child == node {
+        if access
+            .equal_id(child, node)
+            .map_err(|cause| Error::Input(InputError::Resource { node: child, cause }))?
+        {
             found = true;
             break;
         }

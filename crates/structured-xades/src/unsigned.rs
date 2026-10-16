@@ -128,7 +128,16 @@ pub fn check_credential_material<X: Xml, W: Work>(
     }
     let mut credential = false;
     if let Some(roles) = roles {
-        if roles.snapshot() != inventory.snapshot || roles.signature() != inventory.signature {
+        if roles.snapshot() != inventory.snapshot
+            || !access
+                .equal_id(roles.signature(), inventory.signature)
+                .map_err(|cause| {
+                    Error::Access(AccessError::Resource {
+                        node: roles.node(),
+                        cause,
+                    })
+                })?
+        {
             return Err(Error::Access(AccessError::Changed { node: roles.node() }));
         }
         for index in 0..roles.entries().len() {

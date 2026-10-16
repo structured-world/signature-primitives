@@ -7,6 +7,7 @@ pub(super) struct Boundary<'a> {
     calls: Cell<usize>,
     refusal: Option<(usize, &'a Memory, usize)>,
     held: Cell<Option<usize>>,
+    inspection_refusal: Option<(usize, &'a Memory, usize)>,
 }
 
 impl<'a> Boundary<'a> {
@@ -16,6 +17,7 @@ impl<'a> Boundary<'a> {
             calls: Cell::new(0),
             refusal: None,
             held: Cell::new(None),
+            inspection_refusal: None,
         }
     }
     pub(super) fn exhaust(source: &'a Tree, at: usize, work: &'a Memory, leave: usize) -> Self {
@@ -24,6 +26,18 @@ impl<'a> Boundary<'a> {
             calls: Cell::new(0),
             refusal: Some((at, work, leave)),
             held: Cell::new(None),
+            inspection_refusal: None,
+        }
+    }
+    pub(super) fn after_inspection(
+        source: &'a Tree,
+        node: usize,
+        work: &'a Memory,
+        leave: usize,
+    ) -> Self {
+        Self {
+            inspection_refusal: Some((node, work, leave)),
+            ..Self::observe(source)
         }
     }
     pub(super) fn calls(&self) -> usize {
@@ -65,7 +79,16 @@ impl Xml for Boundary<'_> {
         execution: &W,
         visitor: impl for<'view> FnOnce(Node<'view>) -> R,
     ) -> Result<R, Cause> {
-        self.source.inspect(snapshot, node, execution, visitor)
+        let result = self.source.inspect(snapshot, node, execution, visitor);
+        if let Some((at, work, leave)) = self.inspection_refusal
+            && node == at
+            && self.held.get().is_none()
+        {
+            self.held.set(Some(work.used()));
+            work.charge_work(u64::try_from(work.work_remaining() - leave).unwrap())
+                .unwrap();
+        }
+        result
     }
     fn attribute<R, W: Work>(
         &self,

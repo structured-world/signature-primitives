@@ -131,7 +131,19 @@ impl<'view, 'document, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq>
         let references = self.selected().reference();
         if references.snapshot() != access.snapshot()
             || timestamp.token().snapshot != references.snapshot()
-            || timestamp.signature() != references.signature()
+        {
+            return Err(SignatureTimeError::Foreign {
+                property: timestamp.property(),
+            });
+        }
+        if !access
+            .equal_id(timestamp.signature(), references.signature())
+            .map_err(|cause| {
+                SignatureTimeError::Access(AccessError::Resource {
+                    node: timestamp.property(),
+                    cause,
+                })
+            })?
         {
             return Err(SignatureTimeError::Foreign {
                 property: timestamp.property(),

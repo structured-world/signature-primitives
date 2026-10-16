@@ -4262,6 +4262,54 @@ fn timestamp_preparation_funds_signature_identity_before_xml_traversal() {
 }
 
 #[test]
+fn timestamp_membership_pays_after_child_lookup_and_before_field_decoding() {
+    // XML traversal has already succeeded when the last unit remains. It
+    // cannot fund the two-operand membership comparison or begin decoding.
+    let (xml, node, _) = Tree::stamped(Role::Signature);
+    let original = funded();
+    let access = Access::new(&xml, xml.snapshot(), &original);
+    let bound = binding::bind(&access, &container::locate(&access, 0).unwrap()).unwrap();
+    let current = funded();
+    let observed = query_boundary::Boundary::after_inspection(&xml, node, &current, 1);
+    let access = Access::new(&observed, xml.snapshot(), &current);
+    assert!(matches!(timestamp::read(&access, &bound, node),
+        Err(InputError::Resource { node: at, cause: MemoryError::WorkExceeded }) if at == node));
+    assert_eq!(current.work_remaining(), 1);
+    assert_eq!(current.used(), 0);
+    assert_eq!(xml.streamed.get(), 0);
+}
+
+#[test]
+fn signed_timestamp_membership_preserves_current_refusal_after_catalogue_admission() {
+    // The catalogue metadata query fits, but the following identifier scan
+    // must not use retained parsing credit or turn refusal into field access.
+    let (mut xml, _) = certificate_tree();
+    let objects = xml.nodes.len();
+    xml.nodes
+        .push(element(Some(3), XADES, "SignedDataObjectProperties"));
+    let node = xml.nodes.len();
+    xml.nodes
+        .push(element(Some(objects), XADES, "AllDataObjectsTimeStamp"));
+    xml.nodes
+        .push(element(Some(node), DS, "CanonicalizationMethod"));
+    xml.nodes
+        .push(element(Some(node), XADES, "EncapsulatedTimeStamp"));
+    let original = funded();
+    let signed = signed_roles(&xml, &original).unwrap();
+    let access = Access::new(&xml, xml.snapshot(), &original);
+    let bound = binding::bind(&access, &container::locate(&access, 0).unwrap()).unwrap();
+    let current = funded();
+    let observed = query_boundary::Boundary::exhaust(&xml, 2, &current, 1);
+    let access = Access::new(&observed, xml.snapshot(), &current);
+    assert!(
+        matches!(timestamp::read_all_data_objects(&access, &bound, &signed, node),
+        Err(InputError::Resource { node: at, cause: MemoryError::WorkExceeded }) if at == node)
+    );
+    assert_eq!(current.work_remaining(), 1);
+    assert_eq!(current.used(), 0);
+}
+
+#[test]
 fn stale_generation_and_capacity_refusal_precede_timestamp_side_effects() {
     // Plans cannot escape the original generation, and no C14N begins on refusal.
     let (xml, node, _) = Tree::stamped(Role::Archive);
@@ -8692,9 +8740,28 @@ fn baseline_data_format_keeps_covered_original_nodes_without_allocating() {
     let storage = funded();
     let (xml, node, mime) = data_format_tree();
     let signed = signed_roles(&xml, &storage).unwrap();
+    let original_access = Access::new(&xml, xml.snapshot(), &storage);
+    let bound = binding::bind(
+        &original_access,
+        &container::locate(&original_access, 0).unwrap(),
+    )
+    .unwrap();
     let query = memory(100_000);
     let access = Access::new(&xml, xml.snapshot(), &query);
     let original = format::read(&access, &signed, 0).unwrap();
+    // Reusing a retained format does not pay its new binding comparison.
+    let short = Memory::new(Arc::new(MemoryAccount::new(0, 1)));
+    let lower = Access::new(&xml, xml.snapshot(), &short);
+    assert!(matches!(
+        format::resolve(&lower, &bound, &original),
+        Err(format::FormatError::Property(properties::Error::Access(
+            AccessError::Resource {
+                cause: MemoryError::WorkExceeded,
+                ..
+            }
+        )))
+    ));
+    assert_eq!(short.work_remaining(), 1);
     assert_eq!(original.snapshot(), xml.snapshot());
     assert_eq!(original.signature(), 0);
     assert_eq!(original.node(), node);
@@ -8994,6 +9061,37 @@ fn format_coverage_preserves_incomplete_manifest_and_duplicate_association_refus
 }
 
 #[test]
+fn format_counter_exemption_pays_identity_before_reporting_foreign() {
+    // A genuine counter receipt for another selected signature is foreign,
+    // but the current operation must fund that conclusion before comparing.
+    let mut xml = preparation_tree();
+    let (child, _, _) = append_nested_counter(&mut xml, 7, 12, true);
+    let counter_node = xml.nodes[child].parent.unwrap();
+    let original = funded();
+    let signed = signed_roles(&xml, &original).unwrap();
+    let access = Access::new(&xml, xml.snapshot(), &original);
+    let bound = binding::bind(&access, &container::locate(&access, 0).unwrap()).unwrap();
+    let receipt = counter::bind(
+        &access,
+        counter::read(&access, &bound, counter_node).unwrap(),
+    )
+    .unwrap();
+    let short = Memory::new(Arc::new(MemoryAccount::new(0, 3)));
+    let lower = Access::new(&xml, xml.snapshot(), &short);
+    assert!(
+        matches!(format::check_references(&lower, &bound, &signed, Some(&receipt)),
+        Err(format::CoverageError::Access(AccessError::Resource {
+            node, cause: MemoryError::WorkExceeded })) if node == counter_node)
+    );
+    assert_eq!(short.work_remaining(), 1);
+    assert_eq!(short.used(), 0);
+    assert!(matches!(
+        format::check_references(&access, &bound, &signed, Some(&receipt)),
+        Err(format::CoverageError::ForeignCounter { .. })
+    ));
+}
+
+#[test]
 fn format_coverage_keeps_resource_lookup_and_unchecked_target_separate() {
     // Missing/foreign lookup is a semantic disposition. Memory/work refusal and
     // unchecked target digest cannot become a successful empty association list.
@@ -9004,6 +9102,19 @@ fn format_coverage_keeps_resource_lookup_and_unchecked_target_separate() {
     let access = Access::new(&xml, xml.snapshot(), &memory);
     let layout = container::locate(&access, 0).unwrap();
     let bound = binding::bind(&access, &layout).unwrap();
+    // The source signature equality costs two units before any XML query or
+    // output allocation. A short admission must preserve the remaining unit.
+    let short = Memory::new(Arc::new(MemoryAccount::new(0, 1)));
+    let lower = Access::new(&xml, xml.snapshot(), &short);
+    assert!(matches!(
+        format::check_references(&lower, &bound, &signed, None),
+        Err(format::CoverageError::Access(AccessError::Resource {
+            cause: MemoryError::WorkExceeded,
+            ..
+        }))
+    ));
+    assert_eq!(short.work_remaining(), 1);
+    assert_eq!(short.used(), 0);
     let no_storage = Memory::new(Arc::new(MemoryAccount::new(0, 300_000)));
     let access = Access::new(&xml, xml.snapshot(), &no_storage);
     assert!(matches!(

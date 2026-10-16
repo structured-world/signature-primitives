@@ -148,28 +148,7 @@ pub fn check_references<X: ReferenceXml, W: Work>(
     counter: Option<&crate::counter::Binding<X>>,
 ) -> CoverageResult<Covered<X>, X> {
     let layout = bound.containers();
-    if access.snapshot() != layout.snapshot() {
-        return Err(CoverageError::Access(AccessError::Changed {
-            node: layout.signature(),
-        }));
-    }
-    if signed.snapshot() != layout.snapshot() || signed.signature() != layout.signature() {
-        return Err(CoverageError::Format(FormatError::Foreign {
-            node: signed.parent(),
-        }));
-    }
-    let counter_value = if let Some(counter) = counter {
-        if counter.original().snapshot() != layout.snapshot()
-            || counter.original().child() != layout.signature()
-        {
-            return Err(CoverageError::ForeignCounter {
-                signature: layout.signature(),
-            });
-        }
-        Some(counter.original().value())
-    } else {
-        None
-    };
+    let counter_value = bind_sources(access, layout, signed, counter)?;
     let mut formats = prepare_formats(access, bound, signed)?;
     let mut indices = access
         .query(layout.signature(), |_, _, work| Ok(work.map()))
@@ -198,10 +177,23 @@ pub fn check_references<X: ReferenceXml, W: Work>(
                 work,
                 |descriptor| {
                     let r = descriptor.reference;
-                    if r.target == Some(layout.signed())
-                        || (counter_value.is_some() && r.target == counter_value)
-                    {
-                        return Ok(());
+                    if let Some(target) = r.target {
+                        let equal = |other| {
+                            access.equal_id(target, other).map_err(|cause| {
+                                CoverageError::Access(AccessError::Resource {
+                                    node: r.node,
+                                    cause,
+                                })
+                            })
+                        };
+                        if equal(layout.signed())? {
+                            return Ok(());
+                        }
+                        if let Some(value) = counter_value
+                            && equal(value)?
+                        {
+                            return Ok(());
+                        }
                     }
                     if r.status != Status::Valid {
                         return Err(CoverageError::Unchecked { reference: r.node });
@@ -246,6 +238,56 @@ pub fn check_references<X: ReferenceXml, W: Work>(
         }
     }
     Ok(formats.into_owned())
+}
+
+fn bind_sources<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    layout: &crate::container::Layout<X>,
+    signed: &Reading<X>,
+    counter: Option<&crate::counter::Binding<X>>,
+) -> CoverageResult<Option<X::Id>, X> {
+    if access.snapshot() != layout.snapshot() {
+        return Err(CoverageError::Access(AccessError::Changed {
+            node: layout.signature(),
+        }));
+    }
+    if signed.snapshot() != layout.snapshot() {
+        return Err(CoverageError::Format(FormatError::Foreign {
+            node: signed.parent(),
+        }));
+    }
+    if !access
+        .equal_id(signed.signature(), layout.signature())
+        .map_err(|cause| {
+            CoverageError::Access(AccessError::Resource {
+                node: signed.parent(),
+                cause,
+            })
+        })?
+    {
+        return Err(CoverageError::Format(FormatError::Foreign {
+            node: signed.parent(),
+        }));
+    }
+    if let Some(counter) = counter {
+        if counter.original().snapshot() != layout.snapshot()
+            || !access
+                .equal_id(counter.original().child(), layout.signature())
+                .map_err(|cause| {
+                    CoverageError::Access(AccessError::Resource {
+                        node: counter.original().node(),
+                        cause,
+                    })
+                })?
+        {
+            return Err(CoverageError::ForeignCounter {
+                signature: layout.signature(),
+            });
+        }
+        Ok(Some(counter.original().value()))
+    } else {
+        Ok(None)
+    }
 }
 
 fn admit<X: Xml, W: Work>(access: &Access<'_, X, W>, node: X::Id) -> CoverageResult<(), X> {
@@ -306,7 +348,18 @@ pub fn resolve<X: ReferenceXml, W: Work>(
     format: &Original<X>,
 ) -> FormatResult<Resolution<Resolved<X::Id>>, X> {
     let layout = bound.containers();
-    if format.snapshot != layout.snapshot() || format.signature != layout.signature() {
+    if format.snapshot != layout.snapshot() {
+        return Err(FormatError::Foreign { node: format.node });
+    }
+    if !access
+        .equal_id(format.signature, layout.signature())
+        .map_err(|cause| {
+            FormatError::Property(Error::Access(AccessError::Resource {
+                node: format.node,
+                cause,
+            }))
+        })?
+    {
         return Err(FormatError::Foreign { node: format.node });
     }
     if access.snapshot() != format.snapshot {
@@ -327,13 +380,24 @@ pub fn resolve<X: ReferenceXml, W: Work>(
                 work,
                 |descriptor| {
                     let r = descriptor.reference;
-                    if r.status != Status::Valid || r.target == Some(layout.signed()) {
+                    if r.status != Status::Valid {
                         return Err(FormatError::Reference {
                             node: r.node,
                             status: r.status,
                         });
                     }
                     if let Some(object) = r.target {
+                        if access.equal_id(object, layout.signed()).map_err(|cause| {
+                            FormatError::Property(Error::Access(AccessError::Resource {
+                                node: r.node,
+                                cause,
+                            }))
+                        })? {
+                            return Err(FormatError::Reference {
+                                node: r.node,
+                                status: r.status,
+                            });
+                        }
                         object_metadata(access, format, object)?;
                     }
                     Ok(Resolved {

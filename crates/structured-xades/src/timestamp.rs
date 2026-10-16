@@ -568,7 +568,11 @@ fn read_in<X: Xml, W: Work>(
     let parent = unsigned_parent_in(access, layout, node)?;
     let mut contained = false;
     for child in access.children(parent) {
-        if child.map_err(InputError::Child)? == node {
+        let child = child.map_err(InputError::Child)?;
+        if access
+            .equal_id(child, node)
+            .map_err(|cause| InputError::Resource { node: child, cause })?
+        {
             contained = true;
         }
     }
@@ -640,7 +644,13 @@ fn read_data_objects<X: Xml, W: Work>(
     role: Role,
 ) -> InputResult<Timestamp<X>, X> {
     let layout = bound.containers();
-    if signed.snapshot() != layout.snapshot() || signed.signature() != layout.signature() {
+    if signed.snapshot() != layout.snapshot() {
+        return Err(InputError::Foreign { node });
+    }
+    if !access
+        .equal_id(signed.signature(), layout.signature())
+        .map_err(|cause| InputError::Resource { node, cause })?
+    {
         return Err(InputError::Foreign { node });
     }
     if access.snapshot() != signed.snapshot() {
@@ -664,7 +674,10 @@ fn read_object_fields<X: Xml, W: Work>(
             .map_err(InputError::Access)?
             .map_err(|cause| InputError::Resource { node, cause })?;
         let entry = objects.entries()[index];
-        if entry.node == node {
+        if access
+            .equal_id(entry.node, node)
+            .map_err(|cause| InputError::Resource { node, cause })?
+        {
             let expected = if role == Role::IndividualDataObjects {
                 crate::properties::DataObjectRole::IndividualTimestamp
             } else {

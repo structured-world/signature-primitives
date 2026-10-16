@@ -4250,7 +4250,7 @@ fn signature_time_binding_keeps_role_source_key_and_full_static_interval() {
                 .retain_actor(&bound, &stamp, 0, &parent, |_, _| Ok::<_, ()>(false))
                 .unwrap()
                 .unwrap();
-            assert_cached_signature_time(&selected, path, &actor, &utc, &access);
+            assert_cached_signature_time(&selected, path, &actor, &utc, &access, &xml);
             assert_signature_time(
                 &selected,
                 actor.verified(),
@@ -4271,6 +4271,7 @@ fn assert_cached_signature_time(
     actor: &structured_xades::timestamp::TimestampActor<'_, '_, Tree>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     access: &Access<'_, Tree, structured_asn1::memory::Memory>,
+    xml: &Tree,
 ) {
     // A previously established full TSA interval must give the same static
     // association as original UTC evaluation. It must not widen role/key
@@ -4281,6 +4282,19 @@ fn assert_cached_signature_time(
     else {
         return; // A path outside the complete interval cannot create a receipt.
     };
+    // Cached generation is not credit for current signature identity work.
+    // Refusal precedes the first XML query and keeps the unspent short budget.
+    let short = structured_asn1::memory::Memory::new(std::sync::Arc::new(
+        structured_asn1::memory::MemoryAccount::new(0, 1),
+    ));
+    let lower = Access::new(xml, access.snapshot(), &short);
+    assert!(
+        matches!(selected.bind_signature_time_path(&timestamp, &lower),
+        Err(structured_xades::certificate::SignatureTimeError::Access(
+            AccessError::Resource {node, cause:structured_asn1::memory::MemoryError::WorkExceeded}
+        )) if node == actor.verified().property())
+    );
+    assert_eq!(short.work_remaining(), 1);
     match (
         selected.bind_signature_time(actor.verified(), utc, access),
         selected.bind_signature_time_path(&timestamp, access),

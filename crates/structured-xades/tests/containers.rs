@@ -1669,6 +1669,17 @@ fn material_index_combines_xml_and_token_pools_without_losing_original_placement
             let carried = tokens.material_in(current).unwrap();
             let execution = current.execution();
             let access = Access::new(&xml, xml.snapshot(), &execution);
+            // Source-pair identity is new work even though both parsed views
+            // are already retained. Refuse before constructing any index.
+            for budget in [0, 1] {
+                let limited = Memory::new(Arc::new(MemoryAccount::new(0, budget)));
+                let lower = Access::new(&xml, xml.snapshot(), &limited);
+                assert!(matches!(
+                    material::Index::build_with_tokens(&values, &carried, &lower),
+                    Err(material::IndexError::Resource { cause: MemoryError::WorkExceeded, .. })
+                ));
+                assert_eq!(limited.used(), 0);
+            }
             let index = material::Index::build_with_tokens(&values, &carried, &access).unwrap();
             let material::Value::Certificate(certificate) = &values.values()[0].value else { panic!("original header certificate") };
             let copies = index.certificate(certificate, &access).unwrap().collect::<Result<Vec<_>, _>>().unwrap();

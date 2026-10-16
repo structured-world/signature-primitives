@@ -25,6 +25,7 @@ jobs:
       - run: npm run check
         working-directory: .github/tests
       - run: python3 -m unittest discover -s .github/tests -p '*_test.py'
+      - run: python3 scripts/test-qualify-xades-key.py
 
   test:
     runs-on: ubuntu-latest

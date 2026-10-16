@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -46,6 +47,54 @@ def registry_graph(path):
             for p in packages if p.get("source", "").startswith("registry+")}
 
 
+def export_hash(source):
+    if source.is_symlink() or not source.is_dir():
+        raise RuntimeError("qualification source is not an exported directory")
+    digest = hashlib.sha256()
+    for path in sorted(source.rglob("*")):
+        mode = path.lstat().st_mode
+        digest.update(os.fsencode(path.relative_to(source)) + b"\0")
+        if stat.S_ISLNK(mode):
+            digest.update(b"link\0" + os.fsencode(os.readlink(path)) + b"\0")
+        elif stat.S_ISDIR(mode):
+            digest.update(b"directory\0")
+        elif stat.S_ISREG(mode):
+            digest.update(b"file\0" + str(mode & 0o111).encode() + b"\0")
+            with path.open("rb") as contents:
+                digest.update(hashlib.file_digest(contents, "sha256").digest())
+        else:
+            raise RuntimeError("qualification source contains an unsupported file kind")
+    return digest.hexdigest()
+
+
+def require_export(source, expected):
+    if export_hash(source) != expected:
+        raise RuntimeError("qualification source differs from the requested git archive")
+
+
+def prepare_xml_source(xml_source, revision, output):
+    source = output / ("xml-" + revision)
+    # The marker is metadata, not proof of source identity. Reconstruct the
+    # canonical archive independently on every run, before using a cached tree.
+    with tempfile.TemporaryDirectory(prefix="export-", dir=output) as temporary:
+        temporary = Path(temporary)
+        archive = temporary / "source.tar"
+        with archive.open("wb") as stream:
+            run(["git", "-C", str(xml_source), "archive", revision], stdout=stream)
+        extracted = temporary / "source"
+        extracted.mkdir()
+        with tarfile.open(archive) as contents:
+            contents.extractall(extracted, filter="data")
+        (extracted / ".qualification-revision").write_text(revision)
+        expected = export_hash(extracted)
+        if source.is_symlink():
+            raise RuntimeError("qualification source cache is a symbolic link")
+        if not source.exists():
+            os.replace(extracted, source)
+        require_export(source, expected)
+    return source, expected
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--xml-source", required=True, type=Path)
@@ -59,21 +108,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     with (output / "runner.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        source = output / ("xml-" + revision)
-        if not source.exists():
-            with tempfile.TemporaryDirectory(prefix="export-", dir=output) as temporary:
-                temporary = Path(temporary)
-                archive = temporary / "source.tar"
-                with archive.open("wb") as stream:
-                    run(["git", "-C", str(args.xml_source), "archive", revision], stdout=stream)
-                extracted = temporary / "source"
-                extracted.mkdir()
-                with tarfile.open(archive) as contents:
-                    contents.extractall(extracted, filter="data")
-                (extracted / ".qualification-revision").write_text(revision)
-                os.replace(extracted, source)
-        if (source / ".qualification-revision").read_text() != revision:
-            raise RuntimeError("qualification source cache has another revision")
+        source, exported = prepare_xml_source(args.xml_source, revision, output)
         harness = output / "harness"
         harness.mkdir(exist_ok=True)
         quoted = lambda path: json.dumps(str(path), ensure_ascii=False)
@@ -103,7 +138,8 @@ def main():
         before = source_hash(root)
         print(f"Source-only XML revision {revision}; native lock SHA256 "
               f"{hashlib.sha256(native_lock_bytes).hexdigest()}; "
-              f"primitives source SHA256 {before}", flush=True)
+              f"primitives source SHA256 {before}; exported XML tree SHA256 {exported}",
+              flush=True)
         # Resolve the path experiment before executing any compiled fixture.
         # Reject registry drift first, rather than discovering it after tests.
         run(["cargo", "+stable", "metadata", "--offline", "--format-version", "1",
@@ -116,6 +152,7 @@ def main():
              "--locked", "--offline",
              "--target-dir", str(root / "target"), "--status-level", "fail",
              "--final-status-level", "fail"], cwd=root)
+        require_export(source, exported)
         if source_hash(root) != before:
             raise RuntimeError("primitives source changed during qualification")
         if native_lock.read_bytes() != native_lock_bytes:

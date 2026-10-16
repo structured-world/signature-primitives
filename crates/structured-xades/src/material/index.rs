@@ -300,27 +300,34 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, W: Work> Index<'source, 
         material: &CarriedMaterial<'source, N, D, G>,
         access: &Access<'_, X, W>,
     ) -> IndexResult<Self, X> {
-        if material.view.snapshot() != view.snapshot || material.view.signature() != view.signature
+        if material.view.snapshot() != view.snapshot {
+            return Err(IndexError::Foreign {
+                signature: view.signature,
+            });
+        }
+        if !access
+            .equal_id(material.view.signature(), view.signature)
+            .map_err(|cause| IndexError::Resource {
+                signature: view.signature,
+                cause,
+            })?
         {
             return Err(IndexError::Foreign {
                 signature: view.signature,
             });
         }
-        Self::build(view, access)?.include_token_material(material, access)
+        Self::build(view, access)?.include_bound_token_material(material, access)
     }
 
-    fn include_token_material<X: Xml<Id = N, Document = D, Generation = G>>(
+    // Called only after build_with_tokens binds the two immutable source sets,
+    // before constructing this index. Do not rescan their same identities for
+    // every insertion; each access still validates the current source snapshot.
+    fn include_bound_token_material<X: Xml<Id = N, Document = D, Generation = G>>(
         mut self,
         material: &CarriedMaterial<'source, N, D, G>,
         access: &Access<'_, X, W>,
     ) -> IndexResult<Self, X> {
         self.admit(access)?;
-        if material.view.snapshot() != self.snapshot || material.view.signature() != self.signature
-        {
-            return Err(IndexError::Foreign {
-                signature: self.signature,
-            });
-        }
         for token in 0..material.view.readings().len() {
             self.admit(access)?;
             let source = &material.view.sources()[token];

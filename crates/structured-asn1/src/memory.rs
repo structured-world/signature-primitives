@@ -15,10 +15,12 @@ use allocator_api2::vec::Vec;
 
 mod allocator;
 mod map;
+mod shared_string;
 mod sort;
 mod string;
 mod work;
 pub use map::{HashWork, OwnedMap, RetainError};
+pub use shared_string::SharedString;
 pub use sort::SortError;
 pub use string::OwnedString;
 pub use work::{Execution, Work};

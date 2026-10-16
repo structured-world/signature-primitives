@@ -9,6 +9,26 @@ use hashbrown::{DefaultHashBuilder, HashMap, TryReserveError};
 use super::allocator::AccountAllocator;
 use super::{Memory, MemoryError, Work};
 
+#[cfg(test)]
+mod tests;
+
+/// A refused in-place filter, preserving the predicate's own cause.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RetainError<E> {
+    /// The map could not admit its traversal or erase metadata.
+    Resource(MemoryError),
+    /// The caller's predicate refused further processing.
+    Predicate(E),
+}
+
+impl From<RetainError<MemoryError>> for MemoryError {
+    fn from(error: RetainError<MemoryError>) -> Self {
+        match error {
+            RetainError::Resource(reason) | RetainError::Predicate(reason) => reason,
+        }
+    }
+}
+
 /// A trusted key type's upper bound for hashing and equality work.
 ///
 /// Implementations must cover all bytes examined by Hash and Eq. This is a
@@ -131,6 +151,90 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
     ) -> Result<impl Iterator<Item = (&'a K, &'a V)> + 'a + use<'a, K, V, W, E>, MemoryError> {
         execution.charge_work(self.buckets()?)?;
         Ok(self.values.iter())
+    }
+
+    /// Retains entries selected by a fallible predicate, without allocating.
+    ///
+    /// The supplied current execution admits the entire control-bucket scan,
+    /// including sparse holes, before the first predicate call. Every erase
+    /// separately admits its metadata work before removal. The predicate must
+    /// admit its own data-dependent work; arbitrary key/value destructors are
+    /// likewise caller-owned code. No key hashing or equality is performed.
+    ///
+    /// Entries are visited in unspecified order. On the first refusal no more
+    /// predicates or key-work metadata callbacks run; the engine finishes its
+    /// already admitted scan while retaining all remaining entries. Earlier
+    /// removals and predicate value edits, including an edit made by a failing
+    /// predicate, remain. Refusal never reports a successful partial filter.
+    ///
+    /// The original allocation, capacity charge and storage account remain
+    /// unchanged. Future growth still uses the map's original execution.
+    /// Filtering under another execution does not rebind that allocator.
+    ///
+    /// # Examples
+    /// ```
+    /// # extern crate alloc;
+    /// # use alloc::sync::Arc;
+    /// use structured_asn1::memory::{Memory, MemoryAccount};
+    /// let memory = Memory::new(Arc::new(MemoryAccount::new(1024, 1024)));
+    /// let mut map = memory.map();
+    /// map.try_insert(1usize, 10).unwrap();
+    /// map.try_insert(2usize, 20).unwrap();
+    /// map.try_retain(&memory, |key, value| {
+    ///     *value += 1;
+    ///     Ok::<_, core::convert::Infallible>(*key == 2)
+    /// }).unwrap();
+    /// assert_eq!(map.len(), 1);
+    /// assert_eq!(map.get(&2, &memory).unwrap(), Some(&21));
+    /// ```
+    pub fn try_retain<E>(
+        &mut self,
+        execution: &impl Work,
+        mut predicate: impl FnMut(&K, &mut V) -> Result<bool, E>,
+    ) -> Result<(), RetainError<E>> {
+        let buckets = self.buckets().map_err(RetainError::Resource)?;
+        execution
+            .charge_work(buckets)
+            .map_err(RetainError::Resource)?;
+        let mut failure = None;
+        let key_work = &mut self.key_work;
+        self.values.retain(|key, value| {
+            if failure.is_some() {
+                return true;
+            }
+            match predicate(key, value) {
+                Ok(true) => true,
+                Err(reason) => {
+                    failure = Some(RetainError::Predicate(reason));
+                    true
+                }
+                Ok(false) => {
+                    // Pinned hashbrown 0.17.1 RawTableInner::erase loads the
+                    // adjacent two control groups, then drops the pair in place.
+                    // It neither hashes keys nor moves entries to another table.
+                    if let Err(reason) = execution.charge_work(2) {
+                        failure = Some(RetainError::Resource(reason));
+                        return true;
+                    }
+                    let removed = match key.hash_work() {
+                        Ok(work) => work,
+                        Err(reason) => {
+                            failure = Some(RetainError::Resource(reason));
+                            return true;
+                        }
+                    };
+                    // HashWork's stored bound is stable by contract. Update
+                    // before hashbrown erases and invokes a possibly panicking Drop.
+                    debug_assert!(*key_work >= removed);
+                    *key_work -= removed;
+                    false
+                }
+            }
+        });
+        match failure {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        }
     }
 
     fn buckets(&self) -> Result<u64, MemoryError> {

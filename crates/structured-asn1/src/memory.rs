@@ -18,7 +18,7 @@ mod map;
 mod sort;
 mod string;
 mod work;
-pub use map::{HashWork, OwnedMap};
+pub use map::{HashWork, OwnedMap, RetainError};
 pub use sort::SortError;
 pub use string::OwnedString;
 pub use work::{Execution, Work};

@@ -9,6 +9,16 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 class BootstrapPackages(unittest.TestCase):
+    def test_coordinated_packages_include_each_others_changes(self):
+        # One workspace version also ships sibling-only changes. Each package
+        # must explain the commit responsible for that coordinated release.
+        normal = tomllib.loads((ROOT / "release-plz.toml").read_text())
+        names = {package["name"] for package in normal["package"]}
+        for package in normal["package"]:
+            with self.subTest(package=package["name"]):
+                self.assertEqual(set(package["changelog_include"]),
+                                 names - {package["name"]})
+
     def test_cms_tag_pattern_survives_bootstrap_to_workspace_transition(self):
         # The first CMS version is already tagged v0.2.0. Release-plz defaults
         # differ for one versus several public packages; neither mode may

@@ -71,6 +71,13 @@ charge survives the parser; moving it does not reserve again. The default
 `OwnedVec<T>` still uses this owner, while parser-bound scratch uses the additional
 execution type parameter. These additions are not in crates.io 0.1.4.
 
+`OwnedVec::try_drain_all` prepays the larger of initialized byte size and element
+count through the original execution, then moves non-Clone values in source
+order without allocating or discarding working capacity. Refusal leaves the
+source unchanged. Dropping a partial iterator drops its remaining values;
+forgetting one can leak values but does not refund the retained allocation.
+Element destructors remain responsible for their own arbitrary work.
+
 ## Explicit INTEGER recovery
 
 `Reader::integer` and `read_integer` are strict: X.690 §8.3.2 requires minimal

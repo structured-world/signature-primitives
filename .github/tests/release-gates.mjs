@@ -138,6 +138,24 @@ try {
 }
 console.log("PASS: actual preparation step attaches main without substituting a later revision.");
 
+// Registry qualification reads what crates.io serves for this revision, so it
+// follows an actual publication by either publishing step and nothing else.
+const registry = workflow.jobs.registry;
+assert.equal(registry.needs, "publish");
+assert.equal(registry.steps.find(step => step.uses?.startsWith("actions/checkout@")).with.ref, "${{ github.sha }}");
+assert.equal(registry.steps.find(step => step.uses?.startsWith("actions/checkout@")).with["fetch-depth"], 0);
+assert.ok(registry.steps.some(step => step.run === "bash scripts/qualify-registry.sh"));
+assert.equal(publish.steps.find(step => step.id === "release"), release);
+assert.equal(publish.steps.find(step => step.id === "first-xades"), firstXades);
+const released = publish.outputs.released.slice(3, -2).trim();
+for (const [core, xades] of [["true", ""], ["false", "true"], ["true", "true"], ["false", "false"], ["false", ""], ["", ""]]) {
+  const created = core === "true" || xades === "true";
+  const steps = { release: { outputs: { releases_created: core } }, "first-xades": { outputs: { releases_created: xades } } };
+  assert.equal(evaluate(released, { steps }), created);
+  assert.equal(evaluate(registry.if, { needs: { publish: { outputs: { released: String(created) } } } }), created);
+}
+console.log("PASS: registry qualification follows a publication of this revision and is skipped otherwise.");
+
 const ci = parse(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"));
 function ciGroup(event, sha, ref = "refs/heads/main") {
   return ci.concurrency.group.replace(/\$\{\{(.*?)\}\}/g, (_, expression) => {

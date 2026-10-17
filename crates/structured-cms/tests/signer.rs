@@ -26,6 +26,207 @@ fn signer(sid: &[u8], signature: &[u8], version: u8) -> Vec<u8> {
     tlv(0x30, &inside)
 }
 
+#[test]
+fn malformed_algorithm_parameters_preserve_the_complete_signer() {
+    // A uniquely bounded constructed NULL is inspection data, never a valid
+    // algorithm. Neither algorithm slot may discard readable original fields.
+    let malformed = [0x30, 6, 6, 2, 42, 3, 0x25, 0];
+    let ordinary = [0x30, 3, 6, 1, 42];
+    for (digest, signature, expected) in [
+        (malformed.as_slice(), ordinary.as_slice(), 1),
+        (ordinary.as_slice(), malformed.as_slice(), 1),
+        (malformed.as_slice(), malformed.as_slice(), 2),
+    ] {
+        let mut fields = vec![2, 1, 1, 0x30, 5, 0x30, 0, 2, 1, 1];
+        fields.extend_from_slice(digest);
+        fields.extend_from_slice(signature);
+        fields.extend_from_slice(&[4, 1, 8]);
+        let encoded = tlv(0x30, &fields);
+        let retained = memory();
+        let parser = Parser::ber(retained.clone());
+        let mut parent = parser.read(&encoded, 700).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let value = SignerInfo::read(&parent, &element)
+            .expect("malformed parameter must retain uniquely readable signer");
+        assert_eq!(value.as_bytes(), encoded);
+        assert_eq!(value.signature().as_one(), Some(&[8][..]));
+        assert_eq!(value.faults().len(), expected);
+        for fault in value.faults() {
+            assert_eq!(
+                fault.code(),
+                ErrorCode::Pkix(structured_pkix::ErrorCode::Encoding(
+                    structured_asn1::ErrorCode::UnexpectedTag
+                ))
+            );
+            assert!(matches!(
+                fault.field(),
+                "signerInfo.digestAlgorithm" | "signerInfo.signatureAlgorithm"
+            ));
+            assert_eq!(
+                encoded[usize::try_from(fault.offset() - 700).unwrap()],
+                0x25
+            );
+        }
+        assert_eq!(value.digest_algorithm().as_bytes(), digest);
+        assert_eq!(value.signature_algorithm().as_bytes(), signature);
+        for reading in [value.digest_algorithm(), value.signature_algorithm()] {
+            assert!(reading.same_session(&parent));
+            if reading.parameters() == Some(&[0x25, 0][..]) {
+                assert!(reading.identifier().is_none());
+                assert!(!reading.has_null_parameter());
+                assert_eq!(
+                    reading.require_identifier().unwrap_err(),
+                    *reading.fault().unwrap()
+                );
+            } else {
+                assert!(reading.identifier().is_some());
+                assert_eq!(
+                    reading.require_identifier().unwrap().as_bytes(),
+                    reading.as_bytes()
+                );
+            }
+        }
+        if expected == 2 {
+            assert_eq!(value.faults()[0].offset(), 718);
+            assert_eq!(value.faults()[1].offset(), 726);
+        }
+        assert!(retained.used() > 0, "diagnostics retain accounted capacity");
+        drop(value);
+        drop(parent);
+        assert_eq!(retained.used(), 0);
+    }
+}
+
+#[test]
+fn malformed_algorithm_duplicate_identity_never_invents_a_valid_default() {
+    // Exact malformed spelling has one reading. Another malformed spelling or
+    // valid NULL cannot gain equality from SHA-2 defaults or NULL normalization.
+    let original = sha2_signer(1, &[0x25, 0]);
+    let retained = memory();
+    let parser = Parser::ber(retained.clone());
+    let mut parent = parser.read(&original, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let first = SignerInfo::read(&parent, &element).unwrap();
+    for (parameter, expected) in [
+        (&[0x25, 0][..], true),
+        (&[0x25, 0x81, 0][..], false),
+        (&[5, 0][..], false),
+        (&[][..], false),
+    ] {
+        let encoded = sha2_signer(1, parameter);
+        let mut parent = parser.read(&encoded, 900).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let second = SignerInfo::read(&parent, &element).unwrap();
+        let held = retained.used();
+        assert_eq!(first.same_value(&second, &parent).unwrap(), expected);
+        assert_eq!(second.same_value(&first, &parent).unwrap(), expected);
+        assert_eq!(retained.used(), held, "comparison must not copy faults");
+        assert_eq!(first.as_bytes(), original);
+        assert!(first.digest_algorithm().identifier().is_none());
+        let current = Memory::new(Arc::new(MemoryAccount::new(0, 0)));
+        let query = parent.try_clone().unwrap().with_execution(&current);
+        let error = first.same_value(&second, &query).unwrap_err();
+        assert!(error.is_resource());
+        assert_eq!(error.offset(), 900);
+        assert_eq!(current.used(), 0);
+    }
+}
+
+#[test]
+fn algorithm_inspection_does_not_recover_ambiguous_parameter_boundaries() {
+    // Retaining one bounded malformed value cannot authorize two parameters,
+    // an absent algorithm OID or a truncated parameter encoding.
+    for bad in [
+        &[0x30, 8, 6, 2, 42, 3, 0x25, 0, 5, 0][..],
+        &[0x30, 2, 0x25, 0][..],
+        &[0x30, 6, 6, 2, 42, 3, 0x25, 1][..],
+    ] {
+        let mut fields = vec![2, 1, 3, 0x80, 1, 7];
+        fields.extend_from_slice(bad);
+        fields.extend_from_slice(&[0x30, 3, 6, 1, 43, 4, 1, 8]);
+        let encoded = tlv(0x30, &fields);
+        let memory = memory();
+        let parser = Parser::ber(memory.clone());
+        let mut parent = parser.read(&encoded, 400).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let error = SignerInfo::read(&parent, &element).unwrap_err();
+        assert!(!error.is_resource());
+        assert_eq!(error.field(), "signerInfo.digestAlgorithm");
+        drop(parent);
+        assert_eq!(memory.used(), 0);
+    }
+}
+
+#[test]
+fn malformed_algorithm_diagnostics_respect_both_work_ceilings_and_capacity() {
+    // Diagnostic retention is part of the producing operation. An aggregate,
+    // local or live-capacity refusal must drop all partial signer allocations.
+    // No attribute catalogue. Original nested reader paths still have a live
+    // peak beyond the retained diagnostics; measure that complete parse peak.
+    let encoded = tlv(
+        0x30,
+        &[
+            2, 1, 3, 0x80, 1, 7, 0x30, 6, 6, 2, 42, 3, 0x25, 0, 0x30, 3, 6, 1, 43, 4, 1, 8,
+        ],
+    );
+    let measured = memory();
+    let parser = Parser::ber(measured.clone());
+    let mut parent = parser.read(&encoded, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let signer = SignerInfo::read(&parent, &element).unwrap();
+    assert_eq!(signer.faults().len(), 1);
+    let cost = measured.work_used();
+    let held = measured.used();
+    assert!(held > 0);
+    let mut lower = held;
+    let mut upper = measured.limit();
+    while lower < upper {
+        let capacity = lower + (upper - lower) / 2;
+        let memory = Memory::new(Arc::new(MemoryAccount::new(capacity, 262_144)));
+        let parser = Parser::ber(memory.clone());
+        let mut parent = parser.read(&encoded, 400).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let result = SignerInfo::read(&parent, &element);
+        if let Err(error) = &result {
+            assert!(error.is_resource());
+            lower = capacity + 1;
+        } else {
+            upper = capacity;
+        }
+        drop(result);
+        drop(parent);
+        assert_eq!(memory.used(), 0);
+    }
+    let peak = lower;
+    for (capacity, local, aggregate, succeeds) in [
+        (peak, cost, cost, true),
+        (peak, cost - 1, cost, false),
+        (peak, cost, cost - 1, false),
+        (peak - 1, cost, cost, false),
+    ] {
+        let memory = Memory::new(Arc::new(MemoryAccount::new(capacity, aggregate)));
+        let parser = Parser::new(
+            Encoding::Ber,
+            Limits {
+                max_work: u64::try_from(local).unwrap(),
+                ..Limits::default()
+            },
+            memory.clone(),
+        );
+        let mut parent = parser.read(&encoded, 400).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let result = SignerInfo::read(&parent, &element);
+        if succeeds {
+            assert_eq!(result.as_ref().unwrap().faults().len(), 1);
+        } else {
+            assert!(result.as_ref().unwrap_err().is_resource());
+        }
+        drop(result);
+        drop(parent);
+        assert_eq!(memory.used(), 0);
+    }
+}
+
 fn named_signer(text: &[u8], tag: u8, serial: u8) -> Vec<u8> {
     let mut attribute = vec![6, 3, 0x55, 4, 3];
     attribute.extend(tlv(tag, text));

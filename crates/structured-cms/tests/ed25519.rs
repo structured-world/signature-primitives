@@ -934,7 +934,12 @@ fn refuse_profile(
             assert!(!input.info.has_faults());
             assert!(input.ess.v2().is_some());
             assert!(core::ptr::eq(input.parent.parser(), parent.parser()));
-            let digest = input.token.signer().digest_algorithm();
+            let digest = input
+                .token
+                .signer()
+                .digest_algorithm()
+                .identifier()
+                .unwrap();
             input
                 .parent
                 .execution()

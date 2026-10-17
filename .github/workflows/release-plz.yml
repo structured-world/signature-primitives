@@ -124,7 +124,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - run: rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown --target thumbv7em-none-eabihf
-      - run: rustup toolchain install 1.92 --profile minimal
+      - run: rustup toolchain install 1.92.0 --profile minimal
       - name: Test runner
         run: cargo +stable install cargo-nextest --locked --version 0.9.146
       - run: bash scripts/qualify-registry.sh

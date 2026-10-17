@@ -157,6 +157,11 @@ for (const [core, xades] of [["true", ""], ["false", "true"], ["true", "true"], 
 console.log("PASS: registry qualification follows a publication of this revision and is skipped otherwise.");
 
 const ci = parse(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"));
+// Registry and pull-request MSRV checks run the same exact compiler release.
+const msrvInstall = steps => steps.find(step => /^rustup toolchain install \d+\.\d+\.\d+ /.test(step.run ?? ""))?.run.split(" ")[3];
+assert.ok(msrvInstall(ci.jobs.msrv.steps));
+assert.equal(msrvInstall(registry.steps), msrvInstall(ci.jobs.msrv.steps));
+console.log("PASS: registry qualification installs the pull-request MSRV compiler.");
 function ciGroup(event, sha, ref = "refs/heads/main") {
   return ci.concurrency.group.replace(/\$\{\{(.*?)\}\}/g, (_, expression) => {
     const tokens = new Lexer(expression.trim()).lex().tokens;

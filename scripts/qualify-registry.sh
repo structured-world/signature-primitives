@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Qualify what crates.io serves for this tree's workspace version: the index
-# checksum matches the archive, the packaged files are the recorded commit's,
-# and the packaged tests pass against the registry dependency graph. Every
-# problem is reported before the script fails.
+# Usage: qualify-registry.sh [REVISION]
+#
+# Qualify what crates.io serves for the packages and versions of REVISION
+# (default HEAD): every archive was packaged from exactly that commit, its
+# index checksum matches, its files are the commit's, and its packaged tests
+# pass against the registry dependency graph. Every problem is reported
+# before the script fails.
 cd -- "$(dirname -- "$0")/.."
 source scripts/package-files.sh
+revision=$(git rev-parse --verify "${1:-HEAD}^{commit}")
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
-mkdir -- "$work/archives" "$work/packages"
+mkdir -- "$work/archives" "$work/packages" "$work/tree"
 export CARGO_TARGET_DIR="$work/target"
 problems=()
 
@@ -75,8 +79,17 @@ check() {
   "$@" || problem "$label: $* failed"
 }
 
-cargo metadata --locked --no-deps --format-version 1 > "$work/metadata.json"
+# Packages and versions come from REVISION itself, not the working tree.
+git archive "$revision" | tar -x -C "$work/tree"
+cargo metadata --locked --no-deps --format-version 1 --manifest-path "$work/tree/Cargo.toml" > "$work/metadata.json"
 msrv=$(jq -r '[.packages[].rust_version] | unique | if length == 1 then .[0] else error("rust-version differs") end' "$work/metadata.json")
+# A two-component rust-version names its .0 release; rustup's two-component
+# channel would follow later patch releases instead.
+case $msrv in
+  *.*.*) ;;
+  *.*) msrv="$msrv.0" ;;
+  *) printf 'qualify-registry: unsupported rust-version %s\n' "$msrv" >&2; exit 1 ;;
+esac
 packages=()
 while read -r name version; do
   label="$name-$version"
@@ -98,11 +111,13 @@ while read -r name version; do
   vcs="$package/.cargo_vcs_info.json"
   [ "$(jq -r '.git.dirty // false' "$vcs")" = false ] || problem "$label was packaged from a dirty tree"
   commit=$(jq -r .git.sha1 "$vcs")
-  if git merge-base --is-ancestor "$commit" HEAD; then
-    compare_sources "$label" "$package" "$commit" "$(jq -r .path_in_vcs "$vcs")"
-  else
-    problem "$label: commit $commit is not reachable from HEAD"
+  # An earlier commit's archive under the same version does not contain the
+  # changes this revision released, so it is not tested in its place.
+  if [ "$commit" != "$revision" ]; then
+    problem "$label was packaged from $commit, not $revision"
+    continue
   fi
+  compare_sources "$label" "$package" "$commit" "$(jq -r .path_in_vcs "$vcs")"
   printf 'qualify-registry: %s %s sha256:%s\n' "$label" "$commit" "$checksum"
   packages+=("$label")
 done < <(jq -r '.packages[] | select(.publish == null) | "\(.name) \(.version)"' "$work/metadata.json")
@@ -113,7 +128,7 @@ for label in "${packages[@]}"; do
   check "$label" cargo +stable test --locked --doc --all-features
   check "$label" cargo "+$msrv" nextest run --locked --all-features --no-tests=pass
   for target in wasm32-unknown-unknown thumbv7em-none-eabihf; do
-    check "$label" cargo +stable check --locked --no-default-features --target "$target"
+    check "$label" cargo +stable check --locked --no-default-features --features alloc --target "$target"
   done
   cd - >/dev/null
 done

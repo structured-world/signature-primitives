@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
-      - run: cargo +stable check --locked --workspace --no-default-features --target ${{ matrix.target }}
+      - run: cargo +stable check --locked --workspace --no-default-features --features alloc --target ${{ matrix.target }}
 
   msrv:
     runs-on: ubuntu-latest

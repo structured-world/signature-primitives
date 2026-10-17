@@ -245,12 +245,25 @@ impl<'a> SignerInfo<'a> {
     pub fn span(&self) -> Span {
         self.element.span()
     }
+    /// Original whole element, including its index in the source container.
+    ///
+    /// This is not a global signer ordinal: nested counter values retain
+    /// their own original container positions. Ranges use the producing
+    /// reader's coordinates; joined-source projection remains with its source map.
+    #[must_use]
+    pub fn element(&self) -> &Element<'a> {
+        &self.element
+    }
     /// Entire original encoding, including non-DER envelope spelling.
     #[must_use]
     pub fn as_bytes(&self) -> &'a [u8] {
         self.element.as_bytes()
     }
     /// Retained document faults; resource refusals never enter this list.
+    ///
+    /// Registered CMS instance/placement violations are retained independently
+    /// of certificate selection. Unknown generic attribute repetition is not
+    /// a blanket fault; value syntax and context-specific binding stay separate.
     #[must_use]
     pub fn faults(&self) -> &[Error] {
         &self.faults
@@ -375,6 +388,7 @@ fn read_attributes<'a, W: Work>(
             .try_push(fault)
             .map_err(|reason| Error::resource(reason, field, at))?;
     }
+    reading.inspect_registered(parent, faults)?;
     Ok(reading)
 }
 

@@ -61,6 +61,40 @@ fn memory() -> Memory {
 }
 
 #[test]
+fn signed_unreadable_counter_has_placement_and_one_extra_signature_fact() {
+    // Presence, generic CMS placement and readable TSTInfo are independent
+    // facts. A bad child cannot disappear merely because it cannot be walked.
+    let mut counter = tlv(6, oid::COUNTERSIGNATURE.as_bytes());
+    counter.extend(tlv(0x31, &[0x30, 0]));
+    let mut fields = vec![2, 1, 3, 0x80, 1, 7, 0x30, 3, 6, 1, 42];
+    fields.extend(tlv(0xa0, &tlv(0x30, &counter)));
+    fields.extend([0x30, 3, 6, 1, 43, 4, 1, 8]);
+    let original = tlv(0x30, &fields);
+    let bytes = message(oid::TST_INFO.as_bytes(), Some(&info()), &original, true);
+    let parser = Parser::ber(memory());
+    let token = Token::read(&parser, &bytes, 400).unwrap();
+    assert_eq!(token.signer().faults().len(), 1);
+    assert_eq!(
+        token.signer().faults()[0].code(),
+        ErrorCode::AttributePlacement
+    );
+    assert_eq!(token.faults().len(), 1);
+    assert_eq!(token.faults()[0].code(), ErrorCode::ExtraSignature);
+    assert_eq!(
+        token.faults()[0].offset(),
+        token.signer().faults()[0].offset()
+    );
+    assert_eq!(token.signer().as_bytes(), original);
+    let parent = parser.read(&[], 400).unwrap();
+    token
+        .with_info(&parent, |info, _, _| {
+            assert_eq!(info.serial().value().as_u64(), Some(7));
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn empty_signer_attributes_preserve_carried_timestamp_information() {
     // Inspection must expose readable TSTInfo despite an invalid empty outer
     // attribute set, including when content requires an accounted join.

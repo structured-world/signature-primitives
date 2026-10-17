@@ -22,6 +22,8 @@ pub enum ErrorCode {
     EmptyAttributes,
     /// An attribute that requires one value holds none or several.
     AttributeCardinality,
+    /// Another instance was written where the selected type requires uniqueness.
+    DuplicateAttribute,
     /// Signed attribute encodings are not in DER SET OF order.
     AttributeOrder,
     /// The numeric schema version does not fit its representation.

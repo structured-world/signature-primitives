@@ -722,6 +722,75 @@ fn binding_fixture(digest: Option<&[u8]>, protected_signature: Option<u8>) -> Ve
 }
 
 #[test]
+fn copied_registered_attributes_still_refuse_strict_preparation_before_provider() {
+    // A readable inspection selection is not a conforming Ready operation.
+    // Strict binding must reject repeated instances before any resolver runs.
+    use structured_cms::{
+        ErrorCode,
+        binding::Scope,
+        prepare::{self, Preparation},
+    };
+    let parser = Parser::ber(Memory::new(Arc::new(MemoryAccount::new(65536, 65536))));
+    let spki = [0x30, 9, 0x30, 3, 6, 1, 42, 3, 2, 0, 7];
+    let mut key_reader = parser.read(&spki, 900).unwrap();
+    let element = key_reader.next_element().unwrap().unwrap();
+    let key =
+        WorkingKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
+    let mut content_type = vec![6, 9];
+    content_type.extend(structured_cms::oid::CONTENT_TYPE.as_bytes());
+    content_type.extend([0x31, 11, 6, 9]);
+    content_type.extend(structured_cms::oid::DATA.as_bytes());
+    let mut attribute = vec![0x30, u8::try_from(content_type.len()).unwrap()];
+    attribute.extend(content_type);
+    let attributes = attribute.repeat(2);
+    let mut fields = vec![
+        2,
+        1,
+        3,
+        0x80,
+        1,
+        7,
+        0x30,
+        3,
+        6,
+        1,
+        42,
+        0xa0,
+        u8::try_from(attributes.len()).unwrap(),
+    ];
+    fields.extend(attributes);
+    fields.extend([0x30, 3, 6, 1, 43, 4, 1, 8]);
+    let mut encoded = vec![0x30, u8::try_from(fields.len()).unwrap()];
+    encoded.extend(fields);
+    let mut parent = parser.read(&encoded, 700).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let signer = SignerInfo::read(&parent, &element).unwrap();
+    let selected = signer
+        .signed_attributes()
+        .unwrap()
+        .singleton_inspection_in(structured_cms::oid::CONTENT_TYPE, &parent)
+        .unwrap();
+    assert_eq!(selected.repeats(), 1);
+    assert!(selected.attribute().is_some());
+    let provider = Provider::default();
+    let Preparation::Malformed(error) = prepare::resolve(
+        &provider,
+        &signer,
+        key,
+        &parent,
+        Scope::Content(structured_cms::oid::DATA),
+    )
+    .unwrap() else {
+        panic!("strict binding must refuse");
+    };
+    assert_eq!(error.code(), ErrorCode::DuplicateAttribute);
+    assert_eq!(provider.digest_resolutions.get(), 0);
+    assert_eq!(provider.signature_resolutions.get(), 0);
+    assert_eq!(provider.digest_starts.get(), 0);
+    assert_eq!(provider.raw_starts.get(), 0);
+}
+
+#[test]
 fn empty_signed_or_unsigned_attributes_refuse_before_every_provider_callback() {
     // The inspection reader retains invalid empty sets. Preparation must not
     // let either schema fault reach algorithm resolution or payload states.

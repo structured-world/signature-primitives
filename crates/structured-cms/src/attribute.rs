@@ -4,6 +4,13 @@ use crate::{Error, ErrorCode, Result};
 use structured_asn1::memory::{Execution, Memory, OwnedVec, Work};
 use structured_asn1::{Element, Encoding, Oid, Parser, Reader, Span, Tag, universal};
 
+const SIGNED_SINGLETONS: [Oid<'static>; 4] = [
+    crate::oid::CONTENT_TYPE,
+    crate::oid::MESSAGE_DIGEST,
+    crate::oid::SIGNING_TIME,
+    crate::oid::ALGORITHM_PROTECTION,
+];
+
 /// The schema placement of an attribute set, not deployment policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
@@ -228,6 +235,36 @@ pub struct Attributes<'a> {
     items: OwnedVec<Attribute<'a>>,
     element: Element<'a>,
     placement: Placement,
+    parser: &'a Parser,
+}
+
+/// Inspection selection among original byte-identical attribute instances.
+///
+/// Repetition is a conformance violation for a registered singleton, not a
+/// successful strict binding. Signer inspection retains its located diagnostics
+/// independently; this borrowed selection does not allocate another report.
+#[derive(Debug)]
+#[must_use]
+pub struct SingletonReading<'s, 'a> {
+    attribute: Option<&'s Attribute<'a>>,
+    repeats: usize,
+}
+
+impl<'s, 'a> SingletonReading<'s, 'a> {
+    /// The original first instance, or absence after the complete paid query.
+    #[must_use]
+    pub fn attribute(&self) -> Option<&'s Attribute<'a>> {
+        self.attribute
+    }
+
+    /// Number of later byte-identical instances, excluding the first one.
+    ///
+    /// Both absence and one instance have zero repeats. This describes
+    /// instances, not the cardinality of values inside one Attribute.
+    #[must_use]
+    pub fn repeats(&self) -> usize {
+        self.repeats
+    }
 }
 
 impl<'a> Attributes<'a> {
@@ -311,6 +348,7 @@ impl<'a> Attributes<'a> {
             items: items.into_owned(),
             element: *element,
             placement,
+            parser: parent.parser(),
         })
     }
 
@@ -385,7 +423,7 @@ impl<'a> Attributes<'a> {
             let attribute = result?;
             if found.is_some() {
                 return Err(Error::schema(
-                    ErrorCode::AttributeCardinality,
+                    ErrorCode::DuplicateAttribute,
                     self.placement.field(),
                     attribute.span().start,
                 ));
@@ -393,6 +431,140 @@ impl<'a> Attributes<'a> {
             found = Some(attribute);
         }
         Ok(found)
+    }
+
+    /// Selects one readable original singleton while reporting copied instances.
+    ///
+    /// Only byte-identical copies share one inspection reading. Conflicts
+    /// refuse rather than choosing a claim; original signed bytes are never
+    /// normalized. This does not validate the type's values or relax strict
+    /// [`Self::unique_in`] / binding. Located registered-type violations are
+    /// retained by [`crate::signer::SignerInfo::faults`].
+    ///
+    /// The producing session is checked before query work. Scanning and byte
+    /// comparisons use both its local and aggregate current ceilings. The
+    /// returned borrowing facts retain no query execution or scratch storage.
+    pub fn singleton_inspection_in<'s>(
+        &'s self,
+        kind: Oid<'_>,
+        parent: &Reader<'_>,
+    ) -> Result<SingletonReading<'s, 'a>> {
+        self.require_session(parent)?;
+        let mut first: Option<&Attribute<'a>> = None;
+        let mut repeats = 0;
+        let mut next = 0;
+        let mut stopped = false;
+        let execution = parent.execution();
+        while let Some(result) = self.next_matching(kind, &execution, &mut next, &mut stopped) {
+            let attribute = result?;
+            if let Some(original) = first {
+                if !same_encoding(
+                    parent,
+                    original.as_bytes(),
+                    attribute.as_bytes(),
+                    self.placement.field(),
+                    attribute.span().start,
+                )? {
+                    return Err(Error::schema(
+                        ErrorCode::DuplicateAttribute,
+                        self.placement.field(),
+                        attribute.span().start,
+                    ));
+                }
+                debug_assert!(repeats < self.items.len());
+                repeats += 1;
+            } else {
+                first = Some(attribute);
+            }
+        }
+        Ok(SingletonReading {
+            attribute: first,
+            repeats,
+        })
+    }
+
+    fn require_session(&self, parent: &Reader<'_>) -> Result<()> {
+        if !core::ptr::eq(self.parser, parent.parser()) {
+            return Err(Error::pkix(structured_pkix::Error::new(
+                structured_pkix::ErrorCode::ForeignReader,
+                self.placement.field(),
+                self.element.span().start,
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn placement_faults_in(
+        &self,
+        parent: &Reader<'_>,
+        mut report: impl FnMut(Error) -> Result<()>,
+    ) -> Result<()> {
+        self.require_session(parent)?;
+        if self.items.is_empty() {
+            return Ok(());
+        }
+        // One placement kernel serves retained inspection and strict binding.
+        // RFC5652 §§11.1–11.4 and RFC6211 §2 constrain these schema roles.
+        // https://www.rfc-editor.org/rfc/rfc5652#section-11
+        // https://www.rfc-editor.org/rfc/rfc6211#section-2
+        if self.placement == Placement::Unsigned {
+            for kind in SIGNED_SINGLETONS {
+                for result in self.all_in(kind, parent) {
+                    let attribute = result?;
+                    report(Error::schema(
+                        ErrorCode::AttributePlacement,
+                        self.placement.field(),
+                        attribute.span().start,
+                    ))?;
+                }
+            }
+        } else {
+            // A signed counter is misplaced even if its child cannot be read.
+            // Unsigned repetition remains legal in the generic CMS schema.
+            for result in self.all_in(crate::oid::COUNTERSIGNATURE, parent) {
+                let attribute = result?;
+                report(Error::schema(
+                    ErrorCode::AttributePlacement,
+                    "signerInfo.signedAttrs.counterSignature",
+                    attribute.span().start,
+                ))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn inspect_registered<W: Work>(
+        &self,
+        parent: &Reader<'_>,
+        faults: &mut OwnedVec<Error, W>,
+    ) -> Result<()> {
+        self.placement_faults_in(parent, |fault| retain(faults, fault))?;
+        if self.placement != Placement::Signed || self.items.is_empty() {
+            return Ok(());
+        }
+        // Registered CMS rules, not a blanket ban on generic repeated OIDs.
+        // RFC5652 §§11.1–11.3; RFC6211 §2. ESS retains its independent profile.
+        // https://www.rfc-editor.org/rfc/rfc5652#section-11
+        // https://www.rfc-editor.org/rfc/rfc6211#section-2
+        for kind in SIGNED_SINGLETONS {
+            let mut seen = false;
+            for result in self.all_in(kind, parent) {
+                let attribute = result?;
+                if !seen {
+                    seen = true;
+                    continue;
+                }
+                retain(
+                    faults,
+                    Error::schema(
+                        ErrorCode::DuplicateAttribute,
+                        self.placement.field(),
+                        attribute.span().start,
+                    ),
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// Original signed octets with only the implicit identifier replaced by SET.
@@ -406,6 +578,34 @@ impl<'a> Attributes<'a> {
         }
         Some([&[0x31], &self.element.as_bytes()[1..]])
     }
+}
+
+fn retain<W: Work>(faults: &mut OwnedVec<Error, W>, fault: Error) -> Result<()> {
+    let field = fault.field();
+    let at = fault.offset();
+    faults
+        .try_push(fault)
+        .map_err(|reason| Error::resource(reason, field, at))
+}
+
+pub(crate) fn same_encoding(
+    parent: &Reader<'_>,
+    left: &[u8],
+    right: &[u8],
+    field: &'static str,
+    at: u64,
+) -> Result<bool> {
+    let execution = parent.execution();
+    execution
+        .charge_work(1)
+        .map_err(|reason| Error::resource(reason, field, at))?;
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+    execution
+        .charge_work(left.len() as u64)
+        .map_err(|reason| Error::resource(reason, field, at))?;
+    Ok(left == right)
 }
 
 /// Accounted matching instances, with one terminal resource refusal.
@@ -473,3 +673,60 @@ impl<'a> Attributes<'a> {
 }
 
 impl<W: Work> core::iter::FusedIterator for Matching<'_, '_, W> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::{sync::Arc, vec};
+
+    #[test]
+    fn placement_kernel_preserves_collecting_strict_and_callback_refusal() {
+        // Both consumers must see the same placement facts; a sink's own
+        // resource refusal stops immediately and retains its original cause.
+        let mut attribute = vec![0x30, 15, 6, 9];
+        attribute.extend(crate::oid::COUNTERSIGNATURE.as_bytes());
+        attribute.extend([0x31, 2, 5, 0]);
+        let mut bytes = vec![0xa0, 34];
+        bytes.extend(attribute.repeat(2));
+        let memory = Memory::new(Arc::new(structured_asn1::memory::MemoryAccount::new(
+            65536, 65536,
+        )));
+        let parser = Parser::ber(memory);
+        let mut parent = parser.read(&bytes, 700).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let attributes = Attributes::read(&parent, &element, Placement::Signed).unwrap();
+        let first = attributes.items()[0].span().start;
+        let mut count = 0;
+        attributes
+            .placement_faults_in(&parent, |fault| {
+                assert_eq!(fault.code(), ErrorCode::AttributePlacement);
+                assert_eq!(fault.offset(), attributes.items()[count].span().start);
+                count += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(count, 2);
+        let mut calls = 0;
+        let error = attributes
+            .placement_faults_in(&parent, |fault| {
+                calls += 1;
+                Err(fault)
+            })
+            .unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(error.code(), ErrorCode::AttributePlacement);
+        assert_eq!(error.offset(), first);
+        let error = attributes
+            .placement_faults_in(&parent, |_| {
+                Err(Error::resource(
+                    structured_asn1::memory::MemoryError::WorkExceeded,
+                    "report",
+                    first,
+                ))
+            })
+            .unwrap_err();
+        assert!(error.is_resource());
+        assert_eq!(error.field(), "report");
+        assert_eq!(error.offset(), first);
+    }
+}

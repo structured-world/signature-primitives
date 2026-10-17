@@ -30,6 +30,14 @@ structured-cms = "0.2"
   with `EmptyAttributes` faults and original ranges. `Attributes::read` remains
   strict; `read_inspection` exposes this uniquely bounded schema violation.
   Binding and preparation reject it before provider callbacks or payload work.
+  Registered CMS singleton repeats and forbidden signed/unsigned placements
+  retain diagnostics even without a selected certificate. For inspection,
+  `Attributes::singleton_inspection_in` selects the first byte-identical instance
+  and reports its repeat count under the current producing reader; conflicts
+  refuse. `DuplicateAttribute` names instance repetition, while
+  `AttributeCardinality` names value cardinality, including in ESS. Strict
+  binding never becomes a conforming operation through this recovery.
+  `SignerInfo::element()` preserves original container-local provenance.
 - `prepare`, `verify` and `provider` support explicit raw-message and prehashed
   verification, full algorithm identities and a shared payload pass. Provider
   and input failures remain distinct from invalid or unsupported signatures.

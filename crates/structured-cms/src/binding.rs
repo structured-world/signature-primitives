@@ -256,33 +256,10 @@ pub fn inspect<'a>(
 
 fn check_placements(signer: &SignerInfo<'_>, parent: &Reader<'_>) -> Result<()> {
     if let Some(unsigned) = signer.unsigned_attributes() {
-        // RFC5652 §§11.1–11.3 and RFC6211 §2 define these as signed attributes.
-        // https://www.rfc-editor.org/rfc/rfc5652#section-11
-        for kind in [
-            oid::CONTENT_TYPE,
-            oid::MESSAGE_DIGEST,
-            oid::SIGNING_TIME,
-            oid::ALGORITHM_PROTECTION,
-        ] {
-            if let Some(result) = unsigned.all_in(kind, parent).next() {
-                let attribute = result?;
-                return Err(Error::schema(
-                    ErrorCode::AttributePlacement,
-                    "signerInfo.unsignedAttrs",
-                    attribute.span().start,
-                ));
-            }
-        }
+        unsigned.placement_faults_in(parent, Err)?;
     }
-    if let Some(signed) = signer.signed_attributes()
-        && let Some(result) = signed.all_in(oid::COUNTERSIGNATURE, parent).next()
-    {
-        let attribute = result?;
-        return Err(Error::schema(
-            ErrorCode::AttributePlacement,
-            "signerInfo.signedAttrs.counterSignature",
-            attribute.span().start,
-        ));
+    if let Some(signed) = signer.signed_attributes() {
+        signed.placement_faults_in(parent, Err)?;
     }
     Ok(())
 }

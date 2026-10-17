@@ -9,7 +9,7 @@ repository.workspace = true
 readme = "README.md"
 keywords = ["cms", "pkcs7", "signature", "no-std"]
 categories = ["cryptography", "parser-implementations", "no-std"]
-include = ["src/**", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
 
 [features]
 default = []

@@ -8,7 +8,9 @@
 use crate::error::{Error, ErrorCode, Located, Result};
 use core::num::NonZeroUsize;
 use structured_asn1::memory::{Memory, Work};
-use structured_asn1::{Element, Encoding, Oid, Parser, Reader, Span, Tag, universal};
+use structured_asn1::{Element, Encoding, Oid, Parser, Reader, ScopedReader, Span, Tag, universal};
+
+pub mod pss;
 
 /// An algorithm and its parameters, as the certificate wrote them.
 #[derive(Debug, Clone, Copy)]
@@ -453,7 +455,7 @@ impl<'a> AlgorithmIdentifier<'a> {
     /// Account equality does not establish source/session identity. This O(1)
     /// metadata predicate reads no parameters and spends no data-dependent work.
     #[must_use]
-    pub fn same_session(self, parent: &Reader<'_>) -> bool {
+    pub fn same_session(self, parent: &ScopedReader<'_, '_>) -> bool {
         core::ptr::eq(self.parser, parent.parser())
     }
 
@@ -573,7 +575,7 @@ impl<'a> AlgorithmIdentifier<'a> {
 ///
 /// Reports the encoding fault and the field it was in.
 pub fn read<'a>(
-    parent: &Reader<'a>,
+    parent: &ScopedReader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<AlgorithmIdentifier<'a>> {
@@ -632,7 +634,7 @@ pub fn read_implicit_inspection<'a>(
 }
 
 fn read_fields<'a, const INSPECTION: bool>(
-    parent: &Reader<'a>,
+    parent: &ScopedReader<'a, '_>,
     element: &Element<'a>,
     expected: Tag,
     field: &'static str,
@@ -694,7 +696,7 @@ fn read_fields<'a, const INSPECTION: bool>(
 }
 
 fn read_tagged<'a>(
-    parent: &Reader<'a>,
+    parent: &ScopedReader<'a, '_>,
     element: &Element<'a>,
     expected: Tag,
     field: &'static str,

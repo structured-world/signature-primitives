@@ -35,7 +35,7 @@ pub struct OtherRevocationInfo<'a> {
 }
 
 impl<'a> OtherRevocationInfo<'a> {
-    /// Reads an original context [1] IMPLICIT `OtherRevocationInfoFormat` using
+    /// Reads an original context \[1\] IMPLICIT `OtherRevocationInfoFormat` using
     /// the same field kernel as `SignedData`'s structural catalogue validation.
     pub fn read(parent: &Reader<'a>, element: &Element<'a>) -> Result<Self> {
         const FIELD: &str = "signedData.crls.other";

@@ -42,6 +42,9 @@ jobs:
       - run: cargo +stable clippy --locked --workspace --all-targets ${{ matrix.features }} -- -D warnings
       - run: cargo +stable nextest run --locked --workspace ${{ matrix.features }}
       - run: cargo +stable test --locked --workspace --doc ${{ matrix.features }}
+      - run: cargo +stable doc --locked --workspace --no-deps ${{ matrix.features }}
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   alloc:
     runs-on: ubuntu-latest

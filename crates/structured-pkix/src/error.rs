@@ -43,6 +43,8 @@ pub enum ErrorCode {
     AlgorithmMismatch,
     /// A value the schema constrains further than its encoding does.
     MalformedValue,
+    /// A DER component explicitly writes its ASN.1 DEFAULT value.
+    DefaultWritten,
     /// A value too large for the type this crate represents it in.
     ValueTooLarge,
 }
@@ -65,6 +67,7 @@ impl fmt::Display for ErrorCode {
                 f.write_str("signed and unsigned algorithm identifiers differ")
             }
             Self::MalformedValue => f.write_str("value the schema does not allow"),
+            Self::DefaultWritten => f.write_str("default value explicitly encoded"),
             Self::ValueTooLarge => f.write_str("value too large to represent"),
         }
     }

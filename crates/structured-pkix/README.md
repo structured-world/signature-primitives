@@ -73,6 +73,16 @@ Applications own trust decisions, external data acquisition and the accounting
 of work inside their injected verification and recognizer callbacks. Merely
 passing an execution account does not bound arbitrary external callback code.
 
+### RSA-PSS parameters
+
+RSA-PSS parameter decoding is available through `algorithm::pss::read_in` and
+`inspect_in`. These reuse an original `AlgorithmIdentifier` and producing reader,
+preserving source ranges, explicit/default fields, independent message/MGF hashes,
+and arbitrary-width salt/trailer INTEGERs. Inspection retains DER spelling faults;
+it does not establish algorithm support or signature validity. Applications apply
+the distinct signature-parameter and public-key-restriction rules and select the
+cryptographic provider.
+
 ### Scoped execution for retained inputs
 
 Supplied-path validation accepts `ValidationContext<..., E>` with

@@ -468,7 +468,7 @@ fn identical_ess_repetition_retains_one_value_and_fault_but_conflicts_refuse() {
     // faults are not erased; a different hash cannot be chosen arbitrarily.
     let first = value(&[identity(&[7; 20])], None);
     let changed = value(&[identity(&[8; 20])], None);
-    for (signed, readable, faults) in [
+    for (signed, readable, faults, code) in [
         (
             vec![attribute(
                 oid::SIGNING_CERTIFICATE,
@@ -476,6 +476,7 @@ fn identical_ess_repetition_retains_one_value_and_fault_but_conflicts_refuse() {
             )],
             true,
             1,
+            ErrorCode::AttributeCardinality,
         ),
         (
             vec![
@@ -484,14 +485,25 @@ fn identical_ess_repetition_retains_one_value_and_fault_but_conflicts_refuse() {
             ],
             true,
             1,
+            ErrorCode::DuplicateAttribute,
         ),
         (
             vec![attribute(
                 oid::SIGNING_CERTIFICATE,
-                &[first.clone(), changed],
+                &[first.clone(), changed.clone()],
             )],
             false,
             0,
+            ErrorCode::AttributeCardinality,
+        ),
+        (
+            vec![
+                attribute(oid::SIGNING_CERTIFICATE, core::slice::from_ref(&first)),
+                attribute(oid::SIGNING_CERTIFICATE, core::slice::from_ref(&changed)),
+            ],
+            false,
+            0,
+            ErrorCode::DuplicateAttribute,
         ),
     ] {
         let encoded = signer(&signed, &[]);
@@ -505,7 +517,7 @@ fn identical_ess_repetition_retains_one_value_and_fault_but_conflicts_refuse() {
             Ok(read) => {
                 assert!(readable);
                 assert_eq!(read.faults().len(), faults);
-                assert_eq!(read.faults()[0].code(), ErrorCode::AttributeCardinality);
+                assert_eq!(read.faults()[0].code(), code);
                 assert_eq!(
                     read.v1().unwrap().signer().hashed().as_one(),
                     Some(&[7; 20][..])
@@ -514,7 +526,7 @@ fn identical_ess_repetition_retains_one_value_and_fault_but_conflicts_refuse() {
             }
             Err(error) => {
                 assert!(!readable);
-                assert_eq!(error.code(), ErrorCode::AttributeCardinality);
+                assert_eq!(error.code(), code);
             }
         }
         assert_eq!(storage.used(), held);

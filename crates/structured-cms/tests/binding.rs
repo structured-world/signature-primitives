@@ -161,7 +161,7 @@ fn recognized_cardinality_and_placement_are_not_applied_to_unknown_types() {
                 a
             },
             false,
-            ErrorCode::AttributeCardinality,
+            ErrorCode::DuplicateAttribute,
         ),
         (
             vec![attribute(oid::CONTENT_TYPE, &tlv(6, oid::DATA.as_bytes()))],

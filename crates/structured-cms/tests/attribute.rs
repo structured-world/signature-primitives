@@ -189,7 +189,7 @@ fn lookup_preserves_all_unknown_instances_and_refusal_is_fused() {
     assert_eq!(current.work_used(), 5);
     assert_eq!(
         attributes.unique_in(kind, &reader).unwrap_err().code(),
-        ErrorCode::AttributeCardinality
+        ErrorCode::DuplicateAttribute
     );
     let unfunded = Memory::new(Arc::new(MemoryAccount::new(0, 0)));
     let old_work = old.work_used();

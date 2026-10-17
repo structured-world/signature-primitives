@@ -1,5 +1,6 @@
 //! Original ESS certificate bindings and signed validation-set restrictions.
 
+use crate::attribute::same_encoding;
 use crate::provider::{DigestAlgorithm, ImpliedDigest};
 use crate::signer::{SignerInfo, required};
 use crate::{Error, ErrorCode, Octets, Result, oid};
@@ -445,17 +446,13 @@ fn read_attribute<'a, W: Work>(
                 attribute.span().start,
             )? {
                 return Err(Error::schema(
-                    ErrorCode::AttributeCardinality,
+                    ErrorCode::DuplicateAttribute,
                     field,
                     attribute.span().start,
                 ));
             }
             record(
-                Error::schema(
-                    ErrorCode::AttributeCardinality,
-                    field,
-                    attribute.span().start,
-                ),
+                Error::schema(ErrorCode::DuplicateAttribute, field, attribute.span().start),
                 faults,
                 field,
             )?;
@@ -498,26 +495,6 @@ fn read_attribute<'a, W: Work>(
         .ok_or_else(|| Error::schema(ErrorCode::MissingField, field, attribute.span().start))?;
     let original = required(&mut reader, field)?;
     SigningCertificate::read(&reader, &original, version).map(Some)
-}
-
-fn same_encoding(
-    parent: &Reader<'_>,
-    left: &[u8],
-    right: &[u8],
-    field: &'static str,
-    at: u64,
-) -> Result<bool> {
-    let execution = parent.execution();
-    execution
-        .charge_work(1)
-        .map_err(|reason| Error::resource(reason, field, at))?;
-    if left.len() != right.len() {
-        return Ok(false);
-    }
-    execution
-        .charge_work(left.len() as u64)
-        .map_err(|reason| Error::resource(reason, field, at))?;
-    Ok(left == right)
 }
 
 impl<'a> SigningCertificate<'a> {

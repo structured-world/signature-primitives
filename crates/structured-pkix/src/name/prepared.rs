@@ -195,6 +195,13 @@ pub(super) fn folds(attribute: Attribute<'_>, memory: &Memory) -> Result<bool, E
     Ok(canonical(attribute, memory, None)?.is_some())
 }
 
+pub(super) fn folds_in(
+    attribute: Attribute<'_>,
+    parent: &structured_asn1::ScopedReader<'_, '_>,
+) -> Result<bool, Error> {
+    Ok(canonical(attribute, &parent.execution(), Some(parent))?.is_some())
+}
+
 fn canonical<'a, W: Work>(
     attribute: Attribute<'a>,
     memory: &W,

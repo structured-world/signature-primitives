@@ -1303,6 +1303,19 @@ impl<'a> Attribute<'a> {
         prepared::folds(self, execution)
     }
 
+    /// Whether this value prepares under the current producing query's limits.
+    ///
+    /// Uses the same preparation as [`Self::folds`], funding scans and scratch
+    /// through `parent.execution()` instead of only its aggregate account.
+    /// Deferred BER strings retain this attribute's original offset and depth
+    /// and use the supplied reader's session, just as [`Name::ordered_in`].
+    /// A query over another source supplies its original-source reader rebound
+    /// to the current operation; retained Name storage is neither copied nor
+    /// charged again. Resource refusal is an error, never a byte-only answer.
+    pub fn folds_in(self, parent: &Reader<'_, '_>) -> Result<bool> {
+        prepared::folds_in(self, parent)
+    }
+
     /// The decoded characters of a value that takes part in folding: the
     /// type's schema permits the encoding it was written in, and it sits
     /// inside the schema's size bounds. A known attribute outside them is not

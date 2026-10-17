@@ -197,12 +197,22 @@ pub fn resolve<'a, P: SignatureProvider<'a>>(
 ) -> Result<Preparation<'a, P>, PrepareError<P::Error>> {
     crate::provider::require_instance(provider, "signerInfo", signer.span().start)
         .map_err(PrepareError::Processing)?;
+    signer
+        .require_session(parent, "signerInfo")
+        .map_err(PrepareError::Processing)?;
+    // Both inspection gates precede binding work and all provider callbacks.
+    // A valid digest cannot authorize observable resolution when the later
+    // signature declaration already contains a retained syntax fault.
+    let identifiers = match algorithms(signer) {
+        Ok(identifiers) => identifiers,
+        Err(error) => return Ok(Preparation::Malformed(error)),
+    };
     let binding = match binding::inspect(signer, parent, scope) {
         Ok(binding) => binding,
         Err(error) if error.is_terminal() => return Err(PrepareError::Processing(error)),
         Err(error) => return Ok(Preparation::Malformed(error)),
     };
-    let identifier = signer.digest_algorithm();
+    let identifier = identifiers.0;
     let digest = match provider
         .resolve_digest(
             DigestAlgorithm::Written(identifier),
@@ -237,7 +247,7 @@ pub fn resolve<'a, P: SignatureProvider<'a>>(
             digest_span.start,
         )));
     }
-    let identifier = signer.signature_algorithm();
+    let identifier = identifiers.1;
     let signature = match provider
         .resolve_signature(identifier, &digest, key, identifier.encoding(), parent)
         .map_err(|source| PrepareError::Callback {
@@ -290,6 +300,26 @@ enum ProtectionStatus {
     Matching,
     Unsupported(Part),
     Malformed(Error),
+}
+
+fn algorithms<'a>(
+    signer: &SignerInfo<'a>,
+) -> Result<
+    (
+        structured_pkix::AlgorithmIdentifier<'a>,
+        structured_pkix::AlgorithmIdentifier<'a>,
+    ),
+    Error,
+> {
+    let digest = signer
+        .digest_algorithm()
+        .require_identifier()
+        .map_err(Error::pkix)?;
+    let signature = signer
+        .signature_algorithm()
+        .require_identifier()
+        .map_err(Error::pkix)?;
+    Ok((digest, signature))
 }
 
 fn protected<'a, P: SignatureProvider<'a>>(

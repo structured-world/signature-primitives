@@ -115,6 +115,14 @@ impl<'a> AlgorithmReading<'a> {
         self.fields.encoding
     }
 
+    /// Whether this inspection reading belongs to the supplied parser session.
+    /// This checks original provenance even when no validated identifier exists;
+    /// account identity alone does not establish source/session identity.
+    #[must_use]
+    pub fn same_session(&self, parent: &Reader<'_>) -> bool {
+        core::ptr::eq(self.fields.parser, parent.parser())
+    }
+
     /// Parameter syntax fault; resource and processing failures are never here.
     #[must_use]
     pub fn fault(&self) -> Option<&Error> {
@@ -129,6 +137,16 @@ impl<'a> AlgorithmReading<'a> {
             return None;
         }
         Some(self.fields.identifier())
+    }
+
+    /// Requires a validated provider input, returning the original syntax fault.
+    /// This is a scalar provenance check; no reparse, allocation or parameter
+    /// normalization is performed. Selected-provider acceptance is separate.
+    pub fn require_identifier(&self) -> Result<AlgorithmIdentifier<'a>> {
+        match &self.fault {
+            Some(error) => Err(error.clone()),
+            None => Ok(self.fields.identifier()),
+        }
     }
 
     /// Paid written-value identity for inspection, not parameter acceptance.

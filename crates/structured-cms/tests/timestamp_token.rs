@@ -61,6 +61,44 @@ fn memory() -> Memory {
 }
 
 #[test]
+fn malformed_signer_algorithms_keep_timestamp_inspection_and_original_content() {
+    // Algorithm faults must not erase the envelope or independently readable
+    // TSTInfo, including through an accounted join of constructed content.
+    let algorithm = [0x30, 6, 6, 2, 42, 3, 0x25, 0];
+    let mut fields = vec![2, 1, 3, 0x80, 1, 7];
+    fields.extend(algorithm);
+    fields.extend(algorithm);
+    fields.extend([4, 1, 8]);
+    let original = tlv(0x30, &fields);
+    for segmented in [false, true] {
+        let bytes = message(
+            oid::TST_INFO.as_bytes(),
+            Some(&info()),
+            &original,
+            segmented,
+        );
+        let account = memory();
+        let parser = Parser::ber(account.clone());
+        let token = Token::read(&parser, &bytes, 400).unwrap();
+        assert_eq!(token.signer().as_bytes(), original);
+        assert_eq!(token.signer().faults().len(), 2);
+        assert!(token.signer().digest_algorithm().identifier().is_none());
+        assert!(token.signer().signature_algorithm().identifier().is_none());
+        let parent = parser.read(&[], 400).unwrap();
+        token
+            .with_info(&parent, |info, _, _| {
+                assert_eq!(info.serial().value().as_u64(), Some(7));
+                assert!(!info.has_faults());
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        drop(token);
+        drop(parent);
+        assert_eq!(account.used(), 0);
+    }
+}
+
+#[test]
 fn timestamp_reader_entry_preserves_existing_session_and_exact_original_bytes() {
     // Carried XML/ASN content must not create a default-budget replacement parser.
     let bytes = message(

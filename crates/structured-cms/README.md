@@ -21,6 +21,11 @@ structured-cms = "0.2"
 
 - `ContentInfo` and `SignedData` preserve original BER encodings, signer
   identifiers, certificate/revocation choices and signed attributes.
+  `SignerInfo::digest_algorithm()` and `signature_algorithm()` return PKIX
+  `AlgorithmReading` views: original fields and uniquely bounded malformed
+  parameters remain inspectable with located faults. Only `identifier()` yields
+  validated provider input. `prepare::resolve` checks both readings before any
+  provider callback; inspection recovery never grants cryptographic acceptance.
 - `prepare`, `verify` and `provider` support explicit raw-message and prehashed
   verification, full algorithm identities and a shared payload pass. Provider
   and input failures remain distinct from invalid or unsupported signatures.

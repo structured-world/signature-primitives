@@ -57,7 +57,12 @@ pub(super) fn check(
     // EN319132-1 V1.3.1 §6.2.1:
     // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
     written(
-        input.token.signer().digest_algorithm(),
+        input
+            .token
+            .signer()
+            .digest_algorithm()
+            .identifier()
+            .expect("timestamp profile runs only after signer faults were refused"),
         input.parent,
         ProfileSource::Envelope,
         DigestUse::Signer,

@@ -237,7 +237,7 @@ fn operation<'a>(
     // stable operation-local signature catalogue/provider, never Reader/Work.
     let Resolution::Supported(identity) = provider
         .resolve_digest(
-            DigestAlgorithm::Written(signer.digest_algorithm()),
+            DigestAlgorithm::Written(signer.digest_algorithm().identifier().unwrap()),
             signer.encoding(),
             parent,
         )
@@ -247,7 +247,7 @@ fn operation<'a>(
     };
     let Resolution::Supported(SignatureMode::Raw(signature)) = provider
         .resolve_signature(
-            signer.signature_algorithm(),
+            signer.signature_algorithm().identifier().unwrap(),
             &identity,
             key,
             signer.encoding(),
@@ -353,7 +353,7 @@ fn prepare_payload<'a>(
     for _ in 0..2 {
         let Resolution::Supported(digest) = provider
             .resolve_digest(
-                DigestAlgorithm::Written(signer.digest_algorithm()),
+                DigestAlgorithm::Written(signer.digest_algorithm().identifier().unwrap()),
                 signer.encoding(),
                 parent,
             )
@@ -363,7 +363,7 @@ fn prepare_payload<'a>(
         };
         let Resolution::Supported(SignatureMode::Raw(identity)) = provider
             .resolve_signature(
-                signer.signature_algorithm(),
+                signer.signature_algorithm().identifier().unwrap(),
                 &digest,
                 key,
                 signer.encoding(),
@@ -390,6 +390,92 @@ fn prepare_payload<'a>(
     )
     .unwrap();
     PayloadBatch::prepare(digests, raw.into_owned(), &parent.execution()).unwrap()
+}
+
+#[test]
+fn malformed_signer_algorithms_refuse_before_any_provider_callback() {
+    // A valid digest followed by a malformed signature must not resolve even
+    // the digest: both syntax gates precede every provider side effect.
+    let malformed = [0x30, 6, 6, 2, 42, 3, 0x25, 0];
+    let digest = [0x30, 3, 6, 1, 42];
+    let signature = [0x30, 3, 6, 1, 43];
+    for (digest, signature, fault_field) in [
+        (
+            malformed.as_slice(),
+            signature.as_slice(),
+            "signerInfo.digestAlgorithm",
+        ),
+        (
+            digest.as_slice(),
+            malformed.as_slice(),
+            "signerInfo.signatureAlgorithm",
+        ),
+        (
+            malformed.as_slice(),
+            malformed.as_slice(),
+            "signerInfo.digestAlgorithm",
+        ),
+    ] {
+        let mut fields = vec![2, 1, 3, 0x80, 1, 7];
+        fields.extend_from_slice(digest);
+        fields.extend_from_slice(signature);
+        fields.extend_from_slice(&[4, 1, 8]);
+        let mut encoded = vec![0x30, u8::try_from(fields.len()).unwrap()];
+        encoded.extend_from_slice(&fields);
+        let memory = Memory::new(Arc::new(MemoryAccount::new(65536, 65536)));
+        let parser = Parser::ber(memory);
+        let mut parent = parser.read(&encoded, 700).unwrap();
+        let element = parent.next_element().unwrap().unwrap();
+        let signer = SignerInfo::read(&parent, &element).expect("readable inspection");
+        let spki = [0x30, 9, 0x30, 3, 6, 1, 42, 3, 2, 0, 7];
+        let mut key_reader = parser.read(&spki, 900).unwrap();
+        let element = key_reader.next_element().unwrap().unwrap();
+        let key = WorkingKey::standing(
+            PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap(),
+        );
+        let provider = Provider::default();
+        let answer = structured_cms::prepare::resolve(
+            &provider,
+            &signer,
+            key,
+            &parent,
+            structured_cms::binding::Scope::Content(structured_cms::oid::DATA),
+        )
+        .unwrap();
+        let structured_cms::prepare::Preparation::Malformed(fault) = answer else {
+            panic!("malformed inspection cannot produce a ready or unsupported plan");
+        };
+        assert_eq!(fault.field(), fault_field);
+        assert_eq!(
+            encoded[usize::try_from(fault.offset() - 700).unwrap()],
+            0x25
+        );
+        assert_eq!(provider.digest_resolutions.get(), 0);
+        assert_eq!(provider.signature_resolutions.get(), 0);
+        assert_eq!(provider.digest_starts.get(), 0);
+        assert_eq!(provider.raw_starts.get(), 0);
+        // Retained syntax faults do not hide caller misuse: a different parser
+        // on the same account must still fail as processing, before callbacks.
+        let foreign = Parser::ber(parser.memory().clone());
+        let query = foreign.read(&[], 700).unwrap();
+        let Err(structured_cms::prepare::PrepareError::Processing(error)) =
+            structured_cms::prepare::resolve(
+                &provider,
+                &signer,
+                key,
+                &query,
+                structured_cms::binding::Scope::Content(structured_cms::oid::DATA),
+            )
+        else {
+            panic!("foreign producer must not become malformed document evidence");
+        };
+        assert_eq!(
+            error.code(),
+            structured_cms::ErrorCode::Pkix(structured_pkix::ErrorCode::ForeignReader,)
+        );
+        assert_eq!(provider.digest_resolutions.get(), 0);
+        assert_eq!(provider.signature_resolutions.get(), 0);
+    }
 }
 
 #[test]

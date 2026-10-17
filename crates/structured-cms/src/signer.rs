@@ -4,7 +4,8 @@ use crate::attribute::{Attributes, Placement};
 use crate::{Error, ErrorCode, Octets, Result};
 use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Element, Encoding, Integer, Reader, Span, Tag, universal};
-use structured_pkix::{AlgorithmIdentifier, Name};
+use structured_pkix::Name;
+use structured_pkix::algorithm::AlgorithmReading;
 
 /// The identity actually selected by the document, without certificate selection.
 #[derive(Debug)]
@@ -68,9 +69,9 @@ impl<'a> SignerIdentifier<'a> {
 pub struct SignerInfo<'a> {
     version: u64,
     sid: SignerIdentifier<'a>,
-    digest_algorithm: AlgorithmIdentifier<'a>,
+    digest_algorithm: AlgorithmReading<'a>,
     signed_attributes: Option<Attributes<'a>>,
-    signature_algorithm: AlgorithmIdentifier<'a>,
+    signature_algorithm: AlgorithmReading<'a>,
     signature: Octets<'a>,
     unsigned_attributes: Option<Attributes<'a>>,
     encoding: Encoding,
@@ -94,6 +95,10 @@ impl<'a> SignerInfo<'a> {
     /// A uniquely readable version mismatch is retained as a fault, never a
     /// successful conformance claim. Signed attributes remain DER and their
     /// original octets are never repaired (RFC5652 §§5.3–5.4).
+    /// Each algorithm uses the PKIX inspection reader: a uniquely bounded
+    /// malformed parameter stays visible with its located diagnostic, while
+    /// missing/ambiguous fields and resource/processing refusals remain errors.
+    /// Provider preparation refuses either malformed algorithm before callbacks.
     /// <https://www.rfc-editor.org/rfc/rfc5652#section-5.3>
     pub fn read(parent: &Reader<'a>, element: &Element<'a>) -> Result<Self> {
         const FIELD: &str = "signerInfo";
@@ -138,8 +143,7 @@ impl<'a> SignerInfo<'a> {
         }
         let digest = required(&mut inside, "signerInfo.digestAlgorithm")?;
         let digest_algorithm =
-            structured_pkix::algorithm::read(&inside, &digest, "signerInfo.digestAlgorithm")
-                .map_err(Error::pkix)?;
+            read_algorithm(&inside, &digest, "signerInfo.digestAlgorithm", &mut faults)?;
         let mut next = required(&mut inside, "signerInfo.signatureAlgorithm")?;
         let signed_attributes = if next.tag() == Tag::context(true, 0) {
             let attributes = Attributes::read(&inside, &next, Placement::Signed)?;
@@ -149,8 +153,7 @@ impl<'a> SignerInfo<'a> {
             None
         };
         let signature_algorithm =
-            structured_pkix::algorithm::read(&inside, &next, "signerInfo.signatureAlgorithm")
-                .map_err(Error::pkix)?;
+            read_algorithm(&inside, &next, "signerInfo.signatureAlgorithm", &mut faults)?;
         let signature_element = required(&mut inside, "signerInfo.signature")?;
         let signature = Octets::read(&inside, &signature_element, "signerInfo.signature")?;
         let unsigned_attributes = match inside
@@ -191,20 +194,22 @@ impl<'a> SignerInfo<'a> {
     pub fn sid(&self) -> &SignerIdentifier<'a> {
         &self.sid
     }
-    /// Original digest algorithm and opaque parameters.
+    /// Original digest inspection, including any parameter syntax fault.
+    /// Only the reading's `identifier()` exposes a validated provider input.
     #[must_use]
-    pub fn digest_algorithm(&self) -> AlgorithmIdentifier<'a> {
-        self.digest_algorithm
+    pub fn digest_algorithm(&self) -> &AlgorithmReading<'a> {
+        &self.digest_algorithm
     }
     /// Original signed attributes, when present.
     #[must_use]
     pub fn signed_attributes(&self) -> Option<&Attributes<'a>> {
         self.signed_attributes.as_ref()
     }
-    /// Original signature algorithm and opaque parameters.
+    /// Original signature inspection, including any parameter syntax fault.
+    /// A readable malformed algorithm is never a validated provider input.
     #[must_use]
-    pub fn signature_algorithm(&self) -> AlgorithmIdentifier<'a> {
-        self.signature_algorithm
+    pub fn signature_algorithm(&self) -> &AlgorithmReading<'a> {
+        &self.signature_algorithm
     }
     /// Logical signature octets without joining.
     #[must_use]
@@ -271,12 +276,21 @@ impl<'a> SignerInfo<'a> {
             .digest_algorithm
             .same_written_in(&other.digest_algorithm, parent)
             .map_err(comparison_error)?
-            && !self
-                .digest_algorithm
-                .digest_matches_in(&other.digest_algorithm, parent)
-                .map_err(comparison_error)?
         {
-            return Ok(false);
+            let (Some(left), Some(right)) = (
+                self.digest_algorithm.identifier(),
+                other.digest_algorithm.identifier(),
+            ) else {
+                // Malformed parameters have only their original encoded
+                // identity. They cannot acquire valid algorithm defaults.
+                return Ok(false);
+            };
+            if !left
+                .digest_matches_in(&right, parent)
+                .map_err(comparison_error)?
+            {
+                return Ok(false);
+            }
         }
         self.signature_algorithm
             .same_written_in(&other.signature_algorithm, parent)
@@ -340,6 +354,27 @@ impl<'a> SignerInfo<'a> {
         self.signature
             .same_value(&other.signature, parent, field, at)
     }
+}
+
+fn read_algorithm<'a, W: Work>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    field: &'static str,
+    faults: &mut OwnedVec<Error, W>,
+) -> Result<AlgorithmReading<'a>> {
+    // RFC5652 §5.3 carries an AlgorithmIdentifier in each slot. Retaining a
+    // unique malformed parameter is inspection recovery, not conforming BER
+    // or permission to resolve a cryptographic algorithm. PKIX owns that one
+    // structural/parameter kernel; resources and ambiguous syntax still refuse.
+    // https://www.rfc-editor.org/rfc/rfc5652#section-5.3
+    let reading =
+        structured_pkix::algorithm::read_inspection(parent, element, field).map_err(Error::pkix)?;
+    if let Some(fault) = reading.fault() {
+        faults
+            .try_push(Error::pkix(fault.clone()))
+            .map_err(|reason| Error::resource(reason, fault.field(), fault.offset()))?;
+    }
+    Ok(reading)
 }
 
 fn duplicate_comparison_error(source: structured_pkix::Error, at: u64) -> Error {

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.4.5...structured-pkix-v0.5.0) - 2026-10-17
+
+### Fixed
+
+- *(pkix)* scope attribute folding work ([#105](https://github.com/structured-world/signature-primitives/pull/105))
+- *(cms)* [**breaking**] retain malformed signer algorithms ([#103](https://github.com/structured-world/signature-primitives/pull/103))
+- *(cms)* retain empty attribute inspection ([#108](https://github.com/structured-world/signature-primitives/pull/108))
+
 ## [0.4.5](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.4.4...structured-pkix-v0.4.5) - 2026-10-16
 
 ### Added

@@ -239,6 +239,24 @@ impl<'a> Attributes<'a> {
     /// placement checks are separate (§§11.1–11.4, RFC6211 §2).
     /// <https://www.rfc-editor.org/rfc/rfc5652#section-5.3>
     pub fn read(parent: &Reader<'a>, element: &Element<'a>, placement: Placement) -> Result<Self> {
+        let reading = Self::read_inspection(parent, element, placement)?;
+        if let Some(fault) = reading.fault() {
+            return Err(fault);
+        }
+        Ok(reading)
+    }
+
+    /// Reads original attributes while retaining a uniquely bounded empty set.
+    ///
+    /// An empty outer set violates RFC5652 §5.3 and is exposed by [`Self::fault`].
+    /// This inspection recovery does not relax signed DER, member syntax or
+    /// binding requirements. It preserves presence rather than treating an
+    /// invalid written set as absent.
+    pub fn read_inspection(
+        parent: &Reader<'a>,
+        element: &Element<'a>,
+        placement: Placement,
+    ) -> Result<Self> {
         if element.tag() != placement.tag() {
             return Err(Error::schema(
                 ErrorCode::UnexpectedTag,
@@ -289,18 +307,27 @@ impl<'a> Attributes<'a> {
                 .try_push(attribute)
                 .map_err(|reason| Error::resource(reason, field, member.span().start))?;
         }
-        if items.is_empty() {
-            return Err(Error::schema(
-                ErrorCode::EmptyAttributes,
-                field,
-                element.span().start,
-            ));
-        }
         Ok(Self {
             items: items.into_owned(),
             element: *element,
             placement,
         })
+    }
+
+    /// The located nonempty-bound violation, without allocating diagnostics.
+    ///
+    /// Original signed bytes remain available for inspection; this fault must
+    /// be refused before preparing a cryptographic operation.
+    #[must_use]
+    pub fn fault(&self) -> Option<Error> {
+        if self.items.is_empty() {
+            return Some(Error::schema(
+                ErrorCode::EmptyAttributes,
+                self.placement.field(),
+                self.element.span().start,
+            ));
+        }
+        None
     }
 
     /// The original attribute catalogue in encoded order.

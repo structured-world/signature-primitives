@@ -146,7 +146,7 @@ impl<'a> SignerInfo<'a> {
             read_algorithm(&inside, &digest, "signerInfo.digestAlgorithm", &mut faults)?;
         let mut next = required(&mut inside, "signerInfo.signatureAlgorithm")?;
         let signed_attributes = if next.tag() == Tag::context(true, 0) {
-            let attributes = Attributes::read(&inside, &next, Placement::Signed)?;
+            let attributes = read_attributes(&inside, &next, Placement::Signed, &mut faults)?;
             next = required(&mut inside, "signerInfo.signatureAlgorithm")?;
             Some(attributes)
         } else {
@@ -160,7 +160,12 @@ impl<'a> SignerInfo<'a> {
             .next_element()
             .map_err(|error| Error::encoding(error, "signerInfo.unsignedAttrs"))?
         {
-            Some(attributes) => Some(Attributes::read(&inside, &attributes, Placement::Unsigned)?),
+            Some(attributes) => Some(read_attributes(
+                &inside,
+                &attributes,
+                Placement::Unsigned,
+                &mut faults,
+            )?),
             None => None,
         };
         if !inside.is_empty() {
@@ -354,6 +359,23 @@ impl<'a> SignerInfo<'a> {
         self.signature
             .same_value(&other.signature, parent, field, at)
     }
+}
+
+fn read_attributes<'a, W: Work>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    placement: Placement,
+    faults: &mut OwnedVec<Error, W>,
+) -> Result<Attributes<'a>> {
+    let reading = Attributes::read_inspection(parent, element, placement)?;
+    if let Some(fault) = reading.fault() {
+        let field = fault.field();
+        let at = fault.offset();
+        faults
+            .try_push(fault)
+            .map_err(|reason| Error::resource(reason, field, at))?;
+    }
+    Ok(reading)
 }
 
 fn read_algorithm<'a, W: Work>(

@@ -26,6 +26,10 @@ structured-cms = "0.2"
   parameters remain inspectable with located faults. Only `identifier()` yields
   validated provider input. `prepare::resolve` checks both readings before any
   provider callback; inspection recovery never grants cryptographic acceptance.
+  Present-empty signed or unsigned attribute sets likewise remain inspectable
+  with `EmptyAttributes` faults and original ranges. `Attributes::read` remains
+  strict; `read_inspection` exposes this uniquely bounded schema violation.
+  Binding and preparation reject it before provider callbacks or payload work.
 - `prepare`, `verify` and `provider` support explicit raw-message and prehashed
   verification, full algorithm identities and a shared payload pass. Provider
   and input failures remain distinct from invalid or unsupported signatures.

@@ -61,6 +61,57 @@ fn memory() -> Memory {
 }
 
 #[test]
+fn empty_signer_attributes_preserve_carried_timestamp_information() {
+    // Inspection must expose readable TSTInfo despite an invalid empty outer
+    // attribute set, including when content requires an accounted join.
+    for (signed, unsigned) in [(true, false), (false, true), (true, true)] {
+        let mut fields = vec![2, 1, 3, 0x80, 1, 7, 0x30, 3, 6, 1, 42];
+        if signed {
+            fields.extend([0xa0, 0]);
+        }
+        fields.extend([0x30, 3, 6, 1, 43, 4, 1, 8]);
+        if unsigned {
+            fields.extend([0xa1, 0]);
+        }
+        let original = tlv(0x30, &fields);
+        for segmented in [false, true] {
+            let bytes = message(
+                oid::TST_INFO.as_bytes(),
+                Some(&info()),
+                &original,
+                segmented,
+            );
+            let account = memory();
+            let parser = Parser::ber(account.clone());
+            let token = Token::read(&parser, &bytes, 400).unwrap();
+            assert_eq!(token.signer().as_bytes(), original);
+            assert_eq!(
+                token.signer().faults().len(),
+                usize::from(signed) + usize::from(unsigned)
+            );
+            assert!(
+                token
+                    .signer()
+                    .faults()
+                    .iter()
+                    .all(|fault| fault.code() == ErrorCode::EmptyAttributes)
+            );
+            let parent = parser.read(&[], 400).unwrap();
+            token
+                .with_info(&parent, |info, _, _| {
+                    assert_eq!(info.serial().value().as_u64(), Some(7));
+                    assert!(!info.has_faults());
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            drop(token);
+            drop(parent);
+            assert_eq!(account.used(), 0);
+        }
+    }
+}
+
+#[test]
 fn malformed_signer_algorithms_keep_timestamp_inspection_and_original_content() {
     // Algorithm faults must not erase the envelope or independently readable
     // TSTInfo, including through an accounted join of constructed content.

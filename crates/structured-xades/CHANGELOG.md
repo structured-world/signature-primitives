@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/structured-world/signature-primitives/compare/structured-xades-v0.6.1...structured-xades-v0.6.2) - 2026-10-17
+
+### Added
+
+- *(asn1)* finish and rebind OwnedMap without copying ([#118](https://github.com/structured-world/signature-primitives/pull/118))
+
 ## [0.6.1](https://github.com/structured-world/signature-primitives/compare/structured-xades-v0.6.0...structured-xades-v0.6.1) - 2026-10-17
 
 ### Added

@@ -83,6 +83,23 @@ it does not establish algorithm support or signature validity. Applications appl
 the distinct signature-parameter and public-key-restriction rules and select the
 cryptographic provider.
 
+### RSA and EC public-key structure
+
+`key::rsa::read(key, &execution)` reads the RFC 8017 `RSAPublicKey` carried by
+an `rsaEncryption` or `id-RSASSA-PSS` key. It returns the borrowed modulus and
+exponent magnitudes without their sign octet, their document offsets and the
+exact modulus bit length. `key::ec::read(working_key, &execution)` reads an
+`id-ecPublicKey` key: the RFC 5480 `ECParameters` choice in force, including
+parameters inherited from an authority along the path and read where that
+authority wrote them, and the SEC1 point split into its coordinates.
+`implicitCurve` and `specifiedCurve` are reported, not refused; the point at
+infinity and the hybrid form are refused.
+
+Both readers decode the original bytes in their parser session under the
+current execution, copy nothing and allocate nothing. They establish structure
+only: key-size and exponent policy, curve support and width, and whether a
+point lies on its curve remain with the provider that verifies.
+
 ### Scoped execution for retained inputs
 
 Supplied-path validation accepts `ValidationContext<..., E>` with

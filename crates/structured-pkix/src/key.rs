@@ -1,12 +1,16 @@
 //! The public key a certificate carries.
 //!
-//! The key stays as it was encoded. Interpreting it is the algorithm
-//! registry's work, and re-encoding it here would change what a key identifier
-//! is computed over.
+//! The key stays as it was encoded: re-encoding it here would change what a
+//! key identifier is computed over. [`rsa`] and [`ec`] read its structure in
+//! place; whether a key is usable remains the algorithm registry's decision.
 
 use crate::algorithm::{self, AlgorithmIdentifier};
 use crate::error::{Error, ErrorCode, Located, Result};
-use structured_asn1::{BitString, Element, Reader, Tag, universal};
+use structured_asn1::memory::Work;
+use structured_asn1::{BitString, Element, Oid, Reader, Tag, universal};
+
+pub mod ec;
+pub mod rsa;
 
 /// A public key and the algorithm it belongs to.
 #[derive(Debug, Clone, Copy)]
@@ -14,6 +18,8 @@ pub struct PublicKeyInfo<'a> {
     algorithm: AlgorithmIdentifier<'a>,
     key: BitString<'a>,
     der: &'a [u8],
+    // Document offset of the first key octet, after the unused-bits octet.
+    key_offset: u64,
 }
 
 impl<'a> PublicKeyInfo<'a> {
@@ -34,6 +40,18 @@ impl<'a> PublicKeyInfo<'a> {
     #[must_use]
     pub fn key_octets(self) -> Option<&'a [u8]> {
         self.key.octets()
+    }
+
+    /// Where the first key octet sits in the whole document.
+    #[must_use]
+    pub fn key_offset(self) -> u64 {
+        self.key_offset
+    }
+
+    /// Whole key octets, or a located refusal of a padded bit string.
+    pub(crate) fn whole_octets(self, field: &'static str) -> Result<&'a [u8]> {
+        self.key_octets()
+            .ok_or_else(|| Error::new(ErrorCode::MalformedValue, field, self.key_offset))
     }
 
     /// The whole structure as it was encoded.
@@ -74,7 +92,10 @@ impl<'a> PublicKeyInfo<'a> {
             .field(field)?
             .ok_or_else(|| fail(ErrorCode::MissingField))?;
         let algorithm = algorithm::read(&inside, &algorithm_element, field)?;
-        let key = inside.read_bit_string().field(field)?;
+        let key_element = inside
+            .expect(Tag::primitive(universal::BIT_STRING))
+            .field(field)?;
+        let key = inside.bit_string(&key_element).field(field)?;
 
         if !inside.is_empty() {
             return Err(fail(ErrorCode::TrailingData));
@@ -84,8 +105,31 @@ impl<'a> PublicKeyInfo<'a> {
             algorithm,
             key,
             der: element.as_bytes(),
+            // A primitive BIT STRING: one unused-bits octet, then the bits.
+            key_offset: key_element.contents_span().start + 1,
         })
     }
+}
+
+/// Paid identity of two OIDs: the length check, then the octets compared.
+pub(crate) fn same_oid<W: Work>(
+    left: Oid<'_>,
+    right: Oid<'_>,
+    execution: &W,
+    field: &'static str,
+    at: u64,
+) -> Result<bool> {
+    let charge = |amount| {
+        execution
+            .charge_work(amount)
+            .map_err(|reason| Error::resource(reason, field, at))
+    };
+    charge(1)?;
+    if left.as_bytes().len() != right.as_bytes().len() {
+        return Ok(false);
+    }
+    charge(left.as_bytes().len() as u64)?;
+    Ok(left == right)
 }
 
 #[cfg(test)]

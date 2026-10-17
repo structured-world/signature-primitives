@@ -148,9 +148,10 @@ pub enum Verified {
 #[derive(Debug, Clone, Copy)]
 pub struct WorkingKey<'a> {
     key: PublicKeyInfo<'a>,
-    /// Parameters whose algorithm compatibility was admitted and established
-    /// during the transition. Getters never defer an untrusted OID comparison.
-    inherited: Option<&'a [u8]>,
+    /// The authority's written parameters this key stands in, readable where
+    /// they were written, after the transition admitted and established
+    /// algorithm compatibility. Getters never defer an untrusted OID comparison.
+    inherited: Option<crate::algorithm::Nested<'a>>,
 }
 
 impl<'a> WorkingKey<'a> {
@@ -195,8 +196,15 @@ impl<'a> WorkingKey<'a> {
     /// does not itself prove that the key's encoding is valid for its algorithm.
     #[must_use]
     pub fn parameters(self) -> Option<&'a [u8]> {
+        self.parameter_source()
+            .map(crate::algorithm::Nested::as_bytes)
+    }
+
+    /// [`Self::parameters`] with their original parser session, offsets and
+    /// depth, which may belong to an authority's certificate.
+    pub(crate) fn parameter_source(self) -> Option<crate::algorithm::Nested<'a>> {
         if !self.key.algorithm().has_no_parameters() {
-            return self.key.algorithm().parameters();
+            return self.key.algorithm().parameters_nested();
         }
         self.inherited
     }
@@ -239,7 +247,7 @@ impl<'a> WorkingKey<'a> {
         let key = certificate.tbs().public_key();
         let mut inherited = None;
         if key.algorithm().has_no_parameters()
-            && let Some(parameters) = self.parameters()
+            && let Some(parameters) = self.parameter_source()
         {
             let previous = self.key.algorithm().algorithm().as_bytes();
             let current = key.algorithm().algorithm().as_bytes();

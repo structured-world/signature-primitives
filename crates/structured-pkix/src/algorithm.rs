@@ -29,6 +29,47 @@ pub struct AlgorithmIdentifier<'a> {
     indefinite: bool,
 }
 
+/// Original bytes nested one level inside an identifier's reader, carrying
+/// only what reading them in place needs: a key that inherits parameters
+/// keeps this rather than the authority's whole identifier.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Nested<'a> {
+    bytes: &'a [u8],
+    at: u64,
+    parser: &'a Parser,
+    outer: u32,
+    encoding: Encoding,
+}
+
+impl<'a> Nested<'a> {
+    pub(crate) fn as_bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// Opens the single element these bytes hold. Source parser, offsets,
+    /// encoding and depth stay original; `execution` pays for the decoding.
+    pub(crate) fn open<'operation, W: Work>(
+        self,
+        execution: &'operation W,
+        field: &'static str,
+    ) -> Result<(ScopedReader<'a, 'operation>, Element<'a>)>
+    where
+        'a: 'operation,
+    {
+        let mut reader = execution
+            .read_scoped_nested(self.parser, self.bytes, self.at, self.encoding, self.outer)
+            .field(field)?;
+        let element = reader
+            .next_element()
+            .field(field)?
+            .ok_or_else(|| Error::new(ErrorCode::MissingField, field, reader.offset()))?;
+        if !reader.is_empty() {
+            return Err(Error::new(ErrorCode::TrailingData, field, reader.offset()));
+        }
+        Ok((reader, element))
+    }
+}
+
 // Raw schema fields are deliberately a different type from the validated
 // identifier. Only a fault-free reading can cross the crypto-facing boundary.
 #[derive(Debug, Clone, Copy)]
@@ -449,6 +490,24 @@ impl<'a> AlgorithmIdentifier<'a> {
             .read_nested_query_in(parent, parameter, at, self.encoding, self.outer)
             .field(field)
             .map(Some)
+    }
+
+    /// The written parameters, readable in place.
+    pub(crate) fn parameters_nested(self) -> Option<Nested<'a>> {
+        let start = self.parameter_start?.get();
+        Some(self.nested(self.parameters()?, self.offset + start as u64))
+    }
+
+    /// Original bytes at `at` that sit one level inside this identifier's
+    /// reader: its parameters, or the sibling key bits of an enclosing SPKI.
+    pub(crate) fn nested(self, bytes: &'a [u8], at: u64) -> Nested<'a> {
+        Nested {
+            bytes,
+            at,
+            parser: self.parser,
+            outer: self.outer,
+            encoding: self.encoding,
+        }
     }
 
     /// Whether this original identifier was produced by this parser session.

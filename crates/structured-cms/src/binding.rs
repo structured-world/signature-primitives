@@ -148,6 +148,18 @@ pub fn inspect<'a>(
     scope: Scope<'a>,
 ) -> Result<Binding<'a>> {
     signer.require_session(parent, "signerInfo")?;
+    // RFC5652 §5.3 requires both written attribute sets to be nonempty.
+    // Inspection can retain this unique malformed shape, but even unsigned
+    // emptiness must refuse before any provider resolution or payload access.
+    // https://www.rfc-editor.org/rfc/rfc5652#section-5.3
+    for attributes in [signer.signed_attributes(), signer.unsigned_attributes()]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(fault) = attributes.fault() {
+            return Err(fault);
+        }
+    }
     check_placements(signer, parent)?;
     let Some(attributes) = signer.signed_attributes() else {
         if let Scope::Content(kind) = scope {

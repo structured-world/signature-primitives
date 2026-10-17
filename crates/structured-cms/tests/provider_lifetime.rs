@@ -722,6 +722,57 @@ fn binding_fixture(digest: Option<&[u8]>, protected_signature: Option<u8>) -> Ve
 }
 
 #[test]
+fn empty_signed_or_unsigned_attributes_refuse_before_every_provider_callback() {
+    // The inspection reader retains invalid empty sets. Preparation must not
+    // let either schema fault reach algorithm resolution or payload states.
+    use structured_cms::{
+        ErrorCode,
+        binding::Scope,
+        prepare::{self, Preparation},
+    };
+    let parser = Parser::ber(Memory::new(Arc::new(MemoryAccount::new(65536, 65536))));
+    let spki = [0x30, 9, 0x30, 3, 6, 1, 42, 3, 2, 0, 7];
+    let mut key_reader = parser.read(&spki, 900).unwrap();
+    let element = key_reader.next_element().unwrap().unwrap();
+    let key =
+        WorkingKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
+    for (signed, unsigned) in [(true, false), (false, true), (true, true)] {
+        let mut fields = vec![2, 1, 3, 0x80, 1, 7, 0x30, 3, 6, 1, 42];
+        if signed {
+            fields.extend([0xa0, 0]);
+        }
+        fields.extend([0x30, 3, 6, 1, 43, 4, 1, 8]);
+        if unsigned {
+            fields.extend([0xa1, 0]);
+        }
+        let mut encoded = vec![0x30, u8::try_from(fields.len()).unwrap()];
+        encoded.extend(fields);
+        let mut reader = parser.read(&encoded, 700).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let signer = SignerInfo::read(&reader, &element).unwrap();
+        let provider = Provider::default();
+        let Preparation::Malformed(error) = prepare::resolve(
+            &provider,
+            &signer,
+            key,
+            &reader,
+            Scope::Content(structured_cms::oid::DATA),
+        )
+        .unwrap() else {
+            panic!("empty set must refuse");
+        };
+        assert_eq!(error.code(), ErrorCode::EmptyAttributes);
+        assert_eq!(error.offset(), if signed { 713 } else { 721 });
+        assert_eq!(provider.digest_resolutions.get(), 0);
+        assert_eq!(provider.signature_resolutions.get(), 0);
+        assert_eq!(provider.digest_starts.get(), 0);
+        assert_eq!(provider.raw_starts.get(), 0);
+        assert_eq!(provider.raw_updates.get(), 0);
+        assert_eq!(provider.digest_updates.get(), 0);
+    }
+}
+
+#[test]
 fn syntax_and_fixed_impossible_imprint_width_refuse_before_states_or_payload() {
     // Binding syntax precedes every resolver. A readable fixed-width mismatch
     // needs digest resolution but cannot initialize a signature/hash state.

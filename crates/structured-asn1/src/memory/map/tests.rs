@@ -1,9 +1,10 @@
 use alloc::sync::Arc;
 use core::cell::Cell;
 use core::hash::{Hash, Hasher};
+use core::sync::atomic::Ordering;
 
-use super::{HashWork, RetainError};
-use crate::memory::{Memory, MemoryAccount, MemoryError, Work};
+use super::{HashWork, OwnedMap, RetainError};
+use crate::memory::{Execution, Memory, MemoryAccount, MemoryError, Work};
 use crate::{Encoding, Limits, Parser};
 
 fn memory(storage: usize, work: usize) -> Memory {
@@ -598,6 +599,345 @@ fn retain_zero_sized_pair_drops_once_and_keeps_table_capacity_until_drop() {
     assert_eq!(current.used(), 0);
     drop(map);
     assert_eq!(DROPS.load(Ordering::Relaxed), 1);
+    assert_eq!(storage.used(), 0);
+}
+
+fn limited(work: u64, memory: &Memory) -> Parser {
+    Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: work,
+            ..Limits::default()
+        },
+        memory.clone(),
+    )
+}
+
+/// Three usize pairs fill the smallest table; the next insertion must grow.
+fn full_map(storage: &Memory) -> OwnedMap<usize, usize> {
+    let mut map = storage.map();
+    for key in 0..3 {
+        map.try_insert(key, key).unwrap();
+    }
+    assert_eq!(map.values.capacity(), map.len());
+    map
+}
+
+#[test]
+fn into_owned_keeps_the_same_table_and_charge_after_its_parser_ends() {
+    // Finishing must not copy, rehash or recharge: the stored value keeps its
+    // address, and the parser's borrowed execution is no longer needed.
+    let storage = memory(16_384, 100_000);
+    let (owned, address, capacity, used) = {
+        let parser = limited(100_000, &storage);
+        let reader = parser.read(&[], 0).unwrap();
+        let mut map = reader.execution().map();
+        for key in 0..20usize {
+            map.try_insert(key, key * 2).unwrap();
+        }
+        let address = core::ptr::from_ref(map.get(&7, &storage).unwrap().unwrap());
+        let capacity = map.values.capacity();
+        let maximum = map.maximum_capacity;
+        let (used, work) = (storage.used(), storage.work_used());
+        let owned = map.into_owned();
+        assert_eq!((storage.used(), storage.work_used()), (used, work));
+        assert_eq!(owned.maximum_capacity, maximum);
+        (owned, address, capacity, used)
+    };
+    let query = memory(0, 4096);
+    let value = owned.get(&7, &query).unwrap().unwrap();
+    assert_eq!(*value, 14);
+    assert_eq!(core::ptr::from_ref(value), address);
+    assert_eq!(owned.len(), 20);
+    assert_eq!(owned.key_work, 20);
+    assert_eq!(owned.values.capacity(), capacity);
+    assert_eq!(storage.used(), used);
+    assert_eq!(query.used(), 0);
+    drop(owned);
+    assert_eq!(storage.used(), 0);
+}
+
+#[test]
+fn with_execution_rejects_a_foreign_account_and_attaches_a_same_account_ceiling() {
+    // A foreign account cannot adopt this table's storage. A same-account
+    // execution moves it without work, and its own local ceiling then governs
+    // insertion even though the aggregate account is ample.
+    let storage = memory(16_384, 100_000);
+    let map = full_map(&storage);
+    let (used, work) = (storage.used(), storage.work_used());
+    let foreign = memory(16_384, 100_000);
+    let map = map.with_execution(&foreign).unwrap_err();
+    assert_eq!(map.len(), 3);
+    assert_eq!((storage.used(), storage.work_used()), (used, work));
+    assert_eq!((foreign.used(), foreign.work_used()), (0, 0));
+    let parser = limited(0, &storage);
+    let reader = parser.read(&[], 0).unwrap();
+    let mut scoped = map.with_execution(&reader.execution()).unwrap();
+    assert_eq!((storage.used(), storage.work_used()), (used, work));
+    assert_eq!(scoped.try_insert(9, 9), Err(MemoryError::WorkExceeded));
+    assert_eq!(scoped.len(), 3);
+    assert_eq!(storage.used(), used);
+    let mut owned = scoped.into_owned();
+    owned.try_insert(9, 9).unwrap();
+    assert_eq!(owned.get(&9, &storage).unwrap(), Some(&9));
+}
+
+#[test]
+fn local_growth_exhaustion_refuses_in_the_allocator_before_the_backend() {
+    // Sweep the attached local ceiling. Some ceiling funds the rehash
+    // estimate but not the new table; that refusal must come from the
+    // allocator, report WorkExceeded and leave buckets and charge unchanged.
+    let storage = memory(1 << 20, usize::MAX);
+    let mut owned = full_map(&storage);
+    let capacity = storage.used();
+    let mut allocator_refusals = 0;
+    for local in 0..100_000 {
+        let parser = limited(local, &storage);
+        let reader = parser.read(&[], 0).unwrap();
+        let mut scoped = owned.with_execution(&reader.execution()).unwrap();
+        scoped.values.allocator().clear_failure();
+        let attempts = scoped.values.allocator().attempts.load(Ordering::Relaxed);
+        let result = scoped.try_insert(99, 99);
+        if storage.used() != capacity {
+            assert!(allocator_refusals > 0);
+            return;
+        }
+        assert_eq!(result, Err(MemoryError::WorkExceeded));
+        assert_eq!(
+            scoped.values.allocator().attempts.load(Ordering::Relaxed),
+            attempts
+        );
+        assert_eq!(scoped.len(), 3);
+        assert_eq!(scoped.values.capacity(), 3);
+        if scoped.values.allocator().failure() == MemoryError::WorkExceeded {
+            allocator_refusals += 1;
+        }
+        owned = scoped.into_owned();
+    }
+    panic!("no local ceiling funded the growth");
+}
+
+#[test]
+fn aggregate_growth_exhaustion_refuses_in_the_allocator_before_the_backend() {
+    // The same sweep on the aggregate account alone, with a fresh account per
+    // ceiling so that only this growth decides the outcome.
+    let base = {
+        let storage = memory(1 << 20, usize::MAX);
+        full_map(&storage);
+        storage.work_used()
+    };
+    let mut allocator_refusals = 0;
+    for extra in 0..100_000 {
+        let storage = memory(1 << 20, base + extra);
+        let mut map = full_map(&storage);
+        let capacity = storage.used();
+        map.values.allocator().clear_failure();
+        let result = map.try_insert(99, 99);
+        if storage.used() != capacity {
+            assert!(allocator_refusals > 0);
+            return;
+        }
+        assert_eq!(result, Err(MemoryError::WorkExceeded));
+        assert_eq!(map.values.allocator().attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.values.capacity(), 3);
+        if map.values.allocator().failure() == MemoryError::WorkExceeded {
+            allocator_refusals += 1;
+        }
+    }
+    panic!("no aggregate allowance funded the growth");
+}
+
+#[test]
+fn storage_exhaustion_on_growth_reports_limit_before_work_or_backend() {
+    // Capacity is reserved first: an exact storage limit refuses the new
+    // table with LimitExceeded and admits no allocation work.
+    let base = memory(1 << 20, usize::MAX);
+    let capacity = {
+        let _map = full_map(&base);
+        base.used()
+    };
+    let storage = memory(capacity, usize::MAX);
+    let mut map = full_map(&storage);
+    assert_eq!(map.try_insert(99, 99), Err(MemoryError::LimitExceeded));
+    assert_eq!(map.values.allocator().attempts.load(Ordering::Relaxed), 1);
+    assert_eq!(map.len(), 3);
+    assert_eq!(storage.used(), capacity);
+}
+
+#[test]
+fn backend_refusal_after_admission_keeps_work_and_rolls_back_capacity() {
+    // Admitted allocation work stays spent when the backend fails; storage
+    // returns to the old table and the map remains usable afterwards.
+    let storage = memory(1 << 20, usize::MAX);
+    let mut map = full_map(&storage);
+    let (used, work) = (storage.used(), storage.work_used());
+    let estimate = 1 + map.control_work().unwrap() + map.rehash_work().unwrap();
+    map.values
+        .allocator()
+        .fail_backend
+        .store(true, Ordering::Relaxed);
+    assert_eq!(map.try_insert(99, 99), Err(MemoryError::OutOfMemory));
+    assert_eq!(map.values.allocator().attempts.load(Ordering::Relaxed), 2);
+    assert_eq!(map.len(), 3);
+    assert_eq!(map.values.capacity(), 3);
+    assert_eq!(storage.used(), used);
+    assert!(storage.work_used() as u64 > work as u64 + estimate);
+    map.values
+        .allocator()
+        .fail_backend
+        .store(false, Ordering::Relaxed);
+    map.try_insert(99, 99).unwrap();
+    assert_eq!(map.len(), 4);
+    drop(map);
+    assert_eq!(storage.used(), 0);
+}
+
+struct Spender<'a> {
+    id: usize,
+    execution: Option<Execution<'a>>,
+    hashes: &'a Cell<usize>,
+    refused: &'a Cell<usize>,
+}
+impl Hash for Spender<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.hashes.set(self.hashes.get() + 1);
+        if let Some(execution) = self.execution
+            && execution.charge_work(5).is_err()
+        {
+            self.refused.set(self.refused.get() + 1);
+        }
+        // Every key collides, so paid comparisons do not depend on the
+        // per-map random hasher seed and two runs are directly comparable.
+        state.write_u8(0);
+    }
+}
+impl PartialEq for Spender<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for Spender<'_> {}
+impl HashWork for Spender<'_> {
+    fn hash_work(&self) -> Result<u64, MemoryError> {
+        Ok(1)
+    }
+}
+
+/// Inserts three keys and one growing key; returns total work and hashes.
+fn spend(spends: bool, local: u64) -> (usize, usize, usize, usize) {
+    let storage = memory(1 << 20, usize::MAX);
+    let parser = limited(local, &storage);
+    let reader = parser.read(&[], 0).unwrap();
+    let execution = reader.execution();
+    let (hashes, refused) = (Cell::new(0), Cell::new(0));
+    let key = |id| Spender {
+        id,
+        execution: spends.then_some(execution),
+        hashes: &hashes,
+        refused: &refused,
+    };
+    let mut map = execution.map();
+    for id in 0..3 {
+        map.try_insert(key(id), ()).unwrap();
+    }
+    assert_eq!(map.values.capacity(), 3);
+    let grown = map.try_insert(key(99), ());
+    assert!(!map.values.allocator().scope_installed());
+    let len = map.len();
+    assert!(len == 3 || len == 4);
+    assert_eq!(grown.is_ok(), len == 4);
+    drop(map);
+    assert_eq!(storage.used(), 0);
+    (storage.work_used(), hashes.get(), refused.get(), len)
+}
+
+#[test]
+fn reentrant_hash_spending_the_same_execution_during_rehash_is_never_double_counted() {
+    // Rehash calls caller Hash after the new table was admitted. A Hash that
+    // spends the same execution sees the real remainder: totals add exactly,
+    // and under a tight ceiling the local limit is never exceeded.
+    let (plain, plain_hashes, _, _) = spend(false, 1_000_000);
+    let (spent, hashes, refused, len) = spend(true, 1_000_000);
+    assert_eq!(hashes, plain_hashes);
+    assert_eq!((refused, len), (0, 4));
+    assert_eq!(spent, plain + 5 * hashes);
+    let exact = spend(true, spent as u64);
+    assert_eq!((exact.0, exact.2, exact.3), (spent, 0, 4));
+    for local in [spent as u64 - 1, plain as u64 + 5, plain as u64] {
+        // Some charge is refused, by the caller's Hash or by the map, and
+        // the shared ceiling is never overdrawn by the two spenders together.
+        let (used, _, refused, len) = spend(true, local);
+        assert!(used as u64 <= local);
+        assert!(refused > 0 || len == 3);
+    }
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn hash_panic_during_rehash_clears_the_scope_and_keeps_charges_consistent() {
+    // Hashbrown frees the new table when a rehash Hash unwinds. The scope
+    // must be cleared, the old table and its charge retained, admitted work
+    // kept spent, and later growth must install a fresh scope normally.
+    struct Fragile<'a> {
+        id: usize,
+        panic: &'a Cell<bool>,
+    }
+    impl Hash for Fragile<'_> {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            assert!(
+                self.id == 99 || !self.panic.get(),
+                "deliberate rehash panic"
+            );
+            state.write_usize(self.id);
+        }
+    }
+    impl PartialEq for Fragile<'_> {
+        fn eq(&self, other: &Self) -> bool {
+            self.id == other.id
+        }
+    }
+    impl Eq for Fragile<'_> {}
+    impl HashWork for Fragile<'_> {
+        fn hash_work(&self) -> Result<u64, MemoryError> {
+            Ok(1)
+        }
+    }
+    let panic = Cell::new(false);
+    let storage = memory(1 << 20, usize::MAX);
+    let mut map = storage.map();
+    for id in 0..3 {
+        map.try_insert(Fragile { id, panic: &panic }, ()).unwrap();
+    }
+    assert_eq!(map.values.capacity(), 3);
+    let (used, work) = (storage.used(), storage.work_used());
+    panic.set(true);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        map.try_insert(
+            Fragile {
+                id: 99,
+                panic: &panic,
+            },
+            (),
+        )
+    }));
+    assert!(result.is_err());
+    assert!(!map.values.allocator().scope_installed());
+    assert_eq!(map.len(), 3);
+    assert_eq!(map.values.capacity(), 3);
+    assert_eq!(storage.used(), used);
+    assert!(storage.work_used() > work);
+    panic.set(false);
+    map.try_insert(
+        Fragile {
+            id: 99,
+            panic: &panic,
+        },
+        (),
+    )
+    .unwrap();
+    assert_eq!(map.len(), 4);
+    drop(map);
     assert_eq!(storage.used(), 0);
 }
 

@@ -7,7 +7,7 @@ use core::hash::{BuildHasher, Hash};
 use hashbrown::hash_map::RawEntryMut;
 use hashbrown::{DefaultHashBuilder, HashMap, TryReserveError};
 
-use super::allocator::AccountAllocator;
+use super::allocator::{self, TableAllocator};
 use super::{Memory, MemoryError, Work};
 
 #[cfg(test)]
@@ -93,11 +93,55 @@ impl HashWork for (crate::Oid<'_>, crate::Oid<'_>) {
 /// Hashbrown supplies bucket/probing/SIMD machinery. Reservations include its
 /// control bytes and alignment, not merely the initialized entries. Hashing and
 /// actual collision comparisons are admitted before examining candidate keys.
+///
+/// The table's storage belongs to its account, not to the execution `W`, so
+/// [`OwnedMap::into_owned`] and [`OwnedMap::with_execution`] move a finished
+/// table between executions without copying or rehashing it.
 pub struct OwnedMap<K: HashWork, V, W: Work = Memory> {
-    values: HashMap<K, V, DefaultHashBuilder, AccountAllocator<W>>,
+    values: HashMap<K, V, DefaultHashBuilder, TableAllocator>,
     execution: W,
     key_work: u64,
     maximum_capacity: usize,
+}
+
+impl<K: HashWork, V> OwnedMap<K, V> {
+    /// Temporarily attaches the current operation's work ceilings.
+    ///
+    /// The execution must use this table's existing account. On mismatch the
+    /// original map is returned unchanged. On success the table, entries,
+    /// capacity, charge and stored key metadata move without copying,
+    /// rehashing, allocation or new work. Previously admitted work is neither
+    /// reset nor charged again. Later [`OwnedMap::try_insert`] growth is paid
+    /// by `execution`; reads keep using the execution passed to each call.
+    /// Call [`OwnedMap::into_owned`] to retain the table independently again.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::sync::Arc;
+    /// use structured_asn1::{Parser, memory::{Memory, MemoryAccount}};
+    /// let memory = Memory::new(Arc::new(MemoryAccount::new(4096, 4096)));
+    /// let mut map = memory.map();
+    /// map.try_insert(1usize, 10).unwrap();
+    /// let other = Memory::new(Arc::new(MemoryAccount::new(4096, 4096)));
+    /// let map = map.with_execution(&other).unwrap_err();
+    /// let parser = Parser::ber(memory.clone());
+    /// let reader = parser.read(&[], 0).unwrap();
+    /// let mut scoped = map.with_execution(&reader.execution()).unwrap();
+    /// scoped.try_insert(2, 20).unwrap();
+    /// let map = scoped.into_owned();
+    /// assert_eq!(map.get(&2, &memory).unwrap(), Some(&20));
+    /// ```
+    pub fn with_execution<W: Work>(self, execution: &W) -> Result<OwnedMap<K, V, W>, Self> {
+        if !self.memory().same_account(execution.memory()) {
+            return Err(self);
+        }
+        Ok(OwnedMap {
+            values: self.values,
+            execution: execution.clone(),
+            key_work: self.key_work,
+            maximum_capacity: self.maximum_capacity,
+        })
+    }
 }
 
 impl<K: HashWork + fmt::Debug, V: fmt::Debug, W: Work> fmt::Debug for OwnedMap<K, V, W> {
@@ -111,7 +155,7 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
         Self {
             values: HashMap::with_hasher_in(
                 DefaultHashBuilder::default(),
-                AccountAllocator::new(execution.clone()),
+                TableAllocator::new(execution.memory().clone()),
             ),
             execution,
             key_work: 0,
@@ -119,10 +163,50 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
         }
     }
 
+    /// Finishes bounded construction as an independently owned table.
+    ///
+    /// Transfers the existing table and its original account without copying
+    /// entries, rehashing, reallocating, changing capacity or reserving again.
+    /// Subsequent growth uses that aggregate account; the parser-local ceiling
+    /// governed construction and is no longer attached. Borrows in `K` and `V`
+    /// retain their own lifetimes.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::sync::Arc;
+    /// use structured_asn1::{Parser, memory::{Memory, MemoryAccount, Work}};
+    /// let memory = Memory::new(Arc::new(MemoryAccount::new(4096, 4096)));
+    /// let result;
+    /// {
+    ///     let parser = Parser::ber(memory.clone());
+    ///     let reader = parser.read(&[], 0)?;
+    ///     let mut scratch = reader.execution().map();
+    ///     scratch.try_insert(7usize, "seven").unwrap();
+    ///     result = scratch.into_owned();
+    /// }
+    /// assert_eq!(result.get(&7, &memory).unwrap(), Some(&"seven"));
+    /// drop(result);
+    /// assert_eq!(memory.used(), 0);
+    /// # Ok::<(), structured_asn1::Error>(())
+    /// ```
+    #[must_use]
+    pub fn into_owned(self) -> OwnedMap<K, V> {
+        // One shared-owner increment per finished table: the account handle
+        // the table already holds cannot also serve as the map's execution
+        // while hashbrown borrows the table mutably during insertion.
+        let execution = self.values.allocator().memory().clone();
+        OwnedMap {
+            values: self.values,
+            execution,
+            key_work: self.key_work,
+            maximum_capacity: self.maximum_capacity,
+        }
+    }
+
     /// The shared account retained until the table is deallocated.
     #[must_use]
     pub fn memory(&self) -> &Memory {
-        self.execution.memory()
+        self.values.allocator().memory()
     }
 
     /// Number of initialized entries.
@@ -416,10 +500,11 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
     }
 
     /// Inserts a value fallibly, or replaces the value for an existing key.
-    /// This storage mutation runs in the collection's original resource
-    /// domain, including hashing, rehashing, allocation and copying work.
-    /// To mutate under a different domain, build a new collection there from
-    /// explicitly admitted borrowed entries; retained capacity is not rebound.
+    /// This storage mutation runs in the map's attached execution, including
+    /// hashing, rehashing, allocation and copying work. Table growth admits
+    /// its storage and work before the allocator backend, in the same order
+    /// as [`super::OwnedVec`]. To mutate under another same-account execution,
+    /// attach it with [`OwnedMap::with_execution`].
     pub fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, MemoryError> {
         let hash = self.hash_key(&key, &self.execution)?;
         let mut failure = None;
@@ -444,7 +529,13 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
             // Include collision-dependent slot searches, not just key hashes.
             self.execution.charge_work(self.rehash_work()?)?;
             self.values.allocator().clear_failure();
-            self.values.try_reserve(1).map_err(|error| match error {
+            allocator::scoped(
+                &mut self.values,
+                HashMap::allocator,
+                &self.execution,
+                |values| values.try_reserve(1),
+            )
+            .map_err(|error| match error {
                 TryReserveError::CapacityOverflow => MemoryError::CapacityOverflow,
                 TryReserveError::AllocError { .. } => self.values.allocator().failure(),
             })?;

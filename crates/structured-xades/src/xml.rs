@@ -1,18 +1,10 @@
 //! Scoped XML access without retaining DOM or callback-local string borrows.
 
 use structured_asn1::memory::{HashWork, MemoryError, Work};
+use structured_ltv::source::{Query, ScopeError};
 
-/// Original document identity and the exact immutable view generation.
-///
-/// A generation change invalidates earlier selection and reference evidence;
-/// it is a processing failure, never a malformed-property diagnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Snapshot<D, G> {
-    /// Stable identity supplied by the XML owner, not a document fingerprint.
-    pub document: D,
-    /// Generation under which all selected nodes and evidence were obtained.
-    pub generation: G,
-}
+// The snapshot is part of this trait's vocabulary: implementors name it here.
+pub use structured_ltv::source::Snapshot;
 
 /// An expanded XML name; prefix spelling does not participate in identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +321,41 @@ impl<'a, X: Xml, W: Work> Access<'a, X, W> {
             self.xml
                 .next_sibling(self.snapshot, parent, node, self.execution)
         })
+    }
+}
+
+// Long-term validation checks run under the same snapshot guard and current
+// operation as every XML query, so one admission path serves both.
+impl<X: Xml, W: Work> Query for Access<'_, X, W> {
+    type Id = X::Id;
+    type Document = X::Document;
+    type Generation = X::Generation;
+    type Work = W;
+
+    fn snapshot(&self) -> Snapshot<X::Document, X::Generation> {
+        self.snapshot
+    }
+
+    fn execution(&self) -> &W {
+        self.execution
+    }
+
+    fn admit(&self, node: X::Id, units: u64) -> Result<(), ScopeError<X::Id>> {
+        let changed = |_: AccessError<(), X::Id>| ScopeError::Changed { node };
+        self.unchanged(node).map_err(changed)?;
+        self.execution
+            .charge_work(units)
+            .map_err(|cause| ScopeError::Resource { node, cause })?;
+        self.unchanged(node).map_err(changed)
+    }
+}
+
+impl<E, N> From<ScopeError<N>> for AccessError<E, N> {
+    fn from(cause: ScopeError<N>) -> Self {
+        match cause {
+            ScopeError::Changed { node } => Self::Changed { node },
+            ScopeError::Resource { node, cause } => Self::Resource { node, cause },
+        }
     }
 }
 

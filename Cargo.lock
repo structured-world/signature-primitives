@@ -685,6 +685,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "structured-ltv"
+version = "0.7.0"
+dependencies = [
+ "structured-asn1",
+ "structured-cms",
+ "structured-pkix",
+]
+
+[[package]]
 name = "structured-pkix"
 version = "0.7.0"
 dependencies = [
@@ -704,6 +713,7 @@ dependencies = [
  "sha2",
  "structured-asn1",
  "structured-cms",
+ "structured-ltv",
  "structured-pkix",
 ]
 

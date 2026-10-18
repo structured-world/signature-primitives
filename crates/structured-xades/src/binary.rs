@@ -146,14 +146,9 @@ pub struct Decoded<'source> {
     pub depth: u32,
 }
 
-/// Original XML enclosure of a distinct decoded binary source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Location<N, D, G> {
-    /// Exact original XML document and generation.
-    pub snapshot: Snapshot<D, G>,
-    /// Original encapsulated-value element.
-    pub node: N,
-}
+// The original XML enclosure of a decoded binary source is a common source
+// location; `Located` and every binary error carry it.
+pub use structured_ltv::source::Location;
 
 /// A retained result alongside its original XML/binary-source enclosure.
 /// Any ASN.1 offsets inside the value remain decoded-source coordinates.

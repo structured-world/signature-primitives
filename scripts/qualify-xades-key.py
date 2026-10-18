@@ -27,7 +27,8 @@ def run(arguments, **kwargs):
 def source_hash(root):
     digest = hashlib.sha256()
     paths = [root / "Cargo.toml", root / "Cargo.lock"]
-    for package in ("structured-asn1", "structured-pkix", "structured-cms", "structured-xades"):
+    for package in ("structured-asn1", "structured-pkix", "structured-cms", "structured-ltv",
+                    "structured-xades"):
         directory = root / "crates" / package
         paths.append(directory / "Cargo.toml")
         paths.extend((directory / "src").rglob("*.rs"))

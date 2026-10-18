@@ -1,0 +1,25 @@
+# Existing packages that depend on LTV publish through OIDC once the first
+# LTV version is in the registry.
+[workspace]
+release_always = false
+git_release_enable = true
+
+[[package]]
+name = "structured-asn1"
+release = false
+
+[[package]]
+name = "structured-pkix"
+release = false
+
+[[package]]
+name = "structured-cms"
+release = false
+
+[[package]]
+name = "structured-ltv"
+release = false
+
+[[package]]
+name = "structured-xades"
+git_tag_name = "structured-xades-v{{ version }}"

@@ -421,7 +421,8 @@ def qualify_shared(output):
     fixture_before = harness_hash(root)
     manifest = ["[workspace]", "[package]", 'name = "xades-dss-qualification"',
                 'version = "0.0.0"', 'edition = "2024"', "publish = false", "[dependencies]"]
-    for package in ("structured-asn1", "structured-pkix", "structured-cms", "structured-xades"):
+    for package in ("structured-asn1", "structured-pkix", "structured-cms", "structured-ltv",
+                    "structured-xades"):
         path = json.dumps(str(root / "crates" / package))
         manifest.append(f"{package} = {{ path = {path}, default-features = false }}")
     manifest += ['p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }',

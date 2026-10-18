@@ -108,6 +108,27 @@ fn every_algorithm_resolves_from_its_own_identifier() {
 }
 
 #[test]
+fn resolution_costs_one_pass_over_the_written_identifier() {
+    // An unknown OID sharing the SHA-2 prefix is the costliest input: it is
+    // decided in one pass, paid as its length plus one, and one unit less is
+    // refused before any comparison.
+    let der = Parser::der(memory(1 << 20));
+    let bytes = [0x30, 11, 6, 9, 0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 7];
+    let unknown = read(&der, &bytes);
+    let exact = memory(10);
+    assert_eq!(
+        digest::algorithm(&unknown, &exact).unwrap(),
+        Resolution::Unsupported
+    );
+    assert_eq!(exact.work_used(), 10);
+    assert!(
+        digest::algorithm(&unknown, &memory(9))
+            .unwrap_err()
+            .is_resource()
+    );
+}
+
+#[test]
 fn a_spent_ceiling_is_an_error_never_a_resolution() {
     // Running out of work is a refusal to finish, located at the identifier.
     let der = Parser::der(memory(1 << 20));

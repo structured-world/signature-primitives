@@ -35,16 +35,6 @@ pub enum Algorithm {
 }
 
 impl Algorithm {
-    const ALL: [Self; 7] = [
-        Self::Sha1,
-        Self::Sha224,
-        Self::Sha256,
-        Self::Sha384,
-        Self::Sha512,
-        Self::Sha512_224,
-        Self::Sha512_256,
-    ];
-
     /// Output width in octets.
     #[must_use]
     pub const fn width(self) -> usize {
@@ -119,15 +109,25 @@ pub fn algorithm<W: Work>(
     execution: &W,
 ) -> Result<Resolution<Algorithm>> {
     let written = identifier.algorithm().as_bytes();
-    // The OID is a slice of the parsed input, so its length plus one fits.
+    // One length dispatch and at most one look at each written byte, which is
+    // exactly what this charge pays for; the OID is a slice of the parsed
+    // input, so its length plus one fits. The patterns are the bytes of the
+    // `oid` constants that `Algorithm::identifier` names.
     execution
         .charge_work(written.len() as u64 + 1)
         .map_err(|reason| Error::resource(reason, identifier.field, identifier.offset))?;
-    let Some(algorithm) = Algorithm::ALL
-        .into_iter()
-        .find(|known| known.identifier().as_bytes() == written)
-    else {
-        return Ok(Resolution::Unsupported);
+    let algorithm = match written {
+        [0x2b, 0x0e, 0x03, 0x02, 0x1a] => Algorithm::Sha1,
+        [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, last] => match last {
+            0x01 => Algorithm::Sha256,
+            0x02 => Algorithm::Sha384,
+            0x03 => Algorithm::Sha512,
+            0x04 => Algorithm::Sha224,
+            0x05 => Algorithm::Sha512_224,
+            0x06 => Algorithm::Sha512_256,
+            _ => return Ok(Resolution::Unsupported),
+        },
+        _ => return Ok(Resolution::Unsupported),
     };
     if identifier.parameters().is_some() && !identifier.has_null_parameter() {
         return Ok(Resolution::Malformed);

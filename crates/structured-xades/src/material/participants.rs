@@ -3,9 +3,10 @@
 use super::status::{AuthorityMaterial, archived_authorities};
 use super::{ArchiveError, Archived, ArtifactRef, Index, IndexError};
 use crate::pki::{Participant, ParticipantAuthority, ParticipantClosure};
-use crate::timestamp::{ElementCoverage, Role, TimestampScope, Verified};
+use crate::timestamp::{ElementCoverage, TimestampScope};
 use crate::xml::{Access, Xml};
 use structured_asn1::memory::{HashWork, MemoryError, OwnedVec, Work};
+use structured_ltv::timestamp::{Purpose, Verified};
 
 /// Direct credential anchor's distinct certificate-material obligation.
 pub struct AnchorMaterial<N, D, G> {
@@ -184,7 +185,7 @@ pub fn archived_participants<
     access.execution().charge_work(cost).map_err(resource)?;
     if archive.node != evidence.property()
         || required.signature() != evidence.signature()
-        || evidence.role() != Role::Archive
+        || evidence.purpose() != Purpose::Archive
     {
         return Err(foreign());
     }

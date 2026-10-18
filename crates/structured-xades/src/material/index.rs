@@ -2,12 +2,11 @@
 
 use super::{Placement, Value, View};
 use crate::binary::Location;
-use crate::timestamp::{
-    CarriedMaterial, CarriedOrigin, CoverageError, ElementCoverage, Role, Verified,
-};
+use crate::timestamp::{CarriedMaterial, CarriedOrigin, CoverageError, ElementCoverage};
 use crate::xml::{Access, AccessError, Snapshot, Xml};
 use core::hash::Hash;
 use structured_asn1::memory::{HashWork, MemoryError, OwnedMap, OwnedVec, Work};
+use structured_ltv::timestamp::{Purpose, Verified};
 use structured_pkix::{Certificate, crl::CertificateList, ocsp::BasicResponse};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -474,7 +473,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, W: Work> Index<'source, 
     where
         N: HashWork,
     {
-        if evidence.role() != Role::Archive {
+        if evidence.purpose() != Purpose::Archive {
             return Err(ArchiveError::NotArchive {
                 property: evidence.property(),
             });

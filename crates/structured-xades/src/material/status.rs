@@ -2,9 +2,10 @@
 
 use super::{ArchiveError, Archived, ArtifactRef, Index, IndexError};
 use crate::binary::Location;
-use crate::timestamp::{ElementCoverage, Verified};
+use crate::timestamp::ElementCoverage;
 use crate::xml::{Access, Xml};
 use structured_asn1::memory::{HashWork, OwnedVec, Work};
+use structured_ltv::timestamp::Verified;
 use structured_pkix::{crl, ocsp};
 
 /// Archive-material census for every path actually reached through the selected

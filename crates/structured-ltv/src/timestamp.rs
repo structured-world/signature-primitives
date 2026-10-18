@@ -1,37 +1,68 @@
-//! Retained mathematical timestamp evidence with original XML input identity.
+//! Retained mathematical timestamp evidence with its original source identity.
 
-use super::Role;
-use crate::binary::Location;
+use crate::source::Location;
 use structured_asn1::memory::{MemoryError, Work};
 use structured_cms::timestamp::{BoundUncertainty, Evidence, earliest, latest};
 use structured_pkix::temporal::{Instant, LeapTable};
 use structured_pkix::{Certificate, path::WorkingKey};
 
-/// Successfully checked token covering the input selected by the common kernel.
-/// Construction is restricted to `Check::retain`; caller-written XML metadata
-/// cannot relabel unrelated token evidence. This is not a TSA trust or B level.
+/// What a timestamp proves the existence of.
+///
+/// Every AdES format writes these four kinds under its own names (XAdES
+/// properties, CAdES attributes, PAdES document timestamps); the format layer
+/// maps its own input role onto one of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// Signed data objects, before the signature was produced.
+    Content,
+    /// The signature value.
+    Signature,
+    /// The signature and its validation-data references.
+    ValidationData,
+    /// The signature, its validation material and earlier timestamps.
+    Archive,
+}
+
+/// Successfully checked token covering the input its format layer selected.
+///
+/// The format layer constructs it only from its own complete token check over
+/// that input; this is not a TSA trust decision or a level.
 #[derive(Debug)]
 pub struct Verified<N, D, G> {
-    pub(super) token: Location<N, D, G>,
-    pub(super) signature: N,
-    pub(super) property: N,
-    pub(super) role: Role,
-    pub(super) evidence: Evidence,
+    token: Location<N, D, G>,
+    signature: N,
+    property: N,
+    purpose: Purpose,
+    evidence: Evidence,
 }
 
 /// Successful mathematical timestamp check with its actual selected signer.
 ///
 /// The certificate and effective key come from the same complete-check context,
 /// not a later caller-supplied association. This still establishes no TSA path,
-/// status or trust. Only [`super::Check::retain_actor`] constructs this binding.
-/// Certificate/key borrows need not retain the provider or temporary context.
+/// status or trust. Certificate/key borrows need not retain the provider or
+/// temporary context.
 pub struct CheckedActor<'certificate, 'document, N, D, G> {
-    pub(super) verified: Verified<N, D, G>,
-    pub(super) certificate: &'certificate Certificate<'document>,
-    pub(super) key: WorkingKey<'document>,
+    verified: Verified<N, D, G>,
+    certificate: &'certificate Certificate<'document>,
+    key: WorkingKey<'document>,
 }
 
 impl<'certificate, 'document, N, D, G> CheckedActor<'certificate, 'document, N, D, G> {
+    /// Binds evidence to the certificate and effective key its check used.
+    #[must_use]
+    pub fn new(
+        verified: Verified<N, D, G>,
+        certificate: &'certificate Certificate<'document>,
+        key: WorkingKey<'document>,
+    ) -> Self {
+        Self {
+            verified,
+            certificate,
+            key,
+        }
+    }
+
     /// Actual candidate used for the successful token signature/ESS checks.
     #[must_use]
     pub fn certificate(&self) -> &'certificate Certificate<'document> {
@@ -44,7 +75,7 @@ impl<'certificate, 'document, N, D, G> CheckedActor<'certificate, 'document, N, 
         self.key
     }
 
-    /// Independently retained mathematical evidence with original XML identity.
+    /// Independently retained mathematical evidence with original identity.
     #[must_use]
     pub fn verified(&self) -> &Verified<N, D, G> {
         &self.verified
@@ -92,6 +123,30 @@ pub enum TemporalError {
     Uncertain(BoundUncertainty),
 }
 
+impl<N, D, G> Verified<N, D, G> {
+    /// Retains a complete token check with the original identity of its input.
+    ///
+    /// `token` is the original token enclosure, `signature` the signature whose
+    /// input was covered, `property` the timestamp property or attribute and
+    /// `purpose` the kind of input selected for the check.
+    #[must_use]
+    pub fn new(
+        token: Location<N, D, G>,
+        signature: N,
+        property: N,
+        purpose: Purpose,
+        evidence: Evidence,
+    ) -> Self {
+        Self {
+            token,
+            signature,
+            property,
+            purpose,
+            evidence,
+        }
+    }
+}
+
 impl<N: Copy, D: Copy, G: Copy> Verified<N, D, G> {
     /// Original token enclosure, not an offset in its decoded ASN.1 source.
     #[must_use]
@@ -103,15 +158,15 @@ impl<N: Copy, D: Copy, G: Copy> Verified<N, D, G> {
     pub fn signature(&self) -> N {
         self.signature
     }
-    /// Original timestamp property, independently of its encapsulated token node.
+    /// Original timestamp property, independently of its encapsulated token.
     #[must_use]
     pub fn property(&self) -> N {
         self.property
     }
-    /// Exact common input-selection role used during checking.
+    /// Kind of input selected during checking.
     #[must_use]
-    pub fn role(&self) -> Role {
-        self.role
+    pub fn purpose(&self) -> Purpose {
+        self.purpose
     }
     /// Independently retained token facts and original ASN.1 source projection.
     #[must_use]
@@ -148,12 +203,10 @@ impl<N: Copy, D: Copy, G: Copy> Verified<N, D, G> {
 
     /// Compares the complete generation interval to an explicit event label.
     ///
-    /// EN319132-1 §6.3(o) requires chronology relative to signer revocation/
-    /// expiry. This helper never substitutes the bare genTime or claimed XML
-    /// `SigningTime` for the interval, nor decides certificate/status/trust policy.
-    /// Missing accuracy, invalid leap labels and absent UTC coverage remain
+    /// This never substitutes the bare genTime or a claimed signing time for
+    /// the interval, nor decides certificate/status/trust policy. Missing
+    /// accuracy, invalid leap labels and absent UTC coverage remain
     /// uncertainty; all table work is admitted through current execution.
-    /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
     pub fn relation<W: Work>(
         &self,
         boundary: Instant,
@@ -209,129 +262,4 @@ fn interval<W: Work>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::sync::Arc;
-    use structured_asn1::{
-        Limits, Parser,
-        memory::{Memory, MemoryAccount},
-    };
-    use structured_cms::timestamp::Accuracy;
-    use structured_pkix::temporal::{Reading, Transition, Uncertainty};
-
-    fn funded() -> Memory {
-        Memory::new(Arc::new(MemoryAccount::new(4096, 10_000)))
-    }
-
-    #[test]
-    fn accuracy_absence_never_creates_an_exact_interval_or_extends_utc_coverage() {
-        // RFC3161 omitted Accuracy supplies no endpoint. It has priority over
-        // UTC coverage; a stated accuracy still propagates the real UTC cause.
-        let work = funded();
-        let reading = Reading::from(Instant::new(100, 0).unwrap());
-        let utc = LeapTable::new(0, 10, &[]).unwrap();
-        assert_eq!(
-            interval(reading, None, &utc, &work),
-            Err(TemporalError::Uncertain(BoundUncertainty::AccuracyUnstated))
-        );
-        assert_eq!(
-            interval(reading, Some(Accuracy::new(0, 0, 0)), &utc, &work),
-            Err(TemporalError::Uncertain(BoundUncertainty::Utc(
-                Uncertainty::OutsideCoverage
-            )))
-        );
-    }
-
-    #[test]
-    fn generation_interval_uses_common_elapsed_utc_arithmetic_across_inserted_second() {
-        // A one-second deviation around an inserted label spans the adjacent
-        // ordinary seconds; POSIX addition would lose that inserted second.
-        let work = funded();
-        let changes = [Transition::new(78_796_800, 1)];
-        let utc = LeapTable::new(78_710_400, 78_883_200, &changes).unwrap();
-        let reading = Reading::from(Instant::leap_after(78_796_799, 0).unwrap());
-        assert_eq!(
-            interval(reading, Some(Accuracy::new(1, 0, 0)), &utc, &work).unwrap(),
-            Interval {
-                earliest: Instant::new(78_796_799, 0).unwrap(),
-                latest: Instant::new(78_796_800, 0).unwrap(),
-            }
-        );
-    }
-
-    #[test]
-    fn current_local_and_aggregate_refusals_precede_utc_lookup() {
-        // Even an otherwise uncertain label must not bypass a current query's
-        // local/aggregate ceiling through retained evidence's old account.
-        let work = funded();
-        let parser = Parser::new(
-            structured_asn1::Encoding::Der,
-            Limits {
-                max_work: 0,
-                ..Limits::default()
-            },
-            work,
-        );
-        let reader = parser.read(&[], 0).unwrap();
-        let utc = LeapTable::new(0, 10, &[]).unwrap();
-        let reading = Reading::from(Instant::new(100, 0).unwrap());
-        assert!(matches!(
-            interval(reading, None, &utc, &reader.execution()),
-            Err(TemporalError::Resource(MemoryError::WorkExceeded))
-        ));
-        let aggregate = Memory::new(Arc::new(MemoryAccount::new(0, 0)));
-        assert!(matches!(
-            interval(reading, None, &utc, &aggregate),
-            Err(TemporalError::Resource(MemoryError::WorkExceeded))
-        ));
-    }
-
-    #[test]
-    fn interval_chronology_does_not_turn_touching_accuracy_into_strict_order() {
-        // A timestamp whose stated accuracy reaches revocation cannot prove
-        // earlier existence just because its bare genTime precedes revocation.
-        let utc = LeapTable::new(0, 100_000, &[]).unwrap();
-        let work = funded();
-        let boundary = Instant::new(100, 0).unwrap();
-        for (first, last, expected) in [
-            (90, 99, BoundaryRelation::Before),
-            (90, 100, BoundaryRelation::Overlaps),
-            (90, 110, BoundaryRelation::Overlaps),
-            (100, 100, BoundaryRelation::At),
-            (101, 110, BoundaryRelation::After),
-        ] {
-            let interval = Interval {
-                earliest: Instant::new(first, 0).unwrap(),
-                latest: Instant::new(last, 0).unwrap(),
-            };
-            assert_eq!(relation(interval, boundary, &utc, &work).unwrap(), expected);
-        }
-        let interval = Interval {
-            earliest: Instant::new(99, 999_999_999).unwrap(),
-            latest: Instant::new(99, 999_999_999).unwrap(),
-        };
-        assert_eq!(
-            relation(interval, boundary, &utc, &work).unwrap(),
-            BoundaryRelation::Before
-        );
-        let inserted = Instant::leap_after(86_399, 0).unwrap();
-        assert!(matches!(
-            relation(interval, inserted, &utc, &work),
-            Err(TemporalError::Uncertain(BoundUncertainty::Utc(_)))
-        ));
-        let denied = Parser::new(
-            structured_asn1::Encoding::Der,
-            Limits {
-                max_work: 0,
-                ..Limits::default()
-            },
-            funded(),
-        );
-        let query = denied.read(&[], 0).unwrap();
-        assert_eq!(
-            relation(interval, inserted, &utc, &query.execution()),
-            Err(TemporalError::Resource(MemoryError::WorkExceeded))
-        );
-        assert_eq!(work.used(), 0);
-    }
-}
+mod tests;

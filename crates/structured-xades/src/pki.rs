@@ -4,8 +4,8 @@
 //! This module executes the common PKIX processor, rather than accepting a
 //! caller-written assertion that unrelated certificates formed a valid path.
 
-use crate::timestamp::{CheckedActor, Interval as GenerationInterval, TemporalError};
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::timestamp::{CheckedActor, Interval as GenerationInterval, TemporalError};
 use structured_pkix::Certificate;
 use structured_pkix::extension::Recognizer;
 use structured_pkix::path::{

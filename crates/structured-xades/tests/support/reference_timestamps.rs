@@ -269,7 +269,7 @@ fn both_reference_timestamp_roles_drive_real_rfc3161_checks_over_exact_inputs() 
             assert_eq!(verified.is_some(), agrees);
             if let Some(verified) = verified {
                 assert_eq!(verified.property(), stamps[index]);
-                assert_eq!(verified.role(), stamp.role());
+                assert_eq!(verified.purpose(), stamp.role().purpose());
             }
             assert_eq!(provider.verified.get(), 1);
         }

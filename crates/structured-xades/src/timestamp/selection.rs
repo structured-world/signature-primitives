@@ -266,7 +266,7 @@ impl<N: Copy + Eq, D: Copy + Eq, G: Copy + Eq> TimestampRequirements<N, D, G> {
                 || !access
                     .equal_id(actual.token().node, expected.token)
                     .map_err(resource)?
-                || actual.role() != expected.role
+                || actual.purpose() != expected.role.purpose()
             {
                 return Ok(TimestampPathBinding::Unproven(
                     TimestampPathFailure::Source { index },

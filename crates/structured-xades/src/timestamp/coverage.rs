@@ -1,8 +1,9 @@
 //! Exact original element selection for implicit timestamp input coverage.
 
-use super::{Input, Part, Role, TimestampXml, Verified};
+use super::{Input, Part, TimestampXml};
 use crate::xml::{Access, AccessError, Node, Snapshot, Xml};
 use structured_asn1::memory::{HashWork, MemoryError, OwnedMap, Work};
+use structured_ltv::timestamp::{Purpose, Verified};
 
 /// Original prepared element coverage. Transformed reference octets grant no
 /// whole-element coverage unless the original XML owner explicitly certified
@@ -12,7 +13,7 @@ pub struct ElementCoverage<N: HashWork, D, G, W: Work> {
     snapshot: Snapshot<D, G>,
     signature: N,
     timestamp: N,
-    role: Role,
+    purpose: Purpose,
     elements: OwnedMap<N, bool, W>,
 }
 
@@ -123,7 +124,7 @@ impl<X: TimestampXml> Input<'_, X> {
             snapshot: self.snapshot,
             signature: self.signature,
             timestamp: self.timestamp,
-            role: self.role,
+            purpose: self.role.purpose(),
             elements,
         })
     }
@@ -181,7 +182,7 @@ impl<N: Copy + Eq + structured_asn1::memory::HashWork, D: Copy + Eq, G: Copy + E
                     evidence.token().snapshot,
                     evidence.signature(),
                     evidence.property(),
-                    evidence.role(),
+                    evidence.purpose(),
                     node,
                     work,
                 ))
@@ -194,7 +195,7 @@ impl<N: Copy + Eq + structured_asn1::memory::HashWork, D: Copy + Eq, G: Copy + E
         snapshot: Snapshot<D, G>,
         signature: N,
         timestamp: N,
-        role: Role,
+        purpose: Purpose,
         node: N,
         execution: &Q,
     ) -> core::result::Result<(), CoverageError<E, N>> {
@@ -202,7 +203,7 @@ impl<N: Copy + Eq + structured_asn1::memory::HashWork, D: Copy + Eq, G: Copy + E
         if snapshot != self.snapshot
             || !crate::xml::equal_id(signature, self.signature, execution).map_err(resource)?
             || !crate::xml::equal_id(timestamp, self.timestamp, execution).map_err(resource)?
-            || role != self.role
+            || purpose != self.purpose
         {
             return Err(CoverageError::Foreign { node });
         }
@@ -256,14 +257,21 @@ mod tests {
             snapshot,
             signature: id,
             timestamp: id,
-            role: Role::Archive,
+            purpose: Purpose::Archive,
             elements: memory.map(),
         };
         for (budget, expected_calls) in [(0, 0), (127, 0), (128, 1), (255, 1)] {
             calls.set(0);
             let current = Memory::new(Arc::new(MemoryAccount::new(0, budget)));
             assert!(matches!(
-                coverage.require_identity::<(), _>(snapshot, id, id, Role::Archive, id, &current,),
+                coverage.require_identity::<(), _>(
+                    snapshot,
+                    id,
+                    id,
+                    Purpose::Archive,
+                    id,
+                    &current,
+                ),
                 Err(CoverageError::Resource {
                     cause: MemoryError::WorkExceeded,
                     ..
@@ -274,7 +282,7 @@ mod tests {
         calls.set(0);
         let exact = Memory::new(Arc::new(MemoryAccount::new(0, 256)));
         coverage
-            .require_identity::<(), _>(snapshot, id, id, Role::Archive, id, &exact)
+            .require_identity::<(), _>(snapshot, id, id, Purpose::Archive, id, &exact)
             .unwrap();
         assert_eq!(calls.get(), 2);
         assert_eq!(exact.charge_work(1), Err(MemoryError::WorkExceeded));

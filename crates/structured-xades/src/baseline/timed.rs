@@ -4,9 +4,10 @@ use super::Basic;
 use crate::certificate::{
     SignatureTime, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure,
 };
-use crate::timestamp::{Role, TimestampPaths, TimestampScope};
+use crate::timestamp::{TimestampPaths, TimestampScope};
 use crate::xml::{Access, AccessError, Xml};
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::timestamp::Purpose;
 
 /// One actual root `SignatureTimeStamp`'s complete static certificate binding.
 /// Negative results do not disappear because a different timestamp succeeded.
@@ -128,7 +129,7 @@ pub fn timestamped<'a, 'r, 'p, 'v, 'c, 'd, X: Xml, W: Work>(
     for path in paths.paths() {
         access.execution().charge_work(1).map_err(resource)?;
         let verified = path.actor().verified();
-        if verified.role() != Role::Signature
+        if verified.purpose() != Purpose::Signature
             || !access
                 .equal_id(verified.signature(), signature)
                 .map_err(resource)?

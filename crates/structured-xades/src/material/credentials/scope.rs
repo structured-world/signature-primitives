@@ -3,9 +3,10 @@
 use super::{Error, Missing};
 use crate::binary::Location;
 use crate::material::{ArchiveError, Archived, ArtifactRef, Index};
-use crate::timestamp::{ElementCoverage, Role, TimestampRequirements, TimestampScope, Verified};
+use crate::timestamp::{ElementCoverage, TimestampRequirements, TimestampScope};
 use crate::xml::{Access, Xml};
 use structured_asn1::memory::{HashWork, Memory, Work};
+use structured_ltv::timestamp::{Purpose, Verified};
 
 /// Optional original archive coverage; only these constructors expose it.
 /// The check verifies its source/role/property against the source-derived scope
@@ -55,7 +56,7 @@ impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, C: Work> Scope<'_, N, 
         match (required.scope(), self.archive) {
             (TimestampScope::All(_), None) => Ok(()),
             (TimestampScope::BeforeArchive(_), Some((coverage, evidence))) => {
-                if evidence.role() != Role::Archive
+                if evidence.purpose() != Purpose::Archive
                     || evidence.token().snapshot != location.snapshot
                     || !access
                         .equal_id(evidence.signature(), required.signature())

@@ -2664,7 +2664,7 @@ struct ArchiveMaterialCheck<'case, 'source, C: Work> {
     prepared: &'case structured_xades::prepare::Prepared<Tree>,
     operation: &'case structured_asn1::Reader<'source>,
     coverage: &'case structured_xades::timestamp::ElementCoverage<usize, u8, u8, C>,
-    evidence: &'case structured_xades::timestamp::Verified<usize, u8, u8>,
+    evidence: &'case structured_ltv::timestamp::Verified<usize, u8, u8>,
     early: bool,
     general: bool,
 }
@@ -3438,7 +3438,7 @@ fn assert_participant_archive_material<W: Work, Q: Work, C: Work>(
     closed: &structured_xades::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     coverage: &structured_xades::timestamp::ElementCoverage<usize, u8, u8, C>,
-    evidence: &structured_xades::timestamp::Verified<usize, u8, u8>,
+    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
     access: &Access<'_, Tree, Q>,
     xml: &Tree,
     early: bool,
@@ -4356,7 +4356,7 @@ fn nonce_freshness_cannot_supply_an_unstated_signature_time_accuracy() {
             .unwrap()
             .expect("valid requested nonce and original mathematical coverage");
         assert!(
-            matches!(selected.bind_signature_time(&verified,&utc,&access),Err(certificate::SignatureTimeError::Time {property,cause:timestamp::TemporalError::Uncertain(BoundUncertainty::AccuracyUnstated)}) if property==node)
+            matches!(selected.bind_signature_time(&verified,&utc,&access),Err(certificate::SignatureTimeError::Time {property,cause:structured_ltv::timestamp::TemporalError::Uncertain(BoundUncertainty::AccuracyUnstated)}) if property==node)
         );
         assert_eq!(provider.verified.get(), 1);
     });
@@ -4364,19 +4364,19 @@ fn nonce_freshness_cannot_supply_an_unstated_signature_time_accuracy() {
 
 fn assert_signature_time(
     selected: &structured_xades::certificate::CheckedPathCertificate<'_, '_, usize, u8, u8>,
-    verified: &structured_xades::timestamp::Verified<usize, u8, u8>,
+    verified: &structured_ltv::timestamp::Verified<usize, u8, u8>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     access: &Access<'_, Tree, structured_asn1::memory::Memory>,
     at: i64,
     association: structured_xades::certificate::KeyAssociation,
     xml: &Tree,
 ) {
-    use structured_xades::{
-        certificate::{self, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure},
-        timestamp,
+    use structured_ltv::timestamp::Purpose;
+    use structured_xades::certificate::{
+        self, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure,
     };
     let result = selected.bind_signature_time(verified, utc, access);
-    if verified.role() != timestamp::Role::Signature {
+    if verified.purpose() != Purpose::Signature {
         assert!(matches!(result, Err(SignatureTimeError::Role { .. })));
     } else if association != certificate::KeyAssociation::Same {
         assert!(matches!(

@@ -1,9 +1,9 @@
 //! Signature-value timestamp association and static certificate interval.
 
 use super::CheckedPathCertificate;
-use crate::timestamp::{Interval, Role, TemporalError, Verified};
 use crate::xml::{Access, AccessError, Xml};
 use structured_asn1::memory::Work;
+use structured_ltv::timestamp::{Interval, Purpose, TemporalError, Verified};
 use structured_pkix::temporal::LeapTable;
 
 /// A completed mathematical/static association, still requiring authenticated
@@ -152,7 +152,7 @@ impl<'view, 'document, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq>
         access
             .query(references.signature(), |_, _, _| Ok(()))
             .map_err(SignatureTimeError::Access)?;
-        if timestamp.role() != Role::Signature {
+        if timestamp.purpose() != Purpose::Signature {
             return Err(SignatureTimeError::Role {
                 property: timestamp.property(),
             });

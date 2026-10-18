@@ -48,7 +48,11 @@ impl Tokens<'_> {
         &self,
         path: &pki::CheckedPath<'_>,
         memory: &Memory,
-        check: impl for<'t> FnOnce(&TsaPath<'t>, &TsaPath<'t>, &timestamp::Verified<usize, u8, u8>),
+        check: impl for<'t> FnOnce(
+            &TsaPath<'t>,
+            &TsaPath<'t>,
+            &structured_ltv::timestamp::Verified<usize, u8, u8>,
+        ),
     ) {
         // Both original tokens are checked once with their real TSA key and
         // bound to the actual checked path; later stages reuse these receipts.
@@ -201,7 +205,7 @@ struct Chain<'a> {
     prior: &'a timestamp::TimestampPaths<'a, 'a, 'a, usize, u8, u8>,
     timed: &'a baseline::Timed<'a, 'a, 'a, 'a, 'a, 'a, usize, u8, u8>,
     coverage: &'a timestamp::ElementCoverage<usize, u8, u8, Memory>,
-    evidence: &'a timestamp::Verified<usize, u8, u8>,
+    evidence: &'a structured_ltv::timestamp::Verified<usize, u8, u8>,
 }
 
 type Credentials<'a> = credential::ParticipantCredentials<'a, 'a, (), usize, u8, u8>;

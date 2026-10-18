@@ -293,7 +293,8 @@ fn with_participants<'d>(
     let credentials =
         credential::check_participants(prepared, &counters, &provider, &access).unwrap();
     let participants =
-        pki::participants(&signer, &counters, &credentials, &prior, &access).unwrap();
+        structured_xades::pki::participants(&signer, &counters, &credentials, &prior, &access)
+            .unwrap();
     check(&participants);
 }
 

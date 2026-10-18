@@ -72,7 +72,8 @@ pub enum Authorities<'path, 'document> {
 /// The format layer's binding of a signature to its signing certificate's path.
 ///
 /// Implemented on the format's own receipt, so a later check can require that
-/// very receipt rather than an equivalent one.
+/// very receipt rather than an equivalent one. Only the issuer derives a
+/// census from it ([`participants`] takes the issuer value).
 pub trait SignerReceipt<'path, 'document> {
     /// Original node identity.
     type Id: Copy;
@@ -598,7 +599,12 @@ where
 /// No provider, parse, certificate hash or signature is repeated. A late
 /// source/admission refusal releases all partial output; direct anchors and
 /// certificate-free format proofs are not silently treated as ordinary paths.
+///
+/// The census names neither receipt type, and the receipt traits are open to
+/// any implementation, so requiring the issuer value is what keeps a caller of
+/// the format from deriving the format's census from receipts of its own.
 pub fn participants<'path, 'document, S, C, R, Q, I>(
+    _issuer: I,
     signer: &'path S,
     counters: &'path C,
     credentials: &'path R,

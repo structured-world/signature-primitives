@@ -246,7 +246,7 @@ impl Chain<'_> {
         let other =
             credential::check_participants(self.prepared, self.counters, &NoCredentials, access)
                 .unwrap();
-        let participants = pki::participants(
+        let participants = structured_xades::pki::participants(
             self.selected,
             self.counters,
             &credentials,
@@ -334,8 +334,14 @@ impl Archive<'_> {
         // Material before the archive is checked against its own original
         // coverage; only the census identity differs between both calls.
         let chain = self.chain;
-        let earlier =
-            pki::participants(chain.selected, chain.counters, census, chain.prior, access).unwrap();
+        let earlier = structured_xades::pki::participants(
+            chain.selected,
+            chain.counters,
+            census,
+            chain.prior,
+            access,
+        )
+        .unwrap();
         // Signer plus the earlier signature-timestamp TSA.
         let roots = [self.statuses; 2];
         let closed = earlier.close_statuses(&roots, self.nodes, access).unwrap();

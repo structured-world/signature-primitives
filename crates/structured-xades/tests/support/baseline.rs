@@ -346,7 +346,7 @@ fn check_material(
         credential::check_participants(prepared, basic.counters, &NoCredentials, access).unwrap();
     let other =
         credential::check_participants(prepared, basic.counters, &NoCredentials, access).unwrap();
-    let participants = pki::participants(
+    let participants = structured_xades::pki::participants(
         basic.certificate,
         basic.counters,
         &credentials,

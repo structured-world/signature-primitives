@@ -35,7 +35,8 @@ pub mod xml;
 
 /// Issuer of the long-term validation receipts this crate builds from its own
 /// checks: timestamp evidence and its signer, archive coverage, the token
-/// census and the material index. Only this crate constructs it, so a caller
+/// census, the material index and the participant census
+/// ([`pki::participants`]). Only this crate constructs it, so a caller
 /// cannot relabel evidence or supply a fabricated receipt to these APIs.
 ///
 /// ```compile_fail

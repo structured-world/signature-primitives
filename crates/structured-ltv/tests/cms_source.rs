@@ -262,7 +262,8 @@ fn participant_census_follows_cms_attributes_and_their_exact_receipts() {
         };
         let required = requirements(&data, &memory, true);
         let paths = bound(&required, &query);
-        let census = pki::participants(&signer, &counters, &credentials, &paths, &query).unwrap();
+        let census =
+            pki::participants(ISSUER, &signer, &counters, &credentials, &paths, &query).unwrap();
         assert_eq!(census.signature(), SIGNATURE);
         assert_eq!(census.entries().len(), 2);
         assert_eq!(
@@ -300,7 +301,7 @@ fn participant_census_follows_cms_attributes_and_their_exact_receipts() {
         let partial = requirements(&data, &memory, false);
         let partial = bound(&partial, &query);
         assert!(matches!(
-            pki::participants(&signer, &counters, &credentials, &partial, &query),
+            pki::participants(ISSUER, &signer, &counters, &credentials, &partial, &query),
             Err(ParticipantError::CounterTimestamps)
         ));
         let unproven = Signer {
@@ -308,7 +309,7 @@ fn participant_census_follows_cms_attributes_and_their_exact_receipts() {
             path: None,
         };
         assert!(matches!(
-            pki::participants(&unproven, &counters, &credentials, &paths, &query),
+            pki::participants(ISSUER, &unproven, &counters, &credentials, &paths, &query),
             Err(ParticipantError::UnprovenSigner)
         ));
         // An authenticated credential with an empty path set is incomplete
@@ -324,12 +325,12 @@ fn participant_census_follows_cms_attributes_and_their_exact_receipts() {
             }),
         };
         assert!(matches!(
-            pki::participants(&signer, &counters, &pathless, &paths, &query),
+            pki::participants(ISSUER, &signer, &counters, &pathless, &paths, &query),
             Err(ParticipantError::MissingAuthorities { node: ROLE })
         ));
         data.generation.set(2);
         assert!(matches!(
-            pki::participants(&signer, &counters, &credentials, &paths, &query),
+            pki::participants(ISSUER, &signer, &counters, &credentials, &paths, &query),
             Err(ParticipantError::Scope(ScopeError::Changed {
                 node: SIGNATURE
             }))

@@ -20,8 +20,8 @@
 //!
 //! The receipts a format asserts from its own checks (a checked timestamp,
 //! its signer, an archive input's coverage, the token census, the material
-//! index) carry an issuer type `I`, and constructing one takes a value of
-//! `I`. A format defines its issuer as a type only it can construct, so a
+//! index, the participant census) carry an issuer type `I`, and constructing
+//! one takes a value of `I`. A format defines its issuer as a type only it can construct, so a
 //! caller of the format cannot relabel evidence or supply a fabricated
 //! receipt to the format's own APIs. Facts derived from receipts keep their
 //! issuer, and receipts of different issuers do not combine:

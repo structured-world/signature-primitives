@@ -60,8 +60,10 @@ and builds a `material::Index` and one `Coverage` per archive input.
 These receipts carry the format's issuer type, and constructing one takes a
 value of it. A format defines that type with a private field, so its callers
 cannot relabel checked timestamp evidence, associate it with another signer or
-supply a fabricated census, index or coverage; receipts of different issuers do
-not combine. The
+supply a fabricated census, index or coverage. The participant census is derived
+by `pki::participants`, which takes the issuer value too, so it comes only from
+the format's own signer, counter and credential receipts. Receipts of different
+issuers do not combine. The
 integration test `tests/cms_source.rs` drives the participant census and
 archive coverage over CMS `SignerInfo` attributes identified by ordinal.
 

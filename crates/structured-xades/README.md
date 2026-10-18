@@ -81,7 +81,8 @@ trust inputs and decides whether the resulting evidence meets its policy.
    establish their respective source-bound facts. Format-neutral path, status,
    participant, timestamp-interval and material facts live in `structured-ltv`;
    `XAdES` receipts implement its traits, and `xml::Access` is its source query. The participant census
-   includes plain countersignatures and timestamps nested in countersignatures.
+   (`pki::participants`, derived from these receipts only) includes plain
+   countersignatures and timestamps nested in countersignatures.
    The timestamp census also retains the optional Annex A signature/reference
    and reference-only timestamps; their implicit inputs preserve original
    preceding-property order rather than reusing archive coverage.

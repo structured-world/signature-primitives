@@ -3,118 +3,65 @@
 use core::cell::Cell;
 use core::cmp::Ordering;
 use std::sync::Arc;
+use structured_asn1::Parser;
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, Work};
-use structured_asn1::{Encoding, Parser, Reader, Tag, universal};
-use structured_cms::provider::{DigestAlgorithm, DigestProvider, Prehash, Resolution};
 use structured_cms::timestamp::{
     ImprintAgreement, ImprintOperand, MessageImprint, RequestAgreement, RequestImprintError,
 };
+use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 
-#[derive(Debug)]
-enum CallbackError {
-    Resource(MemoryError),
-    Encoding(structured_asn1::Error),
-    Processing(structured_pkix::Error),
-}
-impl CallbackError {
-    fn is_resource(&self) -> bool {
-        match self {
-            Self::Resource(_) => true,
-            Self::Encoding(error) => error.is_resource(),
-            Self::Processing(error) => error.is_resource(),
-        }
-    }
-}
-impl From<MemoryError> for CallbackError {
-    fn from(error: MemoryError) -> Self {
-        Self::Resource(error)
-    }
-}
-struct Identity<'a> {
-    oid: &'a [u8],
-    parameter: u64,
-}
+const SHA256: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 1];
+const SHA384: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 2];
+const UNKNOWN: &[u8] = &[42];
+
 #[derive(Default)]
 struct Provider {
     resolves: Cell<usize>,
     compares: Cell<usize>,
 }
-impl<'a> DigestProvider<'a> for Provider {
-    type Error = CallbackError;
-    type Identity = Identity<'a>;
+impl Digest<'_> for Provider {
+    type Identity = Algorithm;
     type State = ();
     type Output = [u8; 1];
-    fn resolve_digest(
-        &'a self,
-        written: DigestAlgorithm<'a>,
-        _: Encoding,
-        parent: &Reader<'a>,
-    ) -> Result<Resolution<Identity<'a>>, CallbackError> {
-        let DigestAlgorithm::Written(written) = written else {
-            return Ok(Resolution::Unsupported);
-        };
-        let oid = written.algorithm().as_bytes();
-        parent.execution().charge_work(oid.len() as u64)?;
-        self.resolves.set(self.resolves.get() + 1);
-        if oid != [42] && oid != [43] {
-            return Ok(Resolution::Unsupported);
-        }
-        // Explicit TEST profile: these private test identifiers carry an
-        // optional INTEGER parameter, whose absent/default identity is zero.
-        // This is not a SHA/RSA parameter policy or a production dispatcher.
-        let mut parameter = 0;
-        if let Some(mut reader) = written
-            .parameters_reader_in(parent, "algorithm.parameters")
-            .map_err(CallbackError::Processing)?
-        {
-            let element = reader
-                .next_element()
-                .map_err(CallbackError::Encoding)?
-                .unwrap();
-            if element.tag() != Tag::primitive(universal::INTEGER) {
-                return Ok(Resolution::Malformed);
-            }
-            let value = reader.integer(&element).map_err(CallbackError::Encoding)?;
-            reader.execution().charge_work(9)?;
-            let Some(value) = value.as_u64() else {
-                return Ok(Resolution::Malformed);
-            };
-            parameter = value;
-        }
-        Ok(Resolution::Supported(Identity { oid, parameter }))
-    }
-    fn compare_digest<W: Work>(
+    type Error = MemoryError;
+    fn compare<W: Work>(
         &self,
-        left: &Identity<'a>,
-        right: &Identity<'a>,
+        left: &Algorithm,
+        right: &Algorithm,
         work: &W,
-    ) -> Result<Ordering, CallbackError> {
-        work.charge_work(1 + left.oid.len() as u64 + right.oid.len() as u64)?;
+    ) -> Result<Ordering, MemoryError> {
+        work.charge_work(1)?;
         self.compares.set(self.compares.get() + 1);
-        Ok(left
-            .oid
-            .cmp(right.oid)
-            .then_with(|| left.parameter.cmp(&right.parameter)))
+        Ok(left.cmp(right))
     }
-    fn digest_width(&self, _: &Identity<'a>) -> Option<usize> {
+    // A synthetic one-octet width, so short test hashes are well formed.
+    fn width(&self, _: &Algorithm) -> Option<usize> {
         Some(1)
     }
-    fn start_digest<W: Work>(&'a self, _: &Identity<'a>, _: &W) -> Result<(), CallbackError> {
+    fn start<W: Work>(&self, _: &Algorithm, _: &W) -> Result<Resolution<()>, MemoryError> {
         panic!("request comparison must not start hashing")
     }
-    fn update_digest<W: Work>(&self, (): &mut (), _: &[u8], _: &W) -> Result<(), CallbackError> {
+    fn update<W: Work>(&self, (): &mut (), _: &[u8], _: &W) -> Result<(), MemoryError> {
         panic!("request comparison must not read content")
     }
-    fn finish_digest<W: Work>(&self, (): (), _: &W) -> Result<[u8; 1], CallbackError> {
+    fn finish<W: Work>(&self, (): (), _: &W) -> Result<[u8; 1], MemoryError> {
         panic!("request comparison must not finalize hashing")
     }
-    fn matches_digest<W: Work>(
+    fn matches<W: Work>(
         &self,
-        _: Prehash<'_, '_, Self, Identity<'a>>,
+        _: &Algorithm,
+        _: &[u8; 1],
         _: &[u8],
         _: &W,
-    ) -> Result<bool, CallbackError> {
-        panic!("request declarations are not finalized prehashes")
+    ) -> Result<bool, MemoryError> {
+        panic!("request declarations are not finished digests")
+    }
+}
+impl AsnDigest<'_> for Provider {
+    fn identity(&self, algorithm: Algorithm) -> Option<Algorithm> {
+        self.resolves.set(self.resolves.get() + 1);
+        Some(algorithm)
     }
 }
 fn memory() -> Memory {
@@ -125,10 +72,10 @@ fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
     bytes.extend_from_slice(value);
     bytes
 }
-fn imprint(oid: u8, parameter: Option<u8>, hash: &[u8]) -> Vec<u8> {
-    let mut algorithm = tlv(6, &[oid]);
+fn imprint(oid: &[u8], parameter: Option<&[u8]>, hash: &[u8]) -> Vec<u8> {
+    let mut algorithm = tlv(6, oid);
     if let Some(parameter) = parameter {
-        algorithm.extend([2, 1, parameter]);
+        algorithm.extend_from_slice(parameter);
     }
     let mut body = tlv(0x30, &algorithm);
     body.extend(tlv(4, hash));
@@ -137,20 +84,29 @@ fn imprint(oid: u8, parameter: Option<u8>, hash: &[u8]) -> Vec<u8> {
 
 #[test]
 fn full_identity_includes_parameters_and_kind_beyond_equal_hash_width() {
-    // Two independent source sessions are valid; a written test-profile default
-    // equals omission, but different parameters/OIDs never match by width alone.
+    // Two independent source sessions are valid; NULL parameters equal their
+    // omission (RFC 5754 §2), while a different algorithm or a malformed
+    // parameter never matches by width alone.
     let provider = Provider::default();
     let token_parser = Parser::ber(memory());
     let requested_parser = Parser::ber(memory());
-    let token_bytes = imprint(42, None, &[7]);
+    let token_bytes = imprint(SHA256, None, &[7]);
     let mut token_parent = token_parser.read(&token_bytes, 400).unwrap();
     let element = token_parent.next_element().unwrap().unwrap();
     let token = MessageImprint::read(&token_parent, &element).unwrap();
     for (kind, parameter, hash, expected) in [
-        (42, Some(0), 7, RequestAgreement::Matches),
-        (42, Some(1), 7, RequestAgreement::AlgorithmDiffers),
-        (43, None, 7, RequestAgreement::AlgorithmDiffers),
-        (42, None, 8, RequestAgreement::HashDiffers),
+        (SHA256, Some(&[5, 0][..]), 7, RequestAgreement::Matches),
+        (
+            SHA256,
+            Some(&[2, 1, 1][..]),
+            7,
+            RequestAgreement::Unusable {
+                operand: ImprintOperand::Requested,
+                reason: ImprintAgreement::MalformedAlgorithm,
+            },
+        ),
+        (SHA384, None, 7, RequestAgreement::AlgorithmDiffers),
+        (SHA256, None, 8, RequestAgreement::HashDiffers),
     ] {
         let requested_bytes = imprint(kind, parameter, &[hash]);
         let mut asked_parent = requested_parser.read(&requested_bytes, 800).unwrap();
@@ -163,8 +119,9 @@ fn full_identity_includes_parameters_and_kind_beyond_equal_hash_width() {
             expected
         );
     }
-    assert_eq!(provider.compares.get(), 4);
-    assert_eq!(provider.resolves.get(), 8);
+    // The malformed request never reaches the provider or a comparison.
+    assert_eq!(provider.compares.get(), 3);
+    assert_eq!(provider.resolves.get(), 7);
 }
 
 #[test]
@@ -175,33 +132,33 @@ fn matching_malformed_widths_and_unsupported_operands_never_succeed() {
     let parser = Parser::ber(memory());
     for (token_kind, token_hash, asked_kind, asked_hash, operand, reason) in [
         (
-            42,
+            SHA256,
             &[7, 8][..],
-            42,
+            SHA256,
             &[7, 8][..],
             ImprintOperand::Token,
             ImprintAgreement::MalformedHash,
         ),
         (
-            42,
+            SHA256,
             &[7][..],
-            42,
+            SHA256,
             &[7, 8][..],
             ImprintOperand::Requested,
             ImprintAgreement::MalformedHash,
         ),
         (
-            44,
+            UNKNOWN,
             &[7][..],
-            42,
+            SHA256,
             &[7][..],
             ImprintOperand::Token,
             ImprintAgreement::Unsupported,
         ),
         (
-            42,
+            SHA256,
             &[7][..],
-            44,
+            UNKNOWN,
             &[7][..],
             ImprintOperand::Requested,
             ImprintAgreement::Unsupported,
@@ -233,7 +190,7 @@ fn wrong_requested_reader_preflights_before_resolving_either_operand() {
     let provider = Provider::default();
     let token_parser = Parser::ber(memory.clone());
     let asked_parser = Parser::ber(memory.clone());
-    let bytes = imprint(42, None, &[7]);
+    let bytes = imprint(SHA256, None, &[7]);
     let mut token_parent = token_parser.read(&bytes, 400).unwrap();
     let mut asked_parent = asked_parser.read(&bytes, 800).unwrap();
     let element = token_parent.next_element().unwrap().unwrap();
@@ -252,14 +209,14 @@ fn wrong_requested_reader_preflights_before_resolving_either_operand() {
 }
 
 #[test]
-fn requested_resource_cause_keeps_requested_span_and_source_role() {
+fn requested_resource_refusal_keeps_its_source_role() {
     // A refusal in the request's own aggregate domain is not token mismatch and
-    // is not projected through the token's possibly joined SourceMap.
+    // is reported against the request, located in its own coordinates.
     let requested_memory = memory();
     let provider = Provider::default();
     let token_parser = Parser::ber(memory());
     let asked_parser = Parser::ber(requested_memory.clone());
-    let bytes = imprint(42, None, &[7]);
+    let bytes = imprint(SHA256, None, &[7]);
     let mut token_parent = token_parser.read(&bytes, 400).unwrap();
     let mut asked_parent = asked_parser.read(&bytes, 800).unwrap();
     let element = token_parent.next_element().unwrap().unwrap();
@@ -272,21 +229,12 @@ fn requested_resource_cause_keeps_requested_span_and_source_role() {
     let error = token
         .matches_request(&asked, &provider, &token_parent, &asked_parent)
         .unwrap_err();
-    let RequestImprintError::Callback {
-        operand,
-        span,
-        source,
-    } = error
-    else {
-        panic!("requested callback cause lost")
+    let RequestImprintError::Processing { operand, source } = error else {
+        panic!("requested resource cause lost")
     };
     assert_eq!(operand, ImprintOperand::Requested);
-    assert_eq!(span.start, 800);
     assert!(source.is_resource());
-    assert!(matches!(
-        source,
-        CallbackError::Resource(MemoryError::WorkExceeded)
-    ));
+    assert!(source.offset() >= 800);
     assert_eq!(provider.resolves.get(), 1);
     assert_eq!(provider.compares.get(), 0);
 }

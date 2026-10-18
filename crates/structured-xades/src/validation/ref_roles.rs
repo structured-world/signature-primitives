@@ -3,8 +3,8 @@
 use super::{ReferenceSearch, ref_catalogue::Memo};
 use crate::{
     binary::{self, BinaryXml, Location},
-    certificate::Agreement,
-    digest::{self, StreamingDigest},
+    certificate::{Agreement, DigestProvider},
+    digest,
     material::{
         ArtifactUses, ExclusiveFindingKind,
         exclusivity::{self, CaError, CaFact, ReferenceCa},
@@ -15,6 +15,7 @@ use crate::{
     xml::{Access, Xml},
 };
 use core::ops::Range;
+use structured_asn1::digest::Digest;
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 use structured_pkix::Certificate;
 
@@ -134,8 +135,8 @@ pub type CertificateRoleResult<'p, 'c, 'd, X, PE> = binary::BinaryResult<
     CertificateRoleError<'c, 'd, PE>,
 >;
 
-fn compare_role_candidates<'c, 'd, X: Xml, P: StreamingDigest<X>, W: Work>(
-    memo: &mut Memo<'_, 'd, X, P, W>,
+fn compare_role_candidates<'c, 'd, 'q, X: Xml, P: Digest<'q>, W: Work>(
+    memo: &mut Memo<'q, 'd, P, W>,
     candidates: &mut Option<OwnedVec<ReferenceCa<'c, 'd>, W>>,
     artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
     comparisons: &mut OwnedVec<CertificateRoleComparison<'c, 'd>, W>,
@@ -221,14 +222,15 @@ pub fn check_certificate_reference_roles<
     'p,
     'c,
     'd,
+    'q,
     X: BinaryXml,
-    P: StreamingDigest<X>,
+    P: DigestProvider<'q, X>,
     W: Work,
 >(
     xml: &X,
     prepared: &'p Prepared<X>,
     artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
-    provider: &P,
+    provider: &'q P,
     work: &W,
 ) -> CertificateRoleResult<'p, 'c, 'd, X, P::Error> {
     let source = prepared.bound().containers();
@@ -251,7 +253,7 @@ pub fn check_certificate_reference_roles<
         return Err(failed(CertificateRoleError::Scope));
     }
     let mut candidates: Option<OwnedVec<ReferenceCa<'c, 'd>, W>> = None;
-    let mut memo = Memo::<X, P, W>::new(provider, work);
+    let mut memo = Memo::<P, W>::new(provider, work);
     let mut rows = work.vector();
     let mut comparisons = work.vector();
     for (property, refs) in prepared.validation_references().iter().enumerate() {
@@ -275,7 +277,7 @@ pub fn check_certificate_reference_roles<
                 provider,
                 work,
                 |identity, expected, work| {
-                    compare_role_candidates(
+                    compare_role_candidates::<X, P, W>(
                         &mut memo,
                         &mut candidates,
                         artifacts,

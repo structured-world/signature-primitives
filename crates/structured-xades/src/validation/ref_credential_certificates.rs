@@ -3,8 +3,8 @@
 use super::{ReferenceDigestError, ReferenceSearch, ref_catalogue::Memo};
 use crate::{
     binary::{self, BinaryXml, Location},
-    certificate::{Agreement, FormatDigest},
-    digest::{self, StreamingDigest},
+    certificate::{Agreement, DigestProvider, FormatDigest},
+    digest,
     material::PathCertificate,
     pki::{Participant, ParticipantAuthority, ParticipantRequirements},
     prepare::{Preparation, Prepared},
@@ -13,6 +13,7 @@ use crate::{
     xml::{Access, Xml},
 };
 use core::ops::Range;
+use structured_asn1::digest::Digest;
 use structured_asn1::memory::{MemoryError, OwnedMap, OwnedVec, Work};
 use structured_pkix::Certificate;
 
@@ -204,19 +205,19 @@ fn candidates<'v, 'd, N: Copy, D: Copy, G: Copy, W: Work>(
     Ok(values)
 }
 
-struct CredentialScan<'provider, 'view, 'document, X: Xml, P: StreamingDigest<X>, W: Work> {
-    memo: Memo<'provider, 'document, X, P, W>,
+struct CredentialScan<'provider, 'view, 'document, P: Digest<'provider>, W: Work> {
+    memo: Memo<'provider, 'document, P, W>,
     candidates: Option<OwnedVec<CredentialCertificate<'view, 'document>, W>>,
     ids: OwnedVec<usize, W>,
     comparisons: OwnedVec<Agreement, W>,
 }
-impl<'v, 'd, X: Xml, P: StreamingDigest<X>, W: Work> CredentialScan<'_, 'v, 'd, X, P, W> {
-    fn compare(
+impl<'q, 'v, 'd, P: Digest<'q>, W: Work> CredentialScan<'q, 'v, 'd, P, W> {
+    fn compare<N: Copy, D: Copy, G: Copy>(
         &mut self,
         identity: FormatDigest<P::Identity>,
         expected: &[u8],
         place: CredentialReferencePlace,
-        required: &ParticipantRequirements<'v, 'd, X::Id, X::Document, X::Generation>,
+        required: &ParticipantRequirements<'v, 'd, N, D, G>,
         work: &W,
     ) -> Result<(), digest::Error<structured_cms::stream::RangesError, P::Error>> {
         let method = self.memo.method(identity, work)?;
@@ -286,14 +287,15 @@ pub fn check_credential_certificate_references<
     'p,
     'v,
     'd,
+    'q,
     X: BinaryXml,
-    P: StreamingDigest<X>,
+    P: DigestProvider<'q, X>,
     W: Work,
 >(
     xml: &X,
     prepared: &'p Prepared<X>,
     required: &ParticipantRequirements<'v, 'd, X::Id, X::Document, X::Generation>,
-    provider: &P,
+    provider: &'q P,
     work: &W,
 ) -> CredentialCertificateResult<'p, 'v, 'd, X, P::Error> {
     let source = prepared.bound().containers();
@@ -322,11 +324,11 @@ pub fn check_credential_certificate_references<
     process(xml, prepared, required, provider, &access, location)
 }
 
-fn process<'p, 'v, 'd, X: BinaryXml, P: StreamingDigest<X>, W: Work>(
+fn process<'p, 'v, 'd, 'q, X: BinaryXml, P: DigestProvider<'q, X>, W: Work>(
     xml: &X,
     prepared: &'p Prepared<X>,
     required: &ParticipantRequirements<'v, 'd, X::Id, X::Document, X::Generation>,
-    provider: &P,
+    provider: &'q P,
     access: &Access<'_, X, W>,
     location: Location<X::Id, X::Document, X::Generation>,
 ) -> CredentialCertificateResult<'p, 'v, 'd, X, P::Error> {

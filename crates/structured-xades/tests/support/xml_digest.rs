@@ -7,15 +7,13 @@ mod reference_digests;
 use super::{Tree, certificate_tree, funded};
 use core::{cell::Cell, cmp::Ordering};
 use sha2::{Digest as _, Sha256};
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{MemoryError, Work};
-use structured_cms::{
-    provider::Resolution,
-    stream::{Receiver, Refused, Source},
-};
+use structured_cms::stream::{Receiver, Refused, Source};
 use structured_xades::{
     binary,
     certificate::{Agreement, DigestProvider},
-    digest::{self, StreamingDigest},
+    digest,
     xml::{Access, AccessError, Name, Xml},
 };
 
@@ -49,7 +47,6 @@ struct Oracle {
     started: Cell<usize>,
     updated: Cell<usize>,
     finished: Cell<usize>,
-    one_shot: Cell<usize>,
     resolved: Cell<usize>,
 }
 impl Oracle {
@@ -59,7 +56,6 @@ impl Oracle {
             started: Cell::new(0),
             updated: Cell::new(0),
             finished: Cell::new(0),
-            one_shot: Cell::new(0),
             resolved: Cell::new(0),
         }
     }
@@ -77,9 +73,7 @@ impl AsRef<[u8]> for Output {
     }
 }
 
-impl DigestProvider<Tree> for Oracle {
-    type Identity = ();
-    type Error = Failure;
+impl DigestProvider<'_, Tree> for Oracle {
     fn classify(&self, (): &()) -> structured_xades::hashes::HashClass {
         // This oracle's only resolved native digest is SHA256.
         structured_xades::hashes::HashClass::OtherKnown
@@ -115,21 +109,6 @@ impl DigestProvider<Tree> for Oracle {
         } else {
             Resolution::Unsupported
         })
-    }
-    fn width(&self, (): &()) -> Option<usize> {
-        Some(32)
-    }
-    fn matches<W: Work>(
-        &self,
-        (): &(),
-        bytes: &[u8],
-        expected: &[u8],
-        work: &W,
-    ) -> Result<bool, Failure> {
-        work.charge_work(bytes.len() as u64 + 64)
-            .map_err(Failure::Resource)?;
-        self.one_shot.set(self.one_shot.get() + 1);
-        Ok(Sha256::digest(bytes).as_slice() == expected)
     }
 }
 
@@ -235,7 +214,8 @@ fn basic_assembly_links_original_facts_and_preserves_inclusion_digest_and_hint_f
                 level.all_requirements_met(),
                 checked.all_root_requirements_met()
             );
-            assert_eq!(provider.one_shot.get(), 1);
+            // The selected certificate was hashed exactly once, by check_path.
+            assert_eq!((provider.started.get(), provider.finished.get()), (1, 1));
             assert_eq!(xml.scalar_calls.get(), scalar_calls);
             assert_eq!(xml.date_time_calls.get(), 1);
             assert_eq!(xml.streamed.get(), 0);
@@ -562,7 +542,7 @@ fn signed_certificate_path_digests_keep_first_target_role_and_resolve_each_once(
                 Some(PathCertificate::Anchor)
             );
             assert_eq!(provider.resolved.get(), 2);
-            assert_eq!(provider.one_shot.get(), 3);
+            assert_eq!(provider.started.get(), 3);
             drop(report);
             assert_eq!(memory.used(), held);
         }
@@ -585,7 +565,7 @@ fn path_digest_width_and_storage_refusals_precede_candidate_hashing() {
         assert_eq!(report.entries()[1].agreement, Agreement::MalformedValue);
         assert!(!report.all_match());
         assert_eq!(provider.resolved.get(), 2);
-        assert_eq!(provider.one_shot.get(), 1);
+        assert_eq!(provider.started.get(), 1);
         let denied = structured_asn1::memory::Memory::new(std::sync::Arc::new(
             structured_asn1::memory::MemoryAccount::new(0, 1 << 24),
         ));
@@ -598,7 +578,7 @@ fn path_digest_width_and_storage_refusals_precede_candidate_hashing() {
             })
         ));
         assert_eq!(provider.resolved.get(), 0);
-        assert_eq!(provider.one_shot.get(), 0);
+        assert_eq!(provider.started.get(), 0);
         assert_eq!(denied.used(), 0);
     });
 }
@@ -643,7 +623,7 @@ fn selected_certificate_path_binding_reuses_first_digest_without_promoting_unpro
                 path.members()[0].certificate()
             ));
             assert_eq!(provider.resolved.get(), 2);
-            assert_eq!(provider.one_shot.get(), 3);
+            assert_eq!(provider.started.get(), 3);
         }
     });
 }
@@ -4443,9 +4423,14 @@ fn assert_signature_time(
         Err(SignatureTimeError::Access(AccessError::Changed { .. }))
     ));
 }
-impl StreamingDigest<Tree> for Oracle {
+impl Digest<'_> for Oracle {
+    type Identity = ();
     type State = Sha256;
     type Output = Output;
+    type Error = Failure;
+    fn width(&self, (): &()) -> Option<usize> {
+        Some(32)
+    }
     fn compare<W: Work>(&self, (): &(), (): &(), work: &W) -> Result<Ordering, Failure> {
         work.charge_work(1).map_err(Failure::Resource)?;
         Ok(Ordering::Equal)
@@ -4479,7 +4464,7 @@ impl StreamingDigest<Tree> for Oracle {
             Output::Full(value)
         })
     }
-    fn matches_output<W: Work>(
+    fn matches<W: Work>(
         &self,
         (): &(),
         output: &Output,
@@ -4556,7 +4541,7 @@ fn fixture() -> (Tree, digest::Reference<usize, u8, u8>) {
 #[test]
 fn streaming_digest_checks_complete_original_chunks_without_one_shot_collection() {
     // Real SHA256 across two chunks detects incorrect chunk order/input. Only
-    // complete EOF permits finish; no contiguous one-shot fallback is called.
+    // complete EOF permits finish; the contract has no one-shot fallback.
     for agrees in [false, true] {
         let (mut xml, reference) = fixture();
         if !agrees {
@@ -4578,7 +4563,6 @@ fn streaming_digest_checks_complete_original_chunks_without_one_shot_collection(
         assert_eq!(provider.started.get(), 1);
         assert_eq!(provider.updated.get(), 2);
         assert_eq!(provider.finished.get(), 1);
-        assert_eq!(provider.one_shot.get(), 0);
         assert_eq!(work.used(), 0);
     }
 }
@@ -4630,7 +4614,7 @@ fn certificate_declared_digest_uses_the_same_decode_before_resolve_boundary() {
         })
     ));
     assert_eq!(provider.resolved.get(), 0);
-    assert_eq!(provider.one_shot.get(), 0);
+    assert_eq!(provider.started.get(), 0);
 }
 
 #[test]
@@ -4672,7 +4656,6 @@ fn streaming_digest_preflights_format_and_capability_before_reading_source() {
         assert_eq!(source.calls, 0);
         assert_eq!(provider.started.get(), usize::from(case == 4));
         assert_eq!(provider.finished.get(), 0);
-        assert_eq!(provider.one_shot.get(), 0);
         assert_eq!(work.used(), 0);
     }
 }
@@ -4713,7 +4696,6 @@ fn streaming_digest_keeps_incomplete_and_sticky_provider_refusal_out_of_normal_m
             assert_eq!(provider.updated.get(), 2);
         }
         assert_eq!(provider.finished.get(), 0);
-        assert_eq!(provider.one_shot.get(), 0);
         assert_eq!(work.used(), 0);
     }
 }

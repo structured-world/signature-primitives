@@ -3,8 +3,8 @@
 use super::{ReferenceDigestError, ReferenceSearch, ref_catalogue::Memo};
 use crate::{
     binary::{self, BinaryXml, Location},
-    certificate::{Agreement, CheckedPathCertificate},
-    digest::{self, StreamingDigest},
+    certificate::{Agreement, CheckedPathCertificate, DigestProvider},
+    digest,
     material::PathCertificate,
     pki::CheckedPath,
     prepare::{Preparation, Prepared},
@@ -12,6 +12,7 @@ use crate::{
     xml::{Access, Xml},
 };
 use core::ops::Range;
+use structured_asn1::digest::Digest;
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 
 /// One original `CompleteCertificateRefsV2` entry and its root-path comparisons.
@@ -139,15 +140,15 @@ fn candidate_ids<W: Work>(
     Ok(ids)
 }
 
-struct PathComparisons<'provider, 'path, 'document, X: Xml, P: StreamingDigest<X>, W: Work> {
+struct PathComparisons<'provider, 'path, 'document, P: Digest<'provider>, W: Work> {
     path: &'path CheckedPath<'document>,
-    memo: Memo<'provider, 'document, X, P, W>,
+    memo: Memo<'provider, 'document, P, W>,
     ids: Option<OwnedVec<usize, W>>,
     covered: OwnedVec<bool, W>,
     comparisons: OwnedVec<Agreement, W>,
 }
-impl<'provider, 'path, 'document, X: Xml, P: StreamingDigest<X>, W: Work>
-    PathComparisons<'provider, 'path, 'document, X, P, W>
+impl<'provider, 'path, 'document, P: Digest<'provider>, W: Work>
+    PathComparisons<'provider, 'path, 'document, P, W>
 {
     fn new(path: &'path CheckedPath<'document>, provider: &'provider P, work: &W) -> Self {
         Self {
@@ -215,14 +216,15 @@ pub fn check_root_certificate_references<
     'p,
     'v,
     'd,
+    'q,
     X: BinaryXml,
-    P: StreamingDigest<X>,
+    P: DigestProvider<'q, X>,
     W: Work,
 >(
     xml: &X,
     prepared: &'p Prepared<X>,
     selected: &CheckedPathCertificate<'v, 'd, X::Id, X::Document, X::Generation>,
-    provider: &P,
+    provider: &'q P,
     work: &W,
 ) -> RootPathReferenceResult<'p, 'v, 'd, X, P::Error> {
     let source = prepared.bound().containers();
@@ -251,7 +253,7 @@ pub fn check_root_certificate_references<
         cause: ReferenceDigestError::Digest(digest::Error::Resource(cause)),
     };
     let path = selected.digests().path();
-    let mut state = PathComparisons::<X, P, W>::new(path, provider, work);
+    let mut state = PathComparisons::<P, W>::new(path, provider, work);
     let mut rows = work.vector();
     let mut root_rules = true;
     for (property, references) in prepared.validation_references().iter().enumerate() {

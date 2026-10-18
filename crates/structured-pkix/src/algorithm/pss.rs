@@ -10,7 +10,7 @@ use crate::error::{Error, ErrorCode, Located, Result};
 use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Element, Integer, Oid, ScopedReader as Reader, Tag, universal};
 
-const SHA1: Oid<'static> = Oid::from_bytes(&[0x2b, 0x0e, 3, 2, 0x1a]);
+use crate::oid::SHA1;
 const MGF1: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 1, 1, 8]);
 const FIELD: &str = "algorithm.pss";
 

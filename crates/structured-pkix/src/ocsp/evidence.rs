@@ -1,9 +1,10 @@
 //! Compose signature/issuer scope with requested target, extension and time facts.
 
 use super::{
-    Digest, ExtensionProcessing, Lookup, NonceBinding, RequestNonce, ScopedResponse,
-    SingleResponse, UpdateWindow,
+    ExtensionProcessing, Lookup, NonceBinding, RequestNonce, ScopedResponse, SingleResponse,
+    UpdateWindow,
 };
+use crate::algorithm::digest::AsnDigest;
 use crate::error::{CallbackResult, Result};
 use crate::temporal::{LeapTable, Reading};
 use crate::{Certificate, Error};
@@ -207,11 +208,11 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
     /// original requested certificate. No hashing, parsing or allocation is
     /// repeated to recover provenance later. Failures retain their original
     /// result/cause; no positive target binding is returned for a lookup failure.
-    pub fn evaluate_with_target<'target, 'request, D: Digest<E>, E: Work>(
+    pub fn evaluate_with_target<'target, 'request, 'd, D: AsnDigest<'d> + ?Sized, E: Work>(
         self,
         request: &Request<'target, 'request>,
         time: &Evaluation<'_, E>,
-        digest: &D,
+        digest: &'d D,
     ) -> CallbackResult<TargetReading<'target, 'request, 'r, 'a>, D::Error> {
         let outcome = self.evaluate(request, time, digest)?;
         Ok(TargetReading {
@@ -225,11 +226,11 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
     /// RFC6960 §3.2 requires identity, signer, authorization and temporal checks;
     /// this operation composes mechanism facts without choosing caller policy.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-3.2>
-    pub fn evaluate<D: Digest<E>, E: Work>(
+    pub fn evaluate<'d, D: AsnDigest<'d> + ?Sized, E: Work>(
         self,
         request: &Request<'_, '_>,
         time: &Evaluation<'_, E>,
-        digest: &D,
+        digest: &'d D,
     ) -> CallbackResult<TargetEvidence<'r, 'a>, D::Error> {
         let execution = time.execution;
         let response = self.signed().response();

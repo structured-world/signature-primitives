@@ -5,7 +5,9 @@ The crate supports `no_std + alloc` and performs no implicit I/O.
 
 An XML adapter supplies the original document, stable node identities,
 authenticated reference instructions and transformed byte streams. Cryptographic
-providers supply digest and signature operations. Application code supplies
+providers supply digest and signature operations: digests through the shared
+`structured_asn1::digest::Digest` contract, with `certificate::DigestProvider`
+adding only XML `DigestMethod` resolution and classification. Application code supplies
 trust inputs and decides whether the resulting evidence meets its policy.
 
 ## Processing the original signature

@@ -1,66 +1,16 @@
 //! Streaming XML digest checks through the caller's selected provider.
+//!
+//! Execution is the provider's [`structured_asn1::digest::Digest`]
+//! implementation; [`DigestProvider`] adds only the XML method resolution and
+//! classification. No independent URI dispatcher or implicit backend is
+//! selected by this crate.
 
 use crate::binary::{self, BinaryXml, Location};
 use crate::certificate::{self, Agreement, DigestProvider};
-use crate::xml::{Access, Snapshot, Xml};
-use core::cmp::Ordering;
+use crate::xml::{Access, Snapshot};
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{MemoryError, Work};
-use structured_cms::{
-    provider::Resolution,
-    stream::{self, Sink, Source, StreamError},
-};
-
-/// Incremental capability of the SAME selected XML digest provider. Algorithm
-/// syntax/parameters and compiled policy still use `DigestProvider::resolve`;
-/// no independent URI dispatcher or implicit backend is selected by this crate.
-/// State/output allocation and all transitive work are admitted by each callback
-/// through current Work. This contract does not qualify an opaque backend.
-/// States own any retained data/charges; they cannot borrow a callback-local W.
-pub trait StreamingDigest<X: Xml>: DigestProvider<X> {
-    /// One identity-bound state, without Clone/Send/Sync requirements.
-    type State;
-    /// Final output with constant-time borrowed octet access.
-    type Output: AsRef<[u8]>;
-
-    /// Compare complete resolved identities, including default/parameter rules.
-    /// Equality of widths or URI spelling alone is insufficient.
-    fn compare<W: Work>(
-        &self,
-        left: &Self::Identity,
-        right: &Self::Identity,
-        execution: &W,
-    ) -> Result<Ordering, Self::Error>;
-    /// Start one stream for this resolved identity. Unsupported explicitly
-    /// reports absent streaming capability; it never buffers into a one-shot
-    /// fallback or selects a different engine behind the caller's back.
-    fn start<W: Work>(
-        &self,
-        identity: &Self::Identity,
-        execution: &W,
-    ) -> Result<Resolution<Self::State>, Self::Error>;
-    /// Admit and process one complete chunk under the current operation.
-    fn update<W: Work>(
-        &self,
-        state: &mut Self::State,
-        bytes: &[u8],
-        execution: &W,
-    ) -> Result<(), Self::Error>;
-    /// Consume a complete state. The common driver invokes this only after EOF.
-    fn finish<W: Work>(
-        &self,
-        state: Self::State,
-        execution: &W,
-    ) -> Result<Self::Output, Self::Error>;
-    /// Compare complete finished output with the declared bytes. The provider
-    /// admits the entire scan and retains its own comparison strategy.
-    fn matches_output<W: Work>(
-        &self,
-        identity: &Self::Identity,
-        output: &Self::Output,
-        expected: &[u8],
-        execution: &W,
-    ) -> Result<bool, Self::Error>;
-}
+use structured_cms::stream::{self, Sink, Source, StreamError};
 
 /// Original digest method/value selectors, NOT proof of their signed coverage.
 /// The enclosing property mechanism supplies its actual source-bound nodes.
@@ -97,12 +47,12 @@ pub enum Error<SE, PE> {
     },
 }
 
-struct Updating<'a, X: Xml, P: StreamingDigest<X>> {
-    provider: &'a P,
-    state: &'a mut P::State,
+struct Updating<'s, 'p, P: Digest<'p>> {
+    provider: &'p P,
+    state: &'s mut P::State,
 }
 
-impl<X: Xml, P: StreamingDigest<X>> Sink for Updating<'_, X, P> {
+impl<'p, P: Digest<'p>> Sink for Updating<'_, 'p, P> {
     type Error = P::Error;
     fn write<W: Work>(&mut self, bytes: &[u8], execution: &W) -> Result<(), Self::Error> {
         self.provider.update(self.state, bytes, execution)
@@ -114,11 +64,11 @@ impl<X: Xml, P: StreamingDigest<X>> Sink for Updating<'_, X, P> {
 /// No whole-input collector, parser, implicit I/O or runtime crypto dependency
 /// is introduced. This produces digest agreement only, never signed coverage,
 /// policy-document acceptance, timestamp evidence or an attained B level.
-pub fn check<X: BinaryXml, P: StreamingDigest<X>, S: Source, W: Work>(
+pub fn check<'p, X: BinaryXml, P: DigestProvider<'p, X>, S: Source, W: Work>(
     xml: &X,
     reference: Reference<X::Id, X::Document, X::Generation>,
     source: &mut S,
-    provider: &P,
+    provider: &'p P,
     execution: &W,
 ) -> binary::BinaryResult<Agreement, X, Error<S::Error, P::Error>> {
     check_with(
@@ -127,7 +77,7 @@ pub fn check<X: BinaryXml, P: StreamingDigest<X>, S: Source, W: Work>(
         provider,
         execution,
         |identity, expected, work| {
-            run_resolved::<X, P, S, W>(&identity, expected, source, provider, work)
+            run_resolved::<P, S, W>(&identity, expected, source, provider, work)
         },
     )
     .map(|reading| match reading {
@@ -143,10 +93,10 @@ pub(crate) enum Checked<T> {
 // Both one-shot source checking and complete material-catalogue checking use
 // this one method/declared-value kernel. Memoization cannot bypass syntax,
 // width or actual resolved-algorithm classification before provider effects.
-pub(crate) fn check_with<X: BinaryXml, P: StreamingDigest<X>, W: Work, SE, R>(
+pub(crate) fn check_with<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: Work, SE, R>(
     xml: &X,
     reference: Reference<X::Id, X::Document, X::Generation>,
-    provider: &P,
+    provider: &'p P,
     execution: &W,
     visit: impl FnOnce(
         certificate::FormatDigest<P::Identity>,
@@ -185,11 +135,11 @@ pub(crate) fn check_with<X: BinaryXml, P: StreamingDigest<X>, W: Work, SE, R>(
     .map_err(|error| error.map_callback(|never| match never {}))?
 }
 
-fn check_expected<X: BinaryXml, P: StreamingDigest<X>, W: Work, SE, R>(
+fn check_expected<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: Work, SE, R>(
     access: &Access<'_, X, W>,
     reference: Reference<X::Id, X::Document, X::Generation>,
     expected: &[u8],
-    provider: &P,
+    provider: &'p P,
     visit: impl FnOnce(
         certificate::FormatDigest<P::Identity>,
         &[u8],
@@ -238,11 +188,11 @@ fn check_expected<X: BinaryXml, P: StreamingDigest<X>, W: Work, SE, R>(
         })
 }
 
-pub(crate) fn run_resolved<X: Xml, P: StreamingDigest<X>, S: Source, W: Work>(
+pub(crate) fn run_resolved<'p, P: Digest<'p>, S: Source, W: Work>(
     identity: &certificate::FormatDigest<P::Identity>,
     expected: &[u8],
     source: &mut S,
-    provider: &P,
+    provider: &'p P,
     execution: &W,
 ) -> Result<Agreement, Error<S::Error, P::Error>> {
     let width = provider.width(identity.identity());
@@ -251,14 +201,14 @@ pub(crate) fn run_resolved<X: Xml, P: StreamingDigest<X>, S: Source, W: Work>(
     {
         return Ok(Agreement::MalformedValue);
     }
-    let output = match compute_resolved::<X, P, S, W>(identity, source, provider, execution)? {
+    let output = match compute_resolved::<P, S, W>(identity, source, provider, execution)? {
         Resolution::Supported(output) => output,
         Resolution::Unsupported => return Ok(Agreement::Unsupported),
         Resolution::Malformed => return Ok(Agreement::MalformedMethod),
     };
     execution.charge_work(1).map_err(Error::Resource)?;
     let agrees = provider
-        .matches_output(identity.identity(), &output, expected, execution)
+        .matches(identity.identity(), &output, expected, execution)
         .map_err(Error::Provider)?;
     Ok(if agrees {
         Agreement::Matches
@@ -269,10 +219,10 @@ pub(crate) fn run_resolved<X: Xml, P: StreamingDigest<X>, S: Source, W: Work>(
 
 type Computation<O, SE, PE> = Result<Resolution<O>, Error<SE, PE>>;
 
-pub(crate) fn compute_resolved<X: Xml, P: StreamingDigest<X>, S: Source, W: Work>(
+pub(crate) fn compute_resolved<'p, P: Digest<'p>, S: Source, W: Work>(
     identity: &certificate::FormatDigest<P::Identity>,
     source: &mut S,
-    provider: &P,
+    provider: &'p P,
     execution: &W,
 ) -> Computation<P::Output, S::Error, P::Error> {
     let width = provider.width(identity.identity());
@@ -285,7 +235,7 @@ pub(crate) fn compute_resolved<X: Xml, P: StreamingDigest<X>, S: Source, W: Work
         Resolution::Unsupported => return Ok(Resolution::Unsupported),
         Resolution::Malformed => return Ok(Resolution::Malformed),
     };
-    let mut updating = Updating::<X, P> {
+    let mut updating = Updating::<P> {
         provider,
         state: &mut state,
     };

@@ -1,11 +1,12 @@
 //! Schema and selected-provider preflight before state initialization or I/O.
 
 use crate::binding::{self, Binding, Protection, Scope};
-use crate::provider::{DigestAlgorithm, Resolution, SignatureMode, SignatureProvider};
+use crate::provider::{DigestAlgorithm, SignatureMode, SignatureProvider, resolve_digest};
 use crate::signer::SignerInfo;
 use crate::{Error, ErrorCode};
 use core::cmp::Ordering;
 use structured_asn1::Reader;
+use structured_asn1::digest::Resolution;
 use structured_asn1::memory::Work;
 use structured_pkix::path::WorkingKey;
 
@@ -146,7 +147,7 @@ impl<'a, P: SignatureProvider<'a>> ResolvedSigner<'a, P> {
         let execution = parent.execution();
         let digest = self
             .provider
-            .compare_digest(&self.digest, &other.digest, &execution)
+            .compare(&self.digest, &other.digest, &execution)
             .map_err(|source| PrepareError::Callback {
                 part: Part::DigestComparison,
                 source,
@@ -213,16 +214,9 @@ pub fn resolve<'a, P: SignatureProvider<'a>>(
         Err(error) => return Ok(Preparation::Malformed(error)),
     };
     let identifier = identifiers.0;
-    let digest = match provider
-        .resolve_digest(
-            DigestAlgorithm::Written(identifier),
-            identifier.encoding(),
-            parent,
-        )
-        .map_err(|source| PrepareError::Callback {
-            part: Part::Digest,
-            source,
-        })? {
+    let digest = match resolve_digest(provider, DigestAlgorithm::Written(identifier), parent)
+        .map_err(PrepareError::Processing)?
+    {
         Resolution::Supported(digest) => digest,
         Resolution::Unsupported => return Ok(Preparation::Unsupported(Part::Digest)),
         Resolution::Malformed => {
@@ -238,7 +232,7 @@ pub fn resolve<'a, P: SignatureProvider<'a>>(
         digest_span,
         ..
     } = &binding
-        && let Some(width) = provider.digest_width(&digest)
+        && let Some(width) = provider.width(&digest)
         && expected.len() != width
     {
         return Ok(Preparation::Malformed(Error::schema(
@@ -332,28 +326,24 @@ fn protected<'a, P: SignatureProvider<'a>>(
 ) -> Result<ProtectionStatus, PrepareError<P::Error>> {
     const FIELD: &str = "signerInfo.signedAttrs.cmsAlgorithmProtection";
     let identifier = protection.digest();
-    let protected_digest = match provider
-        .resolve_digest(
-            DigestAlgorithm::Written(identifier),
-            identifier.encoding(),
-            parent,
-        )
-        .map_err(|source| PrepareError::Callback {
-            part: Part::ProtectedDigest,
-            source,
-        })? {
-        Resolution::Supported(digest) => digest,
-        Resolution::Unsupported => return Ok(ProtectionStatus::Unsupported(Part::ProtectedDigest)),
-        Resolution::Malformed => {
-            return Ok(ProtectionStatus::Malformed(Error::schema(
-                ErrorCode::AlgorithmSyntax,
-                FIELD,
-                identifier.offset(),
-            )));
-        }
-    };
+    let protected_digest =
+        match resolve_digest(provider, DigestAlgorithm::Written(identifier), parent)
+            .map_err(PrepareError::Processing)?
+        {
+            Resolution::Supported(digest) => digest,
+            Resolution::Unsupported => {
+                return Ok(ProtectionStatus::Unsupported(Part::ProtectedDigest));
+            }
+            Resolution::Malformed => {
+                return Ok(ProtectionStatus::Malformed(Error::schema(
+                    ErrorCode::AlgorithmSyntax,
+                    FIELD,
+                    identifier.offset(),
+                )));
+            }
+        };
     if provider
-        .compare_digest(digest, &protected_digest, &parent.execution())
+        .compare(digest, &protected_digest, &parent.execution())
         .map_err(|source| PrepareError::Callback {
             part: Part::DigestComparison,
             source,

@@ -11,8 +11,8 @@ use super::{
 };
 use crate::{
     binary::{self, BinaryXml, Location},
-    certificate::{Agreement, FormatDigest},
-    digest::{self, StreamingDigest},
+    certificate::{Agreement, DigestProvider, FormatDigest},
+    digest,
     material::{
         self, ArtifactRef, ArtifactSource, ArtifactUses, ExclusiveFindingKind,
         exclusivity::{self, CaError, CaFact, ReferenceStatus},
@@ -296,10 +296,10 @@ struct StatusComparisons<
     'certificate,
     'document,
     X: Xml,
-    P: StreamingDigest<X>,
+    P: DigestProvider<'provider, X>,
     W: Work,
 > {
-    memo: Memo<'provider, 'source, X, P, W>,
+    memo: Memo<'provider, 'source, P, W>,
     candidates: Option<OwnedVec<ReferenceStatus<'certificate, 'document>, W>>,
     envelopes: Option<XmlEnvelopeIndex<'source, X, W>>,
     located: LocatedEnvelopes<'source, X, W>,
@@ -314,7 +314,7 @@ struct StatusComparisons<
     ocsp_ids: OwnedMap<&'document [u8], usize, W>,
     next_id: usize,
 }
-impl<'provider, 'source, 'c, 'd, X: Xml, P: StreamingDigest<X>, W: Work>
+impl<'provider, 'source, 'c, 'd, X: Xml, P: DigestProvider<'provider, X>, W: Work>
     StatusComparisons<'provider, 'source, 'c, 'd, X, P, W>
 {
     fn new(provider: &'provider P, work: &W) -> Self {
@@ -585,7 +585,7 @@ impl<'provider, 'source, 'c, 'd, X: Xml, P: StreamingDigest<X>, W: Work>
         (property, refs, entry): OriginalRow<'_, X>,
         artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
         pools: CandidatePools<'_, 'source, X::Id, X::Document, X::Generation>,
-        provider: &P,
+        provider: &'provider P,
         work: &W,
     ) -> binary::BinaryResult<StatusRoleRow<X::Id>, X, CertificateRoleError<'c, 'd, P::Error>>
     where
@@ -675,8 +675,9 @@ pub fn check_revocation_reference_roles<
     'p,
     'c,
     'd,
+    'q,
     X: BinaryXml,
-    P: StreamingDigest<X>,
+    P: DigestProvider<'q, X>,
     W: Work,
 >(
     xml: &X,
@@ -684,7 +685,7 @@ pub fn check_revocation_reference_roles<
     artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
     view: &material::View<'_, X::Id, X::Document, X::Generation>,
     tokens: Option<&CarriedMaterial<'_, X::Id, X::Document, X::Generation>>,
-    provider: &P,
+    provider: &'q P,
     work: &W,
 ) -> RevocationRoleResult<'p, 'c, 'd, X, P::Error> {
     let source = prepared.bound().containers();

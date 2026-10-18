@@ -5,13 +5,13 @@ use crate::binding::{Bound, SignatureXml};
 use crate::container::XADES;
 use crate::properties::{Error, PropertyResult, Reading};
 use crate::xml::{Access, AccessError, Name, Snapshot, Xml};
+use structured_asn1::digest::{Digest, OnceError, Resolution, matches_once};
 use structured_asn1::{
     Reader, Tag,
     memory::{MemoryError, OwnedVec, Work},
     universal,
 };
 use structured_cms::ess::IssuerSerialReading;
-use structured_cms::provider::Resolution;
 use structured_pkix::{Certificate, path::WorkingKey};
 
 mod path;
@@ -57,20 +57,15 @@ pub trait CertificateXml: SignatureXml {
     ) -> Result<KeyAssociation, Self::Error>;
 }
 
-/// Selected XML digest dispatch for an already contiguous original certificate.
+/// XML `DigestMethod` resolution of the selected provider, layered over its
+/// [`Digest`] execution.
 ///
-/// This is not an incremental digest-state adapter. An existing XML provider's
-/// one-shot digest can be reused without accumulating chunks or constructing an
-/// ASN.1 identifier from an XML algorithm URI. Resolution must enforce original
-/// method syntax/parameters and compiled XML algorithm policy before hashing.
-/// Every callback admits its transitive CPU, allocation and output capacity;
-/// this contract alone does not qualify an opaque backend's accounting.
-pub trait DigestProvider<X: Xml> {
-    /// Resolved XML algorithm identity with complete output/parameter semantics.
-    type Identity;
-    /// Original provider/policy/resource failure, never a digest mismatch.
-    type Error;
-
+/// Resolution must enforce original method syntax/parameters and compiled XML
+/// algorithm policy before hashing; no ASN.1 identifier is constructed from an
+/// XML algorithm URI. Every callback admits its transitive CPU, allocation and
+/// output capacity; this contract alone does not qualify an opaque backend's
+/// accounting.
+pub trait DigestProvider<'a, X: Xml>: Digest<'a> {
     /// Resolves the original method through the selected XML provider dispatcher.
     fn resolve<W: Work>(
         &self,
@@ -85,22 +80,6 @@ pub trait DigestProvider<X: Xml> {
     /// digest capability. The common baseline guard rejects it and MD5 before
     /// invoking hash primitives; compiled deployment acceptance stays in resolve.
     fn classify(&self, identity: &Self::Identity) -> crate::hashes::HashClass;
-
-    /// Constant-time metadata lookup on the resolved identity, when fixed-width.
-    fn width(&self, identity: &Self::Identity) -> Option<usize>;
-
-    /// Hashes the complete original certificate and compares its full output.
-    /// No re-encoding, implicit acquisition, width-based algorithm inference or
-    /// chunk collector is allowed. An output of the wrong resolved width is a
-    /// processing/provider failure, never a successful equality. Allocation and
-    /// comparison work must be admitted before execution in current Work.
-    fn matches<W: Work>(
-        &self,
-        identity: &Self::Identity,
-        certificate: &[u8],
-        expected: &[u8],
-        execution: &W,
-    ) -> Result<bool, Self::Error>;
 }
 
 /// Completed digest agreement, separate from selected-key association/path trust.
@@ -133,6 +112,14 @@ pub enum DigestError<E> {
     Provider(E),
     /// Common dispatch admission refused before provider execution.
     Resource(MemoryError),
+    /// The provider's output contradicts its own identity's fixed width: a
+    /// provider contract failure, never an ordinary mismatch.
+    OutputWidth {
+        /// Width promised by the resolved identity.
+        expected: usize,
+        /// Width actually returned.
+        actual: usize,
+    },
 }
 
 /// One original `Cert` entry in the signed `SigningCertificateV2` property.
@@ -207,12 +194,12 @@ impl<N: Copy, D: Copy, G: Copy> References<N, D, G> {
 /// The caller must separately bind this candidate to the successfully selected
 /// XML signature key. A digest match, URI or issuer hint does not establish that
 /// association and does not produce baseline/path/trust evidence here.
-pub fn compare<X: BinaryXml, P: DigestProvider<X>, W: Work>(
+pub fn compare<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: Work>(
     xml: &X,
     reference: &Catalogue<X>,
     index: usize,
     certificate: &Certificate<'_>,
-    provider: &P,
+    provider: &'p P,
     execution: &W,
 ) -> binary::BinaryResult<Agreement, X, DigestError<P::Error>> {
     // An invalid ordinal is caller misuse, not malformed signed XML. Represent
@@ -256,11 +243,11 @@ pub fn compare<X: BinaryXml, P: DigestProvider<X>, W: Work>(
     .map_err(|error| error.map_callback(|never| match never {}))?
 }
 
-fn compare_expected<X: Xml, P: DigestProvider<X>, W: Work>(
+fn compare_expected<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
     access: &Access<'_, X, W>,
     entry: &Reference<X::Id>,
     certificate: &Certificate<'_>,
-    provider: &P,
+    provider: &'p P,
     expected: &[u8],
 ) -> binary::BinaryResult<Agreement, X, DigestError<P::Error>> {
     let identity = match resolve_expected(access, entry, provider, expected)? {
@@ -286,7 +273,7 @@ impl<I> FormatDigest<I> {
     }
 }
 
-pub(crate) fn baseline_digest<X: Xml, P: DigestProvider<X>>(
+pub(crate) fn baseline_digest<'p, X: Xml, P: DigestProvider<'p, X>>(
     identity: P::Identity,
     provider: &P,
 ) -> Expected<P::Identity> {
@@ -302,7 +289,7 @@ pub(crate) fn baseline_digest<X: Xml, P: DigestProvider<X>>(
     }
 }
 
-fn resolve_expected<X: Xml, P: DigestProvider<X>, W: Work>(
+fn resolve_expected<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
     access: &Access<'_, X, W>,
     entry: &Reference<X::Id>,
     provider: &P,
@@ -338,11 +325,11 @@ fn resolve_expected<X: Xml, P: DigestProvider<X>, W: Work>(
     Ok(Expected::Ready(identity))
 }
 
-fn compare_resolved<X: Xml, P: DigestProvider<X>, W: Work>(
+fn compare_resolved<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
     access: &Access<'_, X, W>,
     entry: &Reference<X::Id>,
     certificate: &Certificate<'_>,
-    provider: &P,
+    provider: &'p P,
     identity: &FormatDigest<P::Identity>,
     expected: &[u8],
 ) -> binary::BinaryResult<Agreement, X, DigestError<P::Error>> {
@@ -353,18 +340,26 @@ fn compare_resolved<X: Xml, P: DigestProvider<X>, W: Work>(
     };
     let check = || {
         execution.charge_work(1).map_err(DigestError::Resource)?;
-        let matches = provider
-            .matches(
-                identity.identity(),
-                certificate.as_bytes(),
-                expected,
-                execution,
-            )
-            .map_err(DigestError::Provider)?;
-        Ok(if matches {
-            Agreement::Matches
-        } else {
-            Agreement::Differs
+        // One update over the whole original certificate; no re-encoding,
+        // implicit acquisition or width-based algorithm inference.
+        let answer = matches_once(
+            provider,
+            identity.identity(),
+            certificate.as_bytes(),
+            expected,
+            execution,
+        )
+        .map_err(|error| match error {
+            OnceError::Provider(cause) => DigestError::Provider(cause),
+            OnceError::OutputWidth { expected, actual } => {
+                DigestError::OutputWidth { expected, actual }
+            }
+        })?;
+        Ok(match answer {
+            Resolution::Supported(true) => Agreement::Matches,
+            Resolution::Supported(false) => Agreement::Differs,
+            Resolution::Unsupported => Agreement::Unsupported,
+            Resolution::Malformed => Agreement::MalformedMethod,
         })
     };
     check().map_err(|cause| binary::Error::Callback { location, cause })
@@ -568,12 +563,19 @@ pub(crate) fn with_issuer_serial_at<X: BinaryXml, R, E>(
 /// available in the original catalogue; they are not silently treated as trust.
 /// Baseline reference conformance is checked before key/provider callbacks;
 /// low-level [`read`] still supports inspection of the general reference schema.
-pub fn check<'view, 'document, X: BinaryXml + CertificateXml, P: DigestProvider<X>, W: Work>(
+pub fn check<
+    'view,
+    'document,
+    'p,
+    X: BinaryXml + CertificateXml,
+    P: DigestProvider<'p, X>,
+    W: Work,
+>(
     xml: &X,
     bound: &Bound<X::Id, X::Document, X::Generation>,
     reference: &'view Catalogue<X>,
     certificate: &'view Certificate<'document>,
-    provider: &P,
+    provider: &'p P,
     execution: &W,
 ) -> CheckResult<'view, 'document, X, P::Error> {
     let key = bind_key::<X, P::Error, W>(

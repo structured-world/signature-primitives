@@ -9,6 +9,7 @@ mod status_roles;
 
 use super::super::{DS, XADES, XADES_141, element, material, prepare, unsigned};
 use super::*;
+use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 use structured_xades::validation::{ReferenceDigest, compare_reference_digest};
 
 fn add(xml: &mut Tree, parent: usize, namespace: &'static str, local: &'static str) -> usize {
@@ -140,9 +141,7 @@ struct CatalogueOracle {
     held_on_failure: Cell<usize>,
 }
 
-impl DigestProvider<Tree> for CatalogueOracle {
-    type Identity = bool;
-    type Error = Failure;
+impl DigestProvider<'_, Tree> for CatalogueOracle {
     fn classify(&self, _: &bool) -> structured_xades::hashes::HashClass {
         structured_xades::hashes::HashClass::OtherKnown
     }
@@ -180,31 +179,16 @@ impl DigestProvider<Tree> for CatalogueOracle {
             .map_err(Failure::Access)?
             .map_err(Failure::Resource)
     }
+}
+
+impl Digest<'_> for CatalogueOracle {
+    type Identity = bool;
+    type State = Sha256;
+    type Output = Output;
+    type Error = Failure;
     fn width(&self, _: &bool) -> Option<usize> {
         Some(32)
     }
-    fn matches<W: Work>(
-        &self,
-        domain: &bool,
-        bytes: &[u8],
-        expected: &[u8],
-        work: &W,
-    ) -> Result<bool, Failure> {
-        work.charge_work(bytes.len() as u64 + 128)
-            .map_err(Failure::Resource)?;
-        self.inner.one_shot.set(self.inner.one_shot.get() + 1);
-        let mut state = Sha256::new();
-        if *domain {
-            state.update(DOMAIN);
-        }
-        state.update(bytes);
-        Ok(state.finalize().as_slice() == expected)
-    }
-}
-
-impl StreamingDigest<Tree> for CatalogueOracle {
-    type State = Sha256;
-    type Output = Output;
     fn compare<W: Work>(&self, left: &bool, right: &bool, work: &W) -> Result<Ordering, Failure> {
         work.charge_work(1).map_err(Failure::Resource)?;
         Ok(left.cmp(right))
@@ -224,14 +208,14 @@ impl StreamingDigest<Tree> for CatalogueOracle {
     fn finish<W: Work>(&self, state: Sha256, work: &W) -> Result<Output, Failure> {
         self.inner.finish(state, work)
     }
-    fn matches_output<W: Work>(
+    fn matches<W: Work>(
         &self,
         _: &bool,
         output: &Output,
         expected: &[u8],
         work: &W,
     ) -> Result<bool, Failure> {
-        self.inner.matches_output(&(), output, expected, work)
+        self.inner.matches(&(), output, expected, work)
     }
 }
 
@@ -445,10 +429,9 @@ fn complete_reference_digest_catalogue_retains_all_pairs_and_reuses_finished_out
                 (
                     provider.resolved.get(),
                     provider.started.get(),
-                    provider.finished.get(),
-                    provider.one_shot.get()
+                    provider.finished.get()
                 ),
-                (4, 2, 2, 0)
+                (4, 2, 2)
             );
             assert!(account.used() > 0);
             assert_eq!((memory.work_used(), memory.used()), (paid, held));
@@ -703,45 +686,51 @@ struct KeyDigest<'key> {
     fail: bool,
 }
 
-impl<W: Work> structured_pkix::ocsp::Digest<W> for KeyDigest<'_> {
-    type Handle = ();
+// Control callbacks: forwarding/charging/error oracle, not SHA-1 math.
+impl Digest<'_> for KeyDigest<'_> {
+    type Identity = ();
+    type State = ();
+    type Output = [u8; 20];
     type Error = MemoryError;
-    fn resolve(
-        &self,
-        algorithm: structured_pkix::ocsp::DigestAlgorithm<'_>,
-        work: &W,
-    ) -> Result<Option<structured_pkix::ocsp::ResolvedDigest<()>>, MemoryError> {
-        work.charge_work(1)?;
-        self.resolves.set(self.resolves.get() + 1);
-        assert!(matches!(
-            algorithm,
-            structured_pkix::ocsp::DigestAlgorithm::Sha1
-        ));
-        Ok(if self.supported {
-            Some(structured_pkix::ocsp::ResolvedDigest {
-                handle: (),
-                width: core::num::NonZeroUsize::new(20).unwrap(),
-            })
-        } else {
-            None
-        })
+    fn width(&self, (): &()) -> Option<usize> {
+        Some(20)
     }
-    fn matches(
-        &self,
-        (): (),
-        input: &[u8],
-        expected: &[u8],
-        work: &W,
-    ) -> Result<bool, MemoryError> {
-        // Control callback: forwarding/charging/error oracle, not SHA-1 math.
-        work.charge_work(input.len() as u64 + expected.len() as u64)?;
+    fn compare<W: Work>(&self, (): &(), (): &(), _: &W) -> Result<Ordering, MemoryError> {
+        Ok(Ordering::Equal)
+    }
+    fn start<W: Work>(&self, (): &(), _: &W) -> Result<Resolution<()>, MemoryError> {
+        Ok(Resolution::Supported(()))
+    }
+    fn update<W: Work>(&self, (): &mut (), input: &[u8], work: &W) -> Result<(), MemoryError> {
+        work.charge_work(input.len() as u64)?;
         self.hashes.set(self.hashes.get() + 1);
         if self.fail {
             return Err(MemoryError::WorkExceeded);
         }
         assert_eq!(input.as_ptr(), self.key.as_ptr());
         assert_eq!(input, self.key);
+        Ok(())
+    }
+    fn finish<W: Work>(&self, (): (), _: &W) -> Result<[u8; 20], MemoryError> {
+        Ok([0; 20])
+    }
+    fn matches<W: Work>(
+        &self,
+        (): &(),
+        _: &[u8; 20],
+        expected: &[u8],
+        work: &W,
+    ) -> Result<bool, MemoryError> {
+        work.charge_work(expected.len() as u64)?;
         Ok(expected == [0x33; 20])
+    }
+}
+
+impl AsnDigest<'_> for KeyDigest<'_> {
+    fn identity(&self, algorithm: Algorithm) -> Option<()> {
+        self.resolves.set(self.resolves.get() + 1);
+        assert_eq!(algorithm, Algorithm::Sha1);
+        self.supported.then_some(())
     }
 }
 
@@ -886,14 +875,7 @@ fn ocsp_reference_keeps_whole_digest_and_identifier_on_one_authenticated_body() 
             Some(ReferenceDigest::Compared(Agreement::Matches))
         );
         assert_eq!((keys.resolves.get(), keys.hashes.get()), (1, 1));
-        assert_eq!(
-            (
-                provider.started.get(),
-                provider.finished.get(),
-                provider.one_shot.get()
-            ),
-            (1, 1, 0)
-        );
+        assert_eq!((provider.started.get(), provider.finished.get()), (1, 1));
         let mut other_bytes = bytes.to_vec();
         let time_at = other_bytes
             .windows(15)
@@ -1512,7 +1494,6 @@ fn assert_certificate_role_comparisons(
             provider.finished.get(),
             usize::from(!shared && !unsupported)
         );
-        assert_eq!(provider.one_shot.get(), 0);
         assert!(core::ptr::eq(report.prepared(), prepared));
         drop(report);
         assert_eq!(query.used(), 0);
@@ -1746,14 +1727,7 @@ fn root_certificate_references_cover_actual_anchor_and_exclude_signer_with_one_m
             );
             assert!(report.candidate(2).is_none());
             if matches!(mode, Mode::Ready) {
-                assert_eq!(
-                    (
-                        provider.started.get(),
-                        provider.finished.get(),
-                        provider.one_shot.get()
-                    ),
-                    (2, 2, 0)
-                );
+                assert_eq!((provider.started.get(), provider.finished.get()), (2, 2));
                 for (row, value) in values.iter().enumerate() {
                     assert_eq!(
                         report.comparisons(row).unwrap(),
@@ -2067,14 +2041,7 @@ fn reference_catalogues_include_token_certificates_crls_and_whole_ocsp_once() {
                 )
                 .unwrap();
                 assert_token_reference_origins(&report);
-                assert_eq!(
-                    (
-                        provider.started.get(),
-                        provider.finished.get(),
-                        provider.one_shot.get()
-                    ),
-                    (3, 3, 0)
-                );
+                assert_eq!((provider.started.get(), provider.finished.get()), (3, 3));
                 drop(report);
                 assert_eq!(memory.used(), held);
                 Ok::<_, ()>(())
@@ -2185,14 +2152,7 @@ fn external_path_artifacts_use_current_digest_kernel_without_fake_xml_sources() 
             assert_eq!(storage.used(), held);
             assert_eq!(storage.work_used(), spent);
             assert_eq!(query.used(), 0);
-            assert_eq!(
-                (
-                    provider.started.get(),
-                    provider.finished.get(),
-                    provider.one_shot.get()
-                ),
-                (1, 1, 0)
-            );
+            assert_eq!((provider.started.get(), provider.finished.get()), (1, 1));
             if kind == material::Kind::Certificate {
                 assert_eq!(
                     compare_reference_target(
@@ -2267,14 +2227,7 @@ fn reference_digests_compare_whole_certificate_crl_and_ocsp_envelope_without_ree
                 compare_reference_digest(&xml, references, 0, &source, &provider, memory).unwrap(),
                 ReferenceDigest::Compared(Agreement::Matches)
             );
-            assert_eq!(
-                (
-                    provider.started.get(),
-                    provider.finished.get(),
-                    provider.one_shot.get()
-                ),
-                (1, 1, 0)
-            );
+            assert_eq!((provider.started.get(), provider.finished.get()), (1, 1));
             let value = references.entries()[0].digest().unwrap().1;
             xml.binary_routes
                 .iter_mut()

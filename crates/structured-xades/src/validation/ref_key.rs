@@ -5,11 +5,11 @@ use crate::{
     binary::{self, BinaryXml, Location},
     xml::Access,
 };
-use structured_asn1::memory::Execution;
 use structured_asn1::{Reader, Tag};
 use structured_pkix::{
     Certificate,
-    ocsp::{Digest, ResponderId, ResponderMatch},
+    algorithm::digest::AsnDigest,
+    ocsp::{ResponderId, ResponderMatch},
 };
 
 /// Source/schema and visitor causes remain distinct from key disagreement.
@@ -65,16 +65,16 @@ pub fn with_responder_key<X: BinaryXml, R, E>(
 /// original source/depth and current query ceilings govern the hash callback.
 /// The certificate's signature/path/authorization and response producedAt
 /// remain independent. None identifies a different original selector branch.
-pub fn matches_reference_key<X: BinaryXml, D, DE>(
+pub fn matches_reference_key<'k, X: BinaryXml, D, DE>(
     xml: &X,
     references: &ReferenceProperty<X::Id, X::Document, X::Generation>,
     index: usize,
     certificate: &Certificate<'_>,
-    digest: &D,
+    digest: &'k D,
     operation: &Reader<'_>,
 ) -> ReferenceKeyResult<X, DE>
 where
-    D: for<'work> Digest<Execution<'work>, Error = DE>,
+    D: AsnDigest<'k, Error = DE>,
 {
     with_key_at(xml, references, index, operation, |hash, reader, at| {
         ResponderId::KeyHash(hash).matches_certificate(

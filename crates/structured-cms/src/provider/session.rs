@@ -1,12 +1,11 @@
 //! Stable selection ownership, including zero-sized backend adapters.
 
-use super::{
-    DigestAlgorithm, DigestProvider, Prehash, Resolution, SignatureAnswer, SignatureMode,
-    SignatureProvider,
-};
+use super::{Prehash, SignatureAnswer, SignatureMode, SignatureProvider};
 use crate::Octets;
 use core::cmp::Ordering;
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::{Encoding, Reader, memory::Work};
+use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 use structured_pkix::{AlgorithmIdentifier, path::WorkingKey};
 
 /// One explicitly selected backend session with stable nonzero-sized ownership.
@@ -50,65 +49,54 @@ impl<P> core::ops::Deref for ProviderSession<P> {
     }
 }
 
-impl<'a, P: DigestProvider<'a>> DigestProvider<'a> for ProviderSession<P> {
-    type Error = P::Error;
+impl<'a, P: Digest<'a>> Digest<'a> for ProviderSession<P> {
     type Identity = P::Identity;
     type State = P::State;
     type Output = P::Output;
-    fn resolve_digest(
-        &'a self,
-        algorithm: DigestAlgorithm<'a>,
-        encoding: Encoding,
-        parent: &Reader<'a>,
-    ) -> Result<Resolution<Self::Identity>, Self::Error> {
-        self.backend.resolve_digest(algorithm, encoding, parent)
+    type Error = P::Error;
+    fn width(&self, identity: &Self::Identity) -> Option<usize> {
+        self.backend.width(identity)
     }
-    fn compare_digest<W: Work>(
+    fn compare<W: Work>(
         &self,
         left: &Self::Identity,
         right: &Self::Identity,
         work: &W,
     ) -> Result<Ordering, Self::Error> {
-        self.backend.compare_digest(left, right, work)
+        self.backend.compare(left, right, work)
     }
-    fn digest_width(&self, identity: &Self::Identity) -> Option<usize> {
-        self.backend.digest_width(identity)
-    }
-    fn start_digest<W: Work>(
+    fn start<W: Work>(
         &'a self,
         identity: &Self::Identity,
         work: &W,
-    ) -> Result<Self::State, Self::Error> {
-        self.backend.start_digest(identity, work)
+    ) -> Result<Resolution<Self::State>, Self::Error> {
+        self.backend.start(identity, work)
     }
-    fn update_digest<W: Work>(
+    fn update<W: Work>(
         &self,
         state: &mut Self::State,
         bytes: &[u8],
         work: &W,
     ) -> Result<(), Self::Error> {
-        self.backend.update_digest(state, bytes, work)
+        self.backend.update(state, bytes, work)
     }
-    fn finish_digest<W: Work>(
-        &self,
-        state: Self::State,
-        work: &W,
-    ) -> Result<Self::Output, Self::Error> {
-        self.backend.finish_digest(state, work)
+    fn finish<W: Work>(&self, state: Self::State, work: &W) -> Result<Self::Output, Self::Error> {
+        self.backend.finish(state, work)
     }
-    fn matches_digest<W: Work>(
+    fn matches<W: Work>(
         &self,
-        digest: Prehash<'_, '_, Self, Self::Identity>,
+        identity: &Self::Identity,
+        output: &Self::Output,
         expected: &[u8],
         work: &W,
     ) -> Result<bool, Self::Error> {
-        // Common processing verifies session provenance before dispatch. The
-        // engine receives a view under the same adapter that created the state.
-        self.backend.matches_digest(
-            Prehash::new(&self.backend, digest.identity(), digest.as_bytes()),
-            expected,
-            work,
-        )
+        self.backend.matches(identity, output, expected, work)
+    }
+}
+
+impl<'a, P: AsnDigest<'a>> AsnDigest<'a> for ProviderSession<P> {
+    fn identity(&self, algorithm: Algorithm) -> Option<Self::Identity> {
+        self.backend.identity(algorithm)
     }
 }
 

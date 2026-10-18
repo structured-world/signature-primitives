@@ -1,13 +1,15 @@
 //! Public DSS corpus decoded by shared code and independent XML/CMS/OCSP oracles.
 //! XML signature/archive coverage and trust are not fabricated by this harness.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{cmp::Ordering, path::PathBuf, sync::Arc};
 use structured_asn1::{
     Parser, Tag,
-    memory::{Memory, MemoryAccount},
+    digest::Resolution,
+    memory::{Memory, MemoryAccount, Work},
     universal,
 };
 use structured_cms::timestamp::Token;
+use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 use structured_pkix::{Certificate, ocsp};
 
 #[path = "../../crates/structured-xades/tests/containers.rs"]
@@ -179,37 +181,53 @@ fn independent_signing_certificates_bind_each_signer() {
 }
 
 /// SHA-1 for the OCSP identities only: RFC6960 §4.2.1 imposes it for
-/// `ResponderID` byKey, and this fixture's `CertID` names it explicitly.
+/// `ResponderID` byKey, and this fixture's `CertID` names it explicitly. The
+/// shared ASN.1 resolver reads the fixture's identifier and NULL parameters.
 struct Sha1;
 
-impl ocsp::Digest for Sha1 {
-    type Handle = ();
+impl structured_asn1::digest::Digest<'_> for Sha1 {
+    type Identity = ();
+    type State = sha1::Sha1;
+    type Output = Vec<u8>;
     type Error = &'static str;
-    fn resolve(
-        &self,
-        algorithm: ocsp::DigestAlgorithm<'_>,
-        _: &Memory,
-    ) -> Result<Option<ocsp::ResolvedDigest<()>>, Self::Error> {
-        // SHA-1 AlgorithmIdentifier with NULL parameters, as the fixture encodes it.
-        const SHA1: &[u8] = &[0x30, 9, 6, 5, 0x2b, 14, 3, 2, 26, 5, 0];
-        let supported = match algorithm {
-            ocsp::DigestAlgorithm::Sha1 => true,
-            ocsp::DigestAlgorithm::Identifier(identifier) => identifier.as_bytes() == SHA1,
-        };
-        Ok(supported.then(|| ocsp::ResolvedDigest {
-            handle: (),
-            width: core::num::NonZeroUsize::new(20).unwrap(),
-        }))
+    fn width(&self, (): &()) -> Option<usize> {
+        Some(20)
     }
-    fn matches(
-        &self,
-        (): (),
-        input: &[u8],
-        expected: &[u8],
-        _: &Memory,
-    ) -> Result<bool, Self::Error> {
+    fn compare<W: Work>(&self, (): &(), (): &(), _: &W) -> Result<Ordering, Self::Error> {
+        Ok(Ordering::Equal)
+    }
+    fn start<W: Work>(&self, (): &(), _: &W) -> Result<Resolution<sha1::Sha1>, Self::Error> {
         use sha1::Digest;
-        Ok(sha1::Sha1::digest(input).as_slice() == expected)
+        Ok(Resolution::Supported(sha1::Sha1::new()))
+    }
+    fn update<W: Work>(
+        &self,
+        state: &mut sha1::Sha1,
+        input: &[u8],
+        _: &W,
+    ) -> Result<(), Self::Error> {
+        use sha1::Digest;
+        state.update(input);
+        Ok(())
+    }
+    fn finish<W: Work>(&self, state: sha1::Sha1, _: &W) -> Result<Vec<u8>, Self::Error> {
+        use sha1::Digest;
+        Ok(state.finalize().to_vec())
+    }
+    fn matches<W: Work>(
+        &self,
+        (): &(),
+        output: &Vec<u8>,
+        expected: &[u8],
+        _: &W,
+    ) -> Result<bool, Self::Error> {
+        Ok(output.as_slice() == expected)
+    }
+}
+
+impl AsnDigest<'_> for Sha1 {
+    fn identity(&self, algorithm: Algorithm) -> Option<()> {
+        (algorithm == Algorithm::Sha1).then_some(())
     }
 }
 

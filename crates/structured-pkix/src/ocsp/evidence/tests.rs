@@ -1,13 +1,35 @@
 use super::*;
+use crate::algorithm::digest::{Algorithm, AsnDigest};
 use crate::fixtures::{
     CertificateParts, bits, context, extension, generalized_time, octets, seq, tlv,
 };
-use crate::ocsp::{
-    AuthorityBinding, AuthoritySource, DigestAlgorithm, ResolvedDigest, SignatureAuthentication,
-};
+use crate::ocsp::{AuthorityBinding, AuthoritySource, SignatureAuthentication};
 use crate::path::{Verified, Verify, WorkingKey};
-use core::{cell::Cell, num::NonZeroUsize};
+use core::cell::Cell;
+use core::cmp::Ordering;
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::{BitString, Parser};
+
+// Output markers: which original input a state hashed.
+const NAME: [u8; 1] = [1];
+const KEY: [u8; 1] = [2];
+
+/// The hashed input, compared by address with the original name or key bits.
+fn marker(name: &[u8], key: &[u8], input: &[u8]) -> [u8; 1] {
+    if input.as_ptr() == name.as_ptr() {
+        assert_eq!(input, name);
+        NAME
+    } else {
+        assert_eq!(input.as_ptr(), key.as_ptr());
+        assert_eq!(input, key);
+        KEY
+    }
+}
+
+/// The `CertID` name hash is `0x11` octets; every key hash is something else.
+fn expected_marker(expected: &[u8]) -> [u8; 1] {
+    if expected == [0x11; 20] { NAME } else { KEY }
+}
 
 struct Provider<'a> {
     key: &'a [u8],
@@ -17,38 +39,59 @@ struct Provider<'a> {
     hashes: Cell<usize>,
     fail: Cell<bool>,
 }
-impl<E: Work> Digest<E> for Provider<'_> {
-    type Handle = ();
+impl Digest<'_> for Provider<'_> {
+    type Identity = Algorithm;
+    type State = [u8; 1];
+    type Output = [u8; 1];
     type Error = &'static str;
-    fn resolve(
+    fn width(&self, _: &Algorithm) -> Option<usize> {
+        None
+    }
+    fn compare<W: Work>(
         &self,
-        _: DigestAlgorithm<'_>,
-        _: &E,
-    ) -> core::result::Result<Option<ResolvedDigest<()>>, Self::Error> {
+        l: &Algorithm,
+        r: &Algorithm,
+        _: &W,
+    ) -> core::result::Result<Ordering, Self::Error> {
+        Ok(l.cmp(r))
+    }
+    fn start<W: Work>(
+        &self,
+        _: &Algorithm,
+        _: &W,
+    ) -> core::result::Result<Resolution<[u8; 1]>, Self::Error> {
         if self.fail.get() {
             return Err("hash refusal");
         }
-        Ok(Some(ResolvedDigest {
-            handle: (),
-            width: NonZeroUsize::new(20).unwrap(),
-        }))
+        Ok(Resolution::Supported([0]))
     }
-    fn matches(
+    fn update<W: Work>(
         &self,
-        (): (),
+        state: &mut [u8; 1],
         input: &[u8],
-        expected: &[u8],
-        _: &E,
-    ) -> core::result::Result<bool, Self::Error> {
+        _: &W,
+    ) -> core::result::Result<(), Self::Error> {
         self.hashes.set(self.hashes.get() + 1);
-        let original = if expected == [0x11; 20] {
-            self.name
-        } else {
-            self.key
-        };
-        assert_eq!(input.as_ptr(), original.as_ptr());
-        assert_eq!(input, original);
+        *state = marker(self.name, self.key, input);
+        Ok(())
+    }
+    fn finish<W: Work>(&self, state: [u8; 1], _: &W) -> core::result::Result<[u8; 1], Self::Error> {
+        Ok(state)
+    }
+    fn matches<W: Work>(
+        &self,
+        _: &Algorithm,
+        output: &[u8; 1],
+        expected: &[u8],
+        _: &W,
+    ) -> core::result::Result<bool, Self::Error> {
+        assert_eq!(*output, expected_marker(expected));
         Ok(true)
+    }
+}
+impl AsnDigest<'_> for Provider<'_> {
+    fn identity(&self, algorithm: Algorithm) -> Option<Algorithm> {
+        Some(algorithm)
     }
 }
 impl Verify for Provider<'_> {
@@ -79,7 +122,7 @@ fn inspect(
     }
     .build();
     let id = seq(&[
-        target_parts.outer_algorithm.clone(),
+        crate::fixtures::algorithm(crate::oid::SHA1),
         octets(&[0x11; 20]),
         octets(&[0x22; 20]),
         target_parts.serial.clone(),
@@ -253,10 +296,9 @@ fn composed_evidence_retains_policy_facts_and_original_ranges_without_reverifica
             nonce: RequestNonce::new(&[0x61; 32]),
             intended_signer: Some(source.signed().signer()),
         };
-        let TargetEvidence::Evidence(evidence) =
-            source.evaluate(&request, &time, provider).unwrap()
-        else {
-            panic!("target evidence refused");
+        let outcome = source.evaluate(&request, &time, provider).unwrap();
+        let TargetEvidence::Evidence(evidence) = outcome else {
+            panic!("target evidence refused: {outcome:?}");
         };
         assert_eq!(evidence.nonce(), NonceBinding::Matches);
         assert_eq!(evidence.recipient(), RecipientBinding::Matches);
@@ -325,46 +367,69 @@ fn duplicate_identity_provider_and_resource_refusals_never_become_missing_or_goo
     });
 }
 
+/// Charges every hash to the current query; `resolve_cost` is spent at start.
+struct ScopedDigest<'a, 'b> {
+    original: &'a Provider<'b>,
+    resolve_cost: u64,
+}
+impl Digest<'_> for ScopedDigest<'_, '_> {
+    type Identity = Algorithm;
+    type State = [u8; 1];
+    type Output = [u8; 1];
+    type Error = structured_asn1::memory::MemoryError;
+    fn width(&self, _: &Algorithm) -> Option<usize> {
+        None
+    }
+    fn compare<W: Work>(
+        &self,
+        l: &Algorithm,
+        r: &Algorithm,
+        _: &W,
+    ) -> core::result::Result<Ordering, Self::Error> {
+        Ok(l.cmp(r))
+    }
+    fn start<W: Work>(
+        &self,
+        _: &Algorithm,
+        execution: &W,
+    ) -> core::result::Result<Resolution<[u8; 1]>, Self::Error> {
+        execution.charge_work(self.resolve_cost)?;
+        Ok(Resolution::Supported([0]))
+    }
+    fn update<W: Work>(
+        &self,
+        state: &mut [u8; 1],
+        input: &[u8],
+        execution: &W,
+    ) -> core::result::Result<(), Self::Error> {
+        execution.charge_work(input.len() as u64)?;
+        *state = marker(self.original.name, self.original.key, input);
+        Ok(())
+    }
+    fn finish<W: Work>(&self, state: [u8; 1], _: &W) -> core::result::Result<[u8; 1], Self::Error> {
+        Ok(state)
+    }
+    fn matches<W: Work>(
+        &self,
+        _: &Algorithm,
+        output: &[u8; 1],
+        expected: &[u8],
+        _: &W,
+    ) -> core::result::Result<bool, Self::Error> {
+        Ok(*output == expected_marker(expected))
+    }
+}
+impl AsnDigest<'_> for ScopedDigest<'_, '_> {
+    fn identity(&self, algorithm: Algorithm) -> Option<Algorithm> {
+        Some(algorithm)
+    }
+}
+
 #[test]
 fn scoped_ocsp_evaluation_funds_lazy_nonce_lookup_callbacks_and_utc() {
     // Authentication was established from the original source. A subsequent
     // query must preserve its own operation ceilings through every deferred
     // component, without charging the earlier source's aggregate domain.
-    struct ScopedDigest<'a, 'b> {
-        original: &'a Provider<'b>,
-        resolve_cost: u64,
-    }
-    impl<E: Work> Digest<E> for ScopedDigest<'_, '_> {
-        type Handle = ();
-        type Error = structured_asn1::memory::MemoryError;
-        fn resolve(
-            &self,
-            _: DigestAlgorithm<'_>,
-            execution: &E,
-        ) -> core::result::Result<Option<ResolvedDigest<()>>, Self::Error> {
-            execution.charge_work(self.resolve_cost)?;
-            Ok(Some(ResolvedDigest {
-                handle: (),
-                width: NonZeroUsize::new(20).unwrap(),
-            }))
-        }
-        fn matches(
-            &self,
-            (): (),
-            input: &[u8],
-            expected: &[u8],
-            execution: &E,
-        ) -> core::result::Result<bool, Self::Error> {
-            execution.charge_work(input.len() as u64)?;
-            let original = if expected == [0x11; 20] {
-                self.original.name
-            } else {
-                self.original.key
-            };
-            assert_eq!(input.as_ptr(), original.as_ptr());
-            Ok(input == original)
-        }
-    }
     inspect(false, |source, target, provider, original| {
         let retained = original.execution.used();
         let old_work = original.execution.work_used();

@@ -11,8 +11,9 @@ use crate::{
     scalar::TextXml,
     xml::{Access, AccessError, Xml},
 };
-use structured_asn1::{Reader, memory::Execution};
-use structured_pkix::ocsp::{Digest, ResponderMatch, SignedResponse};
+use structured_asn1::Reader;
+use structured_pkix::algorithm::digest::AsnDigest;
+use structured_pkix::ocsp::{ResponderMatch, SignedResponse};
 
 /// Completed identifier facts, separate from whole-response digest, target
 /// authorization, status usability, actual participant use and incorporation.
@@ -87,17 +88,17 @@ pub type OcspReferenceResult<X, PE> = Result<
 /// # Panics
 /// Only if an immutable privately constructed reference changes its selector
 /// kind between the original field selection and the same field kernel.
-pub fn check_ocsp_reference<X, D, PE>(
+pub fn check_ocsp_reference<'k, X, D, PE>(
     xml: &X,
     references: &ReferenceProperty<X::Id, X::Document, X::Generation>,
     index: usize,
     signed: SignedResponse<'_, '_>,
-    digest: &D,
+    digest: &'k D,
     operation: &Reader<'_>,
 ) -> OcspReferenceResult<X, PE>
 where
     X: BinaryXml + TextXml + CalendarXml,
-    D: for<'work> Digest<Execution<'work>, Error = PE>,
+    D: AsnDigest<'k, Error = PE>,
 {
     let work = operation.execution();
     let access = Access::new(xml, references.snapshot(), &work);

@@ -19,7 +19,7 @@ const DATA: &str = "ocspResponse.responseData";
 const SINGLE: &str = "ocspResponse.singleResponse";
 
 mod digest;
-pub use digest::{CertMatch, Digest, DigestAlgorithm, ResolvedDigest, ResponderMatch};
+pub use digest::{CertMatch, ResponderMatch};
 
 mod nonce;
 pub use nonce::{NonceBinding, NonceSizeError, RequestNonce};

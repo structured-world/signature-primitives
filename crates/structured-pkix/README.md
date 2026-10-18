@@ -273,11 +273,24 @@ For OCSP, read the response envelope and move successful `ResponseBytes` into
 `into_basic(&execution)`. Deferred parsing keeps the original reader's offsets,
 depth and cumulative work ceiling. Unsigned error responses remain distinct
 from a signed BasicResponse. `authenticate_signature` checks the actual signer,
-ResponderID and exact ResponseData with injected `Digest` and `path::Verify`.
-Digest providers resolve an algorithm to a handle and fixed output width, then
-compare original input bytes with the expected digest. Incorrect widths are
-rejected before hashing. Protocol-imposed SHA-1 for byKey identity is separate
-from the CertID's original algorithm identifier.
+ResponderID and exact ResponseData with an injected `algorithm::digest::AsnDigest`
+provider and `path::Verify`. The CertID's written hash identifier resolves
+through the shared ASN.1 digest resolver; the SHA-1 that RFC 6960 §4.2.1 imposes
+for byKey identity needs no written identifier. Incorrect widths are rejected
+before hashing, and an identifier with parameters its hash does not take is
+reported apart from an unsupported one.
+
+## Digest identifiers
+
+`algorithm::digest::algorithm(&identifier, &execution)` names the standard
+digest an `AlgorithmIdentifier` writes (SHA-1 and the SHA-2 family). Absent and
+NULL parameters both mean none, with NULL validated under the encoding of the
+document it came from, so a BER long-form NULL is still NULL. Any other
+parameter of a known identifier is `Malformed`; an identifier the table does not
+know is `Unsupported`; a spent ceiling is an error. `resolve` then asks the
+provider's `AsnDigest::identity` for its own identity, and execution runs through
+the shared `structured_asn1::digest::Digest` contract. OCSP and CMS use this one
+resolver.
 
 Bind a signed response to its issuer using `bind_issuer`, or to completed direct
 delegation facts using `check_delegate` and `bind_delegate`. Direct delegation

@@ -2,14 +2,13 @@
 
 use core::{cell::Cell, cmp::Ordering, marker::PhantomData};
 use std::{rc::Rc, sync::Arc};
+use structured_asn1::digest::Resolution;
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, Work};
 use structured_asn1::{Encoding, Parser, Reader};
 use structured_cms::Octets;
-use structured_cms::provider::{
-    DigestAlgorithm, DigestProvider, Prehash, Resolution, SignatureAnswer, SignatureMode,
-    SignatureProvider,
-};
+use structured_cms::provider::{Prehash, SignatureAnswer, SignatureMode, SignatureProvider};
 use structured_cms::signer::SignerInfo;
+use structured_pkix::algorithm::digest::{self, Algorithm, AsnDigest};
 use structured_pkix::path::WorkingKey;
 use structured_pkix::{AlgorithmIdentifier, PublicKeyInfo};
 
@@ -37,34 +36,16 @@ struct Frame<'a> {
     marker: PhantomData<Rc<()>>,
 }
 
-impl<'a> DigestProvider<'a> for Provider {
-    type Error = MemoryError;
+/// SHA-256 with absent parameters, which this provider maps to its synthetic
+/// one-byte checksum; the routing is under test, not the hash.
+const DIGEST: [u8; 13] = [0x30, 11, 6, 9, 0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 1];
+
+impl structured_asn1::digest::Digest<'_> for Provider {
     type Identity = ();
     type State = Digest;
     type Output = [u8; 1];
-    fn resolve_digest(
-        &'a self,
-        identifier: DigestAlgorithm<'a>,
-        _encoding: Encoding,
-        parent: &Reader<'a>,
-    ) -> Result<Resolution<()>, MemoryError> {
-        parent.execution().charge_work(2)?;
-        if self.refuse_resolution.get() {
-            return Err(MemoryError::WorkExceeded);
-        }
-        self.digest_resolutions
-            .set(self.digest_resolutions.get() + 1);
-        let DigestAlgorithm::Written(identifier) = identifier else {
-            // This selected synthetic backend does not implement ESS defaults;
-            // schema identity never grants support by changing the mechanism.
-            return Ok(Resolution::Unsupported);
-        };
-        if self.unsupported_digest.get() || identifier.algorithm().as_bytes() != [42] {
-            return Ok(Resolution::Unsupported);
-        }
-        Ok(Resolution::Supported(()))
-    }
-    fn compare_digest<W: Work>(
+    type Error = MemoryError;
+    fn compare<W: Work>(
         &self,
         _left: &(),
         _right: &(),
@@ -76,19 +57,19 @@ impl<'a> DigestProvider<'a> for Provider {
         }
         Ok(Ordering::Equal)
     }
-    fn digest_width(&self, _identity: &()) -> Option<usize> {
+    fn width(&self, _identity: &()) -> Option<usize> {
         Some(1)
     }
-    fn start_digest<W: Work>(
-        &'a self,
+    fn start<W: Work>(
+        &self,
         _identity: &(),
         execution: &W,
-    ) -> Result<Digest, MemoryError> {
+    ) -> Result<Resolution<Digest>, MemoryError> {
         execution.charge_work(1)?;
         self.digest_starts.set(self.digest_starts.get() + 1);
-        Ok(Digest(0, PhantomData))
+        Ok(Resolution::Supported(Digest(0, PhantomData)))
     }
-    fn update_digest<W: Work>(
+    fn update<W: Work>(
         &self,
         state: &mut Digest,
         bytes: &[u8],
@@ -101,26 +82,52 @@ impl<'a> DigestProvider<'a> for Provider {
         }
         Ok(())
     }
-    fn finish_digest<W: Work>(&self, state: Digest, execution: &W) -> Result<[u8; 1], MemoryError> {
+    fn finish<W: Work>(&self, state: Digest, execution: &W) -> Result<[u8; 1], MemoryError> {
         execution.charge_work(1)?;
         self.digest_finishes.set(self.digest_finishes.get() + 1);
         Ok([state.0])
     }
 
-    fn matches_digest<W: Work>(
+    fn matches<W: Work>(
         &self,
-        digest: Prehash<'_, '_, Self, ()>,
+        _identity: &(),
+        output: &[u8; 1],
         expected: &[u8],
         execution: &W,
     ) -> Result<bool, MemoryError> {
         execution.charge_work(1)?;
-        let bytes = digest.as_bytes();
-        if bytes.len() != expected.len() {
+        if output.len() != expected.len() {
             return Ok(false);
         }
-        execution.charge_work(bytes.len() as u64)?;
-        Ok(bytes == expected)
+        execution.charge_work(output.len() as u64)?;
+        Ok(output.as_slice() == expected)
     }
+}
+
+impl AsnDigest<'_> for Provider {
+    fn identity(&self, algorithm: Algorithm) -> Option<()> {
+        self.digest_resolutions
+            .set(self.digest_resolutions.get() + 1);
+        (!self.unsupported_digest.get() && algorithm == Algorithm::Sha256).then_some(())
+    }
+}
+
+/// The shared ASN.1 resolver supports a signer's written digest identifier.
+fn assert_digest_supported(provider: &Provider, signer: &SignerInfo<'_>, parent: &Reader<'_>) {
+    let identifier = signer.digest_algorithm().identifier().unwrap();
+    assert_eq!(
+        digest::resolve(provider, &identifier, &parent.execution()).unwrap(),
+        Resolution::Supported(()),
+        "fixture digest is supported"
+    );
+}
+
+/// A direct signer over SHA-256 and the synthetic `signature` mechanism.
+fn signer_case(signature: u8, octet: u8) -> Vec<u8> {
+    let mut bytes = vec![0x30, 27, 2, 1, 3, 0x80, 1, 7];
+    bytes.extend_from_slice(&DIGEST);
+    bytes.extend_from_slice(&[0x30, 3, 6, 1, signature, 4, 1, octet]);
+    bytes
 }
 
 impl<'a> SignatureProvider<'a> for Provider {
@@ -135,6 +142,9 @@ impl<'a> SignatureProvider<'a> for Provider {
         parent: &Reader<'a>,
     ) -> Result<Resolution<SignatureMode<()>>, MemoryError> {
         parent.execution().charge_work(2)?;
+        if self.refuse_resolution.get() {
+            return Err(MemoryError::WorkExceeded);
+        }
         self.signature_resolutions
             .set(self.signature_resolutions.get() + 1);
         // These synthetic signature mechanisms deliberately differ by input mode.
@@ -235,20 +245,11 @@ fn operation<'a>(
 ) -> SignatureAnswer {
     // The descriptor is passed by value. The native-like frame borrows the
     // stable operation-local signature catalogue/provider, never Reader/Work.
-    let Resolution::Supported(identity) = provider
-        .resolve_digest(
-            DigestAlgorithm::Written(signer.digest_algorithm().identifier().unwrap()),
-            signer.encoding(),
-            parent,
-        )
-        .unwrap()
-    else {
-        panic!("fixture digest is supported");
-    };
+    assert_digest_supported(provider, signer, parent);
     let Resolution::Supported(SignatureMode::Raw(signature)) = provider
         .resolve_signature(
             signer.signature_algorithm().identifier().unwrap(),
-            &identity,
+            &(),
             key,
             signer.encoding(),
             parent,
@@ -275,9 +276,7 @@ fn raw_frame_borrows_stack_local_decoded_signer_without_self_reference_or_copy()
     // cloned signature catalogue, Send/Sync provider or escaped parser borrow.
     let memory = Memory::new(Arc::new(MemoryAccount::new(65536, 65536)));
     let parser = Parser::ber(memory.clone());
-    let encoded = [
-        0x30, 19, 2, 1, 3, 0x80, 1, 7, 0x30, 3, 6, 1, 42, 0x30, 3, 6, 1, 43, 4, 1, 195,
-    ];
+    let encoded = signer_case(43, 195);
     let mut reader = parser.read(&encoded, 400).unwrap();
     let element = reader.next_element().unwrap().unwrap();
     let signer = SignerInfo::read(&reader, &element).unwrap();
@@ -351,16 +350,8 @@ fn prepare_payload<'a>(
     let mut digests = parent.execution().vector();
     let mut raw = parent.execution().vector();
     for _ in 0..2 {
-        let Resolution::Supported(digest) = provider
-            .resolve_digest(
-                DigestAlgorithm::Written(signer.digest_algorithm().identifier().unwrap()),
-                signer.encoding(),
-                parent,
-            )
-            .unwrap()
-        else {
-            panic!("fixture digest is supported");
-        };
+        assert_digest_supported(provider, signer, parent);
+        let digest = ();
         let Resolution::Supported(SignatureMode::Raw(identity)) = provider
             .resolve_signature(
                 signer.signature_algorithm().identifier().unwrap(),
@@ -397,7 +388,7 @@ fn malformed_signer_algorithms_refuse_before_any_provider_callback() {
     // A valid digest followed by a malformed signature must not resolve even
     // the digest: both syntax gates precede every provider side effect.
     let malformed = [0x30, 6, 6, 2, 42, 3, 0x25, 0];
-    let digest = [0x30, 3, 6, 1, 42];
+    let digest = DIGEST;
     let signature = [0x30, 3, 6, 1, 43];
     for (digest, signature, fault_field) in [
         (
@@ -484,9 +475,7 @@ fn shared_pass_finishes_raw_and_digest_once_only_after_complete_eof() {
     // frames. The synthetic checksum only checks routing, not cryptography.
     let memory = Memory::new(Arc::new(MemoryAccount::new(65536, 65536)));
     let parser = Parser::ber(memory.clone());
-    let encoded = [
-        0x30, 19, 2, 1, 3, 0x80, 1, 7, 0x30, 3, 6, 1, 42, 0x30, 3, 6, 1, 43, 4, 1, 195,
-    ];
+    let encoded = signer_case(43, 195);
     let mut reader = parser.read(&encoded, 400).unwrap();
     let element = reader.next_element().unwrap().unwrap();
     let signer = SignerInfo::read(&reader, &element).unwrap();
@@ -615,9 +604,7 @@ fn preflight_resolves_inputs_but_keeps_unsupported_and_resource_distinct() {
     use structured_cms::prepare::{self, Part, Preparation, PrepareError};
     let memory = Memory::new(Arc::new(MemoryAccount::new(65536, 65536)));
     let parser = Parser::ber(memory);
-    let encoded = [
-        0x30, 19, 2, 1, 3, 0x80, 1, 7, 0x30, 3, 6, 1, 42, 0x30, 3, 6, 1, 43, 4, 1, 195,
-    ];
+    let encoded = signer_case(43, 195);
     let mut reader = parser.read(&encoded, 400).unwrap();
     let element = reader.next_element().unwrap().unwrap();
     let signer = SignerInfo::read(&reader, &element).unwrap();
@@ -660,6 +647,7 @@ fn preflight_resolves_inputs_but_keeps_unsupported_and_resource_distinct() {
         Preparation::Unsupported(Part::Digest)
     ));
     assert_eq!(provider.signature_resolutions.get(), 1);
+    provider.unsupported_digest.set(false);
     provider.refuse_resolution.set(true);
     assert!(matches!(
         prepare::resolve(
@@ -670,7 +658,7 @@ fn preflight_resolves_inputs_but_keeps_unsupported_and_resource_distinct() {
             Scope::Content(structured_cms::oid::DATA)
         ),
         Err(PrepareError::Callback {
-            part: Part::Digest,
+            part: Part::Signature,
             source: MemoryError::WorkExceeded
         })
     ));
@@ -711,11 +699,12 @@ fn binding_fixture(digest: Option<&[u8]>, protected_signature: Option<u8>) -> Ve
     if let Some(signature) = protected_signature {
         attributes.push(attribute(
             structured_cms::oid::ALGORITHM_PROTECTION,
-            &[0x30, 10, 0x30, 3, 6, 1, 42, 0xa1, 3, 6, 1, signature],
+            &[&[0x30, 18][..], &DIGEST, &[0xa1, 3, 6, 1, signature]].concat(),
         ));
     }
     attributes.sort();
-    let mut contents = vec![2, 1, 3, 0x80, 1, 7, 0x30, 3, 6, 1, 42];
+    let mut contents = vec![2, 1, 3, 0x80, 1, 7];
+    contents.extend_from_slice(&DIGEST);
     contents.extend(tlv(0xa0, &attributes.concat()));
     contents.extend_from_slice(&[0x30, 3, 6, 1, 43, 4, 1, 195]);
     tlv(0x30, &contents)
@@ -743,21 +732,9 @@ fn copied_registered_attributes_still_refuse_strict_preparation_before_provider(
     let mut attribute = vec![0x30, u8::try_from(content_type.len()).unwrap()];
     attribute.extend(content_type);
     let attributes = attribute.repeat(2);
-    let mut fields = vec![
-        2,
-        1,
-        3,
-        0x80,
-        1,
-        7,
-        0x30,
-        3,
-        6,
-        1,
-        42,
-        0xa0,
-        u8::try_from(attributes.len()).unwrap(),
-    ];
+    let mut fields = vec![2, 1, 3, 0x80, 1, 7];
+    fields.extend_from_slice(&DIGEST);
+    fields.extend([0xa0, u8::try_from(attributes.len()).unwrap()]);
     fields.extend(attributes);
     fields.extend([0x30, 3, 6, 1, 43, 4, 1, 8]);
     let mut encoded = vec![0x30, u8::try_from(fields.len()).unwrap()];
@@ -806,7 +783,8 @@ fn empty_signed_or_unsigned_attributes_refuse_before_every_provider_callback() {
     let key =
         WorkingKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
     for (signed, unsigned) in [(true, false), (false, true), (true, true)] {
-        let mut fields = vec![2, 1, 3, 0x80, 1, 7, 0x30, 3, 6, 1, 42];
+        let mut fields = vec![2, 1, 3, 0x80, 1, 7];
+        fields.extend_from_slice(&DIGEST);
         if signed {
             fields.extend([0xa0, 0]);
         }
@@ -831,7 +809,7 @@ fn empty_signed_or_unsigned_attributes_refuse_before_every_provider_callback() {
             panic!("empty set must refuse");
         };
         assert_eq!(error.code(), ErrorCode::EmptyAttributes);
-        assert_eq!(error.offset(), if signed { 713 } else { 721 });
+        assert_eq!(error.offset(), if signed { 721 } else { 729 });
         assert_eq!(provider.digest_resolutions.get(), 0);
         assert_eq!(provider.signature_resolutions.get(), 0);
         assert_eq!(provider.digest_starts.get(), 0);
@@ -932,9 +910,7 @@ fn protection_uses_selected_semantics_and_never_downgrades_raw_to_prehash() {
 }
 
 fn direct_case(signature: u8) -> Vec<u8> {
-    vec![
-        0x30, 19, 2, 1, 3, 0x80, 1, 7, 0x30, 3, 6, 1, 42, 0x30, 3, 6, 1, signature, 4, 1, 195,
-    ]
+    signer_case(signature, 195)
 }
 
 fn parameter_signer_case(parameter: &[u8], signature: u8, octet: u8) -> Vec<u8> {
@@ -946,11 +922,9 @@ fn parameter_signer_case(parameter: &[u8], signature: u8, octet: u8) -> Vec<u8> 
         1,
         7,
         0x30,
-        u8::try_from(3 + parameter.len()).unwrap(),
-        6,
-        1,
-        42,
+        u8::try_from(DIGEST.len() - 2 + parameter.len()).unwrap(),
     ];
+    inside.extend_from_slice(&DIGEST[2..]);
     inside.extend_from_slice(parameter);
     inside.extend_from_slice(&[0x30, 3, 6, 1, signature, 4, 1, octet]);
     let mut bytes = vec![0x30, u8::try_from(inside.len()).unwrap()];
@@ -960,9 +934,10 @@ fn parameter_signer_case(parameter: &[u8], signature: u8, octet: u8) -> Vec<u8> 
 
 #[test]
 fn prepared_duplicate_comparison_uses_resolved_identities_without_resolution_or_hashing() {
-    // The synthetic resolver deliberately maps its accepted parameter spellings
-    // to one opaque identity. Common comparison must use that identity instead
-    // of raw TLVs, while preserving mode/signature bytes and provider instance.
+    // The shared resolver maps absent, DER NULL and BER long-form NULL SHA-256
+    // parameters to one identity (RFC 5754 §2). Common comparison uses the
+    // resolved identities, while preserving mode/signature bytes and provider
+    // instance, without resolving or hashing again.
     use structured_cms::prepare::{Part, PrepareError};
     let memory = Memory::new(Arc::new(MemoryAccount::new(1_000_000, 1_000_000)));
     let parser = Parser::ber(memory.clone());
@@ -991,7 +966,8 @@ fn prepared_duplicate_comparison_uses_resolved_identities_without_resolution_or_
     let provider = Provider::default();
     let other = Provider::default();
     let ready = ready_requests(&provider, &signers, key, &parent);
-    assert!(!signers[0].same_value(&signers[1], &parent).unwrap());
+    // Encoded comparison applies the same SHA-2 rule, so it already agrees.
+    assert!(signers[0].same_value(&signers[1], &parent).unwrap());
     let resolves = (
         provider.digest_resolutions.get(),
         provider.signature_resolutions.get(),

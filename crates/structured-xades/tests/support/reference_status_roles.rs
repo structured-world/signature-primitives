@@ -455,14 +455,7 @@ fn assert_crl_roles(
             );
         }
     }
-    assert_eq!(
-        (
-            provider.started.get(),
-            provider.finished.get(),
-            provider.one_shot.get()
-        ),
-        (3, 3, 0)
-    );
+    assert_eq!((provider.started.get(), provider.finished.get()), (3, 3));
     drop(report);
     assert_eq!(query.used(), 0);
     assert_eq!(storage.used(), held);
@@ -692,12 +685,8 @@ fn check_ocsp_graph(
         }
         let hashes = usize::from(include_envelope);
         assert_eq!(
-            (
-                provider.started.get(),
-                provider.finished.get(),
-                provider.one_shot.get()
-            ),
-            (hashes, hashes, 0)
+            (provider.started.get(), provider.finished.get()),
+            (hashes, hashes)
         );
         drop(report);
         assert_eq!(query.used(), 0);
@@ -903,12 +892,8 @@ fn assert_credential_reference_set(
     }
     let hashes = if absent { 0 } else { 2 };
     assert_eq!(
-        (
-            provider.started.get(),
-            provider.finished.get(),
-            provider.one_shot.get()
-        ),
-        (hashes, hashes, 0)
+        (provider.started.get(), provider.finished.get()),
+        (hashes, hashes)
     );
     drop(report);
     assert_eq!(query.used(), 0);

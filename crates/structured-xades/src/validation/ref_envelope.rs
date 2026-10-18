@@ -7,18 +7,18 @@ use super::{
 };
 use crate::{
     binary::{self, BinaryXml},
-    certificate::Agreement,
-    digest::StreamingDigest,
+    certificate::{Agreement, DigestProvider},
     properties::CalendarXml,
     scalar::TextXml,
     xml::{Access, AccessError, Xml},
 };
 use structured_asn1::{
     Reader,
-    memory::{Execution, MemoryError, Work},
+    memory::{MemoryError, Work},
 };
 use structured_pkix::{
-    ocsp::{Digest, ResponderMatch, ResponseBytes, SignedResponse},
+    algorithm::digest::AsnDigest,
+    ocsp::{ResponderMatch, ResponseBytes, SignedResponse},
     oid,
 };
 
@@ -188,19 +188,19 @@ pub(super) fn envelope_contains<W: Work>(
 /// This is not issuer authorization, freshness, status applicability, presence,
 /// actor membership, substitution-resistant acquisition policy or a grade.
 /// None means the original reference has a different kind, never agreement.
-pub fn check_ocsp_envelope_reference<'r, 'e, 's, 'd, X, K, P, KP>(
+pub fn check_ocsp_envelope_reference<'r, 'e, 's, 'd, 'k, 'q, X, K, P, KP>(
     xml: &X,
     references: &'r ReferenceProperty<X::Id, X::Document, X::Generation>,
     index: usize,
     actual: OcspReferenceInput<'e, 's, 'd>,
-    key_digest: &K,
-    provider: &P,
+    key_digest: &'k K,
+    provider: &'q P,
     operation: &Reader<'_>,
 ) -> OcspEnvelopeResult<'r, 'e, 's, 'd, X, KP, P::Error>
 where
     X: BinaryXml + CalendarXml + TextXml,
-    K: for<'work> Digest<Execution<'work>, Error = KP>,
-    P: StreamingDigest<X>,
+    K: AsnDigest<'k, Error = KP>,
+    P: DigestProvider<'q, X>,
 {
     let work = operation.execution();
     let access = Access::new(xml, references.snapshot(), &work);

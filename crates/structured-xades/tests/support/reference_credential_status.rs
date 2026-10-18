@@ -291,12 +291,8 @@ fn check_report(
             _ => 3,
         };
         assert_eq!(
-            (
-                provider.started.get(),
-                provider.finished.get(),
-                provider.one_shot.get()
-            ),
-            (hashes, hashes, 0)
+            (provider.started.get(), provider.finished.get()),
+            (hashes, hashes)
         );
         drop(report);
         assert_eq!(query.used(), 0);

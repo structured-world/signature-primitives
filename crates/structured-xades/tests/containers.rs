@@ -39,8 +39,10 @@ mod reference_timestamps;
 
 use std::{
     cell::{Cell, RefCell},
+    cmp::Ordering,
     sync::Arc,
 };
+use structured_asn1::digest::{Digest, Resolution as DigestResolution};
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, OwnedVec, Work};
 use structured_cms::stream::{self, Receiver, Sink};
 use structured_xades::{
@@ -5982,10 +5984,7 @@ struct WholeCertificate {
     pointer: Cell<usize>,
 }
 
-impl certificate::DigestProvider<Tree> for WholeCertificate {
-    type Identity = ();
-    type Error = MemoryError;
-
+impl certificate::DigestProvider<'_, Tree> for WholeCertificate {
     fn classify(&self, (): &()) -> structured_xades::hashes::HashClass {
         // Scripted non-MD5 capability for byte-flow controls only; this
         // checksum oracle is explicitly not cryptographic qualification.
@@ -5996,7 +5995,7 @@ impl certificate::DigestProvider<Tree> for WholeCertificate {
         &self,
         access: &Access<'_, Tree, W>,
         method: usize,
-    ) -> Result<structured_cms::provider::Resolution<()>, MemoryError> {
+    ) -> Result<DigestResolution<()>, MemoryError> {
         // Test-only resolver: it checks source selection, not real URI policy.
         assert_eq!(method, self.method);
         assert!(
@@ -6011,34 +6010,57 @@ impl certificate::DigestProvider<Tree> for WholeCertificate {
                 .unwrap()
         );
         match self.mode {
-            DigestMode::Available => Ok(structured_cms::provider::Resolution::Supported(())),
-            DigestMode::Unsupported => Ok(structured_cms::provider::Resolution::Unsupported),
-            DigestMode::Malformed => Ok(structured_cms::provider::Resolution::Malformed),
+            DigestMode::Available => Ok(DigestResolution::Supported(())),
+            DigestMode::Unsupported => Ok(DigestResolution::Unsupported),
+            DigestMode::Malformed => Ok(DigestResolution::Malformed),
             DigestMode::Refused => Err(MemoryError::WorkExceeded),
         }
     }
+}
+
+// Deliberate non-cryptographic XOR checksum checks data flow and admission.
+// This test cannot qualify cryptographic math, XML policy or path trust.
+impl Digest<'_> for WholeCertificate {
+    type Identity = ();
+    type State = u8;
+    type Output = [u8; 1];
+    type Error = MemoryError;
 
     fn width(&self, (): &()) -> Option<usize> {
         Some(1)
     }
-
+    fn compare<W: Work>(&self, (): &(), (): &(), _: &W) -> Result<Ordering, MemoryError> {
+        Ok(Ordering::Equal)
+    }
+    fn start<W: Work>(&self, (): &(), _: &W) -> Result<DigestResolution<u8>, MemoryError> {
+        Ok(DigestResolution::Supported(0))
+    }
+    fn update<W: Work>(
+        &self,
+        checksum: &mut u8,
+        certificate: &[u8],
+        execution: &W,
+    ) -> Result<(), MemoryError> {
+        execution.charge_work(u64::try_from(certificate.len()).unwrap())?;
+        self.calls.set(self.calls.get() + 1);
+        self.pointer.set(certificate.as_ptr() as usize);
+        for byte in certificate {
+            *checksum ^= byte;
+        }
+        Ok(())
+    }
+    fn finish<W: Work>(&self, checksum: u8, _: &W) -> Result<[u8; 1], MemoryError> {
+        Ok([checksum])
+    }
     fn matches<W: Work>(
         &self,
         (): &(),
-        certificate: &[u8],
+        output: &[u8; 1],
         expected: &[u8],
         execution: &W,
     ) -> Result<bool, MemoryError> {
-        // Deliberate non-cryptographic checksum checks data flow and admission.
-        // This test cannot qualify cryptographic math, XML policy or path trust.
-        execution.charge_work(u64::try_from(certificate.len() + expected.len()).unwrap())?;
-        self.calls.set(self.calls.get() + 1);
-        self.pointer.set(certificate.as_ptr() as usize);
-        let mut checksum = 0;
-        for byte in certificate {
-            checksum ^= byte;
-        }
-        Ok(expected == [checksum])
+        execution.charge_work(u64::try_from(expected.len()).unwrap())?;
+        Ok(expected == output)
     }
 }
 

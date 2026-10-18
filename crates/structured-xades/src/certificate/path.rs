@@ -90,15 +90,16 @@ pub type PathCheckResult<'view, 'document, X, PE> = super::CertificateResult<
 pub fn check_path<
     'view,
     'document,
+    'p,
     X: BinaryXml + CertificateXml,
-    P: DigestProvider<X>,
+    P: DigestProvider<'p, X>,
     W: Work,
 >(
     xml: &X,
     bound: &crate::binding::Bound<X::Id, X::Document, X::Generation>,
     references: &'view Catalogue<X>,
     path: &'view CheckedPath<'document>,
-    provider: &P,
+    provider: &'p P,
     execution: &W,
 ) -> PathCheckResult<'view, 'document, X, P::Error> {
     let certificate = path
@@ -174,11 +175,11 @@ impl<'view, 'document, N, D, G> PathDigests<'view, 'document, N, D, G> {
 /// # Panics
 /// Only if the private checked-path invariant is violated: accepted paths are
 /// nonempty and their last issuer-to-subject member is the actual target.
-pub fn match_path<'view, 'document, X: BinaryXml, P: DigestProvider<X>, W: Work>(
+pub fn match_path<'view, 'document, 'p, X: BinaryXml, P: DigestProvider<'p, X>, W: Work>(
     xml: &X,
     references: &'view Catalogue<X>,
     path: &'view CheckedPath<'document>,
-    provider: &P,
+    provider: &'p P,
     execution: &W,
 ) -> PathDigestResult<'view, 'document, X, P::Error> {
     let access = Access::new(xml, references.snapshot(), execution);
@@ -252,12 +253,12 @@ pub fn match_path<'view, 'document, X: BinaryXml, P: DigestProvider<X>, W: Work>
     })
 }
 
-fn match_reference<X: Xml, P: DigestProvider<X>, W: Work>(
+fn match_reference<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
     access: &Access<'_, X, W>,
     reference: &super::Reference<X::Id>,
     ordinal: usize,
     path: &CheckedPath<'_>,
-    provider: &P,
+    provider: &'p P,
     expected: &[u8],
 ) -> binary::BinaryResult<PathDigest, X, DigestError<P::Error>> {
     let identity = match super::resolve_expected(access, reference, provider, expected)? {
@@ -306,33 +307,44 @@ fn match_reference<X: Xml, P: DigestProvider<X>, W: Work>(
     }
     for (index, member) in members.iter().enumerate() {
         admit()?;
-        if super::compare_resolved(
+        match super::compare_resolved(
             access,
             reference,
             member.certificate(),
             provider,
             &identity,
             expected,
-        )? == Agreement::Matches
-        {
-            answer.agreement = Agreement::Matches;
-            answer.certificate = Some(PathCertificate::Member(index));
-            return Ok(answer);
+        )? {
+            Agreement::Matches => {
+                answer.agreement = Agreement::Matches;
+                answer.certificate = Some(PathCertificate::Member(index));
+                return Ok(answer);
+            }
+            Agreement::Differs => {}
+            // The provider cannot digest under this identity at all; no later
+            // candidate can change that answer into a mismatch.
+            other => {
+                answer.agreement = other;
+                return Ok(answer);
+            }
         }
     }
     admit()?;
-    if let Some(certificate) = path.anchor().certificate()
-        && super::compare_resolved(
+    if let Some(certificate) = path.anchor().certificate() {
+        let agreement = super::compare_resolved(
             access,
             reference,
             certificate,
             provider,
             &identity,
             expected,
-        )? == Agreement::Matches
-    {
-        answer.agreement = Agreement::Matches;
-        answer.certificate = Some(PathCertificate::Anchor);
+        )?;
+        if agreement != Agreement::Differs {
+            answer.agreement = agreement;
+        }
+        if agreement == Agreement::Matches {
+            answer.certificate = Some(PathCertificate::Anchor);
+        }
     }
     Ok(answer)
 }

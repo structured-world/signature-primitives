@@ -2,14 +2,13 @@
 
 use super::{Cause, DS, Tree, XADES_141, element, funded, renewed_tree};
 use core::{cell::Cell, cmp::Ordering};
-use sha2::{Digest as _, Sha256, Sha384, Sha512_256};
+use sha2::{Digest as _, Sha256};
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{MemoryError, Work};
-use structured_cms::provider::Resolution;
 use structured_xades::{
     binding::{self, Coverage, Reference, Status},
     certificate::DigestProvider,
     container,
-    digest::StreamingDigest,
     reference::{Completeness, ObjectLocation},
     renewed::{self, PairOutcome, State},
     unsigned,
@@ -52,9 +51,7 @@ struct Oracle<'a> {
     refuse_update: bool,
     refuse_start: Option<usize>,
 }
-impl DigestProvider<Tree> for Oracle<'_> {
-    type Identity = Identity;
-    type Error = Failure;
+impl DigestProvider<'_, Tree> for Oracle<'_> {
     fn classify(&self, identity: &Identity) -> structured_xades::hashes::HashClass {
         // Executable oracle identities are SHA2 variants. The MD5 identity is
         // classification-only: every primitive below refuses if it is reached.
@@ -97,6 +94,13 @@ impl DigestProvider<Tree> for Oracle<'_> {
             )
             .map_err(Failure::Access)?
     }
+}
+impl Digest<'_> for Oracle<'_> {
+    type Identity = Identity;
+    // Only SHA-256 streams; the other identities answer `Unsupported` at start.
+    type State = Sha256;
+    type Output = [u8; 32];
+    type Error = Failure;
     fn width(&self, identity: &Identity) -> Option<usize> {
         Some(match identity {
             Identity::Sha256 | Identity::Sha512_256 => 32,
@@ -104,26 +108,6 @@ impl DigestProvider<Tree> for Oracle<'_> {
             Identity::Md5 => 16,
         })
     }
-    fn matches<W: Work>(
-        &self,
-        identity: &Identity,
-        bytes: &[u8],
-        expected: &[u8],
-        work: &W,
-    ) -> Result<bool, Failure> {
-        work.charge_work(bytes.len() as u64 + 64)
-            .map_err(Failure::Resource)?;
-        Ok(match identity {
-            Identity::Sha256 => Sha256::digest(bytes).as_slice() == expected,
-            Identity::Sha384 => Sha384::digest(bytes).as_slice() == expected,
-            Identity::Sha512_256 => Sha512_256::digest(bytes).as_slice() == expected,
-            Identity::Md5 => panic!("prohibited MD5 must not execute"),
-        })
-    }
-}
-impl StreamingDigest<Tree> for Oracle<'_> {
-    type State = Sha256;
-    type Output = [u8; 32];
     fn compare<W: Work>(
         &self,
         left: &Identity,
@@ -172,7 +156,7 @@ impl StreamingDigest<Tree> for Oracle<'_> {
         self.finished.set(self.finished.get() + 1);
         Ok(state.finalize().into())
     }
-    fn matches_output<W: Work>(
+    fn matches<W: Work>(
         &self,
         _: &Identity,
         output: &[u8; 32],

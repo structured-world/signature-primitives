@@ -3,10 +3,9 @@
 use super::{Catalogue, Pair};
 use crate::{
     binary,
-    certificate::{self, Agreement},
+    certificate::{self, Agreement, DigestProvider},
     container::DS,
-    digest::{self, StreamingDigest},
-    properties,
+    digest, properties,
     reference::{
         Completeness, ObjectLocation, Parent, ReferenceXml, Replay, ReplayOutcome, VisitError,
     },
@@ -14,11 +13,9 @@ use crate::{
     xml::{Access, AccessError, Name, Snapshot, Xml},
 };
 use core::cmp::Ordering;
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
-use structured_cms::{
-    provider::Resolution,
-    stream::{Receiver, Source},
-};
+use structured_cms::stream::{Receiver, Source};
 
 /// Completed processing state, independent of archive coverage or policy trust.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,22 +181,17 @@ struct Candidate<N, I, O> {
     output: O,
 }
 
-type Candidates<X, P> = OwnedVec<
-    Candidate<
-        <X as Xml>::Id,
-        <P as certificate::DigestProvider<X>>::Identity,
-        <P as StreamingDigest<X>>::Output,
-    >,
->;
+type Candidates<'q, X, P> =
+    OwnedVec<Candidate<<X as Xml>::Id, <P as Digest<'q>>::Identity, <P as Digest<'q>>::Output>>;
 
-fn memoize<X: TimestampXml, P: StreamingDigest<X>, W: Work>(
+fn memoize<'q, X: TimestampXml, P: DigestProvider<'q, X>, W: Work>(
     xml: &X,
     access: &Access<'_, X, W>,
     reading: &Catalogue<X::Id, X::Document, X::Generation>,
     instructions: &[Instruction<X::Id>],
     identity: &certificate::FormatDigest<P::Identity>,
-    provider: &P,
-) -> CheckResult<Resolution<Candidates<X, P>>, X, P::Error> {
+    provider: &'q P,
+) -> CheckResult<Resolution<Candidates<'q, X, P>>, X, P::Error> {
     let work = access.execution();
     let mut candidates = work.vector();
     let mut ordinal = 0;
@@ -220,7 +212,7 @@ fn memoize<X: TimestampXml, P: StreamingDigest<X>, W: Work>(
             },
         };
         let output =
-            match digest::compute_resolved::<X, P, _, _>(identity, &mut source, provider, work)
+            match digest::compute_resolved::<P, _, _>(identity, &mut source, provider, work)
                 .map_err(|cause| CheckError::Digest {
                     node: instruction.node,
                     cause,
@@ -302,10 +294,10 @@ impl<X: TimestampXml> Source for Input<'_, X> {
 /// XML parser, implicit acquisition or whole-input collector. Source unavailability
 /// is retained per pair and continues; policy/resource/receiver errors terminate.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-pub fn check<X: TimestampXml + binary::BinaryXml, P: StreamingDigest<X>, W: Work>(
+pub fn check<'q, X: TimestampXml + binary::BinaryXml, P: DigestProvider<'q, X>, W: Work>(
     xml: &X,
     reading: &Catalogue<X::Id, X::Document, X::Generation>,
-    provider: &P,
+    provider: &'q P,
     work: &W,
 ) -> CheckResult<Checked<X>, X, P::Error> {
     let result = check_inner(xml, reading, provider, work)?;
@@ -315,10 +307,10 @@ pub fn check<X: TimestampXml + binary::BinaryXml, P: StreamingDigest<X>, W: Work
     Ok(result)
 }
 
-fn check_inner<X: TimestampXml + binary::BinaryXml, P: StreamingDigest<X>, W: Work>(
+fn check_inner<'q, X: TimestampXml + binary::BinaryXml, P: DigestProvider<'q, X>, W: Work>(
     xml: &X,
     reading: &Catalogue<X::Id, X::Document, X::Generation>,
-    provider: &P,
+    provider: &'q P,
     work: &W,
 ) -> CheckResult<Checked<X>, X, P::Error> {
     let access = Access::new(xml, reading.snapshot, work);
@@ -428,13 +420,13 @@ fn manifest_state<X: Xml, W: Work, PE>(
     }))
 }
 
-fn finish_pairs<X: TimestampXml, P: StreamingDigest<X>, W: Work>(
+fn finish_pairs<'q, X: TimestampXml, P: DigestProvider<'q, X>, W: Work>(
     xml: &X,
     reading: &Catalogue<X::Id, X::Document, X::Generation>,
     expected: &[Expected<X::Id>],
     candidates: &[Candidate<X::Id, P::Identity, P::Output>],
     identity: &certificate::FormatDigest<P::Identity>,
-    provider: &P,
+    provider: &'q P,
     work: &W,
 ) -> CheckResult<Checked<X>, X, P::Error> {
     let mut results = work.vector();
@@ -480,7 +472,7 @@ fn report<N: Copy, D: Copy, G: Copy, E>(
     }
 }
 
-fn resolve<X: Xml, P: StreamingDigest<X>, W: Work>(
+fn resolve<'q, X: Xml, P: DigestProvider<'q, X>, W: Work>(
     access: &Access<'_, X, W>,
     node: X::Id,
     provider: &P,
@@ -612,13 +604,13 @@ fn read_expected<X: binary::BinaryXml, W: Work, PE>(
     Ok(expected.into_owned())
 }
 
-fn process_pair<X: TimestampXml, P: StreamingDigest<X>, W: Work>(
+fn process_pair<'q, X: TimestampXml, P: DigestProvider<'q, X>, W: Work>(
     xml: &X,
     reading: &Catalogue<X::Id, X::Document, X::Generation>,
     pair: &Expected<X::Id>,
     candidates: &[Candidate<X::Id, P::Identity, P::Output>],
     identity: &certificate::FormatDigest<P::Identity>,
-    provider: &P,
+    provider: &'q P,
     work: &W,
 ) -> CheckResult<PairCheck<X::Id, X::Error>, X, P::Error> {
     let width = provider.width(identity.identity());
@@ -644,7 +636,7 @@ fn process_pair<X: TimestampXml, P: StreamingDigest<X>, W: Work>(
         let candidate = &candidates[ordinal];
         ordinal += 1;
         if provider
-            .matches_output(
+            .matches(
                 identity.identity(),
                 &candidate.output,
                 &pair.reference,
@@ -701,7 +693,7 @@ fn process_pair<X: TimestampXml, P: StreamingDigest<X>, W: Work>(
             node,
         },
     };
-    result.outcome = match digest::run_resolved::<X, P, _, _>(
+    result.outcome = match digest::run_resolved::<P, _, _>(
         identity,
         &pair.object,
         &mut source,

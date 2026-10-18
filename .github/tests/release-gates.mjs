@@ -100,6 +100,20 @@ try {
 }
 console.log("PASS: first LTV publication uses its own token between OIDC steps; absent token selects normal OIDC.");
 
+// release-plz's own readiness check can pass before a dependent's cargo publish
+// resolves the new version (release-plz#2946). The dependents step must wait
+// for actual resolution of a freshly published LTV, and only then.
+const resolution = publish.steps.find(step => step.name === "Wait until LTV resolves for dependents");
+assert.ok(resolution, "a resolver wait must separate LTV from its dependents");
+assert.ok(publish.steps.indexOf(firstLtv) < publish.steps.indexOf(resolution));
+assert.ok(publish.steps.indexOf(resolution) < publish.steps.indexOf(dependents));
+assert.equal(resolution.run, "bash scripts/wait-registry-resolution.sh structured-ltv");
+for (const created of ["true", "false", ""]) {
+  const values = { steps: { "first-ltv": { outputs: { releases_created: created } } } };
+  assert.equal(evaluate(resolution.if, values), created === "true");
+}
+console.log("PASS: dependents publish only after a newly published LTV version resolves.");
+
 // CI completion used to prepare the next release while the second package was
 // still publishing, yielding a spurious version-only 0.1.5 after 0.1.4.
 const preparation = workflow.jobs["release-pr"];

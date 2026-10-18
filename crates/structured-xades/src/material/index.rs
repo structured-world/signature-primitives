@@ -28,6 +28,25 @@ pub type IndexResult<'source, X, W> = Result<
 /// again. All source and embedded certificate metadata, exact hashing/equality,
 /// hidden table probes, entries and duplicate links are funded before work.
 /// Refusal drops the complete partial index, preserving original sources.
+///
+/// Only this crate adds occurrences, so a caller cannot plant material the
+/// document does not carry:
+///
+/// ```compile_fail
+/// use structured_asn1::memory::Memory;
+/// use structured_ltv::material::{ArtifactRef, ArtifactSource};
+/// use structured_ltv::source::{Location, Query};
+/// use structured_xades::material::{Index, Occurrence, Placement};
+/// fn plant<'s, Q: Query<Id = usize, Document = u8, Generation = u8, Work = Memory>>(
+///     index: &mut Index<'s, usize, u8, u8, Memory>,
+///     value: &structured_pkix::Certificate<'s>,
+///     at: Location<usize, u8, u8>,
+///     query: &Q,
+/// ) {
+///     let occurrence = Occurrence::new(ArtifactSource::Material(0), at, Placement::General(0));
+///     let _ = index.insert(ArtifactRef::Certificate(value), occurrence, query);
+/// }
+/// ```
 pub fn index<'source, X: Xml, W: Work>(
     view: &View<'source, X::Id, X::Document, X::Generation>,
     access: &Access<'_, X, W>,
@@ -50,6 +69,7 @@ pub fn index<'source, X: Xml, W: Work>(
                     && basic.source_index() == ordinal
                 {
                     index.insert(
+                        ISSUER,
                         ArtifactRef::Ocsp(basic.response()),
                         Occurrence::new(
                             ArtifactSource::Material(basic.source_index()),
@@ -64,6 +84,7 @@ pub fn index<'source, X: Xml, W: Work>(
             }
         };
         index.insert(
+            ISSUER,
             artifact,
             Occurrence::new(ArtifactSource::Material(ordinal), value.location, placement),
             access,
@@ -118,6 +139,7 @@ pub fn index_with_tokens<'source, X: Xml, W: Work>(
         for (certificate, value) in certificates.iter().enumerate() {
             index.admit(access)?;
             index.insert(
+                ISSUER,
                 ArtifactRef::Certificate(value),
                 Occurrence::new(
                     ArtifactSource::TokenCertificate { token, certificate },
@@ -131,6 +153,7 @@ pub fn index_with_tokens<'source, X: Xml, W: Work>(
     for value in material.crls() {
         index.admit(access)?;
         index.insert(
+            ISSUER,
             ArtifactRef::Crl(&value.value),
             carried(material, value.origin),
             access,
@@ -139,6 +162,7 @@ pub fn index_with_tokens<'source, X: Xml, W: Work>(
     for value in material.basic_responses() {
         index.admit(access)?;
         index.insert(
+            ISSUER,
             ArtifactRef::Ocsp(&value.value),
             carried(material, value.origin),
             access,

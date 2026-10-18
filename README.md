@@ -146,7 +146,7 @@ register an unpublished crate's trusted publisher. For the first LTV version,
 the temporary repository Actions secret `LTV_BOOTSTRAP_TOKEN` selects three
 steps: ASN.1, PKIX and CMS publish through OIDC, `structured-ltv` publishes with
 that token, then `structured-xades`, which depends on it, publishes through
-OIDC. Limit the token to `publish-new` for `structured-ltv`. After the first
+OIDC once Cargo resolves the new LTV version. Limit the token to `publish-new` for `structured-ltv`. After the first
 publication, register the crate's Trusted Publisher with repository owner
 `structured-world`, repository `signature-primitives`, workflow
 `release-plz.yml` and environment `release`. Then delete the

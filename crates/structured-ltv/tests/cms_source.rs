@@ -363,6 +363,7 @@ fn material_index_refuses_an_occurrence_from_another_generation() {
     let occurrence = |location| Occurrence::new(ArtifactSource::Material(0), location, ());
     assert_eq!(
         index.insert(
+            ISSUER,
             ArtifactRef::Certificate(&value),
             occurrence(earlier),
             &query
@@ -373,6 +374,7 @@ fn material_index_refuses_an_occurrence_from_another_generation() {
     );
     index
         .insert(
+            ISSUER,
             ArtifactRef::Certificate(&value),
             occurrence(data.location(CERTIFICATES)),
             &query,

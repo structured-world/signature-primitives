@@ -111,6 +111,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.LTV_BOOTSTRAP_TOKEN }}
+      - name: Wait until LTV resolves for dependents
+        if: steps.first-ltv.outputs.releases_created == 'true'
+        run: bash scripts/wait-registry-resolution.sh structured-ltv
       - name: Publish packages depending on LTV
         id: dependents
         if: steps.bootstrap.outputs.enabled == 'true'

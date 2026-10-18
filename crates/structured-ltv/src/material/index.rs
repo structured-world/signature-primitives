@@ -293,8 +293,11 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
     /// the same location and placement. Hashing, probes and storage are
     /// admitted first; a refusal leaves the index for the caller to drop. The
     /// builder pays its own traversal of the format's pools with [`Self::admit`].
+    /// Requiring the issuer value keeps a caller of the format, which may own
+    /// the index, from adding material the document does not carry.
     pub fn insert<Q: Query<Id = N, Document = D, Generation = G, Work = W>>(
         &mut self,
+        _issuer: I,
         artifact: ArtifactRef<'_, 'source>,
         occurrence: Occurrence<N, D, G, P>,
         query: &Q,

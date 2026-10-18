@@ -157,19 +157,19 @@ it installed keeps the bootstrap path selected.
 ## Dependency updates
 
 All seven CI checks and CLA are required for `main`. Trusted default-branch
-automation merges repository-local Dependabot PRs after mandatory CI and a
-fresh positive review, with no unresolved threads or active changes requested.
-Codex's positive verdict must strictly follow the current head's recorded push;
-a collaborator approval must identify that exact commit and the reviewer must
-currently have write or admin access. Missing review evidence
-keeps the PR waiting. The merge operation also binds the inspected SHA.
+automation qualifies repository-local Dependabot PRs by CI alone: a PR whose
+required checks pass on a branch that is current with `main` is merged, and a
+PR that is only behind `main` is updated so that CI runs again on the new head.
+No review is required. Both operations bind the inspected head SHA, so a head
+changed since inspection is refused and left for the next event.
 
 `hashbrown` and `allocator-api2` changes require manual contract review, including
 grouped updates and manifest/lockfile changes. Their audited capacity/layout
-contracts cannot be qualified by CI alone. Other updates are checked on PR/CI
-and review events, with an hourly backstop for verdict reactions that emit no Actions event.
-The merge App token is scoped to this repository and created only when a
-qualified update is ready; the automation never executes PR code with it.
+contracts cannot be qualified by CI alone. Other updates are checked when a
+Dependabot PR is opened or updated and when CI completes, with an hourly
+backstop for an event GitHub did not deliver.
+The merge App token is scoped to this repository and created only when an
+update or merge is due; the automation never executes PR code with it.
 
 ## Development
 

@@ -3,51 +3,43 @@
 use core::cmp::Ordering;
 use std::sync::Arc;
 use structured_asn1::{
-    Encoding, Reader, Span,
+    Span,
+    digest::{Digest, Resolution},
     memory::{Memory, MemoryAccount, Work},
 };
-use structured_cms::provider::{
-    DigestAlgorithm, DigestProvider, Prehash, ProviderSession, Resolution,
-};
+use structured_cms::provider::ProviderSession;
 
 struct Stateless;
 std::thread_local! { static STARTS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) }; }
-impl<'a> DigestProvider<'a> for Stateless {
-    type Error = core::convert::Infallible;
+impl Digest<'_> for Stateless {
     type Identity = ();
     type State = ();
     type Output = [u8; 1];
-    fn resolve_digest(
-        &'a self,
-        _: DigestAlgorithm<'a>,
-        _: Encoding,
-        _: &Reader<'a>,
-    ) -> Result<Resolution<()>, Self::Error> {
-        Ok(Resolution::Supported(()))
-    }
-    fn compare_digest<W: Work>(&self, (): &(), (): &(), _: &W) -> Result<Ordering, Self::Error> {
-        Ok(Ordering::Equal)
-    }
-    fn digest_width(&self, (): &()) -> Option<usize> {
+    type Error = core::convert::Infallible;
+    fn width(&self, (): &()) -> Option<usize> {
         Some(1)
     }
-    fn start_digest<W: Work>(&'a self, (): &(), _: &W) -> Result<(), Self::Error> {
+    fn compare<W: Work>(&self, (): &(), (): &(), _: &W) -> Result<Ordering, Self::Error> {
+        Ok(Ordering::Equal)
+    }
+    fn start<W: Work>(&self, (): &(), _: &W) -> Result<Resolution<()>, Self::Error> {
         STARTS.with(|calls| calls.set(calls.get() + 1));
+        Ok(Resolution::Supported(()))
+    }
+    fn update<W: Work>(&self, (): &mut (), _: &[u8], _: &W) -> Result<(), Self::Error> {
         Ok(())
     }
-    fn update_digest<W: Work>(&self, (): &mut (), _: &[u8], _: &W) -> Result<(), Self::Error> {
-        Ok(())
-    }
-    fn finish_digest<W: Work>(&self, (): (), _: &W) -> Result<[u8; 1], Self::Error> {
+    fn finish<W: Work>(&self, (): (), _: &W) -> Result<[u8; 1], Self::Error> {
         Ok([7])
     }
-    fn matches_digest<W: Work>(
+    fn matches<W: Work>(
         &self,
-        digest: Prehash<'_, '_, Self, ()>,
+        (): &(),
+        output: &[u8; 1],
         expected: &[u8],
         _: &W,
     ) -> Result<bool, Self::Error> {
-        Ok(digest.as_bytes() == expected)
+        Ok(output.as_slice() == expected)
     }
 }
 
@@ -105,7 +97,7 @@ fn distinct_zst_selections_keep_distinct_borrowed_identity() {
     assert!(matches!(
         binding::matches_digest(
             &sessions[0],
-            digest.prehash(),
+            digest.finished(),
             &[7],
             &memory,
             "imprint",
@@ -116,7 +108,7 @@ fn distinct_zst_selections_keep_distinct_borrowed_identity() {
     ));
     let BindError::Processing(error) = binding::matches_digest(
         &sessions[1],
-        digest.prehash(),
+        digest.finished(),
         &[7],
         &memory,
         "imprint",

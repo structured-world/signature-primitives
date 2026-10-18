@@ -1,16 +1,17 @@
 //! One-pass digest fan-out with one final output per resolved semantic identity.
 
 use crate::Error;
-use crate::provider::{DigestProvider, Finalized, Prehash};
+use crate::provider::{Finalized, Finished, Prehash};
 use crate::stream::{self, Sink, Source, StreamError};
 use core::cmp::Ordering;
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{OwnedVec, SortError, Work};
 
 /// A complete pass preserves source, common-processing and provider causes.
 pub type PassError<SE, PE> = StreamError<SE, DigestError<PE>>;
 /// A finalized output with the selected provider's full identity and storage type.
 pub type DigestOutput<'a, P> =
-    Finalized<'a, P, <P as DigestProvider<'a>>::Identity, <P as DigestProvider<'a>>::Output>;
+    Finalized<'a, P, <P as Digest<'a>>::Identity, <P as Digest<'a>>::Output>;
 /// Fallible digest processing, without reducing provider refusal to absence.
 pub type DigestResult<T, E> = Result<T, DigestError<E>>;
 /// A complete source pass, preserving acquisition and processing causes.
@@ -31,6 +32,17 @@ pub enum DigestError<E> {
         /// Actual returned output width.
         actual: usize,
     },
+    /// The provider resolved this identity but cannot stream it, which CMS
+    /// content and attribute digests require. A capability answer of the
+    /// provider, not a document fault.
+    Unstreamable,
+}
+
+fn started<S, E>(start: Result<Resolution<S>, E>) -> Result<S, DigestError<E>> {
+    match start.map_err(DigestError::Callback)? {
+        Resolution::Supported(state) => Ok(state),
+        Resolution::Unsupported | Resolution::Malformed => Err(DigestError::Unstreamable),
+    }
 }
 
 struct Pending<I, S> {
@@ -44,7 +56,7 @@ struct Request<I> {
 }
 
 /// Prepared states from one selected provider; no state cloning or source replay.
-pub struct DigestBatch<'a, P: DigestProvider<'a>> {
+pub struct DigestBatch<'a, P: Digest<'a>> {
     provider: &'a P,
     pending: OwnedVec<Pending<P::Identity, P::State>>,
     mapping: OwnedVec<usize>,
@@ -52,7 +64,7 @@ pub struct DigestBatch<'a, P: DigestProvider<'a>> {
     at: u64,
 }
 
-impl<'a, P: DigestProvider<'a>> DigestBatch<'a, P> {
+impl<'a, P: Digest<'a>> DigestBatch<'a, P> {
     /// Moves resolved identities into the current operation and initializes each once.
     ///
     /// Identities must come from this selected provider's resolver. They are
@@ -84,7 +96,7 @@ impl<'a, P: DigestProvider<'a>> DigestBatch<'a, P> {
         }
         ordered
             .try_sort_unstable_by(|left, right| {
-                provider.compare_digest(&left.identity, &right.identity, execution)
+                provider.compare(&left.identity, &right.identity, execution)
             })
             .map_err(|error| match error {
                 SortError::Resource(reason) => refusal(reason),
@@ -105,7 +117,7 @@ impl<'a, P: DigestProvider<'a>> DigestBatch<'a, P> {
             execution.charge_work(1).map_err(refusal)?;
             if let Some(previous) = pending.last()
                 && provider
-                    .compare_digest(&previous.identity, &identity, execution)
+                    .compare(&previous.identity, &identity, execution)
                     .map_err(DigestError::Callback)?
                     == Ordering::Equal
             {
@@ -113,9 +125,7 @@ impl<'a, P: DigestProvider<'a>> DigestBatch<'a, P> {
                 continue;
             }
             pending.try_reserve(1).map_err(refusal)?;
-            let state = provider
-                .start_digest(&identity, execution)
-                .map_err(DigestError::Callback)?;
+            let state = started(provider.start(&identity, execution))?;
             pending
                 .try_push(Pending { identity, state })
                 .map_err(refusal)?;
@@ -172,7 +182,7 @@ impl<'a, P: DigestProvider<'a>> DigestBatch<'a, P> {
                 DigestError::Processing(Error::resource(reason, self.field, self.at))
             })?;
             self.provider
-                .update_digest(&mut pending.state, bytes, execution)
+                .update(&mut pending.state, bytes, execution)
                 .map_err(DigestError::Callback)?;
         }
         Ok(())
@@ -192,9 +202,9 @@ impl<'a, P: DigestProvider<'a>> DigestBatch<'a, P> {
             execution.charge_work(1).map_err(refusal)?;
             let output = self
                 .provider
-                .finish_digest(pending.state, execution)
+                .finish(pending.state, execution)
                 .map_err(DigestError::Callback)?;
-            if let Some(expected) = self.provider.digest_width(&pending.identity) {
+            if let Some(expected) = self.provider.width(&pending.identity) {
                 let actual = output.as_ref().len();
                 if actual != expected {
                     return Err(DigestError::OutputWidth { expected, actual });
@@ -222,9 +232,9 @@ impl<'a, P: DigestProvider<'a>> DigestBatch<'a, P> {
     }
 }
 
-struct BatchSink<'s, 'a, P: DigestProvider<'a>>(&'s mut DigestBatch<'a, P>);
+struct BatchSink<'s, 'a, P: Digest<'a>>(&'s mut DigestBatch<'a, P>);
 
-impl<'a, P: DigestProvider<'a>> Sink for BatchSink<'_, 'a, P> {
+impl<'a, P: Digest<'a>> Sink for BatchSink<'_, 'a, P> {
     type Error = DigestError<P::Error>;
     fn write<W: Work>(&mut self, bytes: &[u8], execution: &W) -> Result<(), Self::Error> {
         self.0.feed(bytes, execution)
@@ -232,7 +242,7 @@ impl<'a, P: DigestProvider<'a>> Sink for BatchSink<'_, 'a, P> {
 }
 
 /// Immutable completed outputs, sorted by the selected provider's full identity.
-pub struct DigestMemo<'a, P: DigestProvider<'a>> {
+pub struct DigestMemo<'a, P: Digest<'a>> {
     provider: &'a P,
     outputs: OwnedVec<DigestOutput<'a, P>>,
     mapping: OwnedVec<usize>,
@@ -245,36 +255,42 @@ pub struct DigestMemo<'a, P: DigestProvider<'a>> {
 /// Signed attributes need their own digest output, while sharing the payload's
 /// already resolved identity. This result borrows that identity and owns its
 /// output; it cannot outlive the memo or become a fabricated digest identity.
-pub struct RelatedDigest<'m, 'a, P: DigestProvider<'a>> {
+pub struct RelatedDigest<'m, 'a, P: Digest<'a>> {
     provider: &'a P,
     identity: &'m P::Identity,
     output: P::Output,
 }
 
-impl<'a, P: DigestProvider<'a>> RelatedDigest<'_, 'a, P> {
+impl<'a, P: Digest<'a>> RelatedDigest<'_, 'a, P> {
     /// Typed finalized input with short borrows, without identity/output clones.
     #[must_use]
     pub fn prehash(&self) -> Prehash<'_, '_, P, P::Identity> {
         Prehash::new(self.provider, self.identity, self.output.as_ref())
     }
+
+    /// Borrows the provider's own output for its comparison, with provenance.
+    #[must_use]
+    pub fn finished(&self) -> Finished<'_, P, P::Identity, P::Output> {
+        Finished::new(self.provider, self.identity, &self.output)
+    }
 }
 
-struct RelatedSink<'s, 'a, P: DigestProvider<'a>> {
+struct RelatedSink<'s, 'a, P: Digest<'a>> {
     provider: &'a P,
     state: &'s mut P::State,
 }
 
-impl<'a, P: DigestProvider<'a>> Sink for RelatedSink<'_, 'a, P> {
+impl<'a, P: Digest<'a>> Sink for RelatedSink<'_, 'a, P> {
     type Error = DigestError<P::Error>;
 
     fn write<W: Work>(&mut self, bytes: &[u8], execution: &W) -> Result<(), Self::Error> {
         self.provider
-            .update_digest(self.state, bytes, execution)
+            .update(self.state, bytes, execution)
             .map_err(DigestError::Callback)
     }
 }
 
-impl<'a, P: DigestProvider<'a>> DigestMemo<'a, P> {
+impl<'a, P: Digest<'a>> DigestMemo<'a, P> {
     /// Completes another input with the original request's resolved identity.
     ///
     /// For CMS signed attributes, feed their original retagged ranges here;
@@ -297,10 +313,8 @@ impl<'a, P: DigestProvider<'a>> DigestMemo<'a, P> {
             return Ok(None);
         };
         let identity = existing.identity();
-        let mut state = self
-            .provider
-            .start_digest(identity, execution)
-            .map_err(|error| StreamError::Callback(DigestError::Callback(error)))?;
+        let mut state =
+            started(self.provider.start(identity, execution)).map_err(StreamError::Callback)?;
         stream::run(
             source,
             &mut RelatedSink {
@@ -313,9 +327,9 @@ impl<'a, P: DigestProvider<'a>> DigestMemo<'a, P> {
         )?;
         let output = self
             .provider
-            .finish_digest(state, execution)
+            .finish(state, execution)
             .map_err(|error| StreamError::Callback(DigestError::Callback(error)))?;
-        if let Some(expected) = self.provider.digest_width(identity) {
+        if let Some(expected) = self.provider.width(identity) {
             let actual = output.as_ref().len();
             if actual != expected {
                 return Err(StreamError::Callback(DigestError::OutputWidth {
@@ -390,7 +404,7 @@ impl<'a, P: DigestProvider<'a>> DigestMemo<'a, P> {
             let held = &self.outputs[middle];
             match self
                 .provider
-                .compare_digest(held.identity(), identity, execution)
+                .compare(held.identity(), identity, execution)
                 .map_err(DigestError::Callback)?
             {
                 Ordering::Equal => return Ok(Some(held)),

@@ -2,10 +2,11 @@
 
 use super::*;
 use core::{cmp::Ordering, convert::Infallible};
-use structured_cms::{provider::Resolution, stream::Source};
+use structured_asn1::digest::{Digest, Resolution};
+use structured_cms::stream::Source;
 use structured_xades::{
     certificate::{Agreement, DigestProvider},
-    digest::{self, StreamingDigest},
+    digest,
     hashes::HashClass,
 };
 
@@ -16,10 +17,7 @@ struct Forbidden {
     resolved: Cell<usize>,
 }
 
-impl DigestProvider<Tree> for Forbidden {
-    type Identity = HashClass;
-    type Error = MemoryError;
-
+impl DigestProvider<'_, Tree> for Forbidden {
     fn classify(&self, identity: &HashClass) -> HashClass {
         *identity
     }
@@ -32,25 +30,16 @@ impl DigestProvider<Tree> for Forbidden {
         self.resolved.set(self.resolved.get() + 1);
         Ok(Resolution::Supported(self.selected))
     }
+}
 
+impl Digest<'_> for Forbidden {
+    type Identity = HashClass;
+    type State = ();
+    type Output = [u8; 16];
+    type Error = MemoryError;
     fn width(&self, _: &HashClass) -> Option<usize> {
         Some(16)
     }
-
-    fn matches<W: Work>(
-        &self,
-        _: &HashClass,
-        _: &[u8],
-        _: &[u8],
-        _: &W,
-    ) -> Result<bool, MemoryError> {
-        panic!("a prohibited resolved hash must not reach one-shot primitive execution")
-    }
-}
-
-impl StreamingDigest<Tree> for Forbidden {
-    type State = ();
-    type Output = [u8; 16];
     fn compare<W: Work>(
         &self,
         _: &HashClass,
@@ -60,7 +49,7 @@ impl StreamingDigest<Tree> for Forbidden {
         panic!("prohibited identity must not reach renewal comparison")
     }
     fn start<W: Work>(&self, _: &HashClass, _: &W) -> Result<Resolution<()>, MemoryError> {
-        panic!("a prohibited resolved hash must not create streaming state")
+        panic!("a prohibited resolved hash must not create digest state")
     }
     fn update<W: Work>(&self, (): &mut (), _: &[u8], _: &W) -> Result<(), MemoryError> {
         panic!("prohibited hash update")
@@ -68,7 +57,7 @@ impl StreamingDigest<Tree> for Forbidden {
     fn finish<W: Work>(&self, (): (), _: &W) -> Result<[u8; 16], MemoryError> {
         panic!("prohibited hash finish")
     }
-    fn matches_output<W: Work>(
+    fn matches<W: Work>(
         &self,
         _: &HashClass,
         _: &[u8; 16],

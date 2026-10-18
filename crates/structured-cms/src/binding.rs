@@ -3,6 +3,7 @@
 use crate::attribute::{Attribute, Attributes};
 use crate::signer::SignerInfo;
 use crate::{Error, ErrorCode, Octets, Result, oid};
+use structured_asn1::digest::Digest;
 use structured_asn1::memory::Work;
 use structured_asn1::{Oid, Reader, Span, Tag, universal};
 use structured_pkix::AlgorithmIdentifier;
@@ -36,15 +37,15 @@ pub enum BindError<E> {
 
 /// Checks actual output width before comparing a declared digest.
 ///
-/// This applies even when `digest_width` is None. `field`/`span` identify the
-/// original declaration, not the output or a synthesized DER element. Provider
-/// instance identity is checked before work or callback. The borrowed provider
-/// retained by the finalized output cannot be replaced or moved while in use.
-/// The callback
-/// receives bytes already finalized; no resolver, hashing or copy is performed.
-pub fn matches_digest<'a, P: crate::provider::DigestProvider<'a>, W: Work>(
+/// This applies even when the identity has no fixed width. `field`/`span`
+/// identify the original declaration, not the output or a synthesized DER
+/// element. Provider instance identity is checked before work or callback. The
+/// borrowed provider retained by the finished output cannot be replaced or
+/// moved while in use. The provider's `matches` receives its own finished
+/// output; no resolver, hashing or copy is performed.
+pub fn matches_digest<'a, P: Digest<'a>, W: Work>(
     provider: &P,
-    digest: crate::provider::Prehash<'_, '_, P, P::Identity>,
+    digest: crate::provider::Finished<'_, P, P::Identity, P::Output>,
     expected: &[u8],
     execution: &W,
     field: &'static str,
@@ -62,8 +63,8 @@ pub fn matches_digest<'a, P: crate::provider::DigestProvider<'a>, W: Work>(
     execution
         .charge_work(1)
         .map_err(|reason| BindError::Processing(Error::resource(reason, field, span.start)))?;
-    let actual = digest.as_bytes().len();
-    if let Some(width) = provider.digest_width(digest.identity())
+    let actual = digest.output().as_ref().len();
+    if let Some(width) = provider.width(digest.identity())
         && width != actual
     {
         return Err(BindError::OutputWidth {
@@ -79,7 +80,7 @@ pub fn matches_digest<'a, P: crate::provider::DigestProvider<'a>, W: Work>(
         )));
     }
     if provider
-        .matches_digest(digest, expected, execution)
+        .matches(digest.identity(), digest.output(), expected, execution)
         .map_err(BindError::Callback)?
     {
         Ok(DigestBinding::Matches)

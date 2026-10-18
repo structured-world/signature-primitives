@@ -7,8 +7,7 @@ use super::{
 };
 use crate::{
     binary::{self, BinaryXml, Located},
-    certificate::Agreement,
-    digest::StreamingDigest,
+    certificate::{Agreement, DigestProvider},
     properties::CalendarXml,
     scalar::TextXml,
     xml::{Access, AccessError, Xml},
@@ -117,17 +116,17 @@ pub type CrlValueResult<'r, 'a, 'd, X, PE> = Result<
 /// its Number and URI remain hints. Readable mismatch retains the independent
 /// digest fact; malformed/unsupported time prevents provider side effects.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-pub fn check_crl_value_reference<'r, 'a, 'd, X, P>(
+pub fn check_crl_value_reference<'r, 'a, 'd, 'q, X, P>(
     xml: &X,
     references: &'r ReferenceProperty<X::Id, X::Document, X::Generation>,
     index: usize,
     actual: &'a CertificateList<'d>,
-    provider: &P,
+    provider: &'q P,
     operation: &ScopedReader<'_, '_>,
 ) -> CrlValueResult<'r, 'a, 'd, X, P::Error>
 where
     X: BinaryXml + CalendarXml + TextXml,
-    P: StreamingDigest<X>,
+    P: DigestProvider<'q, X>,
 {
     let work = operation.execution();
     let access = Access::new(xml, references.snapshot(), &work);

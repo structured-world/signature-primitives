@@ -10,6 +10,7 @@ use core::num::NonZeroUsize;
 use structured_asn1::memory::{Memory, Work};
 use structured_asn1::{Element, Encoding, Oid, Parser, Reader, ScopedReader, Span, Tag, universal};
 
+pub mod digest;
 pub mod pss;
 
 /// An algorithm and its parameters, as the certificate wrote them.
@@ -531,9 +532,10 @@ impl<'a> AlgorithmIdentifier<'a> {
     /// thing for the algorithms that spell it that way.
     #[must_use]
     pub fn has_no_parameters(self) -> bool {
-        // A null is two bytes: the tag and a zero length.
-        self.parameters()
-            .is_none_or(|parameters| parameters == [0x05, 0x00])
+        // The NULL validated under the document's own encoding, not the DER
+        // bytes `05 00`: BER may write its zero length in long form
+        // (X.690 §8.1.3.5, §8.8; RFC 5652 §1 makes a signed message BER).
+        self.parameters().is_none() || self.null_parameter
     }
 
     /// Whether two identifiers name the same algorithm with the same

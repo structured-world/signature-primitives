@@ -54,7 +54,6 @@ fn ocsp_value_retains_original_pair_and_optional_digest_distinction() {
                 })
             );
             assert_eq!(provider.started.get(), usize::from(with_digest));
-            assert_eq!(provider.one_shot.get(), 0);
             let CalendarFact::Value(matching) = xml.calendar_routes[0].1 else {
                 panic!("complete original time")
             };

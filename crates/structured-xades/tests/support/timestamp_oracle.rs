@@ -7,17 +7,16 @@ use p256::ecdsa::{
     signature::hazmat::{PrehashSigner, PrehashVerifier},
 };
 use sha2::{Digest, Sha256};
+use structured_asn1::digest::Resolution;
 use structured_asn1::{
     Encoding, Reader,
     memory::{MemoryError, Work},
 };
 use structured_cms::{
     Octets, oid,
-    provider::{
-        DigestAlgorithm, DigestProvider, ImpliedDigest, Prehash, Resolution, SignatureAnswer,
-        SignatureMode, SignatureProvider,
-    },
+    provider::{Prehash, SignatureAnswer, SignatureMode, SignatureProvider},
 };
+use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 use structured_pkix::{AlgorithmIdentifier, path::WorkingKey};
 
 const SHA256: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 1];
@@ -52,64 +51,46 @@ pub struct Oracle {
     pub verified: Cell<usize>,
 }
 
-impl<'a> DigestProvider<'a> for Oracle {
-    type Error = Failure;
+impl<'a> structured_asn1::digest::Digest<'a> for Oracle {
     type Identity = ();
     type State = Sha256;
     type Output = [u8; 32];
-    fn resolve_digest(
-        &'a self,
-        algorithm: DigestAlgorithm<'a>,
-        _encoding: Encoding,
-        reader: &Reader<'a>,
-    ) -> Result<Resolution<()>, Failure> {
-        reader.execution().charge_work(32)?;
-        Ok(match algorithm {
-            DigestAlgorithm::Written(value)
-                if value.algorithm().as_bytes() == SHA256 && value.parameters().is_none() =>
-            {
-                Resolution::Supported(())
-            }
-            DigestAlgorithm::Implied {
-                algorithm: ImpliedDigest::EssV2Sha256,
-                ..
-            } => Resolution::Supported(()),
-            _ => Resolution::Unsupported,
-        })
+    type Error = Failure;
+    fn width(&self, (): &()) -> Option<usize> {
+        Some(32)
     }
-    fn compare_digest<W: Work>(&self, (): &(), (): &(), work: &W) -> Result<Ordering, Failure> {
+    fn compare<W: Work>(&self, (): &(), (): &(), work: &W) -> Result<Ordering, Failure> {
         work.charge_work(1)?;
         Ok(Ordering::Equal)
     }
-    fn digest_width(&self, (): &()) -> Option<usize> {
-        Some(32)
-    }
-    fn start_digest<W: Work>(&'a self, (): &(), work: &W) -> Result<Sha256, Failure> {
+    fn start<W: Work>(&'a self, (): &(), work: &W) -> Result<Resolution<Sha256>, Failure> {
         work.charge_work(64)?;
-        Ok(Sha256::new())
+        Ok(Resolution::Supported(Sha256::new()))
     }
-    fn update_digest<W: Work>(
-        &self,
-        state: &mut Sha256,
-        bytes: &[u8],
-        work: &W,
-    ) -> Result<(), Failure> {
+    fn update<W: Work>(&self, state: &mut Sha256, bytes: &[u8], work: &W) -> Result<(), Failure> {
         work.charge_work(bytes.len() as u64 + 64)?;
         state.update(bytes);
         Ok(())
     }
-    fn finish_digest<W: Work>(&self, state: Sha256, work: &W) -> Result<[u8; 32], Failure> {
+    fn finish<W: Work>(&self, state: Sha256, work: &W) -> Result<[u8; 32], Failure> {
         work.charge_work(128)?;
         Ok(state.finalize().into())
     }
-    fn matches_digest<W: Work>(
+    fn matches<W: Work>(
         &self,
-        digest: Prehash<'_, '_, Self, ()>,
+        (): &(),
+        output: &[u8; 32],
         expected: &[u8],
         work: &W,
     ) -> Result<bool, Failure> {
         work.charge_work(32)?;
-        Ok(digest.as_bytes() == expected)
+        Ok(output.as_slice() == expected)
+    }
+}
+
+impl AsnDigest<'_> for Oracle {
+    fn identity(&self, algorithm: Algorithm) -> Option<()> {
+        (algorithm == Algorithm::Sha256).then_some(())
     }
 }
 
@@ -687,36 +668,50 @@ fn ocsp_response_value(issuer_seed: u8, signer_seed: u8, serial: u8) -> Vec<u8> 
     )
 }
 
-impl<W: Work> structured_pkix::ocsp::Digest<W> for PathOracle {
-    type Handle = ();
+// DEV-only fixed SHA256 provider, with no whole-input/output Vec.
+impl structured_asn1::digest::Digest<'_> for PathOracle {
+    type Identity = ();
+    type State = Sha256;
+    type Output = [u8; 32];
     type Error = MemoryError;
-    fn resolve(
-        &self,
-        algorithm: structured_pkix::ocsp::DigestAlgorithm<'_>,
-        work: &W,
-    ) -> Result<Option<structured_pkix::ocsp::ResolvedDigest<()>>, MemoryError> {
-        work.charge_work(32)?;
-        let structured_pkix::ocsp::DigestAlgorithm::Identifier(algorithm) = algorithm else {
-            return Ok(None);
-        };
-        if algorithm.algorithm().as_bytes() != SHA256 || algorithm.parameters().is_some() {
-            return Ok(None);
-        }
-        Ok(Some(structured_pkix::ocsp::ResolvedDigest {
-            handle: (),
-            width: core::num::NonZeroUsize::new(32).unwrap(),
-        }))
+    fn width(&self, (): &()) -> Option<usize> {
+        Some(32)
     }
-    fn matches(
+    fn compare<W: Work>(&self, (): &(), (): &(), _: &W) -> Result<Ordering, MemoryError> {
+        Ok(Ordering::Equal)
+    }
+    fn start<W: Work>(&self, (): &(), work: &W) -> Result<Resolution<Sha256>, MemoryError> {
+        work.charge_work(128)?;
+        Ok(Resolution::Supported(Sha256::new()))
+    }
+    fn update<W: Work>(
         &self,
-        (): (),
+        state: &mut Sha256,
         input: &[u8],
+        work: &W,
+    ) -> Result<(), MemoryError> {
+        work.charge_work(input.len() as u64)?;
+        state.update(input);
+        Ok(())
+    }
+    fn finish<W: Work>(&self, state: Sha256, _: &W) -> Result<[u8; 32], MemoryError> {
+        Ok(state.finalize().into())
+    }
+    fn matches<W: Work>(
+        &self,
+        (): &(),
+        output: &[u8; 32],
         expected: &[u8],
         work: &W,
     ) -> Result<bool, MemoryError> {
-        // DEV-only fixed SHA256 provider, with no whole-input/output Vec.
-        work.charge_work(input.len() as u64 + expected.len() as u64 + 128)?;
-        Ok(Sha256::digest(input).as_slice() == expected)
+        work.charge_work(expected.len() as u64)?;
+        Ok(output.as_slice() == expected)
+    }
+}
+
+impl AsnDigest<'_> for PathOracle {
+    fn identity(&self, algorithm: Algorithm) -> Option<()> {
+        (algorithm == Algorithm::Sha256).then_some(())
     }
 }
 

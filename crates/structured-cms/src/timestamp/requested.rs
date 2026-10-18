@@ -1,11 +1,11 @@
 //! Full parsed-request imprint comparison with both original source contexts.
 
-use super::imprint_check::{ResolveError, Resolved};
+use super::imprint_check::Resolved;
 use super::{ImprintAgreement, MessageImprint};
 use crate::Error;
-use crate::provider::DigestProvider;
 use core::cmp::Ordering;
 use structured_asn1::{Reader, Span};
+use structured_pkix::algorithm::digest::AsnDigest;
 
 /// Combined execution preserves request versus covered-content failure classes.
 #[derive(Debug)]
@@ -70,7 +70,7 @@ impl<'a> MessageImprint<'a> {
     /// remains independent of covered-content agreement; an unusable token
     /// declaration starts no digest state or content pass. No identity Clone,
     /// second token parameter resolve, state reconstruction or rehash is used.
-    pub fn check_requested_content<P: DigestProvider<'a>, S: crate::stream::Source>(
+    pub fn check_requested_content<P: AsnDigest<'a>, S: crate::stream::Source>(
         &self,
         requested: &MessageImprint<'a>,
         provider: &'a P,
@@ -123,7 +123,7 @@ impl<'a> MessageImprint<'a> {
     /// A joined token location uses its token source map; a requested location
     /// uses its own original provenance. Nonce, policy, `certReq` and timeliness
     /// remain separate checks. <https://www.rfc-editor.org/rfc/rfc3161#section-2.2>
-    pub fn matches_request<P: DigestProvider<'a>>(
+    pub fn matches_request<P: AsnDigest<'a>>(
         &self,
         requested: &MessageImprint<'a>,
         provider: &'a P,
@@ -169,7 +169,7 @@ fn preflight<E>(
     Ok(())
 }
 
-fn compare_resolved<'a, P: DigestProvider<'a>>(
+fn compare_resolved<'a, P: AsnDigest<'a>>(
     token_imprint: &MessageImprint<'a>,
     requested: &MessageImprint<'a>,
     provider: &'a P,
@@ -193,7 +193,7 @@ fn compare_resolved<'a, P: DigestProvider<'a>>(
     };
     let execution = token_parent.execution();
     if provider
-        .compare_digest(token, &asked, &execution)
+        .compare(token, &asked, &execution)
         .map_err(|source| RequestImprintError::Callback {
             operand: ImprintOperand::Token,
             span: token_imprint.span(),
@@ -222,7 +222,7 @@ fn compare_resolved<'a, P: DigestProvider<'a>>(
     })
 }
 
-fn resolve<'a, P: DigestProvider<'a>>(
+fn resolve<'a, P: AsnDigest<'a>>(
     imprint: &MessageImprint<'a>,
     provider: &'a P,
     parent: &Reader<'a>,
@@ -230,12 +230,5 @@ fn resolve<'a, P: DigestProvider<'a>>(
 ) -> Result<Resolved<P::Identity>, RequestImprintError<P::Error>> {
     imprint
         .resolve(provider, parent)
-        .map_err(|error| match error {
-            ResolveError::Processing(source) => RequestImprintError::Processing { operand, source },
-            ResolveError::Callback(source) => RequestImprintError::Callback {
-                operand,
-                span: imprint.span(),
-                source,
-            },
-        })
+        .map_err(|source| RequestImprintError::Processing { operand, source })
 }

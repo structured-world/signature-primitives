@@ -75,6 +75,13 @@ fn every_identifier_renders_as_the_dotted_form_it_is_documented_with() {
         (super::EC_PUBLIC_KEY, "1.2.840.10045.2.1"),
         (super::ED25519, "1.3.101.112"),
         (super::ED448, "1.3.101.113"),
+        (super::SHA1, "1.3.14.3.2.26"),
+        (super::SHA256, "2.16.840.1.101.3.4.2.1"),
+        (super::SHA384, "2.16.840.1.101.3.4.2.2"),
+        (super::SHA512, "2.16.840.1.101.3.4.2.3"),
+        (super::SHA224, "2.16.840.1.101.3.4.2.4"),
+        (super::SHA512_224, "2.16.840.1.101.3.4.2.5"),
+        (super::SHA512_256, "2.16.840.1.101.3.4.2.6"),
     ] {
         let execution = crate::fixtures::memory();
         let text = identifier.text(&execution).unwrap();
@@ -159,6 +166,13 @@ fn no_two_identifiers_are_the_same_bytes() {
         super::EC_PUBLIC_KEY,
         super::ED25519,
         super::ED448,
+        super::SHA1,
+        super::SHA256,
+        super::SHA384,
+        super::SHA512,
+        super::SHA224,
+        super::SHA512_224,
+        super::SHA512_256,
     ];
     for (position, identifier) in all.iter().enumerate() {
         assert!(

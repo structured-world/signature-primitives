@@ -5,13 +5,12 @@ use core::{cell::Cell, cmp::Ordering, fmt};
 use p256::ecdsa::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use structured_asn1::digest::Resolution;
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, Work};
-use structured_asn1::{Encoding, Parser, Reader, Tag, universal};
-use structured_cms::provider::{
-    DigestAlgorithm, DigestProvider, Prehash, Resolution, SignatureAnswer, SignatureMode,
-    SignatureProvider,
-};
+use structured_asn1::{Encoding, Parser, Reader};
+use structured_cms::provider::{Prehash, SignatureAnswer, SignatureMode, SignatureProvider};
 use structured_cms::{Octets, binding, oid, prepare, signer::SignerInfo, verify};
+use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 use structured_pkix::{AlgorithmIdentifier, PublicKeyInfo, path::WorkingKey};
 
 const SHA256: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 1];
@@ -53,83 +52,50 @@ struct Oracle {
     received: Cell<[u8; 32]>,
 }
 
-impl<'a> DigestProvider<'a> for Oracle {
-    type Error = Fault;
-    // Only normalized SHA256 is supported; absent/valid NULL are equivalent.
+impl<'a> structured_asn1::digest::Digest<'a> for Oracle {
+    // Only SHA256 is supported; the shared resolver reads its parameters.
     type Identity = ();
     type State = Sha256;
     type Output = [u8; 32];
+    type Error = Fault;
 
-    fn resolve_digest(
-        &'a self,
-        identifier: DigestAlgorithm<'a>,
-        _encoding: Encoding,
-        parent: &Reader<'a>,
-    ) -> Result<Resolution<()>, Fault> {
-        parent.execution().charge_work(10)?;
-        let DigestAlgorithm::Written(identifier) = identifier else {
-            return Ok(Resolution::Unsupported);
-        };
-        if identifier.algorithm().as_bytes() != SHA256 {
-            return Ok(Resolution::Unsupported);
-        }
-        if let Some(mut reader) = identifier
-            .parameters_reader_in(parent, "digest.parameters")
-            .map_err(Fault::Pkix)?
-        {
-            let element = reader
-                .next_element()
-                .map_err(Fault::Asn)?
-                .ok_or(Fault::WrongMode)?;
-            if element.tag() != Tag::primitive(universal::NULL) {
-                return Ok(Resolution::Malformed);
-            }
-            match reader.null(&element) {
-                Ok(()) => {}
-                Err(error) if error.code() == structured_asn1::ErrorCode::MalformedNull => {
-                    return Ok(Resolution::Malformed);
-                }
-                Err(error) => return Err(Fault::Asn(error)),
-            }
-        }
-        // RFC5754 §2: SHA2 receivers accept absent or NULL parameters.
-        Ok(Resolution::Supported(()))
+    fn width(&self, (): &()) -> Option<usize> {
+        Some(32)
     }
-    fn compare_digest<W: Work>(&self, (): &(), (): &(), work: &W) -> Result<Ordering, Fault> {
+    fn compare<W: Work>(&self, (): &(), (): &(), work: &W) -> Result<Ordering, Fault> {
         work.charge_work(1)?;
         Ok(Ordering::Equal)
     }
-    fn digest_width(&self, (): &()) -> Option<usize> {
-        Some(32)
-    }
-    fn start_digest<W: Work>(&'a self, (): &(), work: &W) -> Result<Sha256, Fault> {
+    fn start<W: Work>(&'a self, (): &(), work: &W) -> Result<Resolution<Sha256>, Fault> {
         work.charge_work(64)?;
         self.starts.set(self.starts.get() + 1);
-        Ok(Sha256::new())
+        Ok(Resolution::Supported(Sha256::new()))
     }
-    fn update_digest<W: Work>(
-        &self,
-        state: &mut Sha256,
-        bytes: &[u8],
-        work: &W,
-    ) -> Result<(), Fault> {
+    fn update<W: Work>(&self, state: &mut Sha256, bytes: &[u8], work: &W) -> Result<(), Fault> {
         work.charge_work(bytes.len() as u64 + 64)?;
         state.update(bytes);
         Ok(())
     }
-    fn finish_digest<W: Work>(&self, state: Sha256, work: &W) -> Result<[u8; 32], Fault> {
+    fn finish<W: Work>(&self, state: Sha256, work: &W) -> Result<[u8; 32], Fault> {
         work.charge_work(128)?;
         self.finishes.set(self.finishes.get() + 1);
         Ok(state.finalize().into())
     }
-    fn matches_digest<W: Work>(
+    fn matches<W: Work>(
         &self,
-        digest: Prehash<'_, '_, Self, ()>,
+        (): &(),
+        output: &[u8; 32],
         expected: &[u8],
         work: &W,
     ) -> Result<bool, Fault> {
         work.charge_work(32)?;
-        Ok(digest.as_bytes() == expected)
+        Ok(output.as_slice() == expected)
+    }
+}
+
+impl AsnDigest<'_> for Oracle {
+    fn identity(&self, algorithm: Algorithm) -> Option<()> {
+        (algorithm == Algorithm::Sha256).then_some(())
     }
 }
 

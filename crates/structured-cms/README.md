@@ -39,8 +39,11 @@ structured-cms = "0.2"
   binding never becomes a conforming operation through this recovery.
   `SignerInfo::element()` preserves original container-local provenance.
 - `prepare`, `verify` and `provider` support explicit raw-message and prehashed
-  verification, full algorithm identities and a shared payload pass. Provider
-  and input failures remain distinct from invalid or unsupported signatures.
+  verification, full algorithm identities and a shared payload pass. Digests run
+  through the provider's `structured_asn1::digest::Digest` implementation, and
+  written digest identifiers resolve through `structured_pkix::algorithm::digest`
+  under the encoding of the message they came from. Provider and input failures
+  remain distinct from invalid or unsupported signatures.
 - `ess` checks independent signing-certificate attributes; `counter` walks
   countersignatures using original parent signature content.
 - `timestamp::Request` reads original TimeStampReq. `timestamp::Token` separates

@@ -78,6 +78,17 @@ source unchanged. Dropping a partial iterator drops its remaining values;
 forgetting one can leak values but does not refund the retained allocation.
 Element destructors remain responsible for their own arbitrary work.
 
+## Incremental digest contract
+
+`digest::Digest<'a>` is the one execution contract a consumer implements over
+its cryptographic backend, shared by the PKIX, CMS and XAdES crates: `width`,
+`compare`, `start`, `update`, `finish` and `matches`, each admitting its work in
+the supplied execution first. `start` answers `Unsupported` for a backend without
+streaming capability instead of buffering. `digest::matches_once` runs the same
+contract over one contiguous input. `Resolution` (Supported / Unsupported /
+Malformed) is the shared resolution answer; which algorithm a document names is
+resolved by the format that wrote it. The crate itself contains no engine.
+
 ## Explicit INTEGER recovery
 
 `Reader::integer` and `read_integer` are strict: X.690 §8.3.2 requires minimal

@@ -3,10 +3,10 @@
 use core::cell::Cell;
 use core::cmp::Ordering;
 use std::sync::Arc;
+use structured_asn1::Parser;
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, OwnedVec, Work};
-use structured_asn1::{Encoding, Parser, Reader};
 use structured_cms::digest::{DigestBatch, DigestError, DigestMemo};
-use structured_cms::provider::{DigestAlgorithm, DigestProvider, Prehash, Resolution};
 
 #[test]
 fn finalized_binding_refuses_a_different_provider_instance_before_callback() {
@@ -33,7 +33,7 @@ fn finalized_binding_refuses_a_different_provider_instance_before_callback() {
     let digest = memo.for_request(0, &memory).unwrap().unwrap();
     let error = structured_cms::binding::matches_digest(
         &other,
-        digest.prehash(),
+        digest.finished(),
         &[1, 195],
         &memory,
         "imprint",
@@ -91,21 +91,13 @@ struct Provider {
     matches: Cell<usize>,
 }
 
-impl<'a> DigestProvider<'a> for Provider {
-    type Error = CallbackError;
+impl Digest<'_> for Provider {
     type Identity = Identity;
     type State = State;
     type Output = Output;
+    type Error = CallbackError;
 
-    fn resolve_digest(
-        &'a self,
-        _identifier: DigestAlgorithm<'a>,
-        _encoding: Encoding,
-        _parent: &Reader<'a>,
-    ) -> Result<Resolution<Identity>, CallbackError> {
-        Ok(Resolution::Unsupported)
-    }
-    fn compare_digest<W: Work>(
+    fn compare<W: Work>(
         &self,
         left: &Identity,
         right: &Identity,
@@ -115,29 +107,29 @@ impl<'a> DigestProvider<'a> for Provider {
         self.comparisons.set(self.comparisons.get() + 1);
         Ok((left.algorithm, left.parameters).cmp(&(right.algorithm, right.parameters)))
     }
-    fn digest_width(&self, identity: &Identity) -> Option<usize> {
+    fn width(&self, identity: &Identity) -> Option<usize> {
         if identity.algorithm == 9 {
             None
         } else {
             Some(2)
         }
     }
-    fn start_digest<W: Work>(
-        &'a self,
+    fn start<W: Work>(
+        &self,
         identity: &Identity,
         execution: &W,
-    ) -> Result<State, CallbackError> {
+    ) -> Result<Resolution<State>, CallbackError> {
         execution.charge_work(1)?;
         let mut hold = execution.vector();
         hold.try_reserve_exact(1)?;
         hold.try_push(identity.algorithm)?;
         self.starts.set(self.starts.get() + 1);
-        Ok(State {
+        Ok(Resolution::Supported(State {
             sum: identity.parameters,
             hold: hold.into_owned(),
-        })
+        }))
     }
-    fn update_digest<W: Work>(
+    fn update<W: Work>(
         &self,
         state: &mut State,
         bytes: &[u8],
@@ -153,7 +145,7 @@ impl<'a> DigestProvider<'a> for Provider {
         }
         Ok(())
     }
-    fn finish_digest<W: Work>(&self, state: State, execution: &W) -> Result<Output, CallbackError> {
+    fn finish<W: Work>(&self, state: State, execution: &W) -> Result<Output, CallbackError> {
         execution.charge_work(1)?;
         let mut output = execution.vector();
         output.try_reserve_exact(2)?;
@@ -166,14 +158,15 @@ impl<'a> DigestProvider<'a> for Provider {
         Ok(Output(output.into_owned()))
     }
 
-    fn matches_digest<W: Work>(
+    fn matches<W: Work>(
         &self,
-        digest: Prehash<'_, '_, Self, Identity>,
+        _: &Identity,
+        output: &Output,
         expected: &[u8],
         execution: &W,
     ) -> Result<bool, CallbackError> {
         execution.charge_work(1)?;
-        let bytes = digest.as_bytes();
+        let bytes = output.as_ref();
         if bytes.len() != expected.len() {
             return Ok(false);
         }
@@ -318,15 +311,23 @@ fn original_signed_ranges_get_a_distinct_output_with_the_same_mapped_identity() 
     assert_eq!(prehash.as_bytes(), &[1, expected]);
     assert_eq!(payload_digest.as_bytes(), &[1, 99]);
     assert_ne!(prehash.as_bytes(), payload_digest.as_bytes());
+    let finished = related.finished();
     assert!(
         provider
-            .matches_digest(related.prehash(), &[1, expected], &reader.execution())
+            .matches(
+                finished.identity(),
+                finished.output(),
+                &[1, expected],
+                &reader.execution()
+            )
             .unwrap()
     );
+    let finished = payload_digest.finished();
     assert!(
         !provider
-            .matches_digest(
-                payload_digest.prehash(),
+            .matches(
+                finished.identity(),
+                finished.output(),
                 &[1, expected],
                 &reader.execution()
             )
@@ -410,7 +411,7 @@ fn imprint_binding_admits_current_work_and_checks_actual_width_without_rehashing
         let compare = |expected: &[u8]| {
             binding::matches_digest(
                 &provider,
-                digest.prehash(),
+                digest.finished(),
                 expected,
                 &memory,
                 "imprint",
@@ -438,7 +439,7 @@ fn imprint_binding_admits_current_work_and_checks_actual_width_without_rehashing
         let exhausted = Memory::new(Arc::new(MemoryAccount::new(0, 0)));
         let Err(BindError::Processing(error)) = binding::matches_digest(
             &provider,
-            digest.prehash(),
+            digest.finished(),
             &[algorithm, 195],
             &exhausted,
             "imprint",
@@ -452,7 +453,7 @@ fn imprint_binding_admits_current_work_and_checks_actual_width_without_rehashing
         assert!(matches!(
             binding::matches_digest(
                 &provider,
-                digest.prehash(),
+                digest.finished(),
                 &[algorithm, 195],
                 &exhausted,
                 "imprint",

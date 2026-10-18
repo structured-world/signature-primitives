@@ -4,11 +4,12 @@ use core::cell::Cell;
 use core::cmp::Ordering;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use structured_asn1::Parser;
+use structured_asn1::digest::Resolution;
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, OwnedVec, Work};
-use structured_asn1::{Encoding, Parser, Reader};
-use structured_cms::provider::{DigestAlgorithm, DigestProvider, Prehash, Resolution};
 use structured_cms::stream::{Receiver, Refused, Source};
 use structured_cms::timestamp::{ImprintAgreement, ImprintError, MessageImprint};
+use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 
 const SHA256: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 1];
 
@@ -28,48 +29,26 @@ impl AsRef<[u8]> for Output {
     }
 }
 
-impl<'a> DigestProvider<'a> for Provider {
-    type Error = MemoryError;
+impl structured_asn1::digest::Digest<'_> for Provider {
     type Identity = ();
     type State = Sha256;
     type Output = Output;
+    type Error = MemoryError;
 
-    fn resolve_digest(
-        &'a self,
-        written: DigestAlgorithm<'a>,
-        _: Encoding,
-        parent: &Reader<'a>,
-    ) -> Result<Resolution<()>, MemoryError> {
-        let DigestAlgorithm::Written(written) = written else {
-            return Ok(Resolution::Unsupported);
-        };
-        parent
-            .execution()
-            .charge_work(written.algorithm().as_bytes().len() as u64)?;
-        if self.unsupported || written.algorithm().as_bytes() != SHA256 {
-            return Ok(Resolution::Unsupported);
-        }
-        // This test adapter deliberately supports only the absent-parameters
-        // SHA-256 profile, not a production algorithm dispatcher.
-        if written.parameters().is_some() {
-            return Ok(Resolution::Malformed);
-        }
-        Ok(Resolution::Supported(()))
+    fn width(&self, (): &()) -> Option<usize> {
+        Some(32)
     }
-    fn compare_digest<W: Work>(&self, (): &(), (): &(), work: &W) -> Result<Ordering, MemoryError> {
+    fn compare<W: Work>(&self, (): &(), (): &(), work: &W) -> Result<Ordering, MemoryError> {
         work.charge_work(1)?;
         Ok(Ordering::Equal)
     }
-    fn digest_width(&self, (): &()) -> Option<usize> {
-        Some(32)
-    }
-    fn start_digest<W: Work>(&'a self, (): &(), work: &W) -> Result<Sha256, MemoryError> {
+    fn start<W: Work>(&self, (): &(), work: &W) -> Result<Resolution<Sha256>, MemoryError> {
         // Explicit test allowance, not a qualified production cost model.
         work.charge_work(1)?;
         self.starts.set(self.starts.get() + 1);
-        Ok(Sha256::new())
+        Ok(Resolution::Supported(Sha256::new()))
     }
-    fn update_digest<W: Work>(
+    fn update<W: Work>(
         &self,
         state: &mut Sha256,
         bytes: &[u8],
@@ -79,7 +58,7 @@ impl<'a> DigestProvider<'a> for Provider {
         state.update(bytes);
         Ok(())
     }
-    fn finish_digest<W: Work>(&self, state: Sha256, work: &W) -> Result<Output, MemoryError> {
+    fn finish<W: Work>(&self, state: Sha256, work: &W) -> Result<Output, MemoryError> {
         work.charge_work(1)?;
         let value = state.finalize();
         let mut output = work.vector();
@@ -90,15 +69,22 @@ impl<'a> DigestProvider<'a> for Provider {
         self.finishes.set(self.finishes.get() + 1);
         Ok(Output(output.into_owned()))
     }
-    fn matches_digest<W: Work>(
+    fn matches<W: Work>(
         &self,
-        output: Prehash<'_, '_, Self, ()>,
+        (): &(),
+        output: &Output,
         expected: &[u8],
         work: &W,
     ) -> Result<bool, MemoryError> {
         work.charge_work(expected.len() as u64)?;
         self.comparisons.set(self.comparisons.get() + 1);
-        Ok(output.as_bytes() == expected)
+        Ok(output.as_ref() == expected)
+    }
+}
+
+impl AsnDigest<'_> for Provider {
+    fn identity(&self, algorithm: Algorithm) -> Option<()> {
+        (!self.unsupported && algorithm == Algorithm::Sha256).then_some(())
     }
 }
 
@@ -303,10 +289,12 @@ fn aggregate_refusal_and_foreign_session_abort_before_input() {
         matches!(imprint.check_content(&provider, &other, &mut input), Err(ImprintError::Processing(error)) if error.is_terminal())
     );
     assert_eq!(memory.work_used(), work);
+    // The shared resolver pays for the identifier first; a spent aggregate is
+    // a resource refusal there, before any provider callback.
     memory.charge_work(memory.work_remaining() as u64).unwrap();
     assert!(matches!(
         imprint.check_content(&provider, &reader, &mut input),
-        Err(ImprintError::Callback(_))
+        Err(ImprintError::Processing(error)) if error.is_resource()
     ));
     assert_eq!(input.passes, 0);
     assert_eq!(provider.starts.get(), 0);

@@ -2,12 +2,14 @@
 
 use super::{CertificateId, IssuerAgreement, SigningAttributes};
 use crate::digest::{DigestBatch, DigestError, PassError};
-use crate::provider::{DigestProvider, Resolution};
+use crate::provider::Finished;
 use crate::stream::RangesError;
 use crate::{Error, Octets};
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{Execution, OwnedVec, Work};
 use structured_asn1::{Reader, Span};
 use structured_pkix::Certificate;
+use structured_pkix::algorithm::digest::AsnDigest;
 
 /// Agreement of one ESS first identifier with a caller-selected certificate.
 /// None of these answers independently establishes signature/path trust or
@@ -44,7 +46,7 @@ pub struct Bindings {
 pub enum BindingError<E> {
     /// Original common processing/resource refusal and its source location.
     Processing(Error),
-    /// Original resolver/comparison failure, including backend resources.
+    /// Original comparison failure, including backend resources.
     Callback {
         /// Original enclosing ESS field whose callback refused.
         field: &'static str,
@@ -99,8 +101,8 @@ enum Request<I, H> {
 }
 
 type PreparedRequest<'a, 'p, P> = Result<
-    Request<<P as DigestProvider<'a>>::Identity, Expected<'a, Execution<'p>>>,
-    BindingError<<P as DigestProvider<'a>>::Error>,
+    Request<<P as Digest<'a>>::Identity, Expected<'a, Execution<'p>>>,
+    BindingError<<P as Digest<'a>>::Error>,
 >;
 
 impl<'a> SigningAttributes<'a> {
@@ -112,7 +114,7 @@ impl<'a> SigningAttributes<'a> {
     /// its own outcome, while the target issuer is prepared at most once. Later
     /// identifiers and policy terms remain signed validation-set restrictions in
     /// this object; the caller must enforce them and signature/path/time policy.
-    pub fn bind_certificate<P: DigestProvider<'a>>(
+    pub fn bind_certificate<P: AsnDigest<'a>>(
         &self,
         provider: &'a P,
         certificate: &Certificate<'_>,
@@ -194,7 +196,7 @@ impl<'a> SigningAttributes<'a> {
                 provider,
                 request.identifier,
                 request.expected.as_bytes(),
-                digest.prehash(),
+                digest.finished(),
                 certificate,
                 parent,
                 &mut issuer,
@@ -207,7 +209,7 @@ impl<'a> SigningAttributes<'a> {
     }
 }
 
-fn prepare_request<'a, 'p, P: DigestProvider<'a>>(
+fn prepare_request<'a, 'p, P: AsnDigest<'a>>(
     provider: &'a P,
     identifier: &CertificateId<'a>,
     parent: &'p Reader<'a>,
@@ -224,18 +226,13 @@ fn prepare_request<'a, 'p, P: DigestProvider<'a>>(
     execution
         .charge_work(1)
         .map_err(|reason| BindingError::Processing(Error::resource(reason, field, at)))?;
-    let resolved = provider
-        .resolve_digest(identifier.digest_algorithm(), parent.encoding(), parent)
-        .map_err(|source| BindingError::Callback {
-            field,
-            span: identifier.element().span(),
-            source,
-        })?;
+    let resolved = crate::provider::resolve_digest(provider, identifier.digest_algorithm(), parent)
+        .map_err(BindingError::Processing)?;
     match resolved {
         Resolution::Unsupported => Ok(Request::Answer(Binding::Unsupported)),
         Resolution::Malformed => Ok(Request::Answer(Binding::MalformedAlgorithm)),
         Resolution::Supported(identity) => {
-            if let Some(width) = provider.digest_width(&identity)
+            if let Some(width) = provider.width(&identity)
                 && width != identifier.hashed().len()
             {
                 return Ok(Request::Answer(Binding::MalformedHash));
@@ -274,22 +271,27 @@ fn prepare_expected<'a, W: Work, E>(
     Ok(Expected::Joined(joined))
 }
 
-fn compare_binding<'a, 'c, 'p, P: DigestProvider<'a>>(
+fn compare_binding<'a, 'c, 'p, P: Digest<'a>>(
     provider: &P,
     identifier: &CertificateId<'a>,
     expected: &[u8],
-    digest: crate::provider::Prehash<'_, '_, P, P::Identity>,
+    digest: Finished<'_, P, P::Identity, P::Output>,
     certificate: &Certificate<'c>,
     parent: &'p Reader<'_>,
     issuer: &mut Option<structured_pkix::Ordered<'c, Execution<'p>>>,
 ) -> Result<Binding, BindingError<P::Error>> {
     // Variable-width identities still require complete declared/actual output
     // agreement. A width mismatch is malformed, never an ordinary hash mismatch.
-    if expected.len() != digest.as_bytes().len() {
+    if expected.len() != digest.output().as_ref().len() {
         return Ok(Binding::MalformedHash);
     }
     let matches = provider
-        .matches_digest(digest, expected, &parent.execution())
+        .matches(
+            digest.identity(),
+            digest.output(),
+            expected,
+            &parent.execution(),
+        )
         .map_err(|source| BindingError::Callback {
             field: identifier.field,
             span: identifier.element().span(),

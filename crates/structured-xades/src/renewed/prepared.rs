@@ -3,7 +3,7 @@
 use super::{CheckError, CheckResult, Checked, Report, check};
 use crate::{
     binary::BinaryXml,
-    digest::StreamingDigest,
+    certificate::DigestProvider,
     prepare::{Preparation, Prepared},
     timestamp::TimestampXml,
     xml::{Access, Xml},
@@ -64,10 +64,16 @@ pub type PreparedResult<'prepared, X, PE> = CheckResult<
 /// historical algorithm acceptance from container presence; those decisions
 /// require the caller's policy and original archive coverage.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-pub fn check_prepared<'prepared, X: TimestampXml + BinaryXml, P: StreamingDigest<X>, W: Work>(
+pub fn check_prepared<
+    'prepared,
+    'q,
+    X: TimestampXml + BinaryXml,
+    P: DigestProvider<'q, X>,
+    W: Work,
+>(
     xml: &X,
     prepared: &'prepared Prepared<X>,
-    provider: &P,
+    provider: &'q P,
     work: &W,
 ) -> PreparedResult<'prepared, X, P::Error> {
     let layout = prepared.bound().containers();

@@ -155,7 +155,6 @@ fn crl_value_combines_fields_and_digest_of_the_same_original_list() {
             Some(validation::ReferenceDigest::Compared(Agreement::Matches))
         );
         assert_eq!(provider.started.get(), 1);
-        assert_eq!(provider.one_shot.get(), 0);
         assert_eq!(query.used(), 0);
         assert_eq!(storage.used(), held);
         assert_eq!(storage.work_used(), spent);

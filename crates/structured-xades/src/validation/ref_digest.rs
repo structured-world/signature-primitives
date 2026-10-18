@@ -3,9 +3,8 @@
 use super::{ReferenceKind, ReferenceProperty};
 use crate::{
     binary::{self, BinaryXml, Location},
-    certificate::Agreement,
-    digest::{self, StreamingDigest},
-    material,
+    certificate::{Agreement, DigestProvider},
+    digest, material,
     xml::Access,
 };
 use structured_asn1::memory::Work;
@@ -74,12 +73,12 @@ pub enum ReferenceDigestError<PE> {
 /// retention alone does not certify valid DER; parse/authenticate the actual
 /// material through the material/PKIX pipeline separately. Neither agreement
 /// nor a URI proves incorporation, issuer identity, path use or a baseline.
-pub fn compare_reference_digest<X: BinaryXml, P: StreamingDigest<X>, W: Work>(
+pub fn compare_reference_digest<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: Work>(
     xml: &X,
     references: &ReferenceProperty<X::Id, X::Document, X::Generation>,
     index: usize,
     source: &material::Material<X>,
-    provider: &P,
+    provider: &'p P,
     execution: &W,
 ) -> binary::BinaryResult<ReferenceDigest, X, ReferenceDigestError<P::Error>> {
     compare_reference_target(
@@ -99,12 +98,12 @@ pub fn compare_reference_digest<X: BinaryXml, P: StreamingDigest<X>, W: Work>(
 /// This does not imply that an external value is incorporated in the signature.
 /// The Annex A full-DER/whole-response and separate identifier obligations are
 /// identical to [`compare_reference_digest`]; no basic-only OCSP hash is allowed.
-pub fn compare_reference_target<X: BinaryXml, P: StreamingDigest<X>, W: Work>(
+pub fn compare_reference_target<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: Work>(
     xml: &X,
     references: &ReferenceProperty<X::Id, X::Document, X::Generation>,
     index: usize,
     target: ReferenceTarget<'_, '_, X::Id, X::Document, X::Generation>,
-    provider: &P,
+    provider: &'p P,
     execution: &W,
 ) -> binary::BinaryResult<ReferenceDigest, X, ReferenceDigestError<P::Error>> {
     let location = Location {

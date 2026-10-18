@@ -3,10 +3,12 @@
 use super::{HashAlgorithmReading, MessageImprint};
 use crate::Error;
 use crate::digest::{DigestBatch, DigestError, PassError};
-use crate::provider::{DigestAlgorithm, DigestProvider, Resolution};
+use crate::provider::DigestAlgorithm;
 use crate::stream::Source;
 use structured_asn1::Reader;
+use structured_asn1::digest::Resolution;
 use structured_asn1::memory::Work;
+use structured_pkix::algorithm::digest::AsnDigest;
 
 /// Imprint agreement alone does not establish token signature or authority trust.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,8 +32,6 @@ pub enum ImprintAgreement {
 pub enum ImprintError<SE, PE> {
     /// Original common processing/resource failure.
     Processing(Error),
-    /// Original selected-provider failure, including its resource cause.
-    Callback(PE),
     /// Digest admission/finalization or provider output-contract failure.
     Digest(DigestError<PE>),
     /// Final output comparison or provider output-contract failure.
@@ -47,11 +47,6 @@ pub(super) enum Resolved<I> {
     Unusable(ImprintAgreement),
 }
 
-pub(super) enum ResolveError<E> {
-    Processing(Error),
-    Callback(E),
-}
-
 impl<'a> MessageImprint<'a> {
     /// Computes the declared imprint over exactly one complete source pass.
     ///
@@ -62,7 +57,7 @@ impl<'a> MessageImprint<'a> {
     /// Source/provider/resource failures cannot become `Differs`. Success is an
     /// imprint fact only; signature, ESS, path, request and time acceptance remain
     /// separate checks. <https://www.rfc-editor.org/rfc/rfc3161#section-2.4.1>
-    pub fn check_content<P: DigestProvider<'a>, S: Source>(
+    pub fn check_content<P: AsnDigest<'a>, S: Source>(
         &self,
         provider: &'a P,
         parent: &Reader<'a>,
@@ -70,10 +65,7 @@ impl<'a> MessageImprint<'a> {
     ) -> Result<ImprintAgreement, ImprintError<S::Error, P::Error>> {
         let resolved = self
             .resolve(provider, parent)
-            .map_err(|error| match error {
-                ResolveError::Processing(error) => ImprintError::Processing(error),
-                ResolveError::Callback(error) => ImprintError::Callback(error),
-            })?;
+            .map_err(ImprintError::Processing)?;
         match resolved {
             Resolved::Ready(identity) => self.compute(provider, parent, source, identity),
             Resolved::Unusable(answer) => Ok(answer),
@@ -91,29 +83,24 @@ impl<'a> MessageImprint<'a> {
         Ok(())
     }
 
-    pub(super) fn resolve<P: DigestProvider<'a>>(
+    pub(super) fn resolve<P: AsnDigest<'a>>(
         &self,
         provider: &'a P,
         parent: &Reader<'a>,
-    ) -> Result<Resolved<P::Identity>, ResolveError<P::Error>> {
-        crate::provider::require_instance(provider, self.fields().enclosing, self.span().start)
-            .map_err(ResolveError::Processing)?;
-        self.require_session(parent)
-            .map_err(ResolveError::Processing)?;
+    ) -> crate::Result<Resolved<P::Identity>> {
+        crate::provider::require_instance(provider, self.fields().enclosing, self.span().start)?;
+        self.require_session(parent)?;
         if !self.faults().is_empty() {
             return Ok(Resolved::Unusable(ImprintAgreement::MalformedImprint));
         }
         let HashAlgorithmReading::Identifier(identifier) = self.algorithm() else {
             return Ok(Resolved::Unusable(ImprintAgreement::MalformedImprint));
         };
-        let identity = match provider
-            .resolve_digest(
-                DigestAlgorithm::Written(*identifier),
-                parent.encoding(),
-                parent,
-            )
-            .map_err(ResolveError::Callback)?
-        {
+        let identity = match crate::provider::resolve_digest(
+            provider,
+            DigestAlgorithm::Written(*identifier),
+            parent,
+        )? {
             Resolution::Supported(identity) => identity,
             Resolution::Malformed => {
                 return Ok(Resolved::Unusable(ImprintAgreement::MalformedAlgorithm));
@@ -122,7 +109,7 @@ impl<'a> MessageImprint<'a> {
                 return Ok(Resolved::Unusable(ImprintAgreement::Unsupported));
             }
         };
-        if let Some(width) = provider.digest_width(&identity)
+        if let Some(width) = provider.width(&identity)
             && self.hashed().len() != width
         {
             return Ok(Resolved::Unusable(ImprintAgreement::MalformedHash));
@@ -130,7 +117,7 @@ impl<'a> MessageImprint<'a> {
         Ok(Resolved::Ready(identity))
     }
 
-    pub(super) fn compute<P: DigestProvider<'a>, S: Source>(
+    pub(super) fn compute<P: AsnDigest<'a>, S: Source>(
         &self,
         provider: &'a P,
         parent: &Reader<'a>,
@@ -164,7 +151,7 @@ impl<'a> MessageImprint<'a> {
             .ok_or(ImprintError::LostRequest)?;
         let matches = crate::binding::matches_digest(
             provider,
-            output.prehash(),
+            output.finished(),
             expected,
             &execution,
             field,

@@ -1,14 +1,16 @@
 //! `RustCrypto` is an independent test provider, never a production backend.
 
+use crate::algorithm::digest::{Algorithm, AsnDigest};
 use crate::fixtures::{
     CertificateParts, bits, boolean, context, extension, generalized_time, int, null, octets,
     oid as encoded_oid, seq, tlv,
 };
 use crate::{AlgorithmIdentifier, Certificate, crl, ocsp, oid, path};
-use core::{cell::Cell, num::NonZeroUsize};
+use core::cell::Cell;
 use p256::ecdsa::signature::{Signer, Verifier};
 use sha1::Digest as _;
-use structured_asn1::memory::{Memory, MemoryError};
+use structured_asn1::digest::Resolution;
+use structured_asn1::memory::{Memory, MemoryError, Work};
 use structured_asn1::{BitString, Oid, Parser};
 
 const ECDSA_SHA256: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x48, 0xce, 0x3d, 4, 3, 2]);
@@ -99,32 +101,36 @@ impl path::Verify for Provider {
         })
     }
 }
-impl ocsp::Digest for Provider {
-    type Handle = ();
+impl structured_asn1::digest::Digest<'_> for Provider {
+    type Identity = ();
+    type State = sha1::Sha1;
+    type Output = alloc::vec::Vec<u8>;
     type Error = MemoryError;
-    fn resolve(
-        &self,
-        algorithm: ocsp::DigestAlgorithm<'_>,
-        execution: &Memory,
-    ) -> core::result::Result<Option<ocsp::ResolvedDigest<()>>, Self::Error> {
-        execution.charge_work(16)?;
-        if let ocsp::DigestAlgorithm::Identifier(algorithm) = algorithm
-            && (algorithm.algorithm() != SHA1 || !algorithm.has_no_parameters())
-        {
-            return Ok(None);
-        }
-        Ok(Some(ocsp::ResolvedDigest {
-            handle: (),
-            width: NonZeroUsize::new(20).unwrap(),
-        }))
+    fn width(&self, (): &()) -> Option<usize> {
+        Some(20)
     }
-    fn matches(
+    fn compare<W: Work>(
         &self,
-        (): (),
+        (): &(),
+        (): &(),
+        _: &W,
+    ) -> Result<core::cmp::Ordering, MemoryError> {
+        Ok(core::cmp::Ordering::Equal)
+    }
+    fn start<W: Work>(
+        &self,
+        (): &(),
+        execution: &W,
+    ) -> Result<Resolution<sha1::Sha1>, MemoryError> {
+        execution.charge_work(16)?;
+        Ok(Resolution::Supported(sha1::Sha1::new()))
+    }
+    fn update<W: Work>(
+        &self,
+        state: &mut sha1::Sha1,
         input: &[u8],
-        expected: &[u8],
-        execution: &Memory,
-    ) -> core::result::Result<bool, Self::Error> {
+        execution: &W,
+    ) -> Result<(), MemoryError> {
         execution.charge_work(
             u64::try_from(input.len())
                 .map_err(|_| MemoryError::WorkExceeded)?
@@ -132,7 +138,30 @@ impl ocsp::Digest for Provider {
                 .ok_or(MemoryError::WorkExceeded)?,
         )?;
         self.hashes.set(self.hashes.get() + 1);
-        Ok(sha1::Sha1::digest(input).as_slice() == expected)
+        state.update(input);
+        Ok(())
+    }
+    fn finish<W: Work>(
+        &self,
+        state: sha1::Sha1,
+        _: &W,
+    ) -> Result<alloc::vec::Vec<u8>, MemoryError> {
+        Ok(state.finalize().to_vec())
+    }
+    fn matches<W: Work>(
+        &self,
+        (): &(),
+        output: &alloc::vec::Vec<u8>,
+        expected: &[u8],
+        execution: &W,
+    ) -> Result<bool, MemoryError> {
+        execution.charge_work(expected.len() as u64)?;
+        Ok(output.as_slice() == expected)
+    }
+}
+impl AsnDigest<'_> for Provider {
+    fn identity(&self, algorithm: Algorithm) -> Option<()> {
+        (algorithm == Algorithm::Sha1).then_some(())
     }
 }
 

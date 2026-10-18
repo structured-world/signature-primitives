@@ -1,7 +1,8 @@
 //! Applicable assertions are selected without discarding duplicate evidence.
 
-use super::{CertMatch, Digest, SignedResponse, SingleResponse};
+use super::{CertMatch, SignedResponse, SingleResponse};
 use crate::Certificate;
+use crate::algorithm::digest::AsnDigest;
 use crate::error::{CallbackResult, Error};
 use structured_asn1::memory::Work;
 
@@ -25,6 +26,8 @@ pub enum Lookup<'r, 'a> {
     UnsupportedHash(&'r SingleResponse<'a>),
     /// Known fixed-output hash width contradicts the original `CertID` bytes.
     MalformedHashWidth(&'r SingleResponse<'a>),
+    /// A candidate's hash identifier writes parameters its algorithm does not take.
+    MalformedHashAlgorithm(&'r SingleResponse<'a>),
 }
 
 impl<'r, 'a> SignedResponse<'r, 'a> {
@@ -33,11 +36,11 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
     /// certificate. The caller binds these inputs to its actual request and
     /// checks nonce/intended recipient separately; identity alone is insufficient.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-3.2>
-    pub fn find<D: Digest<E>, E: Work>(
+    pub fn find<'d, D: AsnDigest<'d> + ?Sized, E: Work>(
         self,
         target: &Certificate<'_>,
         issuer: &Certificate<'_>,
-        digest: &D,
+        digest: &'d D,
         execution: &E,
     ) -> CallbackResult<Lookup<'r, 'a>, D::Error> {
         let mut first = None;
@@ -49,6 +52,9 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
                 CertMatch::Differs => {}
                 CertMatch::UnsupportedHash => return Ok(Lookup::UnsupportedHash(response)),
                 CertMatch::MalformedHashWidth => return Ok(Lookup::MalformedHashWidth(response)),
+                CertMatch::MalformedHashAlgorithm => {
+                    return Ok(Lookup::MalformedHashAlgorithm(response));
+                }
                 CertMatch::Matches => match first {
                     None => first = Some(response),
                     Some(first) => {

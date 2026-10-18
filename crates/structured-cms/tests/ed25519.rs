@@ -5,13 +5,12 @@ use core::{cell::Cell, cmp::Ordering};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha512};
 use std::sync::Arc;
+use structured_asn1::digest::Resolution;
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, OwnedVec, Work};
 use structured_asn1::{Encoding, Parser, Reader};
-use structured_cms::provider::{
-    DigestAlgorithm, DigestProvider, Prehash, Resolution, SignatureAnswer, SignatureMode,
-    SignatureProvider,
-};
+use structured_cms::provider::{Prehash, SignatureAnswer, SignatureMode, SignatureProvider};
 use structured_cms::{Octets, binding, oid, prepare, signer::SignerInfo, verify};
+use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 use structured_pkix::{AlgorithmIdentifier, PublicKeyInfo, path::WorkingKey};
 
 const SHA512: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 3];
@@ -47,73 +46,55 @@ struct Raw<'a> {
     input: Option<OwnedVec<u8>>,
 }
 
-impl<'a> DigestProvider<'a> for Oracle {
-    type Error = Failure;
+impl<'a> structured_asn1::digest::Digest<'a> for Oracle {
     type Identity = ();
     type State = Sha512;
     type Output = [u8; 64];
+    type Error = Failure;
 
-    fn resolve_digest(
-        &'a self,
-        identifier: DigestAlgorithm<'a>,
-        _encoding: Encoding,
-        parent: &Reader<'a>,
-    ) -> Result<Resolution<()>, Failure> {
-        parent.execution().charge_work(SHA512.len() as u64 + 1)?;
-        self.digest_resolutions
-            .set(self.digest_resolutions.get() + 1);
-        let DigestAlgorithm::Written(identifier) = identifier else {
-            return Ok(Resolution::Unsupported);
-        };
-        if identifier.algorithm().as_bytes() != SHA512 {
-            return Ok(Resolution::Unsupported);
-        }
-        // RFC8419 §2.3 requires absent SHA-512 parameters in this profile.
-        if identifier.parameters().is_some() {
-            return Ok(Resolution::Malformed);
-        }
-        Ok(Resolution::Supported(()))
+    fn width(&self, (): &()) -> Option<usize> {
+        Some(64)
     }
 
-    fn compare_digest<W: Work>(&self, (): &(), (): &(), work: &W) -> Result<Ordering, Failure> {
+    fn compare<W: Work>(&self, (): &(), (): &(), work: &W) -> Result<Ordering, Failure> {
         work.charge_work(1)?;
         Ok(Ordering::Equal)
     }
 
-    fn digest_width(&self, (): &()) -> Option<usize> {
-        Some(64)
-    }
-
-    fn start_digest<W: Work>(&'a self, (): &(), work: &W) -> Result<Sha512, Failure> {
+    fn start<W: Work>(&'a self, (): &(), work: &W) -> Result<Resolution<Sha512>, Failure> {
         work.charge_work(128)?;
         self.digest_starts.set(self.digest_starts.get() + 1);
-        Ok(Sha512::new())
+        Ok(Resolution::Supported(Sha512::new()))
     }
 
-    fn update_digest<W: Work>(
-        &self,
-        state: &mut Sha512,
-        bytes: &[u8],
-        work: &W,
-    ) -> Result<(), Failure> {
+    fn update<W: Work>(&self, state: &mut Sha512, bytes: &[u8], work: &W) -> Result<(), Failure> {
         work.charge_work(bytes.len() as u64 + 128)?;
         state.update(bytes);
         Ok(())
     }
 
-    fn finish_digest<W: Work>(&self, state: Sha512, work: &W) -> Result<[u8; 64], Failure> {
+    fn finish<W: Work>(&self, state: Sha512, work: &W) -> Result<[u8; 64], Failure> {
         work.charge_work(256)?;
         Ok(state.finalize().into())
     }
 
-    fn matches_digest<W: Work>(
+    fn matches<W: Work>(
         &self,
-        digest: Prehash<'_, '_, Self, ()>,
+        (): &(),
+        output: &[u8; 64],
         expected: &[u8],
         work: &W,
     ) -> Result<bool, Failure> {
         work.charge_work(64)?;
-        Ok(digest.as_bytes() == expected)
+        Ok(output.as_slice() == expected)
+    }
+}
+
+impl AsnDigest<'_> for Oracle {
+    fn identity(&self, algorithm: Algorithm) -> Option<()> {
+        self.digest_resolutions
+            .set(self.digest_resolutions.get() + 1);
+        (algorithm == Algorithm::Sha512).then_some(())
     }
 }
 

@@ -3,16 +3,17 @@
 use super::{ReferenceDigestError, ReferenceKind};
 use crate::{
     binary::{self, BinaryXml, Location},
-    certificate::{Agreement, FormatDigest},
-    digest::{self, StreamingDigest},
+    certificate::{Agreement, DigestProvider, FormatDigest},
+    digest,
     material::{self, Retained},
     prepare::{Preparation, Prepared},
     timestamp::{CarriedMaterial, TokenSource},
     xml::{Access, Xml},
 };
 use core::{cmp::Ordering, ops::Range};
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{HashWork, MemoryError, OwnedMap, OwnedVec, Work};
-use structured_cms::{provider::Resolution, stream::RangesError};
+use structured_cms::stream::RangesError;
 
 /// How one original reference participated in the complete digest search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,7 +287,7 @@ impl HashWork for CacheKey {
     }
 }
 
-pub(super) struct Memo<'provider, 'source, X: Xml, P: StreamingDigest<X>, W: Work> {
+pub(super) struct Memo<'provider, 'source, P: Digest<'provider>, W: Work> {
     provider: &'provider P,
     identities: OwnedVec<FormatDigest<P::Identity>, W>,
     entries: OwnedMap<CacheKey, Option<Resolution<P::Output>>, W>,
@@ -321,7 +322,7 @@ impl<N: Copy + Eq, D: Copy + Eq, G: Copy + Eq> CandidatePools<'_, '_, N, D, G> {
     }
 }
 
-impl<'provider, 'source, X: Xml, P: StreamingDigest<X>, W: Work> Memo<'provider, 'source, X, P, W> {
+impl<'provider, 'source, P: Digest<'provider>, W: Work> Memo<'provider, 'source, P, W> {
     pub(super) fn new(provider: &'provider P, work: &W) -> Self {
         Self {
             provider,
@@ -426,7 +427,7 @@ impl<'provider, 'source, X: Xml, P: StreamingDigest<X>, W: Work> Memo<'provider,
             .map_err(digest::Error::Resource)?;
         let identity = &self.identities[method];
         let output =
-            digest::compute_resolved::<X, P, _, W>(identity, &mut [bytes], self.provider, work)?;
+            digest::compute_resolved::<P, _, W>(identity, &mut [bytes], self.provider, work)?;
         let answer = self.matches(identity, &output, expected, work)?;
         *self
             .entries
@@ -450,7 +451,7 @@ impl<'provider, 'source, X: Xml, P: StreamingDigest<X>, W: Work> Memo<'provider,
         };
         work.charge_work(1).map_err(digest::Error::Resource)?;
         self.provider
-            .matches_output(identity.identity(), output, expected, work)
+            .matches(identity.identity(), output, expected, work)
             .map(|same| {
                 if same {
                     Agreement::Matches
@@ -476,14 +477,15 @@ impl<'provider, 'source, X: Xml, P: StreamingDigest<X>, W: Work> Memo<'provider,
 pub fn compare_reference_catalogues<
     'references,
     'source,
+    'p,
     X: BinaryXml,
-    P: StreamingDigest<X>,
+    P: DigestProvider<'p, X>,
     W: Work,
 >(
     xml: &X,
     prepared: &'references Prepared<X>,
     view: &material::View<'source, X::Id, X::Document, X::Generation>,
-    provider: &P,
+    provider: &'p P,
     work: &W,
 ) -> ReferenceCatalogueResult<'references, 'source, X, P::Error> {
     compare_catalogues(xml, prepared, view, None, provider, work)
@@ -501,26 +503,27 @@ pub fn compare_reference_catalogues<
 pub fn compare_reference_catalogues_with_tokens<
     'references,
     'source,
+    'p,
     X: BinaryXml,
-    P: StreamingDigest<X>,
+    P: DigestProvider<'p, X>,
     W: Work,
 >(
     xml: &X,
     prepared: &'references Prepared<X>,
     view: &material::View<'source, X::Id, X::Document, X::Generation>,
     tokens: &CarriedMaterial<'source, X::Id, X::Document, X::Generation>,
-    provider: &P,
+    provider: &'p P,
     work: &W,
 ) -> ReferenceCatalogueResult<'references, 'source, X, P::Error> {
     compare_catalogues(xml, prepared, view, Some(tokens), provider, work)
 }
 
-fn compare_catalogues<'references, 'source, X: BinaryXml, P: StreamingDigest<X>, W: Work>(
+fn compare_catalogues<'references, 'source, 'p, X: BinaryXml, P: DigestProvider<'p, X>, W: Work>(
     xml: &X,
     prepared: &'references Prepared<X>,
     view: &material::View<'source, X::Id, X::Document, X::Generation>,
     tokens: Option<&CarriedMaterial<'source, X::Id, X::Document, X::Generation>>,
-    provider: &P,
+    provider: &'p P,
     work: &W,
 ) -> ReferenceCatalogueResult<'references, 'source, X, P::Error> {
     let original = prepared.bound().containers();
@@ -548,7 +551,7 @@ fn compare_catalogues<'references, 'source, X: BinaryXml, P: StreamingDigest<X>,
         location,
         cause: ReferenceDigestError::Digest(digest::Error::Resource(cause)),
     };
-    let mut memo = Memo::<X, P, W>::new(provider, work);
+    let mut memo = Memo::<P, W>::new(provider, work);
     let mut rows = work.vector();
     let mut comparisons = work.vector();
     for (property, references) in prepared.validation_references().iter().enumerate() {

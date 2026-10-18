@@ -282,5 +282,34 @@ pub const ED25519: Oid<'static> = Oid::from_bytes(&[0x2b, 0x65, 0x70]);
 /// `1.3.101.113`, an Ed448 key.
 pub const ED448: Oid<'static> = Oid::from_bytes(&[0x2b, 0x65, 0x71]);
 
+// Digest algorithms, the identifiers `algorithm::digest` resolves.
+
+/// `1.3.14.3.2.26`, SHA-1.
+pub const SHA1: Oid<'static> = Oid::from_bytes(&[0x2b, 0x0e, 0x03, 0x02, 0x1a]);
+
+/// `2.16.840.1.101.3.4.2.1`, SHA-256.
+pub const SHA256: Oid<'static> =
+    Oid::from_bytes(&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01]);
+
+/// `2.16.840.1.101.3.4.2.2`, SHA-384.
+pub const SHA384: Oid<'static> =
+    Oid::from_bytes(&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02]);
+
+/// `2.16.840.1.101.3.4.2.3`, SHA-512.
+pub const SHA512: Oid<'static> =
+    Oid::from_bytes(&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03]);
+
+/// `2.16.840.1.101.3.4.2.4`, SHA-224.
+pub const SHA224: Oid<'static> =
+    Oid::from_bytes(&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x04]);
+
+/// `2.16.840.1.101.3.4.2.5`, SHA-512/224.
+pub const SHA512_224: Oid<'static> =
+    Oid::from_bytes(&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x05]);
+
+/// `2.16.840.1.101.3.4.2.6`, SHA-512/256.
+pub const SHA512_256: Oid<'static> =
+    Oid::from_bytes(&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x06]);
+
 #[cfg(test)]
 mod tests;

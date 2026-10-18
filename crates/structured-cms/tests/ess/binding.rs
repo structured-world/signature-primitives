@@ -2,22 +2,22 @@
 
 use super::{attribute, certificate, identity, issuer, memory, sequence, signer, tlv, value};
 use core::{cell::Cell, cmp::Ordering};
+use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{MemoryError, Work};
-use structured_asn1::{Encoding, Parser, Reader};
+use structured_asn1::{Encoding, Parser};
 use structured_cms::ess::{Binding, BindingError, SigningAttributes};
 use structured_cms::oid;
-use structured_cms::provider::{
-    DigestAlgorithm, DigestProvider, ImpliedDigest, Prehash, Resolution,
-};
+use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 
 #[derive(Debug)]
 enum Failure {
-    Resource(MemoryError),
+    /// The provider's own admission refused; no test inspects which ceiling.
+    Resource,
     Injected,
 }
 impl From<MemoryError> for Failure {
-    fn from(error: MemoryError) -> Self {
-        Self::Resource(error)
+    fn from(_: MemoryError) -> Self {
+        Self::Resource
     }
 }
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -47,56 +47,15 @@ struct Provider {
     comparisons: Cell<usize>,
     refused: Cell<bool>,
     unsupported: Cell<bool>,
-    malformed: Cell<bool>,
     last_input: Cell<*const u8>,
 }
 
-impl<'a> DigestProvider<'a> for Provider {
-    type Error = Failure;
+impl Digest<'_> for Provider {
     type Identity = Identity;
     type State = State;
     type Output = Output;
-    fn resolve_digest(
-        &'a self,
-        identifier: DigestAlgorithm<'a>,
-        _: Encoding,
-        parent: &Reader<'a>,
-    ) -> Result<Resolution<Identity>, Failure> {
-        parent.execution().charge_work(1)?;
-        if self.refused.get() {
-            return Err(Failure::Injected);
-        }
-        if self.unsupported.get() {
-            return Ok(Resolution::Unsupported);
-        }
-        if self.malformed.get() {
-            return Ok(Resolution::Malformed);
-        }
-        let algorithm = match identifier {
-            DigestAlgorithm::Implied {
-                algorithm: ImpliedDigest::EssSha1,
-                ..
-            } => Hash::Sha1,
-            DigestAlgorithm::Implied {
-                algorithm: ImpliedDigest::EssV2Sha256,
-                ..
-            } => Hash::Sha256,
-            DigestAlgorithm::Written(algorithm) => {
-                parent
-                    .execution()
-                    .charge_work(algorithm.algorithm().as_bytes().len() as u64)?;
-                if algorithm.algorithm() == oid::SHA1 {
-                    Hash::Sha1
-                } else if algorithm.algorithm() == oid::SHA256 {
-                    Hash::Sha256
-                } else {
-                    return Ok(Resolution::Unsupported);
-                }
-            }
-        };
-        Ok(Resolution::Supported(Identity(algorithm)))
-    }
-    fn compare_digest<W: Work>(
+    type Error = Failure;
+    fn compare<W: Work>(
         &self,
         left: &Identity,
         right: &Identity,
@@ -105,25 +64,25 @@ impl<'a> DigestProvider<'a> for Provider {
         execution.charge_work(1)?;
         Ok(left.0.cmp(&right.0))
     }
-    fn digest_width(&self, identity: &Identity) -> Option<usize> {
+    fn width(&self, identity: &Identity) -> Option<usize> {
         Some(match identity.0 {
             Hash::Sha1 => 20,
             Hash::Sha256 => 32,
         })
     }
-    fn start_digest<W: Work>(
-        &'a self,
+    fn start<W: Work>(
+        &self,
         identity: &Identity,
         execution: &W,
-    ) -> Result<State, Failure> {
+    ) -> Result<Resolution<State>, Failure> {
         execution.charge_work(1)?;
         self.starts.set(self.starts.get() + 1);
-        Ok(State {
+        Ok(Resolution::Supported(State {
             sum: 0,
-            width: self.digest_width(identity).unwrap(),
-        })
+            width: self.width(identity).unwrap(),
+        }))
     }
-    fn update_digest<W: Work>(
+    fn update<W: Work>(
         &self,
         state: &mut State,
         bytes: &[u8],
@@ -137,7 +96,7 @@ impl<'a> DigestProvider<'a> for Provider {
         }
         Ok(())
     }
-    fn finish_digest<W: Work>(&self, state: State, execution: &W) -> Result<Output, Failure> {
+    fn finish<W: Work>(&self, state: State, execution: &W) -> Result<Output, Failure> {
         execution.charge_work(1)?;
         self.finishes.set(self.finishes.get() + 1);
         Ok(Output {
@@ -145,15 +104,32 @@ impl<'a> DigestProvider<'a> for Provider {
             width: state.width,
         })
     }
-    fn matches_digest<W: Work>(
+    fn matches<W: Work>(
         &self,
-        digest: Prehash<'_, '_, Self, Identity>,
+        _: &Identity,
+        output: &Output,
         expected: &[u8],
         execution: &W,
     ) -> Result<bool, Failure> {
         execution.charge_work(expected.len() as u64)?;
+        if self.refused.get() {
+            return Err(Failure::Injected);
+        }
         self.comparisons.set(self.comparisons.get() + 1);
-        Ok(digest.as_bytes() == expected)
+        Ok(output.as_ref() == expected)
+    }
+}
+
+impl AsnDigest<'_> for Provider {
+    fn identity(&self, algorithm: Algorithm) -> Option<Identity> {
+        if self.unsupported.get() {
+            return None;
+        }
+        match algorithm {
+            Algorithm::Sha1 => Some(Identity(Hash::Sha1)),
+            Algorithm::Sha256 => Some(Identity(Hash::Sha256)),
+            _ => None,
+        }
     }
 }
 
@@ -239,15 +215,64 @@ fn malformed_width_and_unsupported_do_not_start_a_hash_or_read_certificate_bytes
         Some(Binding::Unsupported)
     );
     provider.unsupported.set(false);
-    provider.malformed.set(true);
+    assert_eq!(provider.starts.get(), 0);
+    assert_eq!(provider.updates.get(), 0);
+    assert_eq!(provider.finishes.get(), 0);
+    assert!(provider.last_input.get().is_null());
+}
+
+#[test]
+fn written_hash_parameters_its_algorithm_does_not_take_are_malformed_before_hashing() {
+    // A V2 identifier writing an INTEGER beside SHA-256 is a malformed
+    // algorithm (RFC 5754 §2 allows only absent or NULL), never a mismatch or
+    // an unsupported mechanism, and no state starts.
+    let certificate_bytes = certificate("issuer", 7);
+    let written = sequence(&[
+        sequence(&[tlv(6, oid::SHA256.as_bytes()), tlv(2, &[1])]),
+        tlv(4, &[7; 32]),
+    ]);
+    let encoded = signer(
+        &[attribute(
+            oid::SIGNING_CERTIFICATE_V2,
+            &[value(&[written], None)],
+        )],
+        &[],
+    );
+    let parser = Parser::ber(memory(1_000_000, 1_000_000));
+    let mut parent = parser.read(&encoded, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let signer = structured_cms::signer::SignerInfo::read(&parent, &element).unwrap();
+    let attributes = SigningAttributes::read(&signer, &parent).unwrap();
+    let certificate = structured_pkix::Certificate::read(&parser, &certificate_bytes, 900).unwrap();
+    let provider = Provider::default();
     assert_eq!(
         attributes
             .bind_certificate(&provider, &certificate, &parent)
             .unwrap()
-            .v1,
+            .v2,
         Some(Binding::MalformedAlgorithm)
     );
-    provider.malformed.set(false);
+    assert_eq!(provider.starts.get(), 0);
+}
+
+#[test]
+fn comparison_refusal_stays_a_callback_error_not_a_mismatch() {
+    // The provider's own comparison fails after hashing; its cause is kept.
+    let certificate_bytes = certificate("issuer", 7);
+    let encoded = signer(
+        &[attribute(
+            oid::SIGNING_CERTIFICATE,
+            &[value(&[identity(&[7; 20])], None)],
+        )],
+        &[],
+    );
+    let parser = Parser::ber(memory(1_000_000, 1_000_000));
+    let mut parent = parser.read(&encoded, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let signer = structured_cms::signer::SignerInfo::read(&parent, &element).unwrap();
+    let attributes = SigningAttributes::read(&signer, &parent).unwrap();
+    let certificate = structured_pkix::Certificate::read(&parser, &certificate_bytes, 900).unwrap();
+    let provider = Provider::default();
     provider.refused.set(true);
     assert!(matches!(
         attributes.bind_certificate(&provider, &certificate, &parent),
@@ -256,10 +281,7 @@ fn malformed_width_and_unsupported_do_not_start_a_hash_or_read_certificate_bytes
             ..
         })
     ));
-    assert_eq!(provider.starts.get(), 0);
-    assert_eq!(provider.updates.get(), 0);
-    assert_eq!(provider.finishes.get(), 0);
-    assert!(provider.last_input.get().is_null());
+    assert_eq!(provider.comparisons.get(), 0);
 }
 
 #[test]
@@ -294,16 +316,16 @@ fn new_local_refusal_is_neither_hash_mismatch_nor_unsupported() {
     );
     let query = limited.read(&[], 1400).unwrap();
     let provider = Provider::default();
-    let Err(BindingError::Callback {
-        source: Failure::Resource(MemoryError::WorkExceeded),
-        field,
-        span,
-    }) = attributes.bind_certificate(&provider, &certificate, &query)
-    else {
-        panic!("resolver local refusal hidden")
+    let result = attributes.bind_certificate(&provider, &certificate, &query);
+    let Err(BindingError::Processing(error)) = result else {
+        panic!("local refusal hidden: {result:?}")
     };
-    assert_eq!(field, "signerInfo.signedAttrs.signingCertificate");
-    assert_eq!(span, attributes.v1().unwrap().signer().element().span());
+    assert!(error.is_resource());
+    assert_eq!(error.field(), "signerInfo.signedAttrs.signingCertificate");
+    assert_eq!(
+        error.offset(),
+        attributes.v1().unwrap().signer().element().span().start
+    );
     assert_eq!(provider.starts.get(), 0);
     assert_eq!(current.used(), 0);
     assert_eq!(storage.used(), held);

@@ -1,10 +1,16 @@
 //! Selected-provider identities and distinct raw versus finalized-prehash inputs.
+//!
+//! Digest execution is the shared [`structured_asn1::digest::Digest`]
+//! contract; ASN.1 digest identifiers resolve through
+//! [`structured_pkix::algorithm::digest`].
 
 use crate::Octets;
 use core::cmp::Ordering;
+use structured_asn1::digest::Resolution;
 use structured_asn1::memory::Work;
 use structured_asn1::{Encoding, Reader, Span};
 use structured_pkix::AlgorithmIdentifier;
+use structured_pkix::algorithm::digest::{self as asn_digest, Algorithm, AsnDigest};
 use structured_pkix::path::WorkingKey;
 mod session;
 pub use session::ProviderSession;
@@ -38,8 +44,8 @@ pub enum ImpliedDigest {
 ///
 /// Implied inputs have no encoded `AlgorithmIdentifier` and no parameter TLV.
 /// A written unsupported/malformed identifier must never become an implied
-/// default. The enclosing field/span locate implied callback failures using
-/// real document provenance, without synthesizing bytes or a new Parser.
+/// default. The enclosing field/span locate the implied identity with real
+/// document provenance, without synthesizing bytes or a new Parser.
 #[derive(Debug, Clone, Copy)]
 pub enum DigestAlgorithm<'a> {
     /// The complete original identifier, encoding and parameter provenance.
@@ -55,15 +61,34 @@ pub enum DigestAlgorithm<'a> {
     },
 }
 
-/// Semantic resolution, distinct from failure to execute the resolver.
-#[derive(Debug)]
-pub enum Resolution<T> {
-    /// Fully resolved algorithm identity, including parameters/output semantics.
-    Supported(T),
-    /// The selected provider cannot answer this mechanism.
-    Unsupported,
-    /// The original algorithm identifier violates the selected algorithm's syntax.
-    Malformed,
+impl ImpliedDigest {
+    /// The algorithm the ESS schema selects.
+    #[must_use]
+    pub const fn algorithm(self) -> Algorithm {
+        match self {
+            Self::EssSha1 => Algorithm::Sha1,
+            Self::EssV2Sha256 => Algorithm::Sha256,
+        }
+    }
+}
+
+/// Resolves a written identifier through the shared ASN.1 resolver, under the
+/// encoding of the document it came from, or an implied ESS algorithm
+/// directly, then asks the provider for its identity.
+pub(crate) fn resolve_digest<'a, P: AsnDigest<'a>>(
+    provider: &P,
+    algorithm: DigestAlgorithm<'_>,
+    parent: &Reader<'_>,
+) -> crate::Result<Resolution<P::Identity>> {
+    match algorithm {
+        DigestAlgorithm::Written(identifier) => {
+            asn_digest::resolve(provider, &identifier, &parent.execution())
+                .map_err(crate::Error::pkix)
+        }
+        DigestAlgorithm::Implied { algorithm, .. } => {
+            Ok(asn_digest::supported(provider, algorithm.algorithm()))
+        }
+    }
 }
 
 /// A cryptographic signature answer after complete input processing.
@@ -102,6 +127,49 @@ pub struct Prehash<'i, 'o, P, I> {
     provider: &'i P,
     identity: &'i I,
     bytes: &'o [u8],
+}
+
+/// A finished digest: the provider's own output and identity, and the
+/// instance that produced them. Only common processing constructs it, from a
+/// state it completed; there is no constructor from arbitrary bytes.
+#[derive(Debug)]
+pub struct Finished<'v, P, I, O> {
+    provider: &'v P,
+    identity: &'v I,
+    output: &'v O,
+}
+
+// Only shared references: copying needs no bound on the referenced types.
+impl<P, I, O> Clone for Finished<'_, P, I, O> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<P, I, O> Copy for Finished<'_, P, I, O> {}
+
+impl<'v, P, I, O: AsRef<[u8]>> Finished<'v, P, I, O> {
+    pub(crate) fn new(provider: &'v P, identity: &'v I, output: &'v O) -> Self {
+        Self {
+            provider,
+            identity,
+            output,
+        }
+    }
+    /// Whether the supplied instance actually completed this output.
+    #[must_use]
+    pub fn from_provider(&self, provider: &P) -> bool {
+        core::ptr::eq(self.provider, provider)
+    }
+    /// Full selected-provider algorithm identity.
+    #[must_use]
+    pub fn identity(&self) -> &'v I {
+        self.identity
+    }
+    /// The provider's own finished output.
+    #[must_use]
+    pub fn output(&self) -> &'v O {
+        self.output
+    }
 }
 
 impl<'i, 'o, P, I> Prehash<'i, 'o, P, I> {
@@ -148,6 +216,16 @@ impl<'p, P, I, O: AsRef<[u8]>> Finalized<'p, P, I, O> {
         Prehash::new(self.provider, &self.identity, self.output.as_ref())
     }
 
+    /// Borrows the provider's own output for its comparison, with provenance.
+    #[must_use]
+    pub fn finished(&self) -> Finished<'_, P, I, O> {
+        Finished {
+            provider: self.provider,
+            identity: &self.identity,
+            output: &self.output,
+        }
+    }
+
     pub(crate) fn new(provider: &'p P, identity: I, output: O) -> Self {
         Self {
             provider,
@@ -157,94 +235,24 @@ impl<'p, P, I, O: AsRef<[u8]>> Finalized<'p, P, I, O> {
     }
 }
 
-/// Narrow digest operations from one explicitly selected provider instance.
+/// Signature operations that stay bound to the same selected provider and key.
 ///
-/// Identities must include algorithm parameters/defaults/output semantics, not
-/// just an OID or byte width. `compare` is a total semantic order: Equal means
-/// the outputs can be shared. Every callback admits its complete transitive
-/// work/storage before execution through the supplied domain. Errors preserve
-/// provider/resource causes; they are never converted to unsupported/malformed.
-/// States/outputs may borrow the selected provider or original document and
-/// impose no Clone, Send or Sync requirement. State initialization must not
-/// retain a reference to the temporary identity object itself.
+/// Digest execution and identities come from the provider's
+/// [`structured_asn1::digest::Digest`] and [`AsnDigest`] implementations; CMS
+/// payload message-digest, ESS certificate hashes and TSP imprints all run
+/// through them with their distinct original covered inputs.
+///
+/// The effective key retains its original SPKI and inherited parameters.
+/// Resolution validates key/algorithm compatibility before raw initialization
+/// or payload I/O. A contiguous-only backend may explicitly buffer with full
+/// admission in its adapter, or report unsupported; it cannot downgrade raw.
 ///
 /// Common processing borrows a stable nonzero-sized selection owner. Ordinary
 /// adapters containing engine/context references already satisfy this. Wrap a
 /// zero-sized stateless adapter in [`ProviderSession`] before using common
 /// processing; otherwise it returns a processing `ProviderMismatch` before
 /// dispatch. Distinct ZST addresses cannot supply instance provenance.
-pub trait DigestProvider<'a>: Sized {
-    /// Original callback failure, including that provider's resource refusal.
-    type Error;
-    /// Fully resolved digest identity.
-    type Identity;
-    /// Digest state, independently movable from its identity object.
-    type State;
-    /// Final output, inline or retaining its own admitted allocation charge.
-    type Output: AsRef<[u8]>;
-
-    /// Resolves original parameters under their producing encoding/work domain.
-    fn resolve_digest(
-        &'a self,
-        identifier: DigestAlgorithm<'a>,
-        encoding: Encoding,
-        parent: &Reader<'a>,
-    ) -> core::result::Result<Resolution<Self::Identity>, Self::Error>;
-    /// Compares full resolved identities after admitting any parameter traversal.
-    fn compare_digest<W: Work>(
-        &self,
-        left: &Self::Identity,
-        right: &Self::Identity,
-        execution: &W,
-    ) -> core::result::Result<Ordering, Self::Error>;
-    /// Expected fixed output width, or None for an identity without a fixed width.
-    /// This is O(1) metadata access on the already resolved identity, not parsing.
-    fn digest_width(&self, identity: &Self::Identity) -> Option<usize>;
-    /// Initializes a state without borrowing the address of `identity`.
-    fn start_digest<W: Work>(
-        &'a self,
-        identity: &Self::Identity,
-        execution: &W,
-    ) -> core::result::Result<Self::State, Self::Error>;
-    /// Admits and processes each complete logical chunk exactly once.
-    fn update_digest<W: Work>(
-        &self,
-        state: &mut Self::State,
-        bytes: &[u8],
-        execution: &W,
-    ) -> core::result::Result<(), Self::Error>;
-    /// Consumes a completed state once; no opaque state cloning or repeated finish.
-    fn finish_digest<W: Work>(
-        &self,
-        state: Self::State,
-        execution: &W,
-    ) -> core::result::Result<Self::Output, Self::Error>;
-
-    /// Compares completed bytes with a declared imprint, without hashing again.
-    ///
-    /// Common schema processing rejects an impossible fixed expected width
-    /// first and checks declared versus actual finalized width even when the
-    /// identity has no fixed width. The callback admits the complete byte comparison in `execution`,
-    /// preserves resource failures and applies its backend's comparison
-    /// strategy, including constant-time equality where its contract requires.
-    /// CMS payload message-digest, ESS certificate hashes and TSP imprints use
-    /// this same operation with their distinct original covered inputs.
-    fn matches_digest<W: Work>(
-        &self,
-        digest: Prehash<'_, '_, Self, Self::Identity>,
-        expected: &[u8],
-        execution: &W,
-    ) -> core::result::Result<bool, Self::Error>;
-}
-
-/// Signature operations that stay bound to the same selected provider and key.
-///
-/// The effective key retains its original SPKI and inherited parameters.
-/// Resolution validates key/algorithm compatibility before raw initialization
-/// or payload I/O. A contiguous-only backend may explicitly buffer with full
-/// admission in its adapter, or report unsupported; it cannot downgrade raw.
-/// The core's digest trait is separate so timestamp imprints need no signer.
-pub trait SignatureProvider<'a>: DigestProvider<'a> {
+pub trait SignatureProvider<'a>: AsnDigest<'a> + Sized {
     /// Fully resolved signature identity, including algorithm-specific defaults.
     type SignatureIdentity;
     /// Raw verification state, initialized with original signature/key first.

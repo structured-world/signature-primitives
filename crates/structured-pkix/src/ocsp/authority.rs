@@ -1,7 +1,8 @@
 //! Explicit issuer scope, separate from request/time/revocation acceptance.
 
-use super::{DelegateFacts, Digest, Lookup, ResponderRevocation, SignedResponse};
+use super::{DelegateFacts, Lookup, ResponderRevocation, SignedResponse};
 use crate::Certificate;
+use crate::algorithm::digest::AsnDigest;
 use crate::error::{CallbackResult, Error, Result};
 use crate::path::WorkingKey;
 use structured_asn1::memory::{MemoryError, Work};
@@ -71,10 +72,10 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
         self.source
     }
     /// Select a target assertion using the same issuer as the signer binding.
-    pub fn find<D: Digest<E>, E: Work>(
+    pub fn find<'d, D: AsnDigest<'d> + ?Sized, E: Work>(
         self,
         target: &Certificate<'_>,
-        digest: &D,
+        digest: &'d D,
         execution: &E,
     ) -> CallbackResult<Lookup<'r, 'a>, D::Error> {
         self.signed.find(target, self.issuer, digest, execution)

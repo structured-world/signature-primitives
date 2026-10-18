@@ -25,6 +25,8 @@ pub enum CheckError<E> {
         /// Actual completed output width.
         actual: usize,
     },
+    /// The provider resolved the digest but cannot stream it.
+    Unstreamable,
 }
 
 /// Original payload acquisition failure remains distinct from execution failure.
@@ -292,7 +294,7 @@ fn check<'a, P: SignatureProvider<'a>, W: Work>(
     {
         match binding::matches_digest(
             provider,
-            payload.prehash(),
+            payload.finished(),
             expected,
             execution,
             "signerInfo.signedAttrs.messageDigest",
@@ -390,6 +392,7 @@ fn digest_error<E>(error: DigestError<E>) -> CheckError<E> {
         DigestError::OutputWidth { expected, actual } => {
             CheckError::OutputWidth { expected, actual }
         }
+        DigestError::Unstreamable => CheckError::Unstreamable,
     }
 }
 fn payload_error<E>(error: PayloadError<E>) -> CheckError<E> {
@@ -431,6 +434,7 @@ impl<E> CheckError<DigestError<E>> {
             Self::Processing(error) => CheckError::Processing(error),
             Self::Callback(error) => digest_error(error),
             Self::OutputWidth { expected, actual } => CheckError::OutputWidth { expected, actual },
+            Self::Unstreamable => CheckError::Unstreamable,
         }
     }
 }

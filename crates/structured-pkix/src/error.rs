@@ -47,6 +47,9 @@ pub enum ErrorCode {
     DefaultWritten,
     /// A value too large for the type this crate represents it in.
     ValueTooLarge,
+    /// A digest provider returned output contradicting its own identity's
+    /// fixed width: a provider contract failure, not a document fault.
+    DigestOutput,
 }
 
 impl fmt::Display for ErrorCode {
@@ -69,6 +72,7 @@ impl fmt::Display for ErrorCode {
             Self::MalformedValue => f.write_str("value the schema does not allow"),
             Self::DefaultWritten => f.write_str("default value explicitly encoded"),
             Self::ValueTooLarge => f.write_str("value too large to represent"),
+            Self::DigestOutput => f.write_str("digest output contradicts its algorithm's width"),
         }
     }
 }

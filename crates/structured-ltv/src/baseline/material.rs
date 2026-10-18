@@ -1,19 +1,15 @@
 //! Same-input composition of whole-signature validation-material facts.
 
-use super::Timed;
-use crate::{
-    material,
-    xml::{Access, Xml},
-};
-use structured_asn1::memory::Work;
-use structured_ltv::pki::ParticipantError;
-use structured_ltv::timestamp::TimestampScope;
+use super::{BasicStage, CredentialMaterial, Timed, X509Material};
+use crate::pki::ParticipantError;
+use crate::source::Query;
+use crate::timestamp::TimestampScope;
 
 /// Linked original time, X.509 and credential-format material reports. Public
 /// input slots cannot manufacture a fact: construction verifies their exact
-/// privately created participant receipts, including selected path contexts.
-/// This is incorporation/placement, not Good status, chronology, algorithm
-/// longevity or caller trust, and cannot by itself assert B-LT acceptance.
+/// participant receipts, including selected path contexts. This is
+/// incorporation/placement, not Good status, chronology, algorithm longevity
+/// or caller trust, and cannot by itself assert B-LT acceptance.
 pub struct LongTerm<'a, T, M, C> {
     timed: &'a T,
     x509: &'a M,
@@ -45,30 +41,19 @@ impl<T, M, C> LongTerm<'_, T, M, C> {
     }
 }
 
-type TimedFor<'a, 'r, 'p, 'v, 'c, 'd, X> =
-    Timed<'a, 'r, 'p, 'v, 'c, 'd, <X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>;
-type ChecksFor<'a, 'r, 'v, 'c, 'd, X> = material::Checks<
+/// A different scope/input receipt is a processing refusal, not absent material.
+pub type MaterialResult<'a, T, M, C, N> = Result<LongTerm<'a, T, M, C>, ParticipantError<N>>;
+
+type TimedOf<'a, 'c, 'd, 'path, 'document, B, Q> = Timed<
     'a,
-    'r,
-    'v,
     'c,
     'd,
-    <X as Xml>::Id,
-    <X as Xml>::Document,
-    <X as Xml>::Generation,
+    B,
+    <B as BasicStage<'path, 'document>>::Signer,
+    <Q as Query>::Id,
+    <Q as Query>::Document,
+    <Q as Query>::Generation,
 >;
-type CredentialsFor<'a, 'v, 'd, A, X> = material::credentials::Report<
-    'a,
-    'v,
-    'd,
-    A,
-    <X as Xml>::Id,
-    <X as Xml>::Document,
-    <X as Xml>::Generation,
->;
-/// A different scope/input receipt is a processing refusal, not absent material.
-pub type MaterialResult<'a, T, M, C, X> =
-    Result<LongTerm<'a, T, M, C>, ParticipantError<<X as Xml>::Id>>;
 
 /// Link the SAME complete participant/status closure and authenticated
 /// credential catalogue to the root/counters/all-token time report. No source
@@ -77,19 +62,26 @@ pub type MaterialResult<'a, T, M, C, X> =
 /// EN319132-1 V1.3.1 §§5.4/6.3(x) require all validation material while keeping
 /// status usability and application trust distinct from incorporated presence.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-pub fn long_term<'s, 'a, 'r, 'p, 'v, 'c, 'd, 'cl, 'rq, 'mv, 'mc, 'au, 'cv, A, X: Xml, W: Work>(
-    timed: &'s TimedFor<'a, 'r, 'p, 'v, 'c, 'd, X>,
-    x509: &'s ChecksFor<'cl, 'rq, 'mv, 'mc, 'd, X>,
-    credentials: &'s CredentialsFor<'au, 'cv, 'd, A, X>,
-    access: &Access<'_, X, W>,
-) -> MaterialResult<
-    's,
-    TimedFor<'a, 'r, 'p, 'v, 'c, 'd, X>,
-    ChecksFor<'cl, 'rq, 'mv, 'mc, 'd, X>,
-    CredentialsFor<'au, 'cv, 'd, A, X>,
-    X,
-> {
-    let requirements = x509.timestamps().inputs().requirements();
+pub fn long_term<'s, 'a, 'c, 'd, 'path, 'document, B, M, C, Q>(
+    timed: &'s TimedOf<'a, 'c, 'd, 'path, 'document, B, Q>,
+    x509: &'s M,
+    credentials: &'s C,
+    query: &Q,
+) -> MaterialResult<'s, TimedOf<'a, 'c, 'd, 'path, 'document, B, Q>, M, C, Q::Id>
+where
+    'document: 'path,
+    B: BasicStage<'path, 'document, Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
+    M: X509Material<
+            'path,
+            'document,
+            Id = Q::Id,
+            Document = Q::Document,
+            Generation = Q::Generation,
+        >,
+    C: CredentialMaterial<Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
+    Q: Query,
+{
+    let requirements = x509.requirements();
     if !matches!(requirements.scope(), TimestampScope::All(_))
         || !matches!(credentials.scope(), TimestampScope::All(_))
     {
@@ -97,13 +89,13 @@ pub fn long_term<'s, 'a, 'r, 'p, 'v, 'c, 'd, 'cl, 'rq, 'mv, 'mc, 'au, 'cv, A, X:
             signature: requirements.signature(),
         });
     }
-    let basic = timed.basic().inputs();
+    let basic = timed.basic();
     requirements.require_inputs(
-        basic.certificate,
-        basic.counters,
+        basic.signer(),
+        basic.counters(),
         credentials.credentials(),
         timed.paths(),
-        access,
+        query,
     )?;
     Ok(LongTerm {
         timed,

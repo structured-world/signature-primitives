@@ -12,6 +12,7 @@
 
 extern crate alloc;
 
+pub mod baseline;
 pub mod material;
 pub mod pki;
 pub mod source;

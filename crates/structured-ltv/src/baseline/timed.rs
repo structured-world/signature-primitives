@@ -1,21 +1,22 @@
 //! Whole original TSA-path census and root signature-time static association.
 
-use super::Basic;
-use crate::certificate::{
-    SignatureTime, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure,
+use super::BasicStage;
+use crate::pki::SignerReceipt;
+use crate::source::{Query, ScopeError};
+use crate::timestamp::{
+    Purpose, SignatureTime, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure,
+    TimestampPaths, TimestampScope, signature_time_path,
 };
-use crate::xml::{Access, AccessError, Xml};
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
-use structured_ltv::timestamp::{Purpose, TimestampPaths, TimestampScope};
 
-/// One actual root `SignatureTimeStamp`'s complete static certificate binding.
+/// One actual root signature timestamp's complete static certificate binding.
 /// Negative results do not disappear because a different timestamp succeeded.
-pub enum SignatureTimeFact<'a, 'path, 'document, N, D, G> {
+pub enum SignatureTimeFact<'a, S, N, D, G> {
     /// Exact original signature input and full generation/static path interval.
-    Bound(SignatureTime<'a, 'path, 'document, N, D, G>),
+    Bound(SignatureTime<'a, S, N, D, G>),
     /// Completed insufficient root certificate/interval fact, not source refusal.
     Unproven {
-        /// Original root `SignatureTimeStamp` property.
+        /// Original root signature timestamp property.
         property: N,
         /// Exact completed negative cause.
         cause: SignatureTimeFailure,
@@ -26,17 +27,17 @@ pub enum SignatureTimeFact<'a, 'path, 'document, N, D, G> {
 /// This does not assert pre-revocation chronology, current/historical status,
 /// format material completeness, algorithm-obsolescence policy or caller trust.
 /// In particular it is NOT an unconditional B-T acceptance verdict.
-pub struct Timed<'a, 'receipt, 'prepared, 'path, 'certificate, 'document, N, D, G> {
-    basic: &'a Basic<'receipt, 'prepared, 'path, 'document, N, D, G>,
+pub struct Timed<'a, 'certificate, 'document, B, S, N, D, G> {
+    basic: &'a B,
     paths: &'a TimestampPaths<'a, 'certificate, 'document, N, D, G>,
-    signatures: OwnedVec<SignatureTimeFact<'a, 'path, 'document, N, D, G>>,
+    signatures: OwnedVec<SignatureTimeFact<'a, S, N, D, G>>,
     static_complete: bool,
 }
 
-impl<'a, 'r, 'p, 'v, 'c, 'd, N, D, G> Timed<'a, 'r, 'p, 'v, 'c, 'd, N, D, G> {
-    /// Same original root field/header/key/digest facts.
+impl<'a, 'c, 'd, B, S, N, D, G> Timed<'a, 'c, 'd, B, S, N, D, G> {
+    /// Same original basic stage.
     #[must_use]
-    pub fn basic(&self) -> &'a Basic<'r, 'p, 'v, 'd, N, D, G> {
+    pub fn basic(&self) -> &'a B {
         self.basic
     }
     /// Complete source-derived root AND nested-counter timestamp/TSA paths.
@@ -44,9 +45,9 @@ impl<'a, 'r, 'p, 'v, 'c, 'd, N, D, G> Timed<'a, 'r, 'p, 'v, 'c, 'd, N, D, G> {
     pub fn paths(&self) -> &'a TimestampPaths<'a, 'c, 'd, N, D, G> {
         self.paths
     }
-    /// Every original root `SignatureTimeStamp`, including negative associations.
+    /// Every original root signature timestamp, including negative associations.
     #[must_use]
-    pub fn signatures(&self) -> &[SignatureTimeFact<'a, 'v, 'd, N, D, G>] {
+    pub fn signatures(&self) -> &[SignatureTimeFact<'a, S, N, D, G>] {
         &self.signatures
     }
     /// At least one root signature timestamp exists and every such timestamp's
@@ -59,8 +60,8 @@ impl<'a, 'r, 'p, 'v, 'c, 'd, N, D, G> Timed<'a, 'r, 'p, 'v, 'c, 'd, N, D, G> {
 }
 
 /// Terminal original source/selection/query refusal; no partial timed report.
-#[derive(Debug)]
-pub enum TimeError<E, N> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeError<N> {
     /// Wrong scope, source or selected root/counter census.
     Foreign {
         /// Original selected signature.
@@ -68,9 +69,9 @@ pub enum TimeError<E, N> {
     },
     /// Original current-operation/source failure, including the complete
     /// counter-census membership query.
-    Access(AccessError<E, N>),
+    Scope(ScopeError<N>),
     /// Original signature-time association processing failed.
-    Signature(SignatureTimeError<E, N>),
+    Signature(SignatureTimeError<N>),
     /// Work or retained report capacity was refused before use.
     Resource {
         /// Original selecting signature/property.
@@ -80,84 +81,79 @@ pub enum TimeError<E, N> {
     },
 }
 
-/// Complete original static time facts in this XML owner's identity domain.
-pub type TimeResult<'a, 'r, 'p, 'v, 'c, 'd, X> = Result<
-    Timed<'a, 'r, 'p, 'v, 'c, 'd, <X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>,
-    TimeError<<X as Xml>::Error, <X as Xml>::Id>,
+/// Complete original static time facts in the query's identity domain.
+pub type TimeResult<'a, 'c, 'd, B, S, Q> = Result<
+    Timed<'a, 'c, 'd, B, S, <Q as Query>::Id, <Q as Query>::Document, <Q as Query>::Generation>,
+    TimeError<<Q as Query>::Id>,
 >;
-type Root<'a, 'r, 'p, 'v, 'd, X> =
-    &'a Basic<'r, 'p, 'v, 'd, <X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>;
 
 /// Bind all-token TSA-path facts to the SAME root/counter source and every actual
 /// root signature timestamp to the checked signer. Reuses previously established
 /// complete generation intervals, not another UTC parse or certificate hash.
-/// EN319132-1 §§5.3/6.3(n,o) distinguish `SignatureTimeStamp` from other roles and
-/// require EACH such timestamp before expiration/revocation. This function
+/// EN319132-1 §§5.3/6.3(n,o) distinguish the signature timestamp from other
+/// kinds and require EACH such timestamp before expiration/revocation. This
 /// establishes the static interval part; actual revocation facts stay explicit.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-pub fn timestamped<'a, 'r, 'p, 'v, 'c, 'd, X: Xml, W: Work>(
-    basic: Root<'a, 'r, 'p, 'v, 'd, X>,
-    paths: &'a TimestampPaths<'a, 'c, 'd, X::Id, X::Document, X::Generation>,
-    access: &Access<'_, X, W>,
-) -> TimeResult<'a, 'r, 'p, 'v, 'c, 'd, X> {
-    let prepared = basic.inputs().fields.prepared();
-    let signature = prepared.bound().containers().signature();
+pub fn timestamped<'a, 'c, 'd, 'path, 'document, B, Q>(
+    basic: &'a B,
+    paths: &'a TimestampPaths<'a, 'c, 'd, Q::Id, Q::Document, Q::Generation>,
+    query: &Q,
+) -> TimeResult<'a, 'c, 'd, B, B::Signer, Q>
+where
+    'document: 'path,
+    B: BasicStage<'path, 'document, Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
+    Q: Query,
+{
+    let selected = basic.signer().signature();
+    let signature = selected.node;
     let required = paths.required();
     let resource = |cause| TimeError::Resource {
         node: signature,
         cause,
     };
     if !matches!(required.scope(), TimestampScope::All(_))
-        || required.scope().location().snapshot != access.snapshot()
-        || prepared.bound().containers().snapshot() != access.snapshot()
-        || !access
-            .equal_id(required.signature(), signature)
+        || required.scope().location().snapshot != query.snapshot()
+        || selected.snapshot != query.snapshot()
+        || !query
+            .equal(required.signature(), signature)
             .map_err(resource)?
         || !required
-            .includes_counters(basic.inputs().counters, access)
-            .map_err(|cause| TimeError::Access(cause.into()))?
+            .includes_counters(basic.counters(), query)
+            .map_err(TimeError::Scope)?
     {
         return Err(TimeError::Foreign { signature });
     }
-    access
-        .query(signature, |_, _, _| Ok(()))
-        .map_err(TimeError::Access)?;
-    let mut signatures = access.execution().vector();
-    let mut static_complete = basic.all_root_requirements_met();
+    query.admit(signature, 1).map_err(TimeError::Scope)?;
+    let mut signatures = query.execution().vector();
+    let mut static_complete = basic.all_requirements_met();
     for path in paths.paths() {
-        access.execution().charge_work(1).map_err(resource)?;
+        query.execution().charge_work(1).map_err(resource)?;
         let verified = path.actor().verified();
         if verified.purpose() != Purpose::Signature
-            || !access
-                .equal_id(verified.signature(), signature)
+            || !query
+                .equal(verified.signature(), signature)
                 .map_err(resource)?
         {
             continue;
         }
         signatures.try_reserve(1).map_err(resource)?;
-        let fact = match basic
-            .inputs()
-            .certificate
-            .bind_signature_time_path(path, access)
-            .map_err(TimeError::Signature)?
-        {
-            SignatureTimeBinding::Bound(value) => SignatureTimeFact::Bound(value),
-            SignatureTimeBinding::Unproven(cause) => {
-                static_complete = false;
-                SignatureTimeFact::Unproven {
-                    property: verified.property(),
-                    cause,
+        let fact =
+            match signature_time_path(basic.signer(), path, query).map_err(TimeError::Signature)? {
+                SignatureTimeBinding::Bound(value) => SignatureTimeFact::Bound(value),
+                SignatureTimeBinding::Unproven(cause) => {
+                    static_complete = false;
+                    SignatureTimeFact::Unproven {
+                        property: verified.property(),
+                        cause,
+                    }
                 }
-            }
-        };
+            };
         signatures.try_push(fact).map_err(resource)?;
     }
     if signatures.is_empty() {
         static_complete = false;
     }
-    access
-        .query(signature, |_, _, _| Ok(()))
-        .map_err(TimeError::Access)?;
+    query.admit(signature, 1).map_err(TimeError::Scope)?;
     Ok(Timed {
         basic,
         paths,

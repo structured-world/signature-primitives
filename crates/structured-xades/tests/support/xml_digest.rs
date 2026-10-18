@@ -3213,8 +3213,7 @@ fn assert_archive_pair<W: Work>(
 ) {
     // Joined material must retain both complete reports and exact original
     // credential identity, without reauthentication, copying or query credit.
-    use structured_ltv::pki;
-    use structured_xades::baseline;
+    use structured_ltv::{baseline, pki};
     let held = access.execution().memory().used();
     let combined = baseline::archive_material(x509, format, access).unwrap();
     assert_eq!(combined.all_material_covered(), covered);
@@ -3238,7 +3237,7 @@ fn assert_archive_pair<W: Work>(
             Err(baseline::ArchiveCensusError::Missing {property}) if property==second));
     } else {
         let census = baseline::archives(prepared, &reports, access).unwrap();
-        assert!(core::ptr::eq(census.prepared(), prepared));
+        assert!(core::ptr::eq(census.census(), prepared));
         assert_eq!(census.reports().len(), 1);
         assert_eq!(census.all_archive_material_covered(), covered);
     }
@@ -3271,8 +3270,8 @@ fn assert_archive_pair<W: Work>(
     assert_eq!(denied.used(), 0);
     assert!(matches!(
         baseline::archives(prepared, &reports, &query),
-        Err(baseline::ArchiveCensusError::Access(
-            AccessError::Resource {
+        Err(baseline::ArchiveCensusError::Scope(
+            structured_ltv::source::ScopeError::Resource {
                 cause: MemoryError::WorkExceeded,
                 ..
             }
@@ -4358,7 +4357,10 @@ fn assert_cached_signature_time(
     // association as original UTC evaluation. It must not widen role/key
     // acceptance or turn an inadmissible current query into a cached success.
     use structured_ltv::pki;
-    use structured_xades::certificate::SignatureTimeBinding;
+    use structured_ltv::source::ScopeError;
+    use structured_ltv::timestamp::{
+        SignatureTimeBinding, SignatureTimeError, signature_time, signature_time_path,
+    };
     let pki::TimestampBinding::Bound(timestamp) =
         path.bind_timestamp(actor, utc, access.execution()).unwrap()
     else {
@@ -4370,28 +4372,26 @@ fn assert_cached_signature_time(
         structured_asn1::memory::MemoryAccount::new(0, 1),
     ));
     let lower = Access::new(xml, access.snapshot(), &short);
-    assert!(
-        matches!(selected.bind_signature_time_path(&timestamp, &lower),
-        Err(structured_xades::certificate::SignatureTimeError::Access(
-            AccessError::Resource {node, cause:structured_asn1::memory::MemoryError::WorkExceeded}
-        )) if node == actor.verified().property())
-    );
+    assert!(matches!(signature_time_path(selected, &timestamp, &lower),
+        Err(SignatureTimeError::Scope(
+            ScopeError::Resource {node, cause:structured_asn1::memory::MemoryError::WorkExceeded}
+        )) if node == actor.verified().property()));
     assert_eq!(short.work_remaining(), 1);
     match (
-        selected.bind_signature_time(actor.verified(), utc, access),
-        selected.bind_signature_time_path(&timestamp, access),
+        signature_time(selected, actor.verified(), utc, access),
+        signature_time_path(selected, &timestamp, access),
     ) {
         (Ok(SignatureTimeBinding::Bound(original)), Ok(SignatureTimeBinding::Bound(cached))) => {
             assert_eq!(original.generation(), cached.generation());
             assert!(core::ptr::eq(cached.timestamp(), actor.verified()));
-            assert!(core::ptr::eq(cached.certificate(), selected));
+            assert!(core::ptr::eq(cached.signer(), selected));
         }
         (Ok(SignatureTimeBinding::Unproven(a)), Ok(SignatureTimeBinding::Unproven(b))) => {
             assert_eq!(a, b);
         }
         (
-            Err(structured_xades::certificate::SignatureTimeError::Role { property: a }),
-            Err(structured_xades::certificate::SignatureTimeError::Role { property: b }),
+            Err(SignatureTimeError::Purpose { property: a }),
+            Err(SignatureTimeError::Purpose { property: b }),
         ) => {
             assert_eq!(a, b);
         }
@@ -4450,7 +4450,7 @@ fn nonce_freshness_cannot_supply_an_unstated_signature_time_accuracy() {
             .unwrap()
             .expect("valid requested nonce and original mathematical coverage");
         assert!(
-            matches!(selected.bind_signature_time(&verified,&utc,&access),Err(certificate::SignatureTimeError::Time {property,cause:structured_ltv::timestamp::TemporalError::Uncertain(BoundUncertainty::AccuracyUnstated)}) if property==node)
+            matches!(structured_ltv::timestamp::signature_time(&selected,&verified,&utc,&access),Err(structured_ltv::timestamp::SignatureTimeError::Time {property,cause:structured_ltv::timestamp::TemporalError::Uncertain(BoundUncertainty::AccuracyUnstated)}) if property==node)
         );
         assert_eq!(provider.verified.get(), 1);
     });
@@ -4465,13 +4465,14 @@ fn assert_signature_time(
     association: structured_xades::certificate::KeyAssociation,
     xml: &Tree,
 ) {
-    use structured_ltv::timestamp::Purpose;
-    use structured_xades::certificate::{
-        self, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure,
+    use structured_ltv::source::ScopeError;
+    use structured_ltv::timestamp::{
+        Purpose, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure, signature_time,
     };
-    let result = selected.bind_signature_time(verified, utc, access);
+    use structured_xades::certificate;
+    let result = signature_time(selected, verified, utc, access);
     if verified.purpose() != Purpose::Signature {
-        assert!(matches!(result, Err(SignatureTimeError::Role { .. })));
+        assert!(matches!(result, Err(SignatureTimeError::Purpose { .. })));
     } else if association != certificate::KeyAssociation::Same {
         assert!(matches!(
             result.unwrap(),
@@ -4486,7 +4487,7 @@ fn assert_signature_time(
         let SignatureTimeBinding::Bound(link) = result.unwrap() else {
             panic!("same signature at its actual generation")
         };
-        assert!(core::ptr::eq(link.certificate(), selected));
+        assert!(core::ptr::eq(link.signer(), selected));
         assert!(core::ptr::eq(link.timestamp(), verified));
         assert_eq!(link.generation().earliest.seconds(), 1_767_225_600);
         assert_eq!(link.generation().earliest, link.generation().latest);
@@ -4496,8 +4497,8 @@ fn assert_signature_time(
     ));
     let denied_access = Access::new(xml, xml.snapshot(), &denied);
     assert!(matches!(
-        selected.bind_signature_time(verified, utc, &denied_access),
-        Err(SignatureTimeError::Access(AccessError::Resource { .. }))
+        signature_time(selected, verified, utc, &denied_access),
+        Err(SignatureTimeError::Scope(ScopeError::Resource { .. }))
     ));
     let foreign = Access::new(
         xml,
@@ -4508,13 +4509,13 @@ fn assert_signature_time(
         access.execution(),
     );
     assert!(matches!(
-        selected.bind_signature_time(verified, utc, &foreign),
+        signature_time(selected, verified, utc, &foreign),
         Err(SignatureTimeError::Foreign { .. })
     ));
     xml.generation.set(xml.generation.get() + 1);
     assert!(matches!(
-        selected.bind_signature_time(verified, utc, access),
-        Err(SignatureTimeError::Access(AccessError::Changed { .. }))
+        signature_time(selected, verified, utc, access),
+        Err(SignatureTimeError::Scope(ScopeError::Changed { .. }))
     ));
 }
 impl Digest<'_> for Oracle {

@@ -1,10 +1,14 @@
 //! One requested baseline level over its complete linked stage reports.
 
-use super::{ArchiveMaterial, Archives, Basic, LongTerm, Timed};
-use crate::{material, prepare::Preparation, unsigned::Requirements};
+use super::Basic;
+use crate::{
+    certificate::CheckedPathCertificate, material, prepare::Preparation, unsigned::Requirements,
+};
+use structured_ltv::baseline::{ArchiveMaterial, Archives, LongTerm, Timed};
 
 type BasicOf<'a, N, D, G> = Basic<'a, 'a, 'a, 'a, N, D, G>;
-type TimedOf<'a, N, D, G> = Timed<'a, 'a, 'a, 'a, 'a, 'a, N, D, G>;
+type TimedOf<'a, N, D, G> =
+    Timed<'a, 'a, 'a, BasicOf<'a, N, D, G>, CheckedPathCertificate<'a, 'a, N, D, G>, N, D, G>;
 type CredentialsOf<'a, A, N, D, G> = material::credentials::Report<'a, 'a, 'a, A, N, D, G>;
 type LongTermOf<'a, A, N, D, G> = LongTerm<
     'a,
@@ -163,7 +167,7 @@ pub fn assess<A, N: Copy, D: Copy, G: Copy>(
             archives,
         } => {
             let census = long_term.credentials().credentials();
-            if !core::ptr::eq(archives.prepared(), evidence.prepared())
+            if !core::ptr::eq(archives.census(), evidence.prepared())
                 || archives
                     .reports()
                     .iter()

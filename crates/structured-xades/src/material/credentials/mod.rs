@@ -16,6 +16,7 @@ use crate::credential::{Checked, Credential, ParticipantCredentials};
 use crate::reference::VisitError;
 use crate::xml::{Access, AccessError, Snapshot, Xml};
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::baseline::CredentialMaterial;
 use structured_ltv::material::{ArchiveError, ArtifactRef, IndexError};
 use structured_ltv::timestamp::{ObligationError, TimestampScope};
 
@@ -160,6 +161,28 @@ impl<'auth, 'path, 'document, A, N: Copy, D: Copy, G: Copy>
     #[must_use]
     pub fn snapshot(&self) -> Snapshot<D, G> {
         self.credentials.snapshot()
+    }
+}
+
+impl<'path, 'document, A, N: Copy, D: Copy, G: Copy> CredentialMaterial
+    for Report<'_, 'path, 'document, A, N, D, G>
+{
+    type Id = N;
+    type Document = D;
+    type Generation = G;
+    type Credentials = ParticipantCredentials<'path, 'document, A, N, D, G>;
+
+    fn scope(&self) -> TimestampScope<N, D, G> {
+        self.scope
+    }
+    fn snapshot(&self) -> Snapshot<D, G> {
+        self.credentials.snapshot()
+    }
+    fn credentials(&self) -> &Self::Credentials {
+        self.credentials
+    }
+    fn all_requirements_met(&self) -> bool {
+        self.complete
     }
 }
 

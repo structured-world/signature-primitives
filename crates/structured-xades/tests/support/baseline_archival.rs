@@ -1,10 +1,11 @@
 //! B-LTA level over one original preparation's complete stage chain.
 
 use super::{
-    LongTermReport, NoCredentials, Tree, fixture, funded, timestamp_oracle, values, xml_digest,
+    LongTermReport, NoCredentials, TimedReport, Tree, fixture, funded, timestamp_oracle, values,
+    xml_digest,
 };
 use structured_asn1::memory::{Memory, Work};
-use structured_ltv::pki;
+use structured_ltv::{baseline as composed, pki};
 use structured_xades::{
     baseline, certificate, credential, material, prepare, timestamp, unsigned,
     xml::{Access, Xml},
@@ -171,7 +172,7 @@ fn archival_level_joins_whole_and_archive_material_of_one_preparation() {
             else {
                 panic!("complete original earlier-token census")
             };
-            let timed = baseline::timestamped(&basic, &paths, &access).unwrap();
+            let timed = composed::timestamped(&basic, &paths, &access).unwrap();
             let coverage = timestamp::Input::prepare(
                 &xml,
                 prepared.bound(),
@@ -206,7 +207,7 @@ struct Chain<'a> {
     operation: &'a structured_asn1::Reader<'a>,
     paths: &'a structured_ltv::timestamp::TimestampPaths<'a, 'a, 'a, usize, u8, u8>,
     prior: &'a structured_ltv::timestamp::TimestampPaths<'a, 'a, 'a, usize, u8, u8>,
-    timed: &'a baseline::Timed<'a, 'a, 'a, 'a, 'a, 'a, usize, u8, u8>,
+    timed: &'a TimedReport<'a, 'a, 'a, 'a, 'a, 'a, 'a>,
     coverage: &'a structured_ltv::material::Coverage<usize, u8, u8, Memory>,
     evidence: &'a structured_ltv::timestamp::Verified<usize, u8, u8>,
 }
@@ -272,7 +273,7 @@ impl Chain<'_> {
                     )
                     .unwrap();
                     let long_term =
-                        baseline::long_term(self.timed, &x509, &format, &access).unwrap();
+                        composed::long_term(self.timed, &x509, &format, &access).unwrap();
                     assert!(long_term.all_material_requirements_met());
                     let archive = Archive {
                         chain: self,
@@ -339,9 +340,9 @@ impl Archive<'_> {
             access,
         )
         .unwrap();
-        let pair = baseline::archive_material(&x509, &format, access).unwrap();
+        let pair = composed::archive_material(&x509, &format, access).unwrap();
         let reports = [&pair];
-        let census = baseline::archives(chain.prepared, &reports, access).unwrap();
+        let census = composed::archives(chain.prepared, &reports, access).unwrap();
         assert!(census.all_archive_material_covered());
         let assessed = baseline::assess(baseline::Evidence::Archival {
             long_term: self.long_term,

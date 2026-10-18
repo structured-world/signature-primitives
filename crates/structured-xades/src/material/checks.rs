@@ -9,8 +9,9 @@ use crate::pki::CounterPaths;
 use crate::prepare::Prepared;
 use crate::xml::{Access, Xml};
 use structured_asn1::memory::Work;
+use structured_ltv::baseline::X509Material;
 use structured_ltv::material::{Incorporation, IncorporationError, artifact_uses, incorporation};
-use structured_ltv::pki::{ParticipantClosure, UsesError, authority_uses};
+use structured_ltv::pki::{ParticipantClosure, ParticipantRequirements, UsesError, authority_uses};
 
 /// All whole-signature X.509 presence and placement checks derived from the
 /// SAME complete participant/status closure and original artifact index.
@@ -60,6 +61,21 @@ impl<N: Copy, D: Copy, G: Copy> Checks<'_, '_, '_, '_, '_, N, D, G> {
             && self.conditional.findings().is_empty()
             && self.exclusive.findings().is_empty()
             && self.timestamps.findings().is_empty()
+    }
+}
+
+impl<'v, 'd, N: Copy, D: Copy, G: Copy> X509Material<'v, 'd>
+    for Checks<'_, '_, 'v, '_, 'd, N, D, G>
+{
+    type Id = N;
+    type Document = D;
+    type Generation = G;
+
+    fn requirements(&self) -> &ParticipantRequirements<'v, 'd, N, D, G> {
+        self.timestamps.inputs().requirements()
+    }
+    fn all_x509_requirements_met(&self) -> bool {
+        Checks::all_x509_requirements_met(self)
     }
 }
 

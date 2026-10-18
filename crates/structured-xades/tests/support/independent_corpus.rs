@@ -41,6 +41,25 @@ pub fn check(directory: &Path) {
     compare(&xml, archive, directory, "archive-input.bin", 1);
 }
 
+/// Called by the pinned external corpus runner for a signature with exactly
+/// one root signature timestamp and no archive.
+///
+/// # Panics
+/// Fails the qualification if an oracle file is missing or common input bytes
+/// differ from the independently verified signature-timestamp imprint.
+pub fn check_signature(directory: &Path) {
+    // EN319132-1 §5.3: only the canonicalized SignatureValue is covered, so
+    // the same common Input must select exactly that one independent piece.
+    let mut xml = Tree::normal();
+    append(&mut xml, 8, DS, "CanonicalizationMethod");
+    append(&mut xml, 8, XADES, "EncapsulatedTimeStamp");
+    xml.canonical_routes.push((
+        12,
+        std::fs::read(directory.join("signature-value.bin")).unwrap(),
+    ));
+    compare(&xml, 8, directory, "signature-input.bin", 0);
+}
+
 fn append(xml: &mut Tree, parent: usize, namespace: &'static str, local: &'static str) -> usize {
     let node = xml.nodes.len();
     xml.nodes.push(element(Some(parent), namespace, local));

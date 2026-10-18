@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Pinned independent XMLDSig/CMS fixture oracles; never a runtime backend.
+"""Pinned independent XMLDSig/CMS/OCSP fixture oracles; never a runtime backend.
 
 Requires curl, xmlsec1, openssl and Python lxml. Upstream data and its LGPL notice stay
-under target/, outside packages. This checks mathematical XML/CMS signatures,
-not trust, historical revocation or complete XAdES/archive coverage acceptance.
+under target/, outside packages. This checks mathematical XML/CMS/OCSP signatures and
+the original bytes shared code reads, not trust, historical revocation or complete
+XAdES/archive coverage acceptance.
 """
 
 import base64
@@ -21,10 +22,23 @@ from lxml import etree
 
 REVISION = "9f3af8f2ca672b8948e0a3ee8687e53adf9f5c33"
 BASE = f"https://raw.githubusercontent.com/esig/dss/{REVISION}/"
-FIXTURE = "dss-xades/src/test/resources/validation/xades-lta-valid.xml"
-SHA256 = "d6ba7c610b283e8ccd8a0161081bc702c8ce31a1268369c2899a7c7c25cb6038"
+VALIDATION = "dss-xades/src/test/resources/validation/"
 DS = "http://www.w3.org/2000/09/xmldsig#"
 XADES = "http://uri.etsi.org/01903/v1.3.2#"
+EXCLUSIVE = "http://www.w3.org/2001/10/xml-exc-c14n#"
+# One fixture per baseline level. EN 319 132-1 V1.3.1 table 2 permits validation
+# values at B-T, so the B-LT fixture is also the B-T qualification input.
+FIXTURES = {
+    "b": {"file": "dss-signed.xml", "tokens": 0, "unsigned": [],
+          "sha256": "5b8b3f4a9ed2d83905f42339fe2f2455679d99ff392c182d57ca91a20ab28bb2"},
+    "lt": {"file": "xades-lt-with-expired-ocsp-responder.xml", "tokens": 1,
+           "unsigned": ["SignatureTimeStamp", "CertificateValues", "RevocationValues"],
+           "sha256": "61d53a31920f8990c8d6d6636cc91e0a4ee274a77da2e0f29cf83ce4187e856c"},
+    "lta": {"file": "xades-lta-valid.xml", "tokens": 2,
+            "unsigned": ["SignatureTimeStamp", "CertificateValues", "RevocationValues",
+                         "ArchiveTimeStamp"],
+            "sha256": "d6ba7c610b283e8ccd8a0161081bc702c8ce31a1268369c2899a7c7c25cb6038"},
+}
 
 
 def run(arguments):
@@ -41,14 +55,12 @@ def fetch(path):
                 "--max-time", "60", BASE + path]).stdout
 
 
-def fixture_bytes(output):
-    target = output / "xades-lta-valid.xml"
-    original = target.read_bytes() if target.exists() else fetch(FIXTURE)
-    if hashlib.sha256(original).hexdigest() != SHA256:
-        raise RuntimeError("independent fixture SHA256 mismatch")
-    # Preserve the original publisher notice next to all downloaded test data.
-    if not (output / "LICENSE.upstream").exists():
-        (output / "LICENSE.upstream").write_bytes(fetch("LICENSE"))
+def fixture_bytes(output, spec):
+    output.mkdir(parents=True, exist_ok=True)
+    target = output / spec["file"]
+    original = target.read_bytes() if target.exists() else fetch(VALIDATION + spec["file"])
+    if hashlib.sha256(original).hexdigest() != spec["sha256"]:
+        raise RuntimeError(f"independent fixture SHA256 mismatch: {spec['file']}")
     target.write_bytes(original)
     return target, original
 
@@ -57,8 +69,10 @@ def verify_xml(output, target, original, tree):
     certificate = tree.find(f".//{{{DS}}}KeyInfo/{{{DS}}}X509Data/{{{DS}}}X509Certificate")
     if certificate is None:
         raise RuntimeError("fixture has no original signer certificate")
+    signer = base64.b64decode(certificate.text)
+    (output / "signer.der").write_bytes(signer)
     key = output / "signer.pem"
-    key.write_text(ssl.DER_cert_to_PEM_cert(base64.b64decode(certificate.text)))
+    key.write_text(ssl.DER_cert_to_PEM_cert(signer))
     # This is historical fixture signature math, explicitly NOT certificate
     # trust or current validity. Do not export this setting to runtime policy.
     command = ["xmlsec1", "--verify", "--print-debug", "--insecure", "--pubkey-cert-pem", str(key),
@@ -69,7 +83,7 @@ def verify_xml(output, target, original, tree):
     (output / "xmlsec-valid.log").write_bytes(checked.stdout + checked.stderr)
     # Change only SignatureValue. Preserve the exact signed document spelling;
     # a serializer-induced reference failure would not exercise this oracle.
-    value = tree.find(f"{{{DS}}}SignatureValue")
+    value = tree.find(f".//{{{DS}}}SignatureValue")
     if value is None or not value.text:
         raise RuntimeError("fixture has no signature value")
     encoded = value.text.encode("utf-8")
@@ -89,9 +103,37 @@ def verify_xml(output, target, original, tree):
         raise RuntimeError("mutation did not isolate signature mathematics")
 
 
-def verify_tokens(output, tree):
+def verify_census(tree, spec):
+    # EN 319 132-1 V1.3.1 table 2: KeyInfo, SigningTime and SigningCertificateV2
+    # are mandatory at every level; the version 1 SigningCertificate is forbidden.
+    for name in ("SigningTime", "SigningCertificateV2"):
+        if len(list(tree.iter(f"{{{XADES}}}{name}"))) != 1:
+            raise RuntimeError(f"fixture lacks exactly one {name}")
+    if list(tree.iter(f"{{{XADES}}}SigningCertificate")):
+        raise RuntimeError("fixture carries the forbidden SigningCertificate")
+    unsigned = tree.find(f".//{{{XADES}}}UnsignedSignatureProperties")
+    names = [] if unsigned is None else [child.tag.split("}")[1] for child in unsigned]
+    if names != spec["unsigned"]:
+        raise RuntimeError(f"independent unsigned-property census changed: {names}")
+
+
+def signing_certificate(output, tree):
+    # EN319132-1 §5.2.2: the signed digest and IssuerSerialV2 of the one
+    # SigningCertificateV2 entry, for the shared readers to bind to the signer.
+    entries = list(tree.iter(f"{{{XADES}}}SigningCertificateV2"))[0].findall(f"{{{XADES}}}Cert")
+    if len(entries) != 1:
+        raise RuntimeError("independent signing-certificate census changed")
+    method = entries[0].find(f"{{{XADES}}}CertDigest/{{{DS}}}DigestMethod").get("Algorithm")
+    value = entries[0].find(f"{{{XADES}}}CertDigest/{{{DS}}}DigestValue").text
+    (output / "cert-digest-method.txt").write_text(method)
+    (output / "cert-digest.bin").write_bytes(base64.b64decode(value))
+    hint = entries[0].find(f"{{{XADES}}}IssuerSerialV2")
+    (output / "issuer-serial.der").write_bytes(base64.b64decode(hint.text))
+
+
+def verify_tokens(output, tree, count):
     tokens = list(tree.iter(f"{{{XADES}}}EncapsulatedTimeStamp"))
-    if len(tokens) != 2:
+    if len(tokens) != count:
         raise RuntimeError("fixture token census changed")
     for ordinal, token in enumerate(tokens):
         path = output / f"token-{ordinal}.der"
@@ -102,29 +144,71 @@ def verify_tokens(output, tree):
         (output / f"cms-{ordinal}.log").write_bytes(checked.stdout + checked.stderr)
 
 
-def original_inputs(output, target):
+def verify_validation_values(output, tree):
+    # Certificates and OCSP responses exactly as incorporated. OpenSSL checks
+    # each response signature with a key from the same CertificateValues; the
+    # responder chain, its expiry and status usability are deliberately unchecked.
+    certificates = [base64.b64decode(node.text)
+                    for node in tree.iter(f"{{{XADES}}}EncapsulatedX509Certificate")]
+    bundle = output / "certificate-values.pem"
+    bundle.write_text("".join(ssl.DER_cert_to_PEM_cert(value) for value in certificates))
+    for ordinal, value in enumerate(certificates):
+        (output / f"certificate-{ordinal}.der").write_bytes(value)
+    responses = list(tree.iter(f"{{{XADES}}}EncapsulatedOCSPValue"))
+    if len(responses) != 1:
+        raise RuntimeError("independent OCSP census changed")
+    for ordinal, response in enumerate(responses):
+        path = output / f"ocsp-{ordinal}.der"
+        path.write_bytes(base64.b64decode(response.text))
+        checked = run(["openssl", "ocsp", "-respin", str(path), "-resp_text",
+                       "-VAfile", str(bundle), "-no_cert_verify"])
+        log = checked.stdout + checked.stderr
+        (output / f"ocsp-{ordinal}.log").write_bytes(log)
+        if b"Response verify OK" not in log or b"Cert Status: good" not in log:
+            raise RuntimeError("OCSP signature or recorded status differs")
+
+
+def canonical(node):
+    return etree.tostring(node, method="c14n", exclusive=True, with_comments=False)
+
+
+def parse(target):
     # Test-only independent libxml2 C14N oracle, never a product dependency.
+    return etree.parse(str(target), etree.XMLParser(resolve_entities=False, no_network=True))
+
+
+def signature_input(output, target):
+    # EN319132-1 §5.3: the signature timestamp covers the canonicalized
+    # SignatureValue under its own CanonicalizationMethod.
+    tree = parse(target)
+    ns = {"d": DS, "x": XADES}
+    methods = tree.xpath("//x:SignatureTimeStamp/d:CanonicalizationMethod/@Algorithm",
+                         namespaces=ns)
+    if methods != [EXCLUSIVE]:
+        raise RuntimeError("independent signature-timestamp C14N changed")
+    value = canonical(tree.xpath("//d:Signature/d:SignatureValue", namespaces=ns)[0])
+    (output / "signature-value.bin").write_bytes(value)
+    (output / "signature-input.bin").write_bytes(value)
+
+
+def archive_inputs(output, target):
     # EN319132-1 §§5.3, 5.5.2.3: transformed references, SignedInfo,
     # SignatureValue, KeyInfo, preceding unsigned properties, other ds:Objects.
-    tree = etree.parse(str(target), etree.XMLParser(resolve_entities=False, no_network=True))
+    tree = parse(target)
     ns = {"d": DS, "x": XADES, "a": "http://uri.etsi.org/01903/v1.4.1#"}
-    canonical = lambda node: etree.tostring(node, method="c14n", exclusive=True, with_comments=False)
     references = tree.xpath("//d:Signature/d:SignedInfo/d:Reference", namespaces=ns)
     if len(references) != 2:
         raise RuntimeError("independent reference census changed")
     ids = {node.get("Id"): node for node in tree.iter() if node.get("Id")}
     transforms = [node.xpath("d:Transforms/d:Transform/@Algorithm", namespaces=ns)
                   for node in references]
-    if transforms != [[DS + "base64"], ["http://www.w3.org/2001/10/xml-exc-c14n#"]]:
+    if transforms != [[DS + "base64"], [EXCLUSIVE]]:
         raise RuntimeError("independent transform contract changed")
     parts = [base64.b64decode("".join(ids[references[0].get("URI")[1:]].itertext())),
              canonical(ids[references[1].get("URI")[1:]])]
     parts += [canonical(tree.xpath("//d:Signature/d:" + name, namespaces=ns)[0])
               for name in ("SignedInfo", "SignatureValue", "KeyInfo")]
     unsigned = tree.xpath("//x:UnsignedSignatureProperties/*", namespaces=ns)
-    if [etree.QName(node).localname for node in unsigned] != [
-            "SignatureTimeStamp", "CertificateValues", "RevocationValues", "ArchiveTimeStamp"]:
-        raise RuntimeError("independent preceding-property census changed")
     parts += [canonical(node) for node in unsigned[:-1]]
     others = tree.xpath("//d:Signature/d:Object[not(x:QualifyingProperties)]", namespaces=ns)
     if len(others) != 1:
@@ -165,6 +249,7 @@ def qualify_shared(output):
         path = json.dumps(str(root / "crates" / package))
         manifest.append(f"{package} = {{ path = {path}, default-features = false }}")
     manifest += ['p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }',
+                 'sha1 = { version = "=0.11.0", default-features = false }',
                  'sha2 = { version = "=0.11.1", default-features = false }']
     manifest += ["[[test]]", 'name = "independent-tokens"',
                  "path = " + json.dumps(str(root / "scripts/fixtures/xades-dss-corpus.rs"))]
@@ -184,26 +269,40 @@ def qualify_shared(output):
     if source_hash(root) != before or harness_hash(root) != fixture_before:
         raise RuntimeError("source changed during independent qualification")
     (output / "qualification.json").write_text(json.dumps({
-        "upstream_revision": REVISION, "fixture_sha256": SHA256,
+        "upstream_revision": REVISION,
+        "fixtures": {level: {"file": spec["file"], "sha256": spec["sha256"]}
+                     for level, spec in FIXTURES.items()},
         "source_sha256": before, "harness_sha256": fixture_before,
         "xmlsec": run(["xmlsec1", "--version"]).stdout.decode().strip(),
         "openssl": run(["openssl", "version"]).stdout.decode().strip(),
-        "scope": "original signature/archive inputs and XML/CMS math; no trust verdict",
+        "scope": "original signature/timestamp/archive inputs, validation values and "
+                 "XML/CMS/OCSP math; no trust verdict",
     }, indent=2) + "\n")
 
 
 def main():
     output = Path(__file__).resolve().parent.parent / "target/xades-corpus-qualification"
     output.mkdir(parents=True, exist_ok=True)
-    target, original = fixture_bytes(output)
-    tree = ET.fromstring(original)
-    verify_xml(output, target, original, tree)
-    verify_tokens(output, tree)
-    original_inputs(output, target)
+    # Preserve the original publisher notice next to all downloaded test data.
+    if not (output / "LICENSE.upstream").exists():
+        (output / "LICENSE.upstream").write_bytes(fetch("LICENSE"))
+    for level, spec in FIXTURES.items():
+        directory = output / level
+        target, original = fixture_bytes(directory, spec)
+        tree = ET.fromstring(original)
+        verify_census(tree, spec)
+        verify_xml(directory, target, original, tree)
+        signing_certificate(directory, tree)
+        verify_tokens(directory, tree, spec["tokens"])
+    signature_input(output / "lt", output / "lt" / FIXTURES["lt"]["file"])
+    verify_validation_values(output / "lt", ET.fromstring(
+        (output / "lt" / FIXTURES["lt"]["file"]).read_bytes()))
+    archive_inputs(output / "lta", output / "lta" / FIXTURES["lta"]["file"])
     qualify_shared(output)
-    print(f"Independent DSS {REVISION} fixture SHA256 {SHA256}: "
-          "XML signature + both references PASS; isolated signature mutation refused; "
-          "2 CMS token signatures PASS. No trust/archive-coverage verdict.")
+    print(f"Independent DSS {REVISION} B-B/B-LT/B-LTA fixtures: "
+          "XML signatures + references PASS; isolated signature mutations refused; "
+          "3 CMS token signatures and 1 OCSP response signature PASS. "
+          "No trust/archive-coverage verdict.")
 
 
 if __name__ == "__main__":

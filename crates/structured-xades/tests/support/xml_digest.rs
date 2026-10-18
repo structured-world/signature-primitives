@@ -229,8 +229,7 @@ fn basic_assembly_links_original_facts_and_preserves_inclusion_digest_and_hint_f
             assert_basic_hints(&checked, &prepared, mode);
             // The B-B level carries the same negative stage outcome; it is
             // never reported as met when any root condition failed.
-            let level =
-                baseline::assess(baseline::Evidence::<(), _, _, _>::Basic(&checked)).unwrap();
+            let level = baseline::assess(baseline::Evidence::basic(&checked)).unwrap();
             assert_eq!(level.requested(), unsigned::Requirements::Basic);
             assert_eq!(
                 level.all_requirements_met(),

@@ -195,7 +195,7 @@ fn assert_timed_level(
 ) {
     // A B-T report answers only a B-T request: a B-LT preparation also
     // requires validation material, which these time facts do not carry.
-    let assessed = baseline::assess(baseline::Evidence::<(), _, _, _>::Timestamped(timed));
+    let assessed = baseline::assess(baseline::Evidence::timestamped(timed));
     if requested == unsigned::Requirements::Timestamped {
         let level = assessed.unwrap();
         assert_eq!(level.requested(), requested);

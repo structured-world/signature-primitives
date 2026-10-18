@@ -40,6 +40,21 @@ pub enum Evidence<'a, A, N, D, G> {
     },
 }
 
+// Basic and timestamped stages carry no credential census, so their
+// constructors fix `A` and callers need not name it (as `HashMap::new` does).
+impl<'a, N, D, G> Evidence<'a, (), N, D, G> {
+    /// B-B evidence.
+    #[must_use]
+    pub fn basic(report: &'a BasicOf<'a, N, D, G>) -> Self {
+        Self::Basic(report)
+    }
+    /// B-T evidence.
+    #[must_use]
+    pub fn timestamped(report: &'a TimedOf<'a, N, D, G>) -> Self {
+        Self::Timestamped(report)
+    }
+}
+
 impl<A, N: Copy, D: Copy, G: Copy> Evidence<'_, A, N, D, G> {
     /// Structural profile these reports were produced for.
     #[must_use]

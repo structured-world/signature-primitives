@@ -19,7 +19,7 @@
 //! findings and every actual credential's format-material findings to that
 //! SAME participant/status input closure. Equal document/node IDs cannot
 //! replace receipt identity. For each archive, use
-//! [`crate::material::archived_participants`] and
+//! [`structured_ltv::material::archived_participants`] and
 //! [`crate::material::credentials::Scope::before_archive`] with the same original
 //! input coverage and mathematical token evidence, then
 //! [`structured_ltv::baseline::archive_material`] to join their exact scope and

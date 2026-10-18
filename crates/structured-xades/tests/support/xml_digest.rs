@@ -14,6 +14,7 @@ use structured_xades::{
     binary,
     certificate::{Agreement, DigestProvider},
     digest,
+    pki::participants,
     xml::{Access, AccessError, Name, Xml},
 };
 
@@ -2461,7 +2462,6 @@ fn with_prepared_inputs<'document>(
         &structured_xades::credential::ParticipantCredentials<'_, 'document, usize, usize, u8, u8>,
     ),
 ) {
-    use structured_ltv::pki;
     use structured_pkix::path::WorkingKey;
     use structured_xades::{certificate, credential};
     let access = Access::new(xml, xml.snapshot(), memory);
@@ -2496,9 +2496,7 @@ fn with_prepared_inputs<'document>(
         &access,
     )
     .unwrap();
-    let participants =
-        structured_xades::pki::participants(&signer, &counters, &credentials, prior, &access)
-            .unwrap();
+    let participants = participants(&signer, &counters, &credentials, prior, &access).unwrap();
     check(&participants, &credentials);
 }
 
@@ -2955,13 +2953,7 @@ fn whole_participant_census_refuses_root_only_timestamp_requirements() {
             panic!("root source has no earlier tokens")
         };
         assert!(matches!(
-            structured_xades::pki::participants(
-                &signer,
-                &counters,
-                &credentials,
-                &partial,
-                &access
-            ),
+            participants(&signer, &counters, &credentials, &partial, &access),
             Err(pki::ParticipantError::CounterTimestamps)
         ));
         let stamps = timestamp::counter_timestamps(&access, &counters).unwrap();
@@ -2972,14 +2964,7 @@ fn whole_participant_census_refuses_root_only_timestamp_requirements() {
         else {
             panic!("all child sources really have no earlier tokens")
         };
-        let report = structured_xades::pki::participants(
-            &signer,
-            &counters,
-            &credentials,
-            &complete,
-            &access,
-        )
-        .unwrap();
+        let report = participants(&signer, &counters, &credentials, &complete, &access).unwrap();
         assert_participant_origins(
             &counters,
             &prepared,
@@ -3929,8 +3914,7 @@ pub(super) fn assert_participant_nodes<'document>(
     else {
         panic!("complete empty earlier-token set")
     };
-    let participants =
-        pki::participants(&signer, &counters, &credentials, &prior, &access).unwrap();
+    let participants = participants(&signer, &counters, &credentials, &prior, &access).unwrap();
     let roots = [inputs; 3];
     let before = memory.used();
     let closed = participants.close_statuses(&roots, nodes, &access).unwrap();
@@ -4035,13 +4019,11 @@ fn archive_participant_requirements_derive_signer_counters_credentials_and_direc
             panic!("complete empty antecedent set")
         };
         let before = memory.used();
-        let participants =
-            structured_xades::pki::participants(&signer, &counters, &credentials, &prior, &access)
-                .unwrap();
+        let census = participants(&signer, &counters, &credentials, &prior, &access).unwrap();
         assert!(
-            matches!(participants.scope(), structured_ltv::timestamp::TimestampScope::BeforeArchive(location) if location.node == archive)
+            matches!(census.scope(), structured_ltv::timestamp::TimestampScope::BeforeArchive(location) if location.node == archive)
         );
-        assert_eq!(participants.signature(), 0);
+        assert_eq!(census.signature(), 0);
         let expected = [
             pki::Participant::Signer(0),
             pki::Participant::Counter {
@@ -4059,8 +4041,8 @@ fn archive_participant_requirements_derive_signer_counters_credentials_and_direc
                 authority: 0,
             },
         ];
-        assert_eq!(participants.entries().len(), expected.len());
-        for (index, entry) in participants.entries().iter().enumerate() {
+        assert_eq!(census.entries().len(), expected.len());
+        for (index, entry) in census.entries().iter().enumerate() {
             assert_eq!(entry.participant(), expected[index]);
             if index == 3 {
                 let pki::ParticipantAuthority::Anchor(actual) = entry.authority() else {
@@ -4074,12 +4056,12 @@ fn archive_participant_requirements_derive_signer_counters_credentials_and_direc
                 assert!(core::ptr::eq(actual, path));
             }
         }
-        drop(participants);
+        drop(census);
         assert_eq!(memory.used(), before);
         let denied = super::memory(0);
         let denied = Access::new(&xml, xml.snapshot(), &denied);
         assert!(matches!(
-            structured_xades::pki::participants(&signer, &counters, &credentials, &prior, &denied),
+            participants(&signer, &counters, &credentials, &prior, &denied),
             Err(pki::ParticipantError::Scope(ScopeError::Resource { .. }))
         ));
         assert_eq!(memory.used(), before);
@@ -4246,9 +4228,7 @@ fn archive_participants_require_the_actual_earlier_tsa_and_exclude_own_and_later
             panic!("complete original earlier TSA set")
         };
         let before = memory.used();
-        let participants =
-            structured_xades::pki::participants(&signer, &counters, &credentials, &prior, &access)
-                .unwrap();
+        let participants = participants(&signer, &counters, &credentials, &prior, &access).unwrap();
         assert_earlier_actor_census(&participants, &tsa_path, expected, archive, &provider);
         drop(participants);
         assert_eq!(memory.used(), before);

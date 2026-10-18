@@ -5,7 +5,7 @@
 //! every incorporated `XMLDSig` countersignature with its signer's checked path
 //! and presents that census to it.
 //!
-//! [`participants`] derives the [`Xades`](crate::Xades) participant census from
+//! [`participants`] derives the [`Xades`] participant census from
 //! this crate's own receipts. Another crate cannot derive one from receipts it
 //! implements itself, such as a signer that reports an unrelated path:
 //!

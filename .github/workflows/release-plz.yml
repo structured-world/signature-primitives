@@ -46,7 +46,7 @@ jobs:
         run: git switch -C main "$GITHUB_SHA"
       - run: rustup toolchain install stable --profile minimal
       - name: Prepare coordinated release PR
-        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
+        uses: release-plz/action@8921286633dfa0c4020f7f30bd1c14fe19cbb10e # v0.5.142
         with:
           command: release-pr
           version: 0.3.171
@@ -93,7 +93,7 @@ jobs:
           fi
       - name: Publish approved coordinated release
         id: release
-        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
+        uses: release-plz/action@8921286633dfa0c4020f7f30bd1c14fe19cbb10e # v0.5.142
         with:
           command: release
           version: 0.3.171
@@ -103,7 +103,7 @@ jobs:
       - name: Publish the first XAdES version
         id: first-xades
         if: steps.bootstrap.outputs.enabled == 'true'
-        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
+        uses: release-plz/action@8921286633dfa0c4020f7f30bd1c14fe19cbb10e # v0.5.142
         with:
           command: release
           version: 0.3.171

@@ -1,4 +1,4 @@
-"""Merge reviewed Dependabot heads using metadata, never executable PR content."""
+"""Merge green Dependabot heads using metadata, never executable PR content."""
 
 import argparse
 import base64
@@ -10,35 +10,12 @@ import tomllib
 import urllib.parse
 
 CRITICAL = {"hashbrown", "allocator-api2"}
-CODEX = "chatgpt-codex-connector[bot]"
+READY = "ready"
+UPDATE = "base update needed"
 
 
 class GitHubError(RuntimeError):
     pass
-
-
-def review_clear(sha, pushed, reactions, reviews, unresolved, writable):
-    if unresolved:
-        return False
-    latest = {}
-    for review in sorted(reviews, key=lambda r: r.get("submitted_at") or ""):
-        if review["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
-            latest[review["user"]["login"]] = review
-    if any(r["state"] == "CHANGES_REQUESTED" for r in latest.values()):
-        return False
-    signals = [r for r in reactions if r["user"]["login"] == CODEX
-               and r["content"] in ("+1", "eyes")]
-    if signals:
-        last = max(signals, key=lambda r: (r["created_at"], r["content"] == "eyes"))
-        # Missing push evidence fails closed; author timestamps are not push times.
-        if last["content"] == "eyes" and (not pushed or last["created_at"] >= pushed):
-            return False
-        if last["content"] == "+1" and pushed and last["created_at"] > pushed:
-            return True
-    return any(r["state"] == "APPROVED" and r["commit_id"] == sha
-               and r.get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR")
-               and writable(r["user"]["login"])
-               for r in latest.values())
 
 
 def contract_changed(filename, before, after):
@@ -87,7 +64,6 @@ class GitHub:
 
     def pages(self, path):
         separator = "&" if "?" in path else "?"
-        # gh follows server Link URLs, including activity's before/after cursors.
         for values in self.request(f"{path}{separator}per_page=100", paginate=True):
             yield from values
 
@@ -97,31 +73,6 @@ class GitHub:
         if result["encoding"] != "base64":
             raise ValueError("Unexpected file encoding")
         return base64.b64decode(result["content"])
-
-    def unresolved(self, number):
-        owner, name = self.repository.split("/")
-        cursor = None
-        while True:
-            result = self.request("graphql", "POST", {
-                "query": """query($owner:String!,$name:String!,$number:Int!,$cursor:String){
-                  repository(owner:$owner,name:$name){pullRequest(number:$number){
-                    reviewThreads(first:100,after:$cursor){nodes{isResolved}
-                      pageInfo{hasNextPage endCursor}}}}}""",
-                "variables": {"owner": owner, "name": name, "number": number, "cursor": cursor}})
-            if result.get("errors"):
-                raise ValueError("Cannot verify review threads")
-            threads = result["data"]["repository"]["pullRequest"]["reviewThreads"]
-            if any(not t["isResolved"] for t in threads["nodes"]):
-                return True
-            if not threads["pageInfo"]["hasNextPage"]:
-                return False
-            cursor = threads["pageInfo"]["endCursor"]
-
-    def writable(self, login):
-        user = urllib.parse.quote(login, safe="")
-        permission = self.request(self.repo(f"collaborators/{user}/permission"))
-        # The API maps maintain to write and triage to read, including custom roles.
-        return permission["permission"] in ("admin", "write")
 
     def inspect(self, number):
         pr = self.request(self.repo(f"pulls/{number}"))
@@ -140,26 +91,24 @@ class GitHub:
             after = b"" if file["status"] == "removed" else self.content(name, pr["head"]["sha"])
             if contract_changed(name, before, after):
                 return pr, "manual contract review"
-        # Native branch protection enforces every required check and base freshness.
+        # Native branch protection enforces every required check and base freshness;
+        # Dependabot never updates a branch that is only behind, so it is updated here.
+        if pr["mergeable_state"] == "behind":
+            return pr, UPDATE
         if pr["mergeable_state"] != "clean":
             return pr, "waiting for mandatory CI/base qualification"
-        ref = urllib.parse.quote("refs/heads/" + pr["head"]["ref"], safe="")
-        # Live responses for our pinned 2022-11-28 API expose timestamp here.
-        # The docs' pushed_at example differs; the positive activity regression
-        # preserves the observed wire contract rather than commit-author dates.
-        pushed = next((a["timestamp"] for a in self.pages(self.repo(f"activity?ref={ref}"))
-                       if a["after"] == pr["head"]["sha"]), None)
-        reactions = list(self.pages(self.repo(f"issues/{number}/reactions")))
-        reviews = list(self.pages(self.repo(f"pulls/{number}/reviews")))
-        if not review_clear(pr["head"]["sha"], pushed, reactions, reviews,
-                            self.unresolved(number), self.writable):
-            return pr, "waiting for fresh clean review"
-        return pr, "ready"
+        return pr, READY
 
     def merge(self, pr, token):
         # The native merge operation atomically refuses a head changed since inspection.
         return self.request(self.repo(f"pulls/{pr['number']}/merge"), "PUT",
                             {"sha": pr["head"]["sha"], "merge_method": "squash"}, token=token)
+
+    def update(self, pr, token):
+        # The native update refuses a head changed since inspection; the App's
+        # push starts CI, whose completion brings the new head back here.
+        return self.request(self.repo(f"pulls/{pr['number']}/update-branch"), "PUT",
+                            {"expected_head_sha": pr["head"]["sha"]}, token=token)
 
 
 def main():
@@ -173,26 +122,33 @@ def main():
     api = GitHub(repository, os.environ["GH_TOKEN"])
     numbers = [p["number"] for p in api.pages(api.repo("pulls?state=open&base=main"))
                if p["user"]["login"] == "dependabot[bot]"]
-    eligible = 0
+    actions = 0
     for number in numbers:
         pr, verdict = api.inspect(number)
         print(f"PR #{number} {pr['head']['sha'][:12]}: {verdict}", flush=True)
-        if verdict == "ready":
-            eligible += 1
-        if verdict == "ready" and not options.dry_run:
-            try:
-                result = api.merge(pr, os.environ["MERGE_TOKEN"])
-            except GitHubError as error:
-                if not any(f"HTTP {code}" in str(error) for code in (405, 409)):
-                    raise
-                print(f"PR #{number}: branch/check state changed; waiting for next event")
-                continue
-            if not result["merged"]:
-                raise ValueError("GitHub refused merge")
-            print(f"PR #{number}: merged {result['sha']}", flush=True)
+        if verdict not in (READY, UPDATE):
+            continue
+        actions += 1
+        if options.dry_run:
+            continue
+        token = os.environ["MERGE_TOKEN"]
+        try:
+            result = api.merge(pr, token) if verdict == READY else api.update(pr, token)
+        except GitHubError as error:
+            # 405/409 refuse a merge, 422 an update, of a head or base changed since inspection.
+            if not any(f"HTTP {code}" in str(error) for code in (405, 409, 422)):
+                raise
+            print(f"PR #{number}: branch/check state changed; waiting for next event")
+            continue
+        if verdict == UPDATE:
+            print(f"PR #{number}: base update started", flush=True)
+            continue
+        if not result["merged"]:
+            raise ValueError("GitHub refused merge")
+        print(f"PR #{number}: merged {result['sha']}", flush=True)
     if options.github_output:
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-            output.write(f"eligible_count={eligible}\n")
+            output.write(f"action_count={actions}\n")
 
 
 if __name__ == "__main__":

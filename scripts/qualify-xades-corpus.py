@@ -101,6 +101,113 @@ def verify_xml(output, target, original, tree):
     # that deliberately never happens for this modified signature.
     if rejected.returncode == 0 or b"Failure reason: SIGNATURE" not in log:
         raise RuntimeError("mutation did not isolate signature mathematics")
+    return command
+
+
+def verify_reference_mutation(output, original, command):
+    # Change one character of the enveloped signed data, leaving SignedInfo
+    # and SignatureValue intact: XMLDSig must refuse the reference digest.
+    if original.count(b">Hello<") != 1:
+        raise RuntimeError("cannot uniquely locate the signed data text")
+    altered = output / "data-altered.xml"
+    altered.write_bytes(original.replace(b">Hello<", b">Hellp<", 1))
+    rejected = subprocess.run(command + [str(altered)], capture_output=True)
+    log = rejected.stdout + rejected.stderr
+    (output / "xmlsec-data-altered.log").write_bytes(log)
+    if rejected.returncode == 0 or b"Failure reason: REFERENCE" not in log:
+        raise RuntimeError("data mutation did not isolate the reference digest")
+
+
+# Each negative fixture breaks exactly one stated rule while staying otherwise
+# well formed. `xmlsec` is the XMLDSig outcome the oracle must report: these
+# defects are XAdES-level, except a tampered reference, which XMLDSig refuses.
+NEGATIVE = {
+    "copied-sigtst": {"file": "xades-t-copied-sigtst.xml", "xmlsec": "valid",
+                      "defect": "foreign-imprint",
+                      "sha256": "f3f994b85c1553d0396c5eff791cafdeb1d2df6cf3d6978a73996ab473d7497c"},
+    "no-keyinfo": {"file": "xades-level-b-with-certvals.xml", "xmlsec": None,
+                   "defect": "KeyInfo",
+                   "sha256": "7c85f8bc9aaddfda3d9de52c89e381b5c344fd6106b45c5e46f62003e15404f1"},
+    "no-signing-time": {"file": "xades-extended-t.xml", "xmlsec": "valid",
+                        "defect": "SigningTime",
+                        "sha256": "b4876b64715331ee4d4759035ad7fc7495b242a82f41bfb46ccaad1b4315c973"},
+    "signing-certificate-v1": {"file": "xades-with-equivalent-certs.xml", "xmlsec": "valid",
+                               "defect": "SigningCertificate",
+                               "sha256": "95e220374c60fe0a9ece68c9dacf4ec744db92391df9d16ec6358fedec882ba6"},
+    "signed-properties-unreferenced": {"file": "dss-signed-altered-signedPropsRemoved.xml",
+                                       # The reference was cut from SignedInfo after
+                                       # signing, so SignatureValue no longer verifies.
+                                       "xmlsec": "SIGNATURE", "defect": "SignedProperties",
+                                       "sha256": "e4f8b7de169136fd2fff39415e6e753ef53ad2cbbcedebb13d44eb76b14e9bad"},
+    # The KeyInfo certificate bytes were altered until they no longer decode.
+    "tampered-keyinfo": {"file": "xades-tampered-keyinfo.xml", "xmlsec": "error",
+                         "defect": "KeyInfoCertificate",
+                         "sha256": "738f026a774d062eceb0f4e7b27c5a076088c277f2c7693b919c600134ab1223"},
+}
+
+
+def xmlsec_outcome(output, target, tree):
+    certificate = tree.find(f".//{{{DS}}}KeyInfo/{{{DS}}}X509Data/{{{DS}}}X509Certificate")
+    signer = base64.b64decode(certificate.text)
+    (output / "signer.der").write_bytes(signer)
+    key = output / "signer.pem"
+    key.write_text(ssl.DER_cert_to_PEM_cert(signer))
+    result = subprocess.run(["xmlsec1", "--verify", "--print-debug", "--insecure",
+                             "--pubkey-cert-pem", str(key),
+                             "--enabled-reference-uris", "empty,same-doc",
+                             "--enabled-retrieval-method-uris", "empty,same-doc",
+                             "--id-attr:Id", f"{XADES}:SignedProperties", str(target)],
+                            capture_output=True)
+    log = result.stdout + result.stderr
+    (output / "xmlsec.log").write_bytes(log)
+    if result.returncode == 0:
+        return "valid"
+    for reason in ("SIGNATURE", "REFERENCE"):
+        if f"Failure reason: {reason}".encode() in log:
+            return reason
+    return "error"
+
+
+def defect_present(tree, defect):
+    references = tree.findall(f".//{{{DS}}}SignedInfo/{{{DS}}}Reference")
+    if defect == "KeyInfo":
+        # EN319132-1 table 2 and requirement a): ds:KeyInfo/X509Data is mandatory.
+        return tree.find(f".//{{{DS}}}KeyInfo") is None
+    if defect == "SigningTime":
+        return not list(tree.iter(f"{{{XADES}}}SigningTime"))
+    if defect == "SigningCertificate":
+        return (bool(list(tree.iter(f"{{{XADES}}}SigningCertificate")))
+                and not list(tree.iter(f"{{{XADES}}}SigningCertificateV2")))
+    if defect == "SignedProperties":
+        # EN319132-1 §4.3: one ds:Reference must cover the SignedProperties.
+        return (tree.find(f".//{{{XADES}}}SignedProperties") is not None
+                and not [node for node in references
+                         if node.get("Type", "").endswith("#SignedProperties")])
+    raise RuntimeError(f"unknown defect {defect}")
+
+
+def qualify_negative(output):
+    for name, spec in NEGATIVE.items():
+        directory = output / "negative" / name
+        target, original = fixture_bytes(directory, spec)
+        tree = ET.fromstring(original)
+        if spec["defect"] not in ("foreign-imprint", "KeyInfoCertificate") and not defect_present(
+                tree, spec["defect"]):
+            raise RuntimeError(f"{name}: stated defect {spec['defect']} is absent")
+        if spec["xmlsec"] is not None:
+            outcome = xmlsec_outcome(directory, target, tree)
+            if outcome != spec["xmlsec"]:
+                raise RuntimeError(f"{name}: xmlsec reported {outcome}, not {spec['xmlsec']}")
+        if spec["defect"] == "KeyInfoCertificate":
+            decoded = subprocess.run(["openssl", "x509", "-inform", "DER", "-noout",
+                                      "-in", str(directory / "signer.der")], capture_output=True)
+            if decoded.returncode == 0:
+                raise RuntimeError(f"{name}: the KeyInfo certificate still decodes")
+        if spec["defect"] == "foreign-imprint":
+            # Token 0 is the signed AllDataObjectsTimeStamp, token 1 the
+            # SignatureTimeStamp carrying a copy of a foreign token.
+            verify_tokens(directory, tree, 2)
+            signature_input(directory, target)
 
 
 def verify_census(tree, spec):
@@ -272,6 +379,9 @@ def qualify_shared(output):
         "upstream_revision": REVISION,
         "fixtures": {level: {"file": spec["file"], "sha256": spec["sha256"]}
                      for level, spec in FIXTURES.items()},
+        "negative": {name: {"file": spec["file"], "sha256": spec["sha256"],
+                            "defect": spec["defect"], "xmlsec": spec["xmlsec"]}
+                     for name, spec in NEGATIVE.items()},
         "source_sha256": before, "harness_sha256": fixture_before,
         "xmlsec": run(["xmlsec1", "--version"]).stdout.decode().strip(),
         "openssl": run(["openssl", "version"]).stdout.decode().strip(),
@@ -291,17 +401,21 @@ def main():
         target, original = fixture_bytes(directory, spec)
         tree = ET.fromstring(original)
         verify_census(tree, spec)
-        verify_xml(directory, target, original, tree)
+        command = verify_xml(directory, target, original, tree)
+        if level == "b":
+            verify_reference_mutation(directory, original, command)
         signing_certificate(directory, tree)
         verify_tokens(directory, tree, spec["tokens"])
     signature_input(output / "lt", output / "lt" / FIXTURES["lt"]["file"])
     verify_validation_values(output / "lt", ET.fromstring(
         (output / "lt" / FIXTURES["lt"]["file"]).read_bytes()))
     archive_inputs(output / "lta", output / "lta" / FIXTURES["lta"]["file"])
+    qualify_negative(output)
     qualify_shared(output)
     print(f"Independent DSS {REVISION} B-B/B-LT/B-LTA fixtures: "
-          "XML signatures + references PASS; isolated signature mutations refused; "
-          "3 CMS token signatures and 1 OCSP response signature PASS. "
+          "XML signatures + references PASS; isolated signature and data mutations refused; "
+          "3 CMS token signatures and 1 OCSP response signature PASS; "
+          f"{len(NEGATIVE)} negative fixtures show their stated defect. "
           "No trust/archive-coverage verdict.")
 
 

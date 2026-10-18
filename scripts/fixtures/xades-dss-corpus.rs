@@ -36,6 +36,27 @@ fn independent_signature_timestamp_input_matches_its_signed_imprint() {
 }
 
 #[test]
+fn independent_copied_signature_timestamp_does_not_cover_this_signature() {
+    // DSS copied a genuine token from another signature: OpenSSL accepts its
+    // CMS signature, but EN319132-1 §5.3 coverage of THIS SignatureValue fails.
+    // The common Input must still select the exact independent C14N bytes.
+    // Token 0 is the signed AllDataObjectsTimeStamp, token 1 the copy.
+    common_inputs::independent_corpus::check_foreign_signature(
+        &corpus("negative/copied-sigtst"),
+        1,
+    );
+}
+
+#[test]
+fn independent_tampered_keyinfo_certificate_is_refused() {
+    // DSS altered the KeyInfo certificate until OpenSSL no longer decodes it;
+    // the shared reader must refuse it rather than yield a signer.
+    let signer = std::fs::read(corpus("negative/tampered-keyinfo").join("signer.der")).unwrap();
+    let parser = Parser::der(memory());
+    assert!(Certificate::read(&parser, &signer, 0).is_err());
+}
+
+#[test]
 fn independent_signature_and_archive_tokens_preserve_original_readings() {
     // The SHA256-pinned upstream XML has a signature timestamp and an archive
     // timestamp. OpenSSL independently verifies each CMS signature/eContent;

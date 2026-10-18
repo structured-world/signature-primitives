@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.6.3...structured-pkix-v0.7.0) - 2026-10-18
+
+### Added
+
+- [**breaking**] share one incremental digest contract ([#131](https://github.com/structured-world/signature-primitives/pull/131))
+- *(xades)* assess baseline levels and qualify against independent fixtures ([#129](https://github.com/structured-world/signature-primitives/pull/129))
+
 ## [0.6.3](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.6.2...structured-pkix-v0.6.3) - 2026-10-18
 
 ### Added

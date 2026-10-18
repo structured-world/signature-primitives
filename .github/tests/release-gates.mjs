@@ -175,11 +175,8 @@ assert.notEqual(ciGroup("push", "release-sha"), ciGroup("push", "follow-up-sha")
 assert.equal(ciGroup("pull_request", "old-sha", "refs/pull/10/merge"), ciGroup("pull_request", "new-sha", "refs/pull/10/merge"));
 console.log("PASS: successive main pushes keep distinct CI groups; PR updates share their cancellation group.");
 
-// Review submissions wake trusted main automation without exposing merge credentials.
-const wake = parse(readFileSync(new URL("../workflows/dependabot-review.yml", import.meta.url), "utf8"));
+// Finished CI wakes trusted main automation, which never checks out PR code.
 const merge = parse(readFileSync(new URL("../workflows/dependabot-merge.yml", import.meta.url), "utf8"));
-assert.ok(wake.on.pull_request_review.types.includes("submitted"));
-assert.deepEqual(wake.permissions, {});
-assert.ok(merge.on.workflow_run.workflows.includes(wake.name));
+assert.ok(merge.on.workflow_run.workflows.includes(ci.name));
 assert.equal(merge.jobs.merge.steps[0].with.ref, "${{ github.event.repository.default_branch }}");
-console.log("PASS: submitted reviews wake trusted default-branch merge automation through an unprivileged signal.");
+console.log("PASS: finished CI wakes trusted default-branch merge automation.");

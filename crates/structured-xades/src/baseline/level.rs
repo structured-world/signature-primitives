@@ -17,7 +17,17 @@ type ArchivesOf<'a, A, N, D, G> = Archives<
     Preparation<N, D, G>,
     ArchiveMaterial<
         'a,
-        material::ParticipantMaterial<'a, 'a, 'a, 'a, 'a, N, D, G>,
+        structured_ltv::material::ParticipantMaterial<
+            'a,
+            'a,
+            'a,
+            'a,
+            'a,
+            N,
+            D,
+            G,
+            material::Placement<N>,
+        >,
         CredentialsOf<'a, A, N, D, G>,
     >,
 >;

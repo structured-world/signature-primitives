@@ -5,7 +5,7 @@ use super::{
     AuthorityClosureError, AuthorityNode, AuthorityOrigin, Participant, ParticipantAuthority,
     ParticipantClosure,
 };
-use crate::xml::{Access, AccessError, Xml};
+use crate::source::{Query, ScopeError};
 use structured_asn1::memory::{OwnedMap, OwnedVec, Work};
 
 /// Actual validation purposes, not configurable policy or an authorization flag.
@@ -16,7 +16,9 @@ use structured_asn1::memory::{OwnedMap, OwnedVec, Work};
 pub struct Uses(u8);
 
 impl Uses {
-    pub(crate) fn participant<N: Copy>(participant: Participant<N>) -> Self {
+    /// The one purpose an actor's own validation material serves.
+    #[must_use]
+    pub fn participant<N: Copy>(participant: Participant<N>) -> Self {
         match participant {
             Participant::Signer(_) | Participant::Counter { .. } => Self(1),
             Participant::Credential { .. } => Self(2),
@@ -24,7 +26,8 @@ impl Uses {
         }
     }
 
-    pub(crate) fn merge(&mut self, other: Self) {
+    /// Adds every purpose of `other`; purposes are never removed.
+    pub fn merge(&mut self, other: Self) {
         self.0 |= other.0;
     }
 
@@ -91,28 +94,28 @@ impl<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G>
 
 /// Source/refusal errors cannot be interpreted as exclusive material use.
 #[derive(Debug)]
-pub enum UsesError<E, N> {
-    /// Current original XML source refused.
-    Access(AccessError<E, N>),
+pub enum UsesError<N> {
+    /// Current original source refused.
+    Scope(ScopeError<N>),
     /// Participant source/generation differs from this operation.
     Foreign,
     /// Actual graph, indexing or admitted storage/work refused.
     Closure(AuthorityClosureError),
 }
 
-/// Purpose propagation result in the XML owner's original identity domain.
-pub type UsesResult<'closure, 'requirements, 'view, 'certificate, 'document, X> = Result<
+/// Purpose propagation result in the query's original identity domain.
+pub type UsesResult<'closure, 'requirements, 'view, 'certificate, 'document, Q> = Result<
     AuthorityUses<
         'closure,
         'requirements,
         'view,
         'certificate,
         'document,
-        <X as Xml>::Id,
-        <X as Xml>::Document,
-        <X as Xml>::Generation,
+        <Q as Query>::Id,
+        <Q as Query>::Document,
+        <Q as Query>::Generation,
     >,
-    UsesError<<X as Xml>::Error, <X as Xml>::Id>,
+    UsesError<<Q as Query>::Id>,
 >;
 
 struct Flow<'view, 'certificate, 'document, W: Work> {
@@ -162,26 +165,26 @@ impl<'view, 'document, W: Work> Flow<'view, '_, 'document, W> {
 /// # Panics
 /// Only if a private queue invariant is violated: a queue index was admitted
 /// after its node's insertion and nodes are never removed during propagation.
-pub fn authority_uses<'closure, 'requirements, 'view, 'certificate, 'document, X: Xml, W: Work>(
+pub fn authority_uses<'closure, 'requirements, 'view, 'certificate, 'document, Q: Query>(
     inputs: &'closure ParticipantClosure<
         'requirements,
         'view,
         'certificate,
         'document,
-        X::Id,
-        X::Document,
-        X::Generation,
+        Q::Id,
+        Q::Document,
+        Q::Generation,
     >,
-    access: &Access<'_, X, W>,
-) -> UsesResult<'closure, 'requirements, 'view, 'certificate, 'document, X> {
+    query: &Q,
+) -> UsesResult<'closure, 'requirements, 'view, 'certificate, 'document, Q> {
     let requirements = inputs.requirements();
-    if requirements.scope().location().snapshot != access.snapshot() {
+    if requirements.scope().location().snapshot != query.snapshot() {
         return Err(UsesError::Foreign);
     }
-    access
-        .query(requirements.signature(), |_, _, _| Ok(()))
-        .map_err(UsesError::Access)?;
-    derive(inputs, access.execution()).map_err(UsesError::Closure)
+    query
+        .admit(requirements.signature(), 1)
+        .map_err(UsesError::Scope)?;
+    derive(inputs, query.execution()).map_err(UsesError::Closure)
 }
 
 fn derive<

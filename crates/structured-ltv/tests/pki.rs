@@ -1,4 +1,4 @@
-//! Actual fixed-curve math for original actor-path composition, not XML trust.
+//! Actual fixed-curve math for original actor-path composition, not trust.
 
 use core::cell::Cell;
 use p256::ecdsa::{
@@ -11,13 +11,13 @@ use structured_asn1::{
     BitString, Parser,
     memory::{Memory, MemoryAccount, MemoryError, Work},
 };
+use structured_ltv::pki::{self, PathOutcome};
 use structured_pkix::{
     AlgorithmIdentifier, Certificate, oid,
     path::{
         self, Anchor, Interval, ValidationBounds, ValidationContext, Verified, Verify, WorkingKey,
     },
 };
-use structured_xades::pki::{self, PathOutcome};
 
 const ECDSA: &[u8] = &[42, 134, 72, 206, 61, 4, 3, 2];
 const CURVE: &[u8] = &[42, 134, 72, 206, 61, 3, 1, 7];

@@ -199,14 +199,22 @@ fn nested_counter_reference_timestamps_remain_in_the_complete_participant_set() 
             .entries()
             .iter()
             .filter(|entry| entry.signature == child)
-            .map(|entry| (entry.property, entry.token, entry.role))
+            .map(|entry| (entry.property, entry.token, entry.purpose))
             .collect();
         assert_eq!(
             actual,
             [
-                (first, first_tokens[0], Role::SignatureAndReferences),
-                (first, first_tokens[1], Role::SignatureAndReferences),
-                (second, second_tokens[0], Role::ReferencesOnly),
+                (
+                    first,
+                    first_tokens[0],
+                    Role::SignatureAndReferences.purpose()
+                ),
+                (
+                    first,
+                    first_tokens[1],
+                    Role::SignatureAndReferences.purpose()
+                ),
+                (second, second_tokens[0], Role::ReferencesOnly.purpose()),
             ]
         );
     });

@@ -14,6 +14,7 @@ use core::{cmp::Ordering, ops::Range};
 use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{HashWork, MemoryError, OwnedMap, OwnedVec, Work};
 use structured_cms::stream::RangesError;
+use structured_ltv::material::ArtifactSource;
 
 /// How one original reference participated in the complete digest search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +65,7 @@ impl<N: Copy> ReferenceRow<N> {
 /// Completed digest fact for one original source, not path/authority agreement.
 #[derive(Debug, Clone, Copy)]
 pub struct MaterialDigest {
-    source: material::ArtifactSource,
+    source: ArtifactSource,
     embedded: Option<usize>,
     agreement: Agreement,
 }
@@ -74,14 +75,14 @@ impl MaterialDigest {
     #[must_use]
     pub fn source(&self) -> Option<usize> {
         match self.source {
-            material::ArtifactSource::Xml(index) => Some(index),
+            ArtifactSource::Material(index) => Some(index),
             _ => None,
         }
     }
     /// Original pool/ordinal discriminator; token ordinals never address XML
     /// sources. An embedded certificate uses its enclosing response's origin.
     #[must_use]
-    pub fn origin(&self) -> material::ArtifactSource {
+    pub fn origin(&self) -> ArtifactSource {
         self.source
     }
     /// Original certificate ordinal inside this source's OCSP basic response.
@@ -166,7 +167,7 @@ struct SourceKey<'source> {
 
 #[derive(Clone, Copy)]
 struct Candidate<'source> {
-    source: material::ArtifactSource,
+    source: ArtifactSource,
     embedded: Option<usize>,
     kind: material::Kind,
     bytes: &'source [u8],
@@ -182,7 +183,7 @@ fn candidates<'source, N: Copy, D: Copy, G: Copy, W: Work>(
     for (source, retained) in view.sources().iter().enumerate() {
         work.charge_work(1)?;
         values.try_push(Candidate {
-            source: material::ArtifactSource::Xml(source),
+            source: ArtifactSource::Material(source),
             embedded: None,
             kind: retained.source().kind(),
             bytes: retained.source().bytes(),
@@ -193,7 +194,7 @@ fn candidates<'source, N: Copy, D: Copy, G: Copy, W: Work>(
         for (embedded, certificate) in basic.response().certificates().iter().enumerate() {
             work.charge_work(1)?;
             values.try_push(Candidate {
-                source: material::ArtifactSource::Xml(basic.source_index()),
+                source: ArtifactSource::Material(basic.source_index()),
                 embedded: Some(embedded),
                 kind: material::Kind::Certificate,
                 bytes: certificate.as_bytes(),
@@ -207,7 +208,7 @@ fn candidates<'source, N: Copy, D: Copy, G: Copy, W: Work>(
             {
                 work.charge_work(1)?;
                 values.try_push(Candidate {
-                    source: material::ArtifactSource::TokenCertificate { token, certificate },
+                    source: ArtifactSource::TokenCertificate { token, certificate },
                     embedded: None,
                     kind: material::Kind::Certificate,
                     bytes: value.as_bytes(),
@@ -217,7 +218,7 @@ fn candidates<'source, N: Copy, D: Copy, G: Copy, W: Work>(
         for crl in tokens.crls() {
             work.charge_work(1)?;
             values.try_push(Candidate {
-                source: material::ArtifactSource::TokenRevocation(crl.origin),
+                source: ArtifactSource::TokenRevocation(crl.origin),
                 embedded: None,
                 kind: material::Kind::Crl,
                 bytes: crl.value.as_bytes(),
@@ -226,7 +227,7 @@ fn candidates<'source, N: Copy, D: Copy, G: Copy, W: Work>(
         for response in tokens.responses() {
             work.charge_work(1)?;
             values.try_push(Candidate {
-                source: material::ArtifactSource::TokenRevocation(response.origin),
+                source: ArtifactSource::TokenRevocation(response.origin),
                 embedded: None,
                 kind: material::Kind::Ocsp,
                 bytes: response.value.as_bytes(),
@@ -237,7 +238,7 @@ fn candidates<'source, N: Copy, D: Copy, G: Copy, W: Work>(
             for (embedded, certificate) in basic.value.certificates().iter().enumerate() {
                 work.charge_work(1)?;
                 values.try_push(Candidate {
-                    source: material::ArtifactSource::TokenRevocation(basic.origin),
+                    source: ArtifactSource::TokenRevocation(basic.origin),
                     embedded: Some(embedded),
                     kind: material::Kind::Certificate,
                     bytes: certificate.as_bytes(),

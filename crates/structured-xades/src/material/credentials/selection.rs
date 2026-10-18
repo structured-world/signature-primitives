@@ -3,9 +3,9 @@
 use super::{Error, ProcessingResult};
 use crate::credential::{Checked, Credentials, ParticipantCredentials};
 use crate::pki::CounterPaths;
-use crate::timestamp::TimestampRequirements;
 use crate::xml::{Access, Xml};
 use structured_asn1::memory::{OwnedVec, Work};
+use structured_ltv::timestamp::TimestampRequirements;
 
 pub(super) type Selected<'auth, 'path, 'document, X, A, W> = OwnedVec<
     &'auth Checked<
@@ -48,7 +48,7 @@ pub(super) fn select<'auth, 'path, 'document, X: Xml, A, W: Work, PE>(
             .map_err(resource)?
         || !required
             .includes_counters(counters, access)
-            .map_err(Error::Input)?
+            .map_err(|cause| Error::Access(cause.into()))?
     {
         return Err(Error::Foreign { node });
     }
@@ -72,7 +72,7 @@ pub(super) fn select<'auth, 'path, 'document, X: Xml, A, W: Work, PE>(
         {
             if required
                 .counter_in_scope(ordinal, access)
-                .map_err(Error::Input)?
+                .map_err(Error::Obligation)?
             {
                 append(next.credentials(), &mut selected, access)?;
             }

@@ -6,17 +6,18 @@ use crate::{
     certificate::{Agreement, DigestProvider},
     digest,
     material::{
-        ArtifactUses, ExclusiveFindingKind,
+        ExclusiveFindingKind,
         exclusivity::{self, CaError, CaFact, ReferenceCa},
     },
     prepare::{Preparation, Prepared},
-    timestamp::TimestampScope,
     unsigned,
     xml::{Access, Xml},
 };
 use core::ops::Range;
 use structured_asn1::digest::Digest;
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::material::ArtifactUses;
+use structured_ltv::timestamp::TimestampScope;
 use structured_pkix::Certificate;
 
 /// One original ordinary Cert reference and all exclusive-credential CA comparisons.

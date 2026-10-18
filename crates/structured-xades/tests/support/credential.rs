@@ -3,10 +3,9 @@
 use super::{Tree, role_tree, signed_roles, xml_digest};
 use core::cell::Cell;
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::pki::{Authorities, CheckedPath};
 use structured_xades::{
-    credential,
-    pki::CheckedPath,
-    role,
+    credential, role,
     xml::{Access, AccessError, Xml},
 };
 
@@ -70,10 +69,7 @@ impl structured_xades::material::credentials::Provider<Tree, OwnedVec<u8>> for M
         // Format metadata oracle only: the authentication receipt is reused,
         // not a second SAML/AC parser or signature/authentication implementation.
         use structured_xades::{
-            material::{
-                self,
-                credentials::{Completeness, Need},
-            },
+            material::credentials::{Completeness, Need},
             reference::VisitError,
         };
         access
@@ -111,12 +107,12 @@ impl structured_xades::material::credentials::Provider<Tree, OwnedVec<u8>> for M
             }
             assert!(matches!(
                 credential.authorities(),
-                credential::Authorities::CertificateFree
+                Authorities::CertificateFree
             ));
         }
-        visitor(Need::Known(material::ArtifactRef::Certificate(
-            self.certificate,
-        )))
+        visitor(Need::Known(
+            structured_ltv::material::ArtifactRef::Certificate(self.certificate),
+        ))
         .map_err(VisitError::Visitor)?;
         Ok(Completeness::Complete)
     }
@@ -184,7 +180,7 @@ fn format_material_checks_every_original_credential_even_without_x509_authoritie
                 |query, view| {
                     let work = query.execution();
                     let current = Access::new(&xml, xml.snapshot(), &work);
-                    let index = material::Index::build(&view, &current).unwrap();
+                    let index = material::index(&view, &current).unwrap();
                     if matches!(mode, MaterialMode::Ready) {
                         assert_material_admission(
                             &xml,
@@ -255,7 +251,7 @@ fn assert_material_admission<W: Work>(
     xml: &Tree,
     credentials: &credential::ParticipantCredentials<'_, '_, OwnedVec<u8>, usize, u8, u8>,
     counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
-    required: &structured_xades::timestamp::TimestampRequirements<usize, u8, u8>,
+    required: &structured_ltv::timestamp::TimestampRequirements<usize, u8, u8>,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     provider: &Materials<'_, '_>,
 ) {
@@ -284,10 +280,12 @@ fn assert_material_admission<W: Work>(
             assert!(matches!(
                 result,
                 Err(material::credentials::Error::Index(
-                    material::IndexError::Access(AccessError::Resource {
-                        cause: MemoryError::WorkExceeded,
-                        ..
-                    })
+                    structured_ltv::material::IndexError::Scope(
+                        structured_ltv::source::ScopeError::Resource {
+                            cause: MemoryError::WorkExceeded,
+                            ..
+                        }
+                    )
                 ))
             ));
         } else {
@@ -316,7 +314,7 @@ fn assert_material_report(
     mode: MaterialMode,
     credentials: &credential::ParticipantCredentials<'_, '_, OwnedVec<u8>, usize, u8, u8>,
     nodes: (usize, usize),
-    scope: structured_xades::timestamp::TimestampScope<usize, u8, u8>,
+    scope: structured_ltv::timestamp::TimestampScope<usize, u8, u8>,
 ) {
     use structured_xades::material;
     if matches!(mode, MaterialMode::Refusal) {
@@ -395,20 +393,20 @@ impl<'path, 'document> credential::Provider<'path, 'document, Tree> for Provider
                 Mode::NoAuthorities => {
                     return Ok(credential::Authentication::Authenticated {
                         evidence: evidence.into_owned(),
-                        authorities: credential::Authorities::Paths(&[]),
+                        authorities: Authorities::Paths(&[]),
                     });
                 }
                 Mode::CapacityRefusal => evidence.try_reserve_exact(1_000_000)?,
                 Mode::DirectAnchor => {
                     return Ok(credential::Authentication::Authenticated {
                         evidence: evidence.into_owned(),
-                        authorities: credential::Authorities::DirectAnchor(self.anchor),
+                        authorities: Authorities::DirectAnchor(self.anchor),
                     });
                 }
                 Mode::CertificateFree => {
                     return Ok(credential::Authentication::Authenticated {
                         evidence: evidence.into_owned(),
-                        authorities: credential::Authorities::CertificateFree,
+                        authorities: Authorities::CertificateFree,
                     });
                 }
                 Mode::Ready => (),
@@ -417,7 +415,7 @@ impl<'path, 'document> credential::Provider<'path, 'document, Tree> for Provider
         evidence.try_extend_from_slice(b"retained original credential receipt")?;
         Ok(credential::Authentication::Authenticated {
             evidence: evidence.into_owned(),
-            authorities: credential::Authorities::Paths(self.paths),
+            authorities: Authorities::Paths(self.paths),
         })
     }
 }
@@ -469,7 +467,7 @@ fn every_original_credential_is_checked_and_late_refusal_drops_retained_prefix()
                             &entry.evidence()[..],
                             b"retained original credential receipt"
                         );
-                        let credential::Authorities::Paths(paths) = entry.authorities() else {
+                        let Authorities::Paths(paths) = entry.authorities() else {
                             panic!("actual checked paths")
                         };
                         assert!(core::ptr::eq(paths[0], path));
@@ -491,8 +489,7 @@ fn every_original_credential_is_checked_and_late_refusal_drops_retained_prefix()
                 ),
                 Mode::DirectAnchor => {
                     let result = result.unwrap();
-                    let credential::Authorities::DirectAnchor(anchor) =
-                        result.entries()[1].authorities()
+                    let Authorities::DirectAnchor(anchor) = result.entries()[1].authorities()
                     else {
                         panic!("actual original direct anchor")
                     };
@@ -506,7 +503,7 @@ fn every_original_credential_is_checked_and_late_refusal_drops_retained_prefix()
                     let result = result.unwrap();
                     assert!(matches!(
                         result.entries()[1].authorities(),
-                        credential::Authorities::CertificateFree
+                        Authorities::CertificateFree
                     ));
                     drop(result);
                 }

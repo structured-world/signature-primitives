@@ -26,17 +26,14 @@ pub use counters::{
     CounterStamp, CounterTimestampError, CounterTimestampResult, CounterTimestamps,
     counter_timestamps,
 };
-pub use coverage::{CoverageError, CoverageFor, ElementCoverage};
+pub use coverage::{CoverageError, CoverageFor};
 mod profile;
 mod selection;
 mod tokens;
-pub use material::{
-    Carried, CarriedCause, CarriedError, CarriedMaterial, CarriedOrigin, OtherCarried,
-};
+pub use material::{Carried, CarriedCause, CarriedError, CarriedMaterial, OtherCarried};
 pub use profile::{DigestError, DigestUse};
 pub use selection::{
-    RequiredToken, RequirementError, RequirementResult, TimestampPathBinding, TimestampPathFailure,
-    TimestampPaths, TimestampRequirements, TimestampScope, TimestampSelection, requirements,
+    RequirementError, RequirementResult, TimestampSelection, requirements,
     requirements_with_counters,
 };
 pub use tokens::{

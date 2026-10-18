@@ -134,7 +134,7 @@ fn with_artifacts(
     statuses: [&pki::PathStatuses<'_, '_, '_>; 2],
     ca: &pki::CheckedPath<'_>,
     storage: &Memory,
-    check: impl FnOnce(&material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>),
+    check: impl FnOnce(&structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>),
 ) {
     let [ordinary, credential] = statuses;
     let access = Access::new(xml, xml.snapshot(), storage);
@@ -164,7 +164,7 @@ fn with_artifacts(
         .close_statuses(&roots, &nodes, &access)
         .unwrap();
     let uses = pki::authority_uses(&closed, &access).unwrap();
-    let artifacts = material::artifact_uses(&uses, &access).unwrap();
+    let artifacts = structured_ltv::material::artifact_uses(&uses, &access).unwrap();
     check(&artifacts);
 }
 
@@ -229,7 +229,7 @@ fn credential_status_references_use_actual_sources_and_ordinary_alternatives() {
 fn check_report(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
     storage: &Memory,
     case: Case,
 ) {

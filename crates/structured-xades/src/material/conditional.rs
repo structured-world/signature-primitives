@@ -1,15 +1,20 @@
 //! Mandatory copies in a present signature's certificate/status containers.
 
 use super::catalogue::{ContainerKind, container_kind};
-use super::status::{ArtifactVisitError, StatusPart, member_source, visit_artifacts};
-use super::{ArtifactRef, Index, IndexError, Placement};
-use crate::pki::{
-    CounterPaths, Participant, ParticipantAuthority, ParticipantClosure, ParticipantRequirements,
-};
+use super::{Index, Placement};
+use crate::pki::CounterPaths;
 use crate::prepare::Prepared;
-use crate::timestamp::TimestampScope;
 use crate::xml::{Access, Snapshot, Xml};
 use structured_asn1::memory::{HashWork, MemoryError, OwnedMap, OwnedVec, Work};
+use structured_ltv::material::status::{
+    ArtifactVisitError, StatusPart, member_source, visit_artifacts,
+};
+use structured_ltv::material::{ArtifactRef, IndexError};
+use structured_ltv::pki::{
+    Participant, ParticipantAuthority, ParticipantClosure, ParticipantRequirements, PathStatuses,
+};
+use structured_ltv::source::ScopeError;
+use structured_ltv::timestamp::TimestampScope;
 
 /// Why a mandatory copy in a present container could not be established.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,7 +73,7 @@ pub enum ConditionalError<E, N> {
     /// An archive antecedent subset cannot establish whole-signature conditions.
     Scope,
     /// Original signature, source, lookup or storage/work refusal.
-    Index(IndexError<E, N>),
+    Index(IndexError<N>),
     /// Original child unsigned/material container structure or access refusal.
     Property(crate::properties::Error<E, N>),
 }
@@ -455,7 +460,7 @@ fn copy_rule<N: Copy>(property: N, signature: N, ordinary: bool) -> CopyRule<N> 
 }
 
 fn path_copies<'certificate, 'document, X: Xml, W: Work>(
-    statuses: &crate::pki::PathStatuses<'_, 'certificate, 'document>,
+    statuses: &PathStatuses<'_, 'certificate, 'document>,
     participant: Participant<X::Id>,
     [certificate, status]: [Option<X::Id>; 2],
     signature: X::Id,
@@ -521,10 +526,10 @@ fn path_copies<'certificate, 'document, X: Xml, W: Work>(
                 record(participant, artifact, rule(property))
             })
             .map_err(|cause| match cause {
-                ArtifactVisitError::Access(cause) => {
-                    ConditionalError::Index(IndexError::Access(cause))
+                ArtifactVisitError::Scope(ScopeError::Resource { cause, .. }) => resource(cause),
+                ArtifactVisitError::Scope(cause) => {
+                    ConditionalError::Index(IndexError::Scope(cause))
                 }
-                ArtifactVisitError::Resource(cause) => resource(cause),
                 ArtifactVisitError::Visitor(cause) => cause,
             })?;
         }

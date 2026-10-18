@@ -4,10 +4,9 @@ use super::Basic;
 use crate::certificate::{
     SignatureTime, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure,
 };
-use crate::timestamp::{TimestampPaths, TimestampScope};
 use crate::xml::{Access, AccessError, Xml};
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
-use structured_ltv::timestamp::Purpose;
+use structured_ltv::timestamp::{Purpose, TimestampPaths, TimestampScope};
 
 /// One actual root `SignatureTimeStamp`'s complete static certificate binding.
 /// Negative results do not disappear because a different timestamp succeeded.
@@ -67,10 +66,9 @@ pub enum TimeError<E, N> {
         /// Original selected signature.
         signature: N,
     },
-    /// Original current-operation/source failure.
+    /// Original current-operation/source failure, including the complete
+    /// counter-census membership query.
     Access(AccessError<E, N>),
-    /// Original complete-census membership query failed.
-    Input(crate::timestamp::InputError<E, N>),
     /// Original signature-time association processing failed.
     Signature(SignatureTimeError<E, N>),
     /// Work or retained report capacity was refused before use.
@@ -117,7 +115,7 @@ pub fn timestamped<'a, 'r, 'p, 'v, 'c, 'd, X: Xml, W: Work>(
             .map_err(resource)?
         || !required
             .includes_counters(basic.inputs().counters, access)
-            .map_err(TimeError::Input)?
+            .map_err(|cause| TimeError::Access(cause.into()))?
     {
         return Err(TimeError::Foreign { signature });
     }

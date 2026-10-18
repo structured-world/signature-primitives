@@ -5,16 +5,16 @@ use crate::{
     binary::{self, BinaryXml, Location},
     certificate::{Agreement, DigestProvider, FormatDigest},
     digest,
-    material::PathCertificate,
-    pki::{Participant, ParticipantAuthority, ParticipantRequirements},
     prepare::{Preparation, Prepared},
-    timestamp::TimestampScope,
     unsigned,
     xml::{Access, Xml},
 };
 use core::ops::Range;
 use structured_asn1::digest::Digest;
 use structured_asn1::memory::{MemoryError, OwnedMap, OwnedVec, Work};
+use structured_ltv::material::PathCertificate;
+use structured_ltv::pki::{Participant, ParticipantAuthority, ParticipantRequirements};
+use structured_ltv::timestamp::TimestampScope;
 use structured_pkix::Certificate;
 
 /// Source of an original certificate reference; protected and ordinary copies

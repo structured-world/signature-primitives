@@ -2,11 +2,11 @@
 
 use super::{Error, Missing};
 use crate::binary::Location;
-use crate::material::{ArchiveError, Archived, ArtifactRef, Index};
-use crate::timestamp::{ElementCoverage, TimestampRequirements, TimestampScope};
+use crate::material::{Archived, Index};
 use crate::xml::{Access, Xml};
 use structured_asn1::memory::{HashWork, Memory, Work};
-use structured_ltv::timestamp::{Purpose, Verified};
+use structured_ltv::material::{ArchiveError, ArtifactRef, Coverage};
+use structured_ltv::timestamp::{Purpose, TimestampRequirements, TimestampScope, Verified};
 
 /// Optional original archive coverage; only these constructors expose it.
 /// The check verifies its source/role/property against the source-derived scope
@@ -15,7 +15,7 @@ pub struct Scope<'a, N: HashWork, D, G, C: Work = Memory> {
     archive: Option<Archive<'a, N, D, G, C>>,
 }
 
-type Archive<'a, N, D, G, C> = (&'a ElementCoverage<N, D, G, C>, &'a Verified<N, D, G>);
+type Archive<'a, N, D, G, C> = (&'a Coverage<N, D, G, C>, &'a Verified<N, D, G>);
 
 impl<N: HashWork, D, G> Scope<'_, N, D, G> {
     /// Whole-signature incorporation, with no archive implication.
@@ -29,7 +29,7 @@ impl<'a, N: HashWork, D, G, C: Work> Scope<'a, N, D, G, C> {
     /// Exact selected archive input and its private mathematical token receipt.
     #[must_use]
     pub fn before_archive(
-        coverage: &'a ElementCoverage<N, D, G, C>,
+        coverage: &'a Coverage<N, D, G, C>,
         evidence: &'a Verified<N, D, G>,
     ) -> Self {
         Self {

@@ -4,8 +4,9 @@ use super::{
     LongTermReport, NoCredentials, Tree, fixture, funded, timestamp_oracle, values, xml_digest,
 };
 use structured_asn1::memory::{Memory, Work};
+use structured_ltv::pki;
 use structured_xades::{
-    baseline, certificate, credential, material, pki, prepare, timestamp, unsigned,
+    baseline, certificate, credential, material, prepare, timestamp, unsigned,
     xml::{Access, Xml},
 };
 
@@ -121,8 +122,10 @@ fn archival_level_joins_whole_and_archive_material_of_one_preparation() {
         let prepared =
             prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
         let fields = prepare::check_fields(&prepared, &access).unwrap();
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+            Ok::<_, ()>(path)
+        })
+        .unwrap();
         let structured_xades::hashes::ParticipantBinding::Bound(hashes) =
             structured_xades::hashes::check_participants(&prepared, &counters, &access).unwrap()
         else {
@@ -156,14 +159,14 @@ fn archival_level_joins_whole_and_archive_material_of_one_preparation() {
             };
             let whole = select(timestamp::TimestampSelection::All);
             let all_paths = [signature_path, archive_path];
-            let timestamp::TimestampPathBinding::Bound(paths) =
+            let structured_ltv::timestamp::TimestampPathBinding::Bound(paths) =
                 whole.bind_paths(&all_paths, &access).unwrap()
             else {
                 panic!("complete original token census")
             };
             let earlier = select(timestamp::TimestampSelection::BeforeArchive(1));
             let prior_paths = [signature_path];
-            let timestamp::TimestampPathBinding::Bound(prior) =
+            let structured_ltv::timestamp::TimestampPathBinding::Bound(prior) =
                 earlier.bind_paths(&prior_paths, &access).unwrap()
             else {
                 panic!("complete original earlier-token census")
@@ -198,13 +201,13 @@ fn archival_level_joins_whole_and_archive_material_of_one_preparation() {
 struct Chain<'a> {
     xml: &'a Tree,
     prepared: &'a prepare::Prepared<Tree>,
-    counters: &'a pki::CounterPaths<'a, 'a, usize, u8, u8>,
+    counters: &'a structured_xades::pki::CounterPaths<'a, 'a, usize, u8, u8>,
     selected: &'a certificate::CheckedPathCertificate<'a, 'a, usize, u8, u8>,
     operation: &'a structured_asn1::Reader<'a>,
-    paths: &'a timestamp::TimestampPaths<'a, 'a, 'a, usize, u8, u8>,
-    prior: &'a timestamp::TimestampPaths<'a, 'a, 'a, usize, u8, u8>,
+    paths: &'a structured_ltv::timestamp::TimestampPaths<'a, 'a, 'a, usize, u8, u8>,
+    prior: &'a structured_ltv::timestamp::TimestampPaths<'a, 'a, 'a, usize, u8, u8>,
     timed: &'a baseline::Timed<'a, 'a, 'a, 'a, 'a, 'a, usize, u8, u8>,
-    coverage: &'a timestamp::ElementCoverage<usize, u8, u8, Memory>,
+    coverage: &'a structured_ltv::material::Coverage<usize, u8, u8, Memory>,
     evidence: &'a structured_ltv::timestamp::Verified<usize, u8, u8>,
 }
 
@@ -249,7 +252,7 @@ impl Chain<'_> {
                 |query, view| {
                     let work = query.execution();
                     let access = Access::new(self.xml, self.xml.snapshot(), &work);
-                    let index = material::Index::build(&view, &access).unwrap();
+                    let index = material::index(&view, &access).unwrap();
                     let x509 = material::check_participants(
                         self.prepared,
                         &closure,
@@ -318,9 +321,14 @@ impl Archive<'_> {
         // Signer plus the earlier signature-timestamp TSA.
         let roots = [self.statuses; 2];
         let closed = earlier.close_statuses(&roots, self.nodes, access).unwrap();
-        let x509 =
-            material::archived_participants(&closed, index, chain.coverage, chain.evidence, access)
-                .unwrap();
+        let x509 = structured_ltv::material::archived_participants(
+            &closed,
+            index,
+            chain.coverage,
+            chain.evidence,
+            access,
+        )
+        .unwrap();
         let format = material::credentials::check(
             census,
             chain.counters,

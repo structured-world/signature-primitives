@@ -1394,7 +1394,8 @@ fn certificate_references_classify_actual_exclusive_credential_ca_once() {
                 timestamp::TimestampSelection::All,
             )
             .unwrap();
-            let timestamp::TimestampPathBinding::Bound(all) = all.bind_paths(&[], &access).unwrap()
+            let structured_ltv::timestamp::TimestampPathBinding::Bound(all) =
+                all.bind_paths(&[], &access).unwrap()
             else {
                 panic!("complete zero-token scope")
             };
@@ -1408,15 +1409,16 @@ fn certificate_references_classify_actual_exclusive_credential_ca_once() {
                 |participants| {
                     super::with_original_delta_statuses(path, storage, |statuses| {
                         let roots = [statuses; 3];
-                        let nodes = [pki::AuthorityNode {
+                        let nodes = [structured_ltv::pki::AuthorityNode {
                             statuses,
                             responders: &[],
                         }];
                         let closed = participants
                             .close_statuses(&roots, &nodes, &access)
                             .unwrap();
-                        let uses = pki::authority_uses(&closed, &access).unwrap();
-                        let artifacts = material::artifact_uses(&uses, &access).unwrap();
+                        let uses = structured_ltv::pki::authority_uses(&closed, &access).unwrap();
+                        let artifacts =
+                            structured_ltv::material::artifact_uses(&uses, &access).unwrap();
                         assert_certificate_role_comparisons(
                             &xml,
                             &prepared,
@@ -1441,7 +1443,7 @@ fn certificate_references_classify_actual_exclusive_credential_ca_once() {
 fn assert_certificate_role_comparisons(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
     certificate: &structured_pkix::Certificate<'_>,
     shared: bool,
     storage: &structured_asn1::memory::Memory,
@@ -1505,7 +1507,7 @@ fn assert_certificate_role_comparisons(
 fn assert_certificate_role_refusals(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
     storage: &structured_asn1::memory::Memory,
 ) {
     // A later query receives no credit from retained actor/CA catalogues.
@@ -1553,7 +1555,7 @@ fn assert_certificate_role_refusals(
 fn assert_certificate_role_provider_refusal(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
     storage: &structured_asn1::memory::Memory,
 ) {
     // A refusal after CA decoding and stream start retains the actual provider
@@ -1719,11 +1721,11 @@ fn root_certificate_references_cover_actual_anchor_and_exclude_signer_with_one_m
             assert!(core::ptr::eq(report.path(), path));
             assert_eq!(
                 report.candidate(0).unwrap().0,
-                material::PathCertificate::Anchor
+                structured_ltv::material::PathCertificate::Anchor
             );
             assert_eq!(
                 report.candidate(1).unwrap().0,
-                material::PathCertificate::Member(0)
+                structured_ltv::material::PathCertificate::Member(0)
             );
             assert!(report.candidate(2).is_none());
             if matches!(mode, Mode::Ready) {
@@ -1855,7 +1857,7 @@ fn conditional_reference_presence_requires_complete_token_pool_and_keeps_missing
 
 fn assert_reference_presence_refusal(
     report: &structured_xades::validation::ReferenceDigests<'_, '_, usize, u8, u8>,
-    required: &structured_xades::timestamp::TimestampRequirements<usize, u8, u8>,
+    required: &structured_ltv::timestamp::TimestampRequirements<usize, u8, u8>,
     counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
     xml: &Tree,
 ) {
@@ -2056,7 +2058,7 @@ fn reference_catalogues_include_token_certificates_crls_and_whole_ocsp_once() {
 fn assert_token_reference_origins(
     report: &structured_xades::validation::ReferenceDigests<'_, '_, usize, u8, u8>,
 ) {
-    use structured_xades::{material::ArtifactSource, timestamp::CarriedOrigin};
+    use structured_ltv::material::{ArtifactSource, CarriedOrigin};
     assert_eq!(report.tokens().unwrap().len(), 1);
     assert_eq!(report.rows().len(), 3);
     let certificates = report.comparisons(0).unwrap();

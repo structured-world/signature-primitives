@@ -6,10 +6,16 @@ use structured_cms::timestamp::{BoundUncertainty, Evidence, earliest, latest};
 use structured_pkix::temporal::{Instant, LeapTable};
 use structured_pkix::{Certificate, path::WorkingKey};
 
+mod obligation;
+pub use obligation::{
+    ObligationError, RequiredToken, TimestampPathBinding, TimestampPathFailure, TimestampPaths,
+    TimestampRequirements, TimestampScope,
+};
+
 /// What a timestamp proves the existence of.
 ///
-/// Every AdES format writes these four kinds under its own names (XAdES
-/// properties, CAdES attributes, PAdES document timestamps); the format layer
+/// Every `AdES` format writes these four kinds under its own names (`XAdES`
+/// properties, `CAdES` attributes, `PAdES` document timestamps); the format layer
 /// maps its own input role onto one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {

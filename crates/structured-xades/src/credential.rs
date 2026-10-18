@@ -1,9 +1,9 @@
 //! Source-bound independent credentials and their actual authority paths.
 
-use crate::pki::CheckedPath;
 use crate::role;
 use crate::xml::{Access, AccessError, Snapshot, Xml};
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::pki::{self as ltv, Authorities, CredentialGroup, CredentialReceipts};
 
 /// One original credential protected by the selected `SignedProperties` binding.
 /// Construction is private; a self-claimed role cannot become a credential.
@@ -30,23 +30,6 @@ impl<N: Copy, D: Copy, G: Copy> Credential<N, D, G> {
     pub fn entry(self) -> role::Entry<N> {
         self.entry
     }
-}
-
-/// Actual certificate requirements of the authenticated credential format.
-/// These are explicit format facts, not a fallback from missing evidence.
-#[derive(Clone, Copy)]
-pub enum Authorities<'path, 'document> {
-    /// All independently checked authority paths used by authentication.
-    /// An empty slice is incomplete provider evidence, not certificate-free.
-    Paths(&'path [&'path CheckedPath<'document>]),
-    /// The credential was authenticated directly by this explicitly selected
-    /// effective trust anchor. Incorporate its existing certificate when needed;
-    /// do not invent a non-anchor chain or a revocation obligation for it.
-    DirectAnchor(&'path structured_pkix::path::EffectiveAnchor<'document>),
-    /// This concrete format authenticated the original credential without
-    /// requiring X.509 certificate paths. Its format-specific evidence remains
-    /// mandatory; this does not establish any other required validation material.
-    CertificateFree,
 }
 
 /// Completed format authentication, separate from application authorization.
@@ -145,6 +128,30 @@ impl<'path, 'document, E, N: Copy, D: Copy, G: Copy> Credentials<'path, 'documen
     #[must_use]
     pub fn entries(&self) -> &[Checked<'path, 'document, E, N, D, G>] {
         &self.entries
+    }
+}
+
+// One signature's authenticated credentials are a common credential group.
+impl<'path, 'document, E, N: Copy, D: Copy, G: Copy> CredentialGroup<'path, 'document>
+    for Credentials<'path, 'document, E, N, D, G>
+{
+    type Id = N;
+
+    fn signature(&self) -> N {
+        self.signature
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn credential(&self, ordinal: usize) -> ltv::Credential<'path, 'document, N> {
+        let checked = &self.entries[ordinal];
+        ltv::Credential {
+            signature: checked.source.signature,
+            node: checked.source.entry.node,
+            authorities: checked.authorities,
+        }
     }
 }
 
@@ -332,6 +339,37 @@ impl<'path, 'document, E, N: Copy, D: Copy, G: Copy>
     #[must_use]
     pub fn counters(&self) -> &[CounterCredentials<'path, 'document, E, N, D, G>] {
         &self.counters
+    }
+}
+
+// The root and counter credential groups are the common credential census.
+impl<'path, 'document, E, N: Copy, D: Copy, G: Copy> CredentialReceipts<'path, 'document>
+    for ParticipantCredentials<'path, 'document, E, N, D, G>
+{
+    type Id = N;
+    type Document = D;
+    type Generation = G;
+    type Group = Credentials<'path, 'document, E, N, D, G>;
+
+    fn snapshot(&self) -> Snapshot<D, G> {
+        self.snapshot
+    }
+
+    fn signature(&self) -> N {
+        self.signature
+    }
+
+    fn root(&self) -> Option<&Self::Group> {
+        self.root.as_ref()
+    }
+
+    fn counters(&self) -> usize {
+        self.counters.len()
+    }
+
+    fn counter(&self, ordinal: usize) -> (N, &Self::Group) {
+        let counter = &self.counters[ordinal];
+        (counter.source.original().child(), &counter.credentials)
     }
 }
 

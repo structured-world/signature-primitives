@@ -1,10 +1,10 @@
 //! Actual countersignature signer association without requiring `XAdES` properties.
 
-use super::CheckedPath;
 use crate::certificate::{CertificateXml, KeyAssociation};
 use crate::counter;
-use crate::xml::{Access, AccessError, AccessResult, Xml};
+use crate::xml::{Access, AccessError, AccessResult, Snapshot, Xml};
 use structured_asn1::memory::{OwnedVec, Work};
+use structured_ltv::pki::{CheckedPath, Counter, CounterReceipts};
 
 /// One actual child-signature receipt and its selected signer's checked path.
 /// This establishes neither revocation nor incorporation of validation data.
@@ -52,7 +52,7 @@ pub type CounterPathResult<'view, 'document, X> = AccessResult<
 /// Construction visits every original counter through the common iterative
 /// walker. These paths still need their own status and material evaluation.
 pub struct CounterPaths<'view, 'document, N, D, G> {
-    snapshot: crate::xml::Snapshot<D, G>,
+    snapshot: Snapshot<D, G>,
     signature: N,
     actors: OwnedVec<CounterActor<'view, 'document, N, D, G>>,
 }
@@ -88,7 +88,7 @@ impl<'view, 'document, N, D, G> CounterActor<'view, 'document, N, D, G> {
 impl<'view, 'document, N: Copy, D: Copy, G: Copy> CounterPaths<'view, 'document, N, D, G> {
     /// Original root source/generation under which all counters were visited.
     #[must_use]
-    pub fn snapshot(&self) -> crate::xml::Snapshot<D, G> {
+    pub fn snapshot(&self) -> Snapshot<D, G> {
         self.snapshot
     }
     /// Root signature whose complete incorporated counters were checked.
@@ -100,6 +100,37 @@ impl<'view, 'document, N: Copy, D: Copy, G: Copy> CounterPaths<'view, 'document,
     #[must_use]
     pub fn actors(&self) -> &[CounterActor<'view, 'document, N, D, G>] {
         &self.actors
+    }
+}
+
+// The complete XMLDSig counter census is the common participant census input.
+impl<'view, 'document, N: Copy, D: Copy, G: Copy> CounterReceipts<'view, 'document>
+    for CounterPaths<'view, 'document, N, D, G>
+{
+    type Id = N;
+    type Document = D;
+    type Generation = G;
+
+    fn snapshot(&self) -> Snapshot<D, G> {
+        self.snapshot
+    }
+
+    fn signature(&self) -> N {
+        self.signature
+    }
+
+    fn len(&self) -> usize {
+        self.actors.len()
+    }
+
+    fn counter(&self, ordinal: usize) -> Counter<'view, 'document, N> {
+        let signer = &self.actors[ordinal].signer;
+        let source = signer.counter.original();
+        Counter {
+            signature: source.child(),
+            property: source.node(),
+            path: signer.path,
+        }
     }
 }
 
@@ -165,10 +196,7 @@ pub fn bind_counters<'view, 'document, X: CertificateXml, W: Work, PE>(
             .query(signature, |_, _, work| Ok(select(counter, work)))
             .map_err(CounterSelectionError::Access)?
             .map_err(|cause| CounterSelectionError::Selection { signature, cause })?;
-        match path
-            .bind_counter(counter, access)
-            .map_err(CounterSelectionError::Access)?
-        {
+        match bind_counter(path, counter, access).map_err(CounterSelectionError::Access)? {
             CounterBinding::Bound(signer) => Ok(CounterActor {
                 signer,
                 roles,
@@ -210,49 +238,47 @@ fn counter_roles<X: CertificateXml, W: Work, PE>(
     .map_err(CounterSelectionError::Property)
 }
 
-impl<'document> CheckedPath<'document> {
-    /// Bind a checked child signature to its actual selected certificate/key.
-    /// EN319132-1 §6.3(aa) includes incorporated countersignature actors in the
-    /// material obligation, including plain `XMLDSig` counters (§5.2.7.2).
-    /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-    ///
-    /// Uses the original successful XML-owner decision and this checked path's
-    /// inherited parameters. It does not reverify, resolve a different candidate,
-    /// fabricate certificate-reference properties or infer trust from `KeyInfo`.
-    /// No catalogue allocation/copy is required. A foreign or stale source is
-    /// terminal before owner dispatch; opaque original evidence may still prove
-    /// the association, while absent evidence remains explicitly Unproven.
-    ///
-    /// # Panics
-    /// Only if the private nonempty checked-path construction invariant fails.
-    pub fn bind_counter<'view, X: CertificateXml, W: Work>(
-        &'view self,
-        counter: &counter::Binding<X>,
-        access: &Access<'_, X, W>,
-    ) -> CounterPathResult<'view, 'document, X> {
-        let source = counter.original();
-        if source.snapshot() != access.snapshot() {
-            return Err(AccessError::Changed {
-                node: source.child(),
-            });
-        }
-        let target = self.members.last().expect("a checked path has a target");
-        let association = access.query(source.child(), |xml, snapshot, work| {
-            xml.key_association(
-                snapshot,
-                source.child(),
-                target.certificate(),
-                self.facts.key,
-                work,
-            )
-        })?;
-        Ok(match association {
-            KeyAssociation::Same => CounterBinding::Bound(CounterPath {
-                counter: *counter,
-                path: self,
-            }),
-            KeyAssociation::Differs => CounterBinding::Differs,
-            KeyAssociation::Unproven => CounterBinding::Unproven,
-        })
+/// Bind a checked child signature to its actual selected certificate/key.
+/// EN319132-1 §6.3(aa) includes incorporated countersignature actors in the
+/// material obligation, including plain `XMLDSig` counters (§5.2.7.2).
+/// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
+///
+/// Uses the original successful XML-owner decision and this checked path's
+/// inherited parameters. It does not reverify, resolve a different candidate,
+/// fabricate certificate-reference properties or infer trust from `KeyInfo`.
+/// No catalogue allocation/copy is required. A foreign or stale source is
+/// terminal before owner dispatch; opaque original evidence may still prove
+/// the association, while absent evidence remains explicitly Unproven.
+///
+/// # Panics
+/// Only if the nonempty checked-path construction invariant fails.
+pub fn bind_counter<'view, 'document, X: CertificateXml, W: Work>(
+    path: &'view CheckedPath<'document>,
+    counter: &counter::Binding<X>,
+    access: &Access<'_, X, W>,
+) -> CounterPathResult<'view, 'document, X> {
+    let source = counter.original();
+    if source.snapshot() != access.snapshot() {
+        return Err(AccessError::Changed {
+            node: source.child(),
+        });
     }
+    let target = path.members().last().expect("a checked path has a target");
+    let association = access.query(source.child(), |xml, snapshot, work| {
+        xml.key_association(
+            snapshot,
+            source.child(),
+            target.certificate(),
+            path.facts().key,
+            work,
+        )
+    })?;
+    Ok(match association {
+        KeyAssociation::Same => CounterBinding::Bound(CounterPath {
+            counter: *counter,
+            path,
+        }),
+        KeyAssociation::Differs => CounterBinding::Differs,
+        KeyAssociation::Unproven => CounterBinding::Unproven,
+    })
 }

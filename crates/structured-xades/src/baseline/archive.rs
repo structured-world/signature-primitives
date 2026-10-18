@@ -1,11 +1,14 @@
 //! Join every participant's material under one original archive's coverage.
 
 use crate::{
-    material, pki,
-    timestamp::TimestampScope,
+    material::{self, Placement},
     xml::{Access, Xml},
 };
 use structured_asn1::memory::{MemoryError, Work};
+use structured_ltv::material::ParticipantMaterial;
+use structured_ltv::pki::ParticipantError;
+use structured_ltv::source::Query;
+use structured_ltv::timestamp::TimestampScope;
 
 /// Original X.509 and credential-format material checked BEFORE the SAME
 /// archive. Construction requires the same authenticated credential census,
@@ -39,7 +42,7 @@ impl<M, C> ArchiveMaterial<'_, M, C> {
     }
 }
 
-type X509<'a, 'r, 'v, 'c, 'd, X> = material::ParticipantMaterial<
+type X509<'a, 'r, 'v, 'c, 'd, X> = ParticipantMaterial<
     'a,
     'r,
     'v,
@@ -48,6 +51,7 @@ type X509<'a, 'r, 'v, 'c, 'd, X> = material::ParticipantMaterial<
     <X as Xml>::Id,
     <X as Xml>::Document,
     <X as Xml>::Generation,
+    Placement<<X as Xml>::Id>,
 >;
 type Credentials<'a, 'p, 'd, A, X> = material::credentials::Report<
     'a,
@@ -60,7 +64,7 @@ type Credentials<'a, 'p, 'd, A, X> = material::credentials::Report<
 >;
 /// Source, scope or input-receipt refusal, not a missing-material finding.
 pub type ArchiveMaterialResult<'a, M, C, X> =
-    Result<ArchiveMaterial<'a, M, C>, pki::ParticipantError<<X as Xml>::Error, <X as Xml>::Id>>;
+    Result<ArchiveMaterial<'a, M, C>, ParticipantError<<X as Xml>::Id>>;
 
 /// Combine both original material reports for one exact preceding-archive
 /// scope. The X.509 report already establishes the original element coverage
@@ -80,7 +84,7 @@ pub fn archive_material<'s, 'a, 'r, 'v, 'c, 'd, 'au, 'p, A, X: Xml, W: Work>(
     let scope = required.scope();
     let original = scope.location();
     let supplied = credentials.scope();
-    let foreign = || pki::ParticipantError::Foreign {
+    let foreign = || ParticipantError::Foreign {
         signature: required.signature(),
     };
     if !matches!(scope, TimestampScope::BeforeArchive(_))
@@ -91,17 +95,12 @@ pub fn archive_material<'s, 'a, 'r, 'v, 'c, 'd, 'au, 'p, A, X: Xml, W: Work>(
     {
         return Err(foreign());
     }
-    access
-        .query(original.node, |_, _, work| Ok(work.charge_work(1)))
-        .map_err(pki::ParticipantError::Access)?
-        .map_err(|cause| pki::ParticipantError::Resource {
-            node: original.node,
-            cause,
-        })?;
+    // One dispatch plus the paid identity metadata pass.
+    Query::admit(access, original.node, 2)?;
     if !required.same_credentials(credentials.credentials())
         || !access
             .equal_id(original.node, supplied.location().node)
-            .map_err(|cause| pki::ParticipantError::Resource {
+            .map_err(|cause| ParticipantError::Resource {
                 node: original.node,
                 cause,
             })?

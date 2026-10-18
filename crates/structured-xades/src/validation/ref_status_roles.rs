@@ -14,16 +14,18 @@ use crate::{
     certificate::{Agreement, DigestProvider, FormatDigest},
     digest,
     material::{
-        self, ArtifactRef, ArtifactSource, ArtifactUses, ExclusiveFindingKind,
+        self, ExclusiveFindingKind,
         exclusivity::{self, CaError, CaFact, ReferenceStatus},
     },
     prepare::{Preparation, Prepared},
-    timestamp::{CarriedMaterial, TimestampScope},
+    timestamp::CarriedMaterial,
     unsigned,
     xml::{Access, Xml},
 };
 use core::ops::Range;
 use structured_asn1::memory::{MemoryError, OwnedMap, OwnedVec, Work};
+use structured_ltv::material::{ArtifactRef, ArtifactSource, ArtifactUses};
+use structured_ltv::timestamp::TimestampScope;
 use structured_pkix::{Certificate, ocsp::Response};
 
 /// Whole-envelope absence is an unproven relation, never a hash of a basic payload.
@@ -268,7 +270,7 @@ fn envelope_index<'source, N: Copy, D: Copy, G: Copy, W: Work>(
             insert_envelope(
                 &mut index,
                 response,
-                ArtifactSource::Xml(ordinal),
+                ArtifactSource::Material(ordinal),
                 value.location,
                 work,
             )?;

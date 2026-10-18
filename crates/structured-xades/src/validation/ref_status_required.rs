@@ -1,13 +1,11 @@
 //! Actual path status inputs required by Annex A.1.2 and A.1.4.
 
-use crate::{
-    material::{
-        ArtifactRef, ArtifactUses,
-        status::{self, StatusPart},
-    },
-    pki::{Participant, ParticipantAuthority, PathStatuses},
-};
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::material::{
+    ArtifactRef, ArtifactUses,
+    status::{self, StatusPart},
+};
+use structured_ltv::pki::{Participant, ParticipantAuthority, PathStatuses};
 
 /// One original source contributing to a non-anchor checked-path status result.
 pub struct PathStatusSource<'certificate, 'document> {

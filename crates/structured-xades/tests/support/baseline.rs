@@ -2,8 +2,9 @@
 
 use super::{Tree, attribute_checks, funded, timestamp_oracle, xml_digest};
 use structured_asn1::memory::{MemoryError, Work};
+use structured_ltv::pki;
 use structured_xades::{
-    baseline, certificate, hashes, pki, prepare, timestamp, unsigned,
+    baseline, certificate, hashes, prepare, timestamp, unsigned,
     xml::{Access, Xml},
 };
 
@@ -83,8 +84,10 @@ fn run_timed_assembly(pool: values::Pool, requested: unsigned::Requirements) {
         let access = Access::new(&xml, xml.snapshot(), memory);
         let prepared = prepare::prepare(&access, 0, requested, None).unwrap();
         let fields = prepare::check_fields(&prepared, &access).unwrap();
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+            Ok::<_, ()>(path)
+        })
+        .unwrap();
         let hashes::ParticipantBinding::Bound(hashes) =
             hashes::check_participants(&prepared, &counters, &access).unwrap()
         else {
@@ -144,10 +147,12 @@ fn run_timed_assembly(pool: values::Pool, requested: unsigned::Requirements) {
         .unwrap();
         assert!(matches!(
             required.bind_paths(&[], &access).unwrap(),
-            timestamp::TimestampPathBinding::Unproven(timestamp::TimestampPathFailure::Count)
+            structured_ltv::timestamp::TimestampPathBinding::Unproven(
+                structured_ltv::timestamp::TimestampPathFailure::Count
+            )
         ));
         let supplied = [&tsa_path];
-        let timestamp::TimestampPathBinding::Bound(paths) =
+        let structured_ltv::timestamp::TimestampPathBinding::Bound(paths) =
             required.bind_paths(&supplied, &access).unwrap()
         else {
             panic!("complete original token census")
@@ -175,7 +180,7 @@ fn run_timed_assembly(pool: values::Pool, requested: unsigned::Requirements) {
 fn assert_static_time(
     timed: &baseline::Timed<'_, '_, '_, '_, '_, '_, usize, u8, u8>,
     basic: &baseline::Basic<'_, '_, '_, '_, usize, u8, u8>,
-    paths: &timestamp::TimestampPaths<'_, '_, '_, usize, u8, u8>,
+    paths: &structured_ltv::timestamp::TimestampPaths<'_, '_, '_, usize, u8, u8>,
 ) {
     // Both the successful interval and exact input receipts survive assembly;
     // a report about an equivalent-looking second input would be insufficient.
@@ -298,7 +303,7 @@ impl structured_xades::material::credentials::Provider<Tree, ()> for NoCredentia
 
 fn check_material(
     timed: &baseline::Timed<'_, '_, '_, '_, '_, '_, usize, u8, u8>,
-    paths: &timestamp::TimestampPaths<'_, '_, '_, usize, u8, u8>,
+    paths: &structured_ltv::timestamp::TimestampPaths<'_, '_, '_, usize, u8, u8>,
     path: &pki::CheckedPath<'_>,
     xml: &Tree,
     operation: &structured_asn1::Reader<'_>,
@@ -333,7 +338,7 @@ fn check_material(
         material::with_counter_values(xml, prepared, basic.counters, operation, |query, view| {
             let work = query.execution();
             let access = Access::new(xml, xml.snapshot(), &work);
-            let index = material::Index::build(&view, &access).unwrap();
+            let index = material::index(&view, &access).unwrap();
             let x509 =
                 material::check_participants(prepared, &closure, basic.counters, &index, &access)
                     .unwrap();

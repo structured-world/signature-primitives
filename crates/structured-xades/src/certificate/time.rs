@@ -110,7 +110,7 @@ impl<'view, 'document, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq>
         W: Work,
     >(
         &'receipt self,
-        path: &'receipt crate::pki::TimestampPath<'_, '_, '_, N, D, G>,
+        path: &'receipt structured_ltv::pki::TimestampPath<'_, '_, '_, N, D, G>,
         access: &Access<'_, X, W>,
     ) -> Result<
         SignatureTimeBinding<'receipt, 'view, 'document, N, D, G>,

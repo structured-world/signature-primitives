@@ -1,19 +1,19 @@
 //! Actual X.509 validation inputs incorporated into the original signature.
 
 use super::{ArtifactRef, ArtifactUses, Index, IndexError, Occurrence};
+use crate::source::{Query, Snapshot};
 use crate::timestamp::TimestampScope;
-use crate::xml::{Access, Snapshot, Xml};
 use structured_asn1::memory::{OwnedVec, Work};
 
 /// One actual validation input and an exact original incorporated copy, if any.
 /// An acquired/caller-supplied value alone is not an incorporated occurrence.
-pub struct IncorporatedArtifact<'certificate, 'document, N, D, G> {
+pub struct IncorporatedArtifact<'certificate, 'document, N, D, G, P> {
     artifact: ArtifactRef<'certificate, 'document>,
-    occurrence: Option<Occurrence<N, D, G>>,
+    occurrence: Option<Occurrence<N, D, G, P>>,
 }
 
-impl<'certificate, 'document, N: Copy, D: Copy, G: Copy>
-    IncorporatedArtifact<'certificate, 'document, N, D, G>
+impl<'certificate, 'document, N: Copy, D: Copy, G: Copy, P: Copy>
+    IncorporatedArtifact<'certificate, 'document, N, D, G, P>
 {
     /// Original actual checked-path or contributing status input.
     #[must_use]
@@ -22,7 +22,7 @@ impl<'certificate, 'document, N: Copy, D: Copy, G: Copy>
     }
     /// First exact incorporated copy; absence never implies usable status.
     #[must_use]
-    pub fn occurrence(&self) -> Option<Occurrence<N, D, G>> {
+    pub fn occurrence(&self) -> Option<Occurrence<N, D, G, P>> {
         self.occurrence
     }
 }
@@ -31,15 +31,15 @@ impl<'certificate, 'document, N: Copy, D: Copy, G: Copy>
 /// preserves missing artifacts rather than accepting a caller-written subset.
 /// Placement, format-specific credentials, status usability, historical trust,
 /// chronology and archive coverage are SEPARATE obligations, not inferred here.
-pub struct Incorporation<'certificate, 'document, N, D, G> {
+pub struct Incorporation<'certificate, 'document, N, D, G, P> {
     snapshot: Snapshot<D, G>,
     signature: N,
-    entries: OwnedVec<IncorporatedArtifact<'certificate, 'document, N, D, G>>,
+    entries: OwnedVec<IncorporatedArtifact<'certificate, 'document, N, D, G, P>>,
     all_present: bool,
 }
 
-impl<'certificate, 'document, N: Copy, D: Copy, G: Copy>
-    Incorporation<'certificate, 'document, N, D, G>
+impl<'certificate, 'document, N: Copy, D: Copy, G: Copy, P: Copy>
+    Incorporation<'certificate, 'document, N, D, G, P>
 {
     /// Actual immutable source under which every copy was located.
     #[must_use]
@@ -53,7 +53,7 @@ impl<'certificate, 'document, N: Copy, D: Copy, G: Copy>
     }
     /// Every actual artifact once, preserving first-encounter order.
     #[must_use]
-    pub fn entries(&self) -> &[IncorporatedArtifact<'certificate, 'document, N, D, G>] {
+    pub fn entries(&self) -> &[IncorporatedArtifact<'certificate, 'document, N, D, G, P>] {
         &self.entries
     }
     /// Only incorporated presence, not allowed placement, Good status or grade.
@@ -64,25 +64,13 @@ impl<'certificate, 'document, N: Copy, D: Copy, G: Copy>
 }
 
 /// Incomplete scope and original source/resource errors are not missing values.
-#[derive(Debug)]
-pub enum IncorporationError<E, N> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncorporationError<N> {
     /// A preceding-archive subset cannot establish whole-signature presence.
     Scope,
     /// Current original source/index/generation/admission refused.
-    Index(IndexError<E, N>),
+    Index(IndexError<N>),
 }
-
-/// Complete original report or an unchanged terminal source/admission cause.
-pub type IncorporationResult<'certificate, 'document, X> = Result<
-    Incorporation<
-        'certificate,
-        'document,
-        <X as Xml>::Id,
-        <X as Xml>::Document,
-        <X as Xml>::Generation,
-    >,
-    IncorporationError<<X as Xml>::Error, <X as Xml>::Id>,
->;
 
 /// Locate every actual X.509 validation input, including independently retained
 /// anchors and reached CRL/delta/OCSP authentication paths, through the SAME
@@ -92,22 +80,30 @@ pub type IncorporationResult<'certificate, 'document, X> = Result<
 /// This necessary presence check does not replace those placement checks or
 /// assert that Unknown/stale/revoked input is Good. No parse/crypto is repeated.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-pub fn incorporation<'certificate, 'document, X: Xml, W: Work, Q: Work>(
-    uses: &ArtifactUses<'_, '_, '_, 'certificate, 'document, X::Id, X::Document, X::Generation>,
-    index: &Index<'_, X::Id, X::Document, X::Generation, W>,
-    access: &Access<'_, X, Q>,
-) -> IncorporationResult<'certificate, 'document, X> {
+pub fn incorporation<'certificate, 'document, N, D, G, P, O, W, Q>(
+    uses: &ArtifactUses<'_, '_, '_, 'certificate, 'document, N, D, G>,
+    index: &Index<'_, N, D, G, P, O, W>,
+    query: &Q,
+) -> Result<Incorporation<'certificate, 'document, N, D, G, P>, IncorporationError<N>>
+where
+    N: Copy + Eq,
+    D: Copy + Eq,
+    G: Copy + Eq,
+    P: Copy,
+    W: Work,
+    Q: Query<Id = N, Document = D, Generation = G>,
+{
     let required = uses.inputs().requirements();
     let TimestampScope::All(location) = required.scope() else {
         return Err(IncorporationError::Scope);
     };
-    if location.snapshot != access.snapshot() {
+    if location.snapshot != query.snapshot() {
         return Err(IncorporationError::Index(IndexError::Foreign {
             signature: required.signature(),
         }));
     }
     index
-        .require_signature(required.signature(), access)
+        .require_signature(required.signature(), query)
         .map_err(IncorporationError::Index)?;
     let resource = |cause| {
         IncorporationError::Index(IndexError::Resource {
@@ -115,19 +111,18 @@ pub fn incorporation<'certificate, 'document, X: Xml, W: Work, Q: Work>(
             cause,
         })
     };
-    let mut entries = access.execution().vector();
+    let mut entries = query.execution().vector();
     entries
         .try_reserve_exact(uses.entries().len())
         .map_err(resource)?;
     let mut all_present = true;
     for ordinal in 0..uses.entries().len() {
-        access
-            .query(required.signature(), |_, _, work| Ok(work.charge_work(1)))
-            .map_err(|cause| IncorporationError::Index(IndexError::Access(cause)))?
-            .map_err(resource)?;
+        query
+            .admit(required.signature(), 2)
+            .map_err(|cause| IncorporationError::Index(IndexError::Scope(cause)))?;
         let artifact = uses.entries()[ordinal].artifact();
         let mut copies = index
-            .artifact(artifact, access)
+            .artifact(artifact, query)
             .map_err(IncorporationError::Index)?;
         let occurrence = copies
             .next()
@@ -144,7 +139,7 @@ pub fn incorporation<'certificate, 'document, X: Xml, W: Work, Q: Work>(
             .map_err(resource)?;
     }
     index
-        .require_signature(required.signature(), access)
+        .require_signature(required.signature(), query)
         .map_err(IncorporationError::Index)?;
     Ok(Incorporation {
         snapshot: location.snapshot,

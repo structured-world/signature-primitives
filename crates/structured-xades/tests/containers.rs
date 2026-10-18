@@ -1410,7 +1410,7 @@ fn assert_verified_element_coverage(
     let denied_access = Access::new(xml, xml.snapshot(), &denied);
     assert!(matches!(
         coverage.covers(verified, value, &denied_access),
-        Err(timestamp::CoverageError::Access(_))
+        Err(structured_ltv::material::CoverageError::Scope(_))
     ));
     assert_eq!(
         coverage.covers(verified, key, &access).unwrap(),
@@ -1431,7 +1431,7 @@ fn assert_verified_element_coverage(
     );
     assert!(matches!(
         coverage.covers(verified, value, &foreign),
-        Err(timestamp::CoverageError::Foreign { .. })
+        Err(structured_ltv::material::CoverageError::Foreign { .. })
     ));
 }
 
@@ -1467,15 +1467,15 @@ fn archive_element_coverage_excludes_its_own_and_later_material_and_non_elements
     let denied = Access::new(&xml, xml.snapshot(), &zero);
     assert!(matches!(
         coverage.selects(earlier, &denied),
-        Err(timestamp::CoverageError::Access(
-            AccessError::Resource { .. }
+        Err(structured_ltv::material::CoverageError::Scope(
+            structured_ltv::source::ScopeError::Resource { .. }
         ))
     ));
     xml.generation.set(2);
     assert!(matches!(
         coverage.selects(earlier, &access),
-        Err(timestamp::CoverageError::Access(
-            AccessError::Changed { .. }
+        Err(structured_ltv::material::CoverageError::Scope(
+            structured_ltv::source::ScopeError::Changed { .. }
         ))
     ));
     drop(coverage);
@@ -1677,19 +1677,19 @@ fn material_index_combines_xml_and_token_pools_without_losing_original_placement
                 let limited = Memory::new(Arc::new(MemoryAccount::new(0, budget)));
                 let lower = Access::new(&xml, xml.snapshot(), &limited);
                 assert!(matches!(
-                    material::Index::build_with_tokens(&values, &carried, &lower),
-                    Err(material::IndexError::Resource { cause: MemoryError::WorkExceeded, .. })
+                    material::index_with_tokens(&values, &carried, &lower),
+                    Err(structured_ltv::material::IndexError::Resource { cause: MemoryError::WorkExceeded, .. })
                 ));
                 assert_eq!(limited.used(), 0);
             }
-            let index = material::Index::build_with_tokens(&values, &carried, &access).unwrap();
+            let index = material::index_with_tokens(&values, &carried, &access).unwrap();
             let material::Value::Certificate(certificate) = &values.values()[0].value else { panic!("original header certificate") };
             let copies = index.certificate(certificate, &access).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
             assert_eq!(copies.len(), 5);
-            assert_eq!(copies[0].source(), material::ArtifactSource::Xml(0));
+            assert_eq!(copies[0].source(), structured_ltv::material::ArtifactSource::Material(0));
             for token in 0..2 {
-                assert_eq!(copies[1 + token].source(), material::ArtifactSource::TokenCertificate { token, certificate: 0 });
-                assert_eq!(copies[3 + token].source(), material::ArtifactSource::TokenRevocation(timestamp::CarriedOrigin { token, choice: 0 }));
+                assert_eq!(copies[1 + token].source(), structured_ltv::material::ArtifactSource::TokenCertificate { token, certificate: 0 });
+                assert_eq!(copies[3 + token].source(), structured_ltv::material::ArtifactSource::TokenRevocation(structured_ltv::material::CarriedOrigin { token, choice: 0 }));
                 assert_eq!(copies[1 + token].embedded_certificate(), None);
                 assert_eq!(copies[3 + token].embedded_certificate(), Some(0));
                 let node = if token == 0 { first } else { second };
@@ -1706,15 +1706,15 @@ fn material_index_combines_xml_and_token_pools_without_losing_original_placement
             // capacity cannot produce a successful truncated combined index.
             drop(index);
             let before = memory.used();
-            let baseline = material::Index::build(&values, &access).unwrap();
+            let baseline = material::index(&values, &access).unwrap();
             let capacity = memory.used() - before;
             drop(baseline);
             let limited = Memory::new(Arc::new(MemoryAccount::new(capacity, 1_048_576)));
             let lower = Access::new(&xml, xml.snapshot(), &limited);
-            drop(material::Index::build(&values, &lower).unwrap());
+            drop(material::index(&values, &lower).unwrap());
             assert_eq!(limited.used(), 0);
-            let Err(error) = material::Index::build_with_tokens(&values, &carried, &lower) else { panic!("late index growth must refuse") };
-            assert!(matches!(error, material::IndexError::Resource { .. }));
+            let Err(error) = material::index_with_tokens(&values, &carried, &lower) else { panic!("late index growth must refuse") };
+            assert!(matches!(error, structured_ltv::material::IndexError::Resource { .. }));
             assert_eq!(limited.used(), 0);
             Ok::<_, ()>(())
         }).unwrap();
@@ -1917,17 +1917,17 @@ fn an_archive_tokens_own_certificate_cannot_complete_its_prior_material() {
         timestamp::with_tokens(&xml,&prepared,query,|query,tokens| {
             let carried=tokens.material_in(query).unwrap();
             let work=query.execution();let access=Access::new(&xml,xml.snapshot(),&work);
-            let index=material::Index::build_with_tokens(&values,&carried,&access).unwrap();
+            let index=material::index_with_tokens(&values,&carried,&access).unwrap();
             let mut own=0;
             for copy in index.certificate(&certificate,&access).unwrap() {
                 let copy=copy.unwrap();
-                if matches!(copy.source(),material::ArtifactSource::TokenCertificate {..}) {
+                if matches!(copy.source(),structured_ltv::material::ArtifactSource::TokenCertificate {..}) {
                     assert!(matches!(copy.placement(),material::Placement::TimestampToken {property,..} if property==archive));
                     own+=1;
                 }
             }
             assert_eq!(own,1);
-            assert!(matches!(index.archived(material::ArtifactRef::Certificate(&certificate),&coverage,&evidence,&access).unwrap(),material::Archived::Uncovered));
+            assert!(matches!(index.archived(structured_ltv::material::ArtifactRef::Certificate(&certificate),&coverage,&evidence,&access).unwrap(),material::Archived::Uncovered));
             Ok::<_,()>(())
         }).unwrap();
         Ok::<_,()>(())
@@ -2007,31 +2007,31 @@ fn archive_artifact_lookup_requires_a_covered_copy_and_exact_original_identity()
         let missing = structured_pkix::Certificate::read(&parser, &missing, 1600).unwrap();
         material::with_values(&xml,&prepared,&operation,|query,view| {
             let work=query.execution();let access=Access::new(&xml,xml.snapshot(),&work);
-            let index=material::Index::build(&view,&access).unwrap();
+            let index=material::index(&view,&access).unwrap();
             assert_crl_archive(&view,&index,&coverage,&evidence,&access,(&certificate,&root,order),&xml);
             assert_ocsp_archive(&view,&index,&coverage,&evidence,&access,(&certificate,&root,early,&path),&xml);
-            let artifact=material::ArtifactRef::Certificate(&certificate);
+            let artifact=structured_ltv::material::ArtifactRef::Certificate(&certificate);
             let census=index.archived_path(&path,&coverage,&evidence,&access).unwrap();
             assert!(core::ptr::eq(census.path(), &raw const path));
             assert_eq!(census.archive(),evidence.token());
             assert_eq!(census.all_certificates_covered(),early);
             assert_eq!(census.entries().len(),2);
-            assert_eq!(census.entries()[0].role,material::PathCertificate::Anchor);
+            assert_eq!(census.entries()[0].role,structured_ltv::material::PathCertificate::Anchor);
             if early {assert!(matches!(census.entries()[0].availability,material::Archived::Present(_)));}
             else {assert!(matches!(census.entries()[0].availability,material::Archived::Missing));}
-            assert_eq!(census.entries()[1].role,material::PathCertificate::Member(0));
+            assert_eq!(census.entries()[1].role,structured_ltv::material::PathCertificate::Member(0));
             if early {assert!(matches!(census.entries()[1].availability,material::Archived::Present(_)));}
             else {assert!(matches!(census.entries()[1].availability,material::Archived::Uncovered));}
             let found=index.archived(artifact,&coverage,&evidence,&access).unwrap();
             if early {assert!(matches!(found,material::Archived::Present(copy) if matches!(copy.placement(),material::Placement::KeyInfo(_))));}
             else {assert!(matches!(found,material::Archived::Uncovered));}
-            assert!(matches!(index.archived(material::ArtifactRef::Certificate(&missing),&coverage,&evidence,&access).unwrap(),material::Archived::Missing));
+            assert!(matches!(index.archived(structured_ltv::material::ArtifactRef::Certificate(&missing),&coverage,&evidence,&access).unwrap(),material::Archived::Missing));
             let denied=Memory::new(Arc::new(MemoryAccount::new(0,0)));
             let denied=Access::new(&xml,xml.snapshot(),&denied);
-            assert!(matches!(index.archived(artifact,&coverage,&evidence,&denied),Err(material::ArchiveError::Index(material::IndexError::Access(_) | material::IndexError::Resource {..}))));
+            assert!(matches!(index.archived(artifact,&coverage,&evidence,&denied),Err(structured_ltv::material::ArchiveError::Index(structured_ltv::material::IndexError::Scope(_) | structured_ltv::material::IndexError::Resource {..}))));
             let no_capacity=Memory::new(Arc::new(MemoryAccount::new(0,1<<24)));
             let no_capacity_access=Access::new(&xml,xml.snapshot(),&no_capacity);
-            assert!(matches!(index.archived_path(&path,&coverage,&evidence,&no_capacity_access),Err(material::ArchiveError::Index(material::IndexError::Resource {..}))));
+            assert!(matches!(index.archived_path(&path,&coverage,&evidence,&no_capacity_access),Err(structured_ltv::material::ArchiveError::Index(structured_ltv::material::IndexError::Resource {..}))));
             assert_eq!(no_capacity.used(),0);
             // Retry is a NEW operation with the unchanged test limits. It must
             // not borrow the nearly exhausted fuel of the preceding independent
@@ -2041,7 +2041,7 @@ fn archive_artifact_lookup_requires_a_covered_copy_and_exact_original_identity()
             let retry_access=Access::new(&xml,xml.snapshot(),&retry);
             assert_eq!(index.archived_path(&path,&coverage,&evidence,&retry_access).unwrap().entries().len(),2);
             let foreign=Access::new(&xml,Snapshot {document:xml.document+1,generation:xml.generation.get()},&work);
-            assert!(matches!(index.archived(artifact,&coverage,&evidence,&foreign),Err(material::ArchiveError::Index(material::IndexError::Foreign {..}))));
+            assert!(matches!(index.archived(artifact,&coverage,&evidence,&foreign),Err(structured_ltv::material::ArchiveError::Index(structured_ltv::material::IndexError::Foreign {..}))));
             Ok::<_,()>(())
         }).unwrap();
         assert_eq!(provider.verified.get(), 1);
@@ -2051,7 +2051,7 @@ fn archive_artifact_lookup_requires_a_covered_copy_and_exact_original_identity()
 fn assert_crl_archive<'source, W: Work + 'source, C: Work>(
     view: &material::View<'source, usize, u8, u8>,
     index: &material::Index<'source, usize, u8, u8, W>,
-    coverage: &timestamp::ElementCoverage<usize, u8, u8, C>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
     evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
     access: &Access<'_, Tree, W>,
     actor: (
@@ -2063,7 +2063,7 @@ fn assert_crl_archive<'source, W: Work + 'source, C: Work>(
 ) {
     // Actual issuer signatures and common complete/delta semantics select the
     // original lists. Retaining only the updating delta must never suffice.
-    use material::status::{self, StatusPart, StatusSource};
+    use structured_ltv::material::status::{self, StatusPart, StatusSource};
     use structured_pkix::crl::{
         Authentication, Coverage, DeltaBinding, DeltaEvidence, Evaluation, SourceOrigin,
     };
@@ -2158,7 +2158,7 @@ fn assert_crl_archive<'source, W: Work + 'source, C: Work>(
 fn assert_crl_archive_refusal<W: Work, C: Work>(
     qualified: &structured_pkix::crl::Coverage<'_, '_>,
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &timestamp::ElementCoverage<usize, u8, u8, C>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
     evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
     access: &Access<'_, Tree, W>,
     xml: &Tree,
@@ -2167,22 +2167,22 @@ fn assert_crl_archive_refusal<W: Work, C: Work>(
     let denied = Memory::new(Arc::new(MemoryAccount::new(0, 1 << 24)));
     let denied_access = Access::new(xml, access.snapshot(), &denied);
     assert!(matches!(
-        material::status::archived(
-            material::status::StatusSource::Crl(qualified),
+        structured_ltv::material::status::archived(
+            structured_ltv::material::status::StatusSource::Crl(qualified),
             index,
             coverage,
             evidence,
             &denied_access
         ),
-        Err(material::ArchiveError::Index(
-            material::IndexError::Resource { .. }
+        Err(structured_ltv::material::ArchiveError::Index(
+            structured_ltv::material::IndexError::Resource { .. }
         ))
     ));
     assert_eq!(denied.used(), 0);
 }
 
 fn assert_crl_path_archive<'source, W: Work, C: Work>(
-    path: &structured_xades::pki::CheckedPath<'source>,
+    path: &structured_ltv::pki::CheckedPath<'source>,
     qualified: &structured_pkix::crl::Coverage<'_, 'source>,
     expected: (
         &structured_pkix::temporal::LeapTable<'_>,
@@ -2190,13 +2190,13 @@ fn assert_crl_path_archive<'source, W: Work, C: Work>(
         &Tree,
     ),
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &timestamp::ElementCoverage<usize, u8, u8, C>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
     evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
     access: &Access<'_, Tree, W>,
 ) {
     // A complete actor census must use one actual path and all original status
     // contributors. Late delta material cannot disappear in a combined report.
-    use structured_xades::pki::{CrlAuthorities, CrlAuthority, CrlCoverageBinding, MemberStatus};
+    use structured_ltv::pki::{CrlAuthorities, CrlAuthority, CrlCoverageBinding, MemberStatus};
     let authorities = [CrlAuthorities::Delta {
         base: CrlAuthority::Anchor,
         delta: CrlAuthority::Anchor,
@@ -2213,7 +2213,8 @@ fn assert_crl_path_archive<'source, W: Work, C: Work>(
         .unwrap();
     xml_digest::assert_participant_status_closure(path, &inputs);
     let whole =
-        material::status::archived_path(&inputs, index, coverage, evidence, access).unwrap();
+        structured_ltv::material::status::archived_path(&inputs, index, coverage, evidence, access)
+            .unwrap();
     assert_unusable_crl_readings(path, qualified, expected, index, coverage, evidence, access);
     assert!(core::ptr::eq(whole.inputs(), &raw const inputs));
     assert!(core::ptr::eq(whole.certificates().path(), path));
@@ -2227,16 +2228,17 @@ fn assert_crl_path_archive<'source, W: Work, C: Work>(
     {
         // The authority closure and archive use the same actual path/status
         // inputs. Complete/delta artifacts remain four separate obligations.
-        use structured_xades::pki::{AuthorityNode, close_authorities};
+        use structured_ltv::pki::{AuthorityNode, close_authorities};
         let nodes = [AuthorityNode {
             statuses: &inputs,
             responders: &[],
         }];
         let roots = [&inputs];
         let closed = close_authorities(&roots, &nodes, access.execution()).unwrap();
-        let report =
-            material::status::archived_authorities(&closed, index, coverage, evidence, access)
-                .unwrap();
+        let report = structured_ltv::material::status::archived_authorities(
+            &closed, index, coverage, evidence, access,
+        )
+        .unwrap();
         assert!(core::ptr::eq(report.inputs(), &raw const closed));
         assert_eq!(report.paths().len(), 1);
         assert!(core::ptr::eq(report.paths()[0].inputs(), &raw const inputs));
@@ -2258,9 +2260,15 @@ fn assert_crl_path_archive<'source, W: Work, C: Work>(
     let limited = Memory::new(Arc::new(MemoryAccount::new(certificate_capacity, 1 << 24)));
     let limited_access = Access::new(expected.2, access.snapshot(), &limited);
     assert!(matches!(
-        material::status::archived_path(&inputs, index, coverage, evidence, &limited_access),
-        Err(material::ArchiveError::Index(
-            material::IndexError::Resource { .. }
+        structured_ltv::material::status::archived_path(
+            &inputs,
+            index,
+            coverage,
+            evidence,
+            &limited_access
+        ),
+        Err(structured_ltv::material::ArchiveError::Index(
+            structured_ltv::material::IndexError::Resource { .. }
         ))
     ));
     assert_eq!(limited.used(), 0);
@@ -2271,15 +2279,15 @@ fn assert_crl_target<'a, W: Work + 'a>(
     issuer: &'a structured_pkix::Certificate<'a>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     work: &W,
-) -> structured_xades::pki::CheckedPath<'a> {
+) -> structured_ltv::pki::CheckedPath<'a> {
     // Shared absence already checked signature/scope/entries/time. Association
     // must additionally bind the actual target and each complete/delta signer
     // to this checked path's anchor, without checking CRL signatures again.
-    use structured_pkix::path::{Anchor, Interval, ValidationBounds, ValidationContext};
-    use structured_xades::pki::{
+    use structured_ltv::pki::{
         self, CrlAuthorities, CrlAuthority, CrlBinding, CrlBindingError, CrlBindingFailure,
         PathOutcome,
     };
+    use structured_pkix::path::{Anchor, Interval, ValidationBounds, ValidationContext};
     let verifier = timestamp_oracle::PathOracle {
         calls: Cell::new(0),
     };
@@ -2357,13 +2365,13 @@ fn crl_authority_paths_require_same_anchor_and_full_evaluation_reading() {
     // A valid certificate path and a valid CRL signature under its actual key
     // are insufficient if that path uses a different anchor. Correct same-root
     // authorities must also cover the original status-evaluation reading.
+    use structured_ltv::pki::{
+        self, CrlAuthorities, CrlAuthority, CrlBinding, CrlBindingFailure, PathOutcome,
+    };
     use structured_pkix::{
         Certificate, crl,
         path::{Anchor, Interval, ValidationBounds, ValidationContext},
         temporal::{Instant, LeapTable},
-    };
-    use structured_xades::pki::{
-        self, CrlAuthorities, CrlAuthority, CrlBinding, CrlBindingFailure, PathOutcome,
     };
     #[cfg(miri)]
     eprintln!("CRL association: generating and verifying original target path");
@@ -2474,8 +2482,8 @@ fn crl_signer_status<'r, 'a, W: Work>(
 }
 
 fn assert_crl_authority_closure<'a, W: Work>(
-    target: &structured_xades::pki::CheckedPath<'a>,
-    signer: &structured_xades::pki::CheckedPath<'a>,
+    target: &structured_ltv::pki::CheckedPath<'a>,
+    signer: &structured_ltv::pki::CheckedPath<'a>,
     target_status: &structured_pkix::crl::AbsenceEvidence<'_, 'a>,
     signer_status: &structured_pkix::crl::AbsenceEvidence<'_, 'a>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
@@ -2484,11 +2492,11 @@ fn assert_crl_authority_closure<'a, W: Work>(
     // Both actual certificates use the same authenticated CRL. The signer
     // path's self-dependency must terminate by receipt identity, not recurse
     // or replay verification; omitting that signer census is not completion.
-    use structured_pkix::crl::Coverage;
-    use structured_xades::pki::{
+    use structured_ltv::pki::{
         AuthorityClosureError, AuthorityNode, AuthorityOrigin, CrlAuthorities, CrlAuthority,
         CrlCoverageBinding, MemberStatus, close_authorities,
     };
+    use structured_pkix::crl::Coverage;
     let target_sources = Coverage::new(*target_status, work).unwrap();
     let signer_sources = Coverage::new(*signer_status, work).unwrap();
     let authorities = [CrlAuthorities::Complete(CrlAuthority::Path(signer))];
@@ -2546,22 +2554,22 @@ fn assert_crl_authority_closure<'a, W: Work>(
 }
 
 fn assert_crl_time_reading<'a, W: Work + 'a>(
-    target_path: &structured_xades::pki::CheckedPath<'a>,
+    target_path: &structured_ltv::pki::CheckedPath<'a>,
     evidence: &structured_pkix::crl::AbsenceEvidence<'_, 'a>,
-    signer_path: &structured_xades::pki::CheckedPath<'a>,
+    signer_path: &structured_ltv::pki::CheckedPath<'a>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     work: &W,
 ) {
     // Missing UTC coverage is a processing uncertainty; a later valid path is
     // a completed interval mismatch. Neither can assert authority at the
     // original status-reading instant, and the original CRL is not reverified.
+    use structured_ltv::pki::{
+        self, CrlAuthorities, CrlAuthority, CrlBinding, CrlBindingError, CrlBindingFailure,
+        PathOutcome,
+    };
     use structured_pkix::{
         path::{Interval, ValidationBounds, ValidationContext},
         temporal::LeapTable,
-    };
-    use structured_xades::pki::{
-        self, CrlAuthorities, CrlAuthority, CrlBinding, CrlBindingError, CrlBindingFailure,
-        PathOutcome,
     };
     assert_crl_foreign_status(target_path, evidence, signer_path, utc, work);
     let now = evidence.evaluated_at().start();
@@ -2610,15 +2618,15 @@ fn assert_crl_time_reading<'a, W: Work + 'a>(
 }
 
 fn assert_crl_foreign_status<'a, W: Work>(
-    target_path: &structured_xades::pki::CheckedPath<'a>,
+    target_path: &structured_ltv::pki::CheckedPath<'a>,
     evidence: &structured_pkix::crl::AbsenceEvidence<'_, 'a>,
-    signer_path: &structured_xades::pki::CheckedPath<'a>,
+    signer_path: &structured_ltv::pki::CheckedPath<'a>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     work: &W,
 ) {
     // Equal member counts cannot relabel another actor's original status.
     // Reuse the already authenticated source and checked authority path.
-    use structured_xades::pki::{
+    use structured_ltv::pki::{
         CrlAuthorities, CrlAuthority, CrlCoverageBinding, MemberStatus, StatusCensusError,
     };
     let coverage = structured_pkix::crl::Coverage::new(*evidence, work).unwrap();
@@ -2637,7 +2645,7 @@ fn assert_crl_foreign_status<'a, W: Work>(
 }
 
 fn assert_unusable_crl_readings<'source, W: Work, C: Work>(
-    path: &structured_xades::pki::CheckedPath<'source>,
+    path: &structured_ltv::pki::CheckedPath<'source>,
     qualified: &structured_pkix::crl::Coverage<'_, 'source>,
     expected: (
         &structured_pkix::temporal::LeapTable<'_>,
@@ -2645,14 +2653,14 @@ fn assert_unusable_crl_readings<'source, W: Work, C: Work>(
         &Tree,
     ),
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &timestamp::ElementCoverage<usize, u8, u8, C>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
     evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
     access: &Access<'_, Tree, W>,
 ) {
     // Actual stale processing facts cannot qualify absence, but still retain
     // their exact target/time, original whole lists and signing authorities.
+    use structured_ltv::pki::CrlReading;
     use structured_pkix::{crl, temporal::Instant};
-    use structured_xades::pki::CrlReading;
     let crl::EvidenceSource::Delta { base, delta } = qualified.sources()[0].source() else {
         panic!("original pair")
     };
@@ -2702,11 +2710,11 @@ fn assert_unusable_crl_readings<'source, W: Work, C: Work>(
 }
 
 fn assert_revoked_crl_reading_archive<'source, W: Work, C: Work>(
-    path: &structured_xades::pki::CheckedPath<'source>,
+    path: &structured_ltv::pki::CheckedPath<'source>,
     qualified: &structured_pkix::crl::Coverage<'_, 'source>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &timestamp::ElementCoverage<usize, u8, u8, C>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
     evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
     access: &Access<'_, Tree, W>,
 ) {
@@ -2745,7 +2753,7 @@ fn assert_revoked_crl_reading_archive<'source, W: Work, C: Work>(
     assert!(facts.absence().is_none());
     assert_crl_reading_archive(
         path,
-        structured_xades::pki::CrlReading::Complete(&facts),
+        structured_ltv::pki::CrlReading::Complete(&facts),
         (utc, false, 2),
         index,
         coverage,
@@ -2758,33 +2766,33 @@ fn assert_revoked_crl_reading_archive<'source, W: Work, C: Work>(
     assert!(matches!(
         path.bind_crl_reading(
             0,
-            structured_xades::pki::CrlReading::Complete(&other),
-            structured_xades::pki::CrlAuthorities::Complete(
-                structured_xades::pki::CrlAuthority::Anchor
+            structured_ltv::pki::CrlReading::Complete(&other),
+            structured_ltv::pki::CrlAuthorities::Complete(
+                structured_ltv::pki::CrlAuthority::Anchor
             ),
             utc,
             work
         )
         .unwrap(),
-        structured_xades::pki::CrlReadingBinding::Rejected(
-            structured_xades::pki::CrlBindingFailure::Target
+        structured_ltv::pki::CrlReadingBinding::Rejected(
+            structured_ltv::pki::CrlBindingFailure::Target
         )
     ));
     assert_eq!(verifier.calls.get(), 1);
 }
 
 fn assert_crl_reading_archive<'source, W: Work, C: Work>(
-    path: &structured_xades::pki::CheckedPath<'source>,
-    reading: structured_xades::pki::CrlReading<'_, '_, 'source>,
+    path: &structured_ltv::pki::CheckedPath<'source>,
+    reading: structured_ltv::pki::CrlReading<'_, '_, 'source>,
     expected: (&structured_pkix::temporal::LeapTable<'_>, bool, usize),
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &timestamp::ElementCoverage<usize, u8, u8, C>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
     evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
     access: &Access<'_, Tree, W>,
 ) {
     // Archive availability and negative status facts are independent. The
     // source/authority binder is the same for complete and paired readings.
-    use structured_xades::pki::{
+    use structured_ltv::pki::{
         AuthorityNode, CrlAuthorities, CrlAuthority, CrlReading, CrlReadingBinding, MemberStatus,
         close_authorities,
     };
@@ -2805,11 +2813,11 @@ fn assert_crl_reading_archive<'source, W: Work, C: Work>(
     };
     assert!(matches!(
         path.bind_crl_reading(0, reading, wrong_kind, expected.0, work),
-        Err(structured_xades::pki::CrlBindingError::SourceKind)
+        Err(structured_ltv::pki::CrlBindingError::SourceKind)
     ));
     assert!(matches!(
         path.bind_crl_reading(1, reading, authorities, expected.0, work),
-        Err(structured_xades::pki::CrlBindingError::MemberIndex { index: 1 })
+        Err(structured_ltv::pki::CrlBindingError::MemberIndex { index: 1 })
     ));
     let CrlReadingBinding::Bound(bound) = path
         .bind_crl_reading(0, reading, authorities, expected.0, work)
@@ -2828,13 +2836,15 @@ fn assert_crl_reading_archive<'source, W: Work, C: Work>(
     }];
     let roots = [&inputs];
     let closed = close_authorities(&roots, &nodes, work).unwrap();
-    let report =
-        material::status::archived_authorities(&closed, index, coverage, evidence, access).unwrap();
+    let report = structured_ltv::material::status::archived_authorities(
+        &closed, index, coverage, evidence, access,
+    )
+    .unwrap();
     assert_eq!(report.all_artifacts_covered(), expected.1);
     assert_eq!(report.paths()[0].statuses()[0].entries().len(), expected.2);
     assert!(matches!(
         report.paths()[0].statuses()[0].source(),
-        material::status::StatusSource::CrlReading(_)
+        structured_ltv::material::status::StatusSource::CrlReading(_)
     ));
     assert_eq!(
         report.paths()[0].statuses()[0].source().evaluated_at(),
@@ -2843,27 +2853,27 @@ fn assert_crl_reading_archive<'source, W: Work, C: Work>(
     let empty = Memory::new(Arc::new(MemoryAccount::new(0, 0)));
     assert!(matches!(
         path.bind_crl_reading(0, reading, authorities, expected.0, &empty),
-        Err(structured_xades::pki::CrlBindingError::Resource(_))
+        Err(structured_ltv::pki::CrlBindingError::Resource(_))
     ));
 }
 
 fn assert_ocsp_archive<'source, W: Work + 'source, C: Work>(
     view: &material::View<'source, usize, u8, u8>,
     index: &material::Index<'source, usize, u8, u8, W>,
-    coverage: &timestamp::ElementCoverage<usize, u8, u8, C>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
     evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
     access: &Access<'_, Tree, W>,
     actor: (
         &'source structured_pkix::Certificate<'source>,
         &'source structured_pkix::Certificate<'source>,
         bool,
-        &'source structured_xades::pki::CheckedPath<'source>,
+        &'source structured_ltv::pki::CheckedPath<'source>,
     ),
     xml: &Tree,
 ) {
     // The actual whole response, signer binding, issuer scope and CertID
     // matching run through the common kernel; the archive needs the envelope.
-    use material::status::{self, StatusPart, StatusSource};
+    use structured_ltv::material::status::{self, StatusPart, StatusSource};
     let (target, issuer, early, path) = actor;
     assert_eq!(view.basic_responses().len(), 1);
     let response = view.basic_responses()[0].response();
@@ -2898,8 +2908,8 @@ fn assert_ocsp_archive<'source, W: Work + 'source, C: Work>(
             evidence,
             &denied_access
         ),
-        Err(material::ArchiveError::Index(
-            material::IndexError::Resource { .. }
+        Err(structured_ltv::material::ArchiveError::Index(
+            structured_ltv::material::IndexError::Resource { .. }
         ))
     ));
     assert_eq!(denied.used(), 0);
@@ -2912,23 +2922,23 @@ fn assert_ocsp_archive<'source, W: Work + 'source, C: Work>(
 }
 
 fn assert_no_check_archive<W: Work, C: Work>(
-    target: &structured_xades::pki::CheckedPath<'_>,
+    target: &structured_ltv::pki::CheckedPath<'_>,
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &timestamp::ElementCoverage<usize, u8, u8, C>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
     evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
     access: &Access<'_, Tree, W>,
 ) {
     // An actually exempt responder needs its original certificate in archive
     // material, but no fabricated status. Here that certificate is absent from
     // XML: skipping its revocation lookup must not make availability positive.
+    use structured_ltv::pki::{
+        self, AuthorityNode, MemberStatus, OcspBinding, PathOutcome, ResponderBinding,
+        close_authorities,
+    };
     use structured_pkix::{
         Certificate, ocsp,
         path::{Anchor, Interval, ValidationBounds, ValidationContext, WorkingKey},
         temporal::{Instant, LeapTable},
-    };
-    use structured_xades::pki::{
-        self, AuthorityNode, MemberStatus, OcspBinding, PathOutcome, ResponderBinding,
-        close_authorities,
     };
     let work = access.execution();
     let parser = structured_asn1::Parser::der(work.memory().clone());
@@ -3004,8 +3014,10 @@ fn assert_no_check_archive<W: Work, C: Work>(
     let roots = [&inputs];
     let closed = close_authorities(&roots, &nodes, work).unwrap();
     let before = verifier.calls.get();
-    let material =
-        material::status::archived_authorities(&closed, index, coverage, evidence, access).unwrap();
+    let material = structured_ltv::material::status::archived_authorities(
+        &closed, index, coverage, evidence, access,
+    )
+    .unwrap();
     assert!(!material.all_artifacts_covered());
     assert_eq!(material.paths().len(), 1);
     assert!(material.paths()[0].statuses().is_empty());
@@ -3083,13 +3095,11 @@ fn delegated_ocsp_requires_original_root_signer_and_full_status_reading() {
 fn assert_delegated_ocsp_path(no_check: bool) {
     // Both actual extension branches preserve the common revocation fact.
     // noCheck never exempts the responder's original-root path/time binding.
+    use structured_ltv::pki::{self, OcspBinding, PathOutcome, ResponderBinding, ResponderFailure};
     use structured_pkix::{
         Certificate, ocsp,
         path::{Anchor, Interval, ValidationBounds, ValidationContext, WorkingKey},
         temporal::{Instant, LeapTable},
-    };
-    use structured_xades::pki::{
-        self, OcspBinding, PathOutcome, ResponderBinding, ResponderFailure,
     };
     xml_digest::with_checked_path(|target_path, _, _, work| {
         let parser = structured_asn1::Parser::der(work.clone());
@@ -3201,14 +3211,14 @@ fn authenticate_delegate<'a, W: Work>(
 }
 
 fn assert_responder_census<W: Work>(
-    bound: &structured_xades::pki::ResponderPath<'_, '_, '_, '_>,
+    bound: &structured_ltv::pki::ResponderPath<'_, '_, '_, '_>,
     work: &W,
 ) {
     // Only the actual shared noCheck fact exempts the exact responder target.
     // An unresolved delegate, missing entry or other actor is not a complete
     // status census; noCheck never turns into a caller-written Good flag.
+    use structured_ltv::pki::{MemberStatus, StatusCensusError};
     use structured_pkix::ocsp::ResponderRevocation;
-    use structured_xades::pki::{MemberStatus, StatusCensusError};
     let entries = [MemberStatus::ResponderNoCheck(bound)];
     let at = bound.target().evidence().evaluated_at();
     let result = bound.path().status_census(at, &entries, work);
@@ -3242,14 +3252,14 @@ fn assert_responder_census<W: Work>(
 }
 
 fn assert_authority_closure<W: Work>(
-    responder: &structured_xades::pki::ResponderPath<'_, '_, '_, '_>,
-    child: &structured_xades::pki::PathStatuses<'_, '_, '_>,
+    responder: &structured_ltv::pki::ResponderPath<'_, '_, '_, '_>,
+    child: &structured_ltv::pki::PathStatuses<'_, '_, '_>,
     work: &W,
 ) {
     // Closure derives the actual delegated authority, not a successful subset
     // chosen by the caller. A repeated root shares its exact dependency once;
     // missing responder/path, duplicate nodes and resource failure stay typed.
-    use structured_xades::pki::{
+    use structured_ltv::pki::{
         AuthorityClosureError, AuthorityNode, AuthorityOrigin, MemberStatus, close_authorities,
     };
     let entries = [MemberStatus::Ocsp(responder.target())];
@@ -3344,8 +3354,8 @@ fn assert_authority_closure<W: Work>(
 }
 
 fn assert_root_dependencies<W: Work>(
-    closed: &structured_xades::pki::AuthorityClosure<'_, '_, '_>,
-    nodes: &[structured_xades::pki::AuthorityNode<'_, '_, '_>],
+    closed: &structured_ltv::pki::AuthorityClosure<'_, '_, '_>,
+    nodes: &[structured_ltv::pki::AuthorityNode<'_, '_, '_>],
     work: &W,
 ) {
     // Duplicate actor roots independently reach the actual OCSP delegate.
@@ -3367,8 +3377,8 @@ fn assert_root_dependencies<W: Work>(
 }
 
 fn assert_responder_fine_reading<'a, W: Work>(
-    target_path: &structured_xades::pki::CheckedPath<'a>,
-    path: &structured_xades::pki::CheckedPath<'a>,
+    target_path: &structured_ltv::pki::CheckedPath<'a>,
+    path: &structured_ltv::pki::CheckedPath<'a>,
     scoped: &structured_pkix::ocsp::ScopedResponse<'_, 'a>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     work: &W,
@@ -3376,13 +3386,11 @@ fn assert_responder_fine_reading<'a, W: Work>(
 ) {
     // Subnanosecond readings need both bounding nanoseconds. A path checked
     // only at the lower label cannot silently supply the upper endpoint.
+    use structured_ltv::pki::{self, OcspBinding, PathOutcome, ResponderBinding, ResponderFailure};
     use structured_pkix::{
         ocsp,
         path::{Interval, ValidationBounds, ValidationContext},
         temporal,
-    };
-    use structured_xades::pki::{
-        self, OcspBinding, PathOutcome, ResponderBinding, ResponderFailure,
     };
     let parser = structured_asn1::Parser::der(work.memory().clone());
     let mut source = parser
@@ -3435,21 +3443,21 @@ fn assert_responder_fine_reading<'a, W: Work>(
 }
 
 fn assert_responder_boundaries<'a, W: Work>(
-    target: &structured_xades::pki::OcspTarget<'_, '_, 'a>,
-    path: &structured_xades::pki::CheckedPath<'a>,
+    target: &structured_ltv::pki::OcspTarget<'_, '_, 'a>,
+    path: &structured_ltv::pki::CheckedPath<'a>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     work: &W,
     verifier: &timestamp_oracle::PathOracle,
 ) {
     // Valid alternative chains do not prove the original root/time association.
     // Work/UTC refusal stays terminal, and binding never repeats signatures.
+    use structured_ltv::pki::{
+        self, PathOutcome, ResponderBinding, ResponderError, ResponderFailure,
+    };
     use structured_pkix::{
         Certificate,
         path::{Anchor, Interval, ValidationBounds, ValidationContext},
         temporal::LeapTable,
-    };
-    use structured_xades::pki::{
-        self, PathOutcome, ResponderBinding, ResponderError, ResponderFailure,
     };
     let at = target.evidence().evaluated_at().start();
     let denied = Memory::new(Arc::new(MemoryAccount::new(0, 0)));
@@ -3496,18 +3504,18 @@ fn assert_responder_boundaries<'a, W: Work>(
 }
 
 fn assert_ocsp_target<W: Work>(
-    path: &structured_xades::pki::CheckedPath<'_>,
+    path: &structured_ltv::pki::CheckedPath<'_>,
     evidence: &structured_pkix::ocsp::BoundEvidence<'_, '_, '_, '_>,
     execution: &W,
 ) {
-    use structured_xades::pki::{OcspBinding, OcspBindingError};
+    use structured_ltv::pki::{OcspBinding, OcspBindingError};
     let OcspBinding::Bound(bound) = path.bind_ocsp(0, evidence, execution).unwrap() else {
         panic!("same actual target and issuing key")
     };
     let utc = structured_pkix::temporal::LeapTable::new(0, 2_000_000_000, &[]).unwrap();
     assert!(matches!(
         bound.bind_responder_path(path, &utc, execution),
-        Err(structured_xades::pki::ResponderError::SourceKind)
+        Err(structured_ltv::pki::ResponderError::SourceKind)
     ));
     assert!(core::ptr::eq(bound.path(), path));
     assert!(core::ptr::eq(bound.evidence(), evidence));
@@ -3529,12 +3537,12 @@ fn ocsp_name_and_serial_cannot_substitute_another_issuer_or_path_target() {
     // The server signature and CertID can be valid under a caller-selected
     // configured-responder scope while the caller supplied the WRONG target
     // issuer. Root composition must bind it to the actual checked path key.
+    use structured_ltv::pki::{OcspBinding, OcspBindingFailure};
     use structured_pkix::{
         ocsp,
         path::WorkingKey,
         temporal::{Instant, LeapTable},
     };
-    use structured_xades::pki::{OcspBinding, OcspBindingFailure};
     xml_digest::with_checked_path(|path, _, _, memory| {
         let target = path.members()[0].certificate();
         let signer = path.anchor().certificate().unwrap();
@@ -3598,13 +3606,13 @@ fn assert_timestamp_path<'a, N: Copy, D: Copy, G: Copy>(
     root: &'a structured_pkix::Certificate<'a>,
     operation: &'a structured_asn1::Reader<'a>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
-) -> structured_xades::pki::CheckedPath<'a> {
+) -> structured_ltv::pki::CheckedPath<'a> {
     // The actual TSA certificate must be the target of the checked path, over
     // the entire generation interval. A later valid chain is insufficient.
-    use structured_pkix::path::{Anchor, Interval, ValidationBounds, ValidationContext};
-    use structured_xades::pki::{
+    use structured_ltv::pki::{
         self, PathOutcome, TimestampBinding, TimestampBindingError, TimestampBindingFailure,
     };
+    use structured_pkix::path::{Anchor, Interval, ValidationBounds, ValidationContext};
     let verifier = timestamp_oracle::PathOracle {
         calls: core::cell::Cell::new(0),
     };
@@ -3696,7 +3704,7 @@ fn timestamp_carried_material_keeps_token_pool_identity_and_embedded_ocsp_certif
             let basic = &material.basic_responses()[ordinal];
             assert_eq!(
                 basic.origin,
-                timestamp::CarriedOrigin {
+                structured_ltv::material::CarriedOrigin {
                     token: ordinal,
                     choice: 1
                 }
@@ -3708,7 +3716,7 @@ fn timestamp_carried_material_keeps_token_pool_identity_and_embedded_ocsp_certif
             assert_eq!(basic.value.certificates()[0].as_bytes(), certificate);
             assert_eq!(
                 material.other()[ordinal].origin,
-                timestamp::CarriedOrigin {
+                structured_ltv::material::CarriedOrigin {
                     token: ordinal,
                     choice: 0
                 }
@@ -3746,7 +3754,7 @@ fn timestamp_carried_material_late_known_failure_drops_all_partial_catalogues() 
     let result = timestamp::with_tokens(&xml, &prepared, &operation, |query, view| {
         let Err(error) = view.material_in(query) else { panic!("late invalid status must refuse") };
         assert_eq!(error.location.node, second);
-        assert_eq!(error.origin, timestamp::CarriedOrigin { token: 1, choice: 0 });
+        assert_eq!(error.origin, structured_ltv::material::CarriedOrigin { token: 1, choice: 0 });
         assert!(matches!(&error.cause, timestamp::CarriedCause::Cms(cause) if cause.code() == structured_cms::ErrorCode::MalformedValue));
         Ok::<_, ()>(error)
     }).unwrap();
@@ -3819,7 +3827,7 @@ fn timestamp_carried_crl_uses_original_choice_bytes_and_actual_enclosing_depth()
             let original = view.readings()[ordinal].token().message().revocations()[0];
             assert_eq!(
                 value.origin,
-                timestamp::CarriedOrigin {
+                structured_ltv::material::CarriedOrigin {
                     token: ordinal,
                     choice: 0
                 }
@@ -3870,7 +3878,7 @@ fn timestamp_carried_material_new_operation_cannot_bypass_storage_or_original_de
             assert_eq!(error.location.node, first);
             assert_eq!(
                 error.origin,
-                timestamp::CarriedOrigin {
+                structured_ltv::material::CarriedOrigin {
                     token: 0,
                     choice: 0
                 }
@@ -4913,9 +4921,8 @@ fn append_timestamp(
 fn complete_timestamp_requirements_keep_own_archive_and_later_tokens() {
     // LT covers ALL incorporated tokens; the same selector's archive scope
     // excludes its own/later unsigned tokens without dropping signed ones.
-    use timestamp::{
-        TimestampPathBinding, TimestampPathFailure, TimestampScope, TimestampSelection,
-    };
+    use structured_ltv::timestamp::{TimestampPathBinding, TimestampPathFailure, TimestampScope};
+    use timestamp::TimestampSelection;
     let work = funded();
     let mut xml = preparation_tree();
     let (earlier, earlier_tokens) = append_timestamp(&mut xml, 7, Role::Archive, 2);
@@ -4939,17 +4946,17 @@ fn complete_timestamp_requirements_keep_own_archive_and_later_tokens() {
         })
     );
     let expected = [
-        (first.node(), first.tokens()[0], Role::Signature),
-        (earlier, earlier_tokens[0], Role::Archive),
-        (earlier, earlier_tokens[1], Role::Archive),
-        (archive, own[0], Role::Archive),
-        (archive, own[1], Role::Archive),
-        (later, later_tokens[0], Role::Signature),
+        (first.node(), first.tokens()[0], Role::Signature.purpose()),
+        (earlier, earlier_tokens[0], Role::Archive.purpose()),
+        (earlier, earlier_tokens[1], Role::Archive.purpose()),
+        (archive, own[0], Role::Archive.purpose()),
+        (archive, own[1], Role::Archive.purpose()),
+        (later, later_tokens[0], Role::Signature.purpose()),
     ];
     let actual: Vec<_> = all
         .entries()
         .iter()
-        .map(|entry| (entry.property, entry.token, entry.role))
+        .map(|entry| (entry.property, entry.token, entry.purpose))
         .collect();
     assert_eq!(actual, expected);
     assert!(matches!(
@@ -4968,7 +4975,7 @@ fn complete_timestamp_requirements_keep_own_archive_and_later_tokens() {
     let actual: Vec<_> = prior
         .entries()
         .iter()
-        .map(|entry| (entry.property, entry.token, entry.role))
+        .map(|entry| (entry.property, entry.token, entry.purpose))
         .collect();
     assert_eq!(actual, expected[..3]);
     drop(prior);
@@ -5033,11 +5040,11 @@ fn archive_prior_timestamp_census_includes_signed_tokens_and_every_earlier_archi
         (
             original_signature.node(),
             original_signature.tokens()[0],
-            Role::Signature,
+            Role::Signature.purpose(),
         ),
-        (first, first_tokens[0], Role::Archive),
-        (first, first_tokens[1], Role::Archive),
-        (signed, signed_tokens[0], Role::AllDataObjects),
+        (first, first_tokens[0], Role::Archive.purpose()),
+        (first, first_tokens[1], Role::Archive.purpose()),
+        (signed, signed_tokens[0], Role::AllDataObjects.purpose()),
     ];
     let before = work.used();
     let required = timestamp::requirements(
@@ -5052,7 +5059,7 @@ fn archive_prior_timestamp_census_includes_signed_tokens_and_every_earlier_archi
     );
     assert_eq!(
         required.scope(),
-        timestamp::TimestampScope::BeforeArchive(Location {
+        structured_ltv::timestamp::TimestampScope::BeforeArchive(Location {
             snapshot: xml.snapshot(),
             node: current
         })
@@ -5060,7 +5067,7 @@ fn archive_prior_timestamp_census_includes_signed_tokens_and_every_earlier_archi
     let actual: Vec<_> = required
         .entries()
         .iter()
-        .map(|entry| (entry.property, entry.token, entry.role))
+        .map(|entry| (entry.property, entry.token, entry.purpose))
         .collect();
     assert_eq!(actual, expected);
     assert!(required.entries().iter().all(|entry| !own_tokens.contains(&entry.token) && !later_tokens.contains(&entry.token)));
@@ -5160,7 +5167,7 @@ fn prior_timestamp_paths_require_each_actual_original_token_not_one_repeated_suc
             })
             .unwrap()
             .expect("actual complete timestamp math and source binding");
-        let structured_xades::pki::TimestampBinding::Bound(bound) =
+        let structured_ltv::pki::TimestampBinding::Bound(bound) =
             path.bind_timestamp(&actor, &utc, work).unwrap()
         else {
             panic!("same original TSA certificate/key and complete generation interval")
@@ -5173,10 +5180,12 @@ fn prior_timestamp_paths_require_each_actual_original_token_not_one_repeated_suc
 fn assert_prior_path_receipts(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    path: &structured_xades::pki::TimestampPath<'_, '_, '_, usize, u8, u8>,
+    path: &structured_ltv::pki::TimestampPath<'_, '_, '_, usize, u8, u8>,
     work: &Memory,
 ) {
-    use timestamp::{TimestampPathBinding, TimestampPathFailure, TimestampSelection};
+    use structured_ltv::source::ScopeError;
+    use structured_ltv::timestamp::{ObligationError, TimestampPathBinding, TimestampPathFailure};
+    use timestamp::TimestampSelection;
     let access = Access::new(xml, xml.snapshot(), work);
     let archives: Vec<_> = prepared
         .timestamps()
@@ -5204,10 +5213,10 @@ fn assert_prior_path_receipts(
     let limited_access = Access::new(xml, xml.snapshot(), &limited);
     assert!(matches!(
         first.bind_paths(&paths, &limited_access),
-        Err(InputError::Resource {
+        Err(ObligationError::Scope(ScopeError::Resource {
             cause: MemoryError::WorkExceeded,
             ..
-        })
+        }))
     ));
     assert_eq!(limited.used(), 0);
     assert!(matches!(
@@ -5229,13 +5238,13 @@ fn assert_prior_path_receipts(
     let denied_access = Access::new(xml, xml.snapshot(), &denied);
     assert!(matches!(
         first.bind_paths(&paths, &denied_access),
-        Err(InputError::Resource { .. } | InputError::Access(AccessError::Resource { .. }))
+        Err(ObligationError::Scope(ScopeError::Resource { .. }))
     ));
     xml.generation.set(xml.generation.get() + 1);
     let stale = Access::new(xml, xml.snapshot(), work);
     assert!(matches!(
         first.bind_paths(&paths, &stale),
-        Err(InputError::Foreign { .. })
+        Err(ObligationError::Foreign { .. })
     ));
 }
 
@@ -7125,7 +7134,7 @@ fn material_index_keeps_every_exact_certificate_copy_including_ocsp_placement() 
     material::with_values(&xml, &prepared, &operation, |query, view| {
         let execution = query.execution();
         let access = Access::new(&xml, xml.snapshot(), &execution);
-        let index = material::Index::build(&view, &access).unwrap();
+        let index = material::index(&view, &access).unwrap();
         let material::Value::Certificate(certificate) = &view.values()[0].value else {
             panic!("header certificate");
         };
@@ -7141,9 +7150,9 @@ fn material_index_keeps_every_exact_certificate_copy_including_ocsp_placement() 
                 .map(material::Occurrence::source)
                 .collect::<Vec<_>>(),
             [
-                material::ArtifactSource::Xml(0),
-                material::ArtifactSource::Xml(1),
-                material::ArtifactSource::Xml(2)
+                structured_ltv::material::ArtifactSource::Material(0),
+                structured_ltv::material::ArtifactSource::Material(1),
+                structured_ltv::material::ArtifactSource::Material(2)
             ]
         );
         assert_eq!(
@@ -7165,7 +7174,10 @@ fn material_index_keeps_every_exact_certificate_copy_including_ocsp_placement() 
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(statuses.len(), 1);
-        assert_eq!(statuses[0].source(), material::ArtifactSource::Xml(1));
+        assert_eq!(
+            statuses[0].source(),
+            structured_ltv::material::ArtifactSource::Material(1)
+        );
         assert_eq!(statuses[0].location().node, ocsp);
         Ok::<_, ()>(())
     })
@@ -7190,7 +7202,7 @@ fn material_index_queries_use_current_work_and_fuse_after_a_source_or_resource_r
     let result = material::with_values(&xml, &prepared, &operation, |query, view| {
         let execution = query.execution();
         let access = Access::new(&xml, xml.snapshot(), &execution);
-        let index = material::Index::build(&view, &access).unwrap();
+        let index = material::index(&view, &access).unwrap();
         let material::Value::Certificate(certificate) = &view.values()[0].value else {
             panic!("header certificate");
         };
@@ -7198,7 +7210,9 @@ fn material_index_queries_use_current_work_and_fuse_after_a_source_or_resource_r
         let current = Access::new(&xml, xml.snapshot(), &empty_work);
         assert!(matches!(
             index.certificate(certificate, &current),
-            Err(material::IndexError::Access(AccessError::Resource { .. }))
+            Err(structured_ltv::material::IndexError::Scope(
+                structured_ltv::source::ScopeError::Resource { .. }
+            ))
         ));
         let current_work = funded();
         let current = Access::new(&xml, xml.snapshot(), &current_work);
@@ -7208,8 +7222,8 @@ fn material_index_queries_use_current_work_and_fuse_after_a_source_or_resource_r
             .unwrap();
         assert!(matches!(
             copies.next(),
-            Some(Err(material::IndexError::Access(
-                AccessError::Resource { .. }
+            Some(Err(structured_ltv::material::IndexError::Scope(
+                structured_ltv::source::ScopeError::Resource { .. }
             )))
         ));
         assert!(copies.next().is_none());
@@ -7223,20 +7237,22 @@ fn material_index_queries_use_current_work_and_fuse_after_a_source_or_resource_r
         );
         assert!(matches!(
             index.certificate(certificate, &foreign),
-            Err(material::IndexError::Foreign { .. })
+            Err(structured_ltv::material::IndexError::Foreign { .. })
         ));
         let mut copies = index.certificate(certificate, &access).unwrap();
         xml.generation.set(2);
         assert!(matches!(
             copies.next(),
-            Some(Err(material::IndexError::Access(
-                AccessError::Changed { .. }
+            Some(Err(structured_ltv::material::IndexError::Scope(
+                structured_ltv::source::ScopeError::Changed { .. }
             )))
         ));
         assert!(copies.next().is_none());
         assert!(matches!(
             index.certificate(certificate, &access),
-            Err(material::IndexError::Access(AccessError::Changed { .. }))
+            Err(structured_ltv::material::IndexError::Scope(
+                structured_ltv::source::ScopeError::Changed { .. }
+            ))
         ));
         Ok::<_, ()>(())
     });
@@ -7267,14 +7283,14 @@ fn material_index_requires_whole_artifact_identity_and_drops_partial_constructio
     material::with_values(&xml, &prepared, &operation, |query, view| {
         let execution = query.execution();
         let access = Access::new(&xml, xml.snapshot(), &execution);
-        let index = material::Index::build(&view, &access).unwrap();
+        let index = material::index(&view, &access).unwrap();
         assert!(index.certificate(&other, &access).unwrap().next().is_none());
         for capacity in [0, 400] {
             let limited = Memory::new(Arc::new(MemoryAccount::new(capacity, 100_000)));
             let current = Access::new(&xml, xml.snapshot(), &limited);
             assert!(matches!(
-                material::Index::build(&view, &current),
-                Err(material::IndexError::Resource { .. })
+                material::index(&view, &current),
+                Err(structured_ltv::material::IndexError::Resource { .. })
             ));
             assert_eq!(limited.used(), 0);
         }
@@ -9939,9 +9955,9 @@ fn checked_with_local_operation<'source>(
     leaf: &'source structured_pkix::Certificate<'source>,
     root: &'source structured_pkix::Certificate<'source>,
     current: &Memory,
-) -> structured_xades::pki::CheckedPath<'source> {
+) -> structured_ltv::pki::CheckedPath<'source> {
+    use structured_ltv::pki::{self, PathOutcome};
     use structured_pkix::path::{self, Anchor, Interval, ValidationBounds, ValidationContext};
-    use structured_xades::pki::{self, PathOutcome};
     let operation = structured_asn1::Parser::der(current.clone());
     let query = operation.read(&[], 1200).unwrap();
     let execution = query.execution();
@@ -9998,14 +10014,14 @@ fn checked_actor_path_outlives_operation_and_keeps_original_key_and_charge() {
 fn crl_reason_union_binds_every_original_authority_without_partial_receipts() {
     // All-reason absence cannot inherit the first source's authority: changing
     // only the second authority must reject with its exact contributor ordinal.
+    use structured_ltv::pki::{
+        CrlAuthorities, CrlAuthority, CrlBindingError, CrlBindingFailure, CrlCoverageBinding,
+        CrlCoverageError,
+    };
     use structured_pkix::{
         crl,
         path::WorkingKey,
         temporal::{Instant, LeapTable},
-    };
-    use structured_xades::pki::{
-        CrlAuthorities, CrlAuthority, CrlBindingError, CrlBindingFailure, CrlCoverageBinding,
-        CrlCoverageError,
     };
     xml_digest::with_checked_path(|path, _, _, work| {
         let (first, second) = timestamp_oracle::crl_reason_partitions(2);
@@ -10083,14 +10099,12 @@ fn crl_reason_union_binds_every_original_authority_without_partial_receipts() {
 }
 
 fn assert_crl_reason_authorities<'a>(
-    path: &structured_xades::pki::CheckedPath<'a>,
+    path: &structured_ltv::pki::CheckedPath<'a>,
     coverage: &structured_pkix::crl::Coverage<'_, 'a>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     work: &Memory,
 ) {
-    use structured_xades::pki::{
-        CrlAuthorities, CrlAuthority, CrlCoverageBinding, CrlCoverageError,
-    };
+    use structured_ltv::pki::{CrlAuthorities, CrlAuthority, CrlCoverageBinding, CrlCoverageError};
     let authorities = [CrlAuthorities::Complete(CrlAuthority::Anchor); 2];
     let before = work.used();
     let CrlCoverageBinding::Bound(bound) = path
@@ -10109,7 +10123,7 @@ fn assert_crl_reason_authorities<'a>(
     assert!(matches!(
         path.bind_crl(0, &coverage.sources()[0], authorities[0], utc, work)
             .unwrap(),
-        structured_xades::pki::CrlBinding::Bound(_)
+        structured_ltv::pki::CrlBinding::Bound(_)
     ));
     let first_work = work.work_used() - before_work;
     let limited = Memory::new(Arc::new(MemoryAccount::new(1 << 20, first_work + 2)));
@@ -10117,7 +10131,7 @@ fn assert_crl_reason_authorities<'a>(
         path.bind_crl_coverage(0, coverage, &authorities, utc, &limited),
         Err(CrlCoverageError::Source {
             source: 1,
-            cause: structured_xades::pki::CrlBindingError::Resource(_)
+            cause: structured_ltv::pki::CrlBindingError::Resource(_)
         })
     ));
     assert_eq!(limited.used(), 0);
@@ -10128,13 +10142,13 @@ fn assert_crl_reason_authorities<'a>(
 }
 
 fn assert_crl_status_census<'a>(
-    path: &structured_xades::pki::CheckedPath<'a>,
-    coverage: &structured_xades::pki::CrlCoverage<'_, '_, 'a>,
+    path: &structured_ltv::pki::CheckedPath<'a>,
+    coverage: &structured_ltv::pki::CrlCoverage<'_, '_, 'a>,
     work: &Memory,
 ) {
     // A valid all-reason source is still incomplete when omitted, supplied
     // twice, relabelled in time, or queried without current execution admission.
-    use structured_xades::pki::{MemberStatus, StatusCensusError};
+    use structured_ltv::pki::{MemberStatus, StatusCensusError};
     let at = coverage.coverage().evaluated_at();
     let entries = [MemberStatus::Crl(coverage)];
     let before = work.used();

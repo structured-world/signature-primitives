@@ -1,12 +1,12 @@
 //! Exclusive CA material in ordinary CertificateValues/RevocationValues.
 
-use super::uses::{ArtifactUse, StatusTarget};
-use super::{ArtifactRef, ArtifactUses, Index, IndexError, Occurrence, Placement};
-use crate::pki::Uses;
-use crate::timestamp::TimestampScope;
+use super::{Index, Occurrence, Placement};
 use crate::xml::{Access, Snapshot, Xml};
 use core::fmt;
 use structured_asn1::memory::{MemoryError, OwnedMap, OwnedVec, Work};
+use structured_ltv::material::{ArtifactRef, ArtifactUses, IndexError};
+use structured_ltv::pki::Uses;
+use structured_ltv::timestamp::TimestampScope;
 use structured_pkix::{Certificate, Version};
 
 /// Result for one ordinary-container occurrence of actually used material.
@@ -84,15 +84,15 @@ impl<'certificate, 'document, N: Copy, D: Copy, G: Copy>
 }
 
 /// Source/current-operation and PKIX errors are terminal, not findings.
-pub enum ExclusivityError<'certificate, 'document, E, N> {
+pub enum ExclusivityError<'certificate, 'document, N> {
     /// Whole-signature requirements are needed; a preceding-archive subset
     /// cannot classify all original incorporated material.
     Scope {
         /// Actual enclosing scope node.
         node: N,
     },
-    /// Original XML/index/generation or current execution refusal.
-    Index(IndexError<E, N>),
+    /// Original index/generation or current execution refusal.
+    Index(IndexError<N>),
     /// Current traversal, cache or retained report capacity was not admitted.
     Resource {
         /// Original enclosing selected signature.
@@ -111,7 +111,7 @@ pub enum ExclusivityError<'certificate, 'document, E, N> {
     },
 }
 
-impl<E: fmt::Debug, N: fmt::Debug> fmt::Debug for ExclusivityError<'_, '_, E, N> {
+impl<N: fmt::Debug> fmt::Debug for ExclusivityError<'_, '_, N> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Scope { node } => formatter.debug_struct("Scope").field("node", node).finish(),
@@ -140,7 +140,7 @@ pub type ExclusivityResult<'certificate, 'document, X> = Result<
         <X as Xml>::Document,
         <X as Xml>::Generation,
     >,
-    ExclusivityError<'certificate, 'document, <X as Xml>::Error, <X as Xml>::Id>,
+    ExclusivityError<'certificate, 'document, <X as Xml>::Id>,
 >;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,8 +218,7 @@ pub(crate) fn reference_status_candidates<'certificate, 'document, N, D, G, W: W
 {
     let mut candidates = work.vector();
     let mut scan = CaScan {
-        entries: artifacts.entries(),
-        targets: &artifacts.targets,
+        artifacts,
         cache: work.map(),
         work,
     };
@@ -272,17 +271,37 @@ impl From<MemoryError> for CaError<'_, '_> {
     }
 }
 
-struct CaScan<'query, 'certificate, 'document, W: Work> {
-    entries: &'query [ArtifactUse<'certificate, 'document>],
-    targets: &'query [StatusTarget],
+// The artifact census a CA scan reads, by artifact ordinal.
+trait Census<'certificate, 'document> {
+    fn artifact(&self, ordinal: usize) -> ArtifactRef<'certificate, 'document>;
+    fn uses(&self, ordinal: usize) -> Uses;
+    fn targets(&self, ordinal: usize) -> impl Iterator<Item = usize>;
+}
+
+impl<'certificate, 'document, N, D, G> Census<'certificate, 'document>
+    for ArtifactUses<'_, '_, '_, 'certificate, 'document, N, D, G>
+{
+    fn artifact(&self, ordinal: usize) -> ArtifactRef<'certificate, 'document> {
+        self.entries()[ordinal].artifact()
+    }
+    fn uses(&self, ordinal: usize) -> Uses {
+        self.entries()[ordinal].uses()
+    }
+    fn targets(&self, ordinal: usize) -> impl Iterator<Item = usize> {
+        ArtifactUses::targets(self, ordinal)
+    }
+}
+
+struct CaScan<'query, C, W: Work> {
+    artifacts: &'query C,
     cache: OwnedMap<usize, CaFact, W>,
     work: &'query W,
 }
 
-impl<'certificate, 'document, W: Work> CaScan<'_, 'certificate, 'document, W> {
+impl<'certificate, 'document, C: Census<'certificate, 'document>, W: Work> CaScan<'_, C, W> {
     fn certificate(&self, index: usize) -> &'certificate Certificate<'document> {
-        let ArtifactRef::Certificate(certificate) = self.entries[index].artifact() else {
-            unreachable!("private status target is an admitted certificate ordinal")
+        let ArtifactRef::Certificate(certificate) = self.artifacts.artifact(index) else {
+            unreachable!("a status target is an admitted certificate ordinal")
         };
         certificate
     }
@@ -304,20 +323,17 @@ impl<'certificate, 'document, W: Work> CaScan<'_, 'certificate, 'document, W> {
         index: usize,
         accepts: impl Fn(Uses) -> bool,
     ) -> Result<Option<(CaFact, usize)>, CaError<'certificate, 'document>> {
-        if matches!(self.entries[index].artifact(), ArtifactRef::Certificate(_)) {
+        if matches!(self.artifacts.artifact(index), ArtifactRef::Certificate(_)) {
             return match self.class(index)? {
                 CaFact::NotAsserted => Ok(None),
                 fact => Ok(Some((fact, index))),
             };
         }
-        let mut next = self.entries[index].targets;
         let mut unstated = None;
-        while let Some(index) = next {
+        let artifacts = self.artifacts;
+        for certificate in artifacts.targets(index) {
             self.work.charge_work(1)?;
-            let target = &self.targets[index];
-            let certificate = target.certificate;
-            next = target.next;
-            let uses = self.entries[certificate].uses();
+            let uses = artifacts.uses(certificate);
             if !accepts(uses) {
                 continue;
             }
@@ -378,8 +394,7 @@ pub fn exclusivity<'certificate, 'document, X: Xml, W: Work, Q: Work>(
     };
     let mut findings = work.vector();
     let mut scan = CaScan {
-        entries: artifacts.entries(),
-        targets: &artifacts.targets,
+        artifacts,
         cache: work.map(),
         work,
     };
@@ -437,160 +452,4 @@ pub fn exclusivity<'certificate, 'document, X: Xml, W: Work, Q: Work>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::material::fixture;
-    use crate::pki::Participant;
-    use alloc::sync::Arc;
-    use structured_asn1::{
-        Parser,
-        memory::{Memory, MemoryAccount},
-    };
-
-    fn memory(capacity: usize, work: usize) -> Memory {
-        Memory::new(Arc::new(MemoryAccount::new(capacity, work)))
-    }
-
-    #[test]
-    fn references_and_value_containers_keep_distinct_exclusive_ca_rules() {
-        // Annex A permits TSA references, unlike ordinary value containers.
-        // Union every role before deciding exclusivity, independent of order.
-        let signer = Uses::participant(Participant::Signer(0usize));
-        let credential = Uses::participant(Participant::Credential {
-            signature: 0usize,
-            node: 0,
-            authority: 0,
-        });
-        let tsa = Uses::participant(Participant::Timestamp {
-            property: 0usize,
-            token: 0,
-        });
-        for (roles, reference, values) in [
-            (&[credential][..], true, true),
-            (&[tsa][..], false, true),
-            (&[credential, tsa][..], false, true),
-            (&[tsa, credential][..], false, true),
-            (&[credential, signer][..], false, false),
-            (&[tsa, signer][..], false, false),
-        ] {
-            let mut uses = roles[0];
-            for &other in &roles[1..] {
-                uses.merge(other);
-            }
-            assert_eq!(exclusive_credential(uses), reference);
-            assert_eq!(exclusive(uses), values);
-        }
-    }
-
-    #[test]
-    fn status_classifies_its_actual_target_not_the_crl_signer() {
-        // Distinct CA/EE signers and targets deliberately oppose one another.
-        // Shared target CA use is not exclusive, even for a credential-only CRL.
-        for (version, ca, shared, expected) in [
-            (Version::V3, Some(false), false, None),
-            (Version::V3, None, false, None),
-            (Version::V3, Some(true), false, Some(CaFact::Asserted)),
-            (Version::V3, Some(true), true, None),
-            (Version::V1, None, false, Some(CaFact::Unstated)),
-            (Version::V2, None, false, Some(CaFact::Unstated)),
-        ] {
-            let target_bytes = fixture::certificate(1, version, ca);
-            let signer_bytes = fixture::certificate(2, Version::V3, Some(true));
-            let crl_bytes = fixture::crl();
-            let source = memory(65_536, 1_000_000);
-            let parser = Parser::der(source.clone());
-            let target = Certificate::read(&parser, &target_bytes, 100).unwrap();
-            let signer = Certificate::read(&parser, &signer_bytes, 900).unwrap();
-            let crl =
-                structured_pkix::crl::CertificateList::read(&parser, &crl_bytes, 1800).unwrap();
-            let timestamp = Uses::participant(Participant::Timestamp {
-                property: 0usize,
-                token: 1,
-            });
-            let mut target_uses = timestamp;
-            if shared {
-                target_uses.merge(Uses::participant(Participant::Signer(0usize)));
-            }
-            let entries = [
-                ArtifactUse {
-                    artifact: ArtifactRef::Certificate(&target),
-                    uses: target_uses,
-                    targets: None,
-                },
-                ArtifactUse {
-                    artifact: ArtifactRef::Certificate(&signer),
-                    uses: timestamp,
-                    targets: None,
-                },
-                ArtifactUse {
-                    artifact: ArtifactRef::Crl(&crl),
-                    uses: timestamp,
-                    targets: Some(0),
-                },
-            ];
-            let targets = [StatusTarget {
-                certificate: 0,
-                next: None,
-            }];
-            let work = memory(65_536, 1_000_000);
-            let before = source.used();
-            let mut scan = CaScan {
-                entries: &entries,
-                targets: &targets,
-                cache: work.map(),
-                work: &work,
-            };
-            let witness = scan.witness(2, exclusive).unwrap().map(|(fact, index)| {
-                assert_eq!(index, 0);
-                fact
-            });
-            assert_eq!(witness, expected);
-            assert_eq!(
-                scan.witness(1, exclusive).unwrap(),
-                Some((CaFact::Asserted, 1))
-            );
-            assert_eq!(scan.witness(2, exclusive_credential).unwrap(), None);
-            drop(scan);
-            assert_eq!(work.used(), 0);
-            assert_eq!(source.used(), before);
-        }
-    }
-
-    #[test]
-    fn ca_query_refusal_is_never_an_unstated_or_non_ca_fact() {
-        // Both decoding and the classification cache are current-operation
-        // work/storage. Refusal cannot permit material or fabricate a finding.
-        let bytes = fixture::certificate(1, Version::V3, Some(true));
-        let source = memory(65_536, 1_000_000);
-        let parser = Parser::der(source.clone());
-        let certificate = Certificate::read(&parser, &bytes, 100).unwrap();
-        let before = source.used();
-        let entries = [ArtifactUse {
-            artifact: ArtifactRef::Certificate(&certificate),
-            uses: Uses::participant(Participant::Timestamp {
-                property: 0usize,
-                token: 1,
-            }),
-            targets: None,
-        }];
-        for work in [memory(0, 1_000_000), memory(65_536, 0)] {
-            let mut scan = CaScan {
-                entries: &entries,
-                targets: &[],
-                cache: work.map(),
-                work: &work,
-            };
-            match scan.witness(0, exclusive) {
-                Err(CaError::Resource(MemoryError::LimitExceeded | MemoryError::WorkExceeded)) => {}
-                Err(CaError::Certificate(actual, cause)) => {
-                    assert!(core::ptr::eq(actual, &raw const certificate));
-                    assert!(cause.is_resource());
-                }
-                _ => panic!("current resource refusal must remain terminal"),
-            }
-            drop(scan);
-            assert_eq!(work.used(), 0);
-            assert_eq!(source.used(), before);
-        }
-    }
-}
+mod tests;

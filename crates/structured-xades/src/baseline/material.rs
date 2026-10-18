@@ -2,10 +2,12 @@
 
 use super::Timed;
 use crate::{
-    material, pki,
+    material,
     xml::{Access, Xml},
 };
 use structured_asn1::memory::Work;
+use structured_ltv::pki::ParticipantError;
+use structured_ltv::timestamp::TimestampScope;
 
 /// Linked original time, X.509 and credential-format material reports. Public
 /// input slots cannot manufacture a fact: construction verifies their exact
@@ -66,7 +68,7 @@ type CredentialsFor<'a, 'v, 'd, A, X> = material::credentials::Report<
 >;
 /// A different scope/input receipt is a processing refusal, not absent material.
 pub type MaterialResult<'a, T, M, C, X> =
-    Result<LongTerm<'a, T, M, C>, pki::ParticipantError<<X as Xml>::Error, <X as Xml>::Id>>;
+    Result<LongTerm<'a, T, M, C>, ParticipantError<<X as Xml>::Id>>;
 
 /// Link the SAME complete participant/status closure and authenticated
 /// credential catalogue to the root/counters/all-token time report. No source
@@ -88,14 +90,10 @@ pub fn long_term<'s, 'a, 'r, 'p, 'v, 'c, 'd, 'cl, 'rq, 'mv, 'mc, 'au, 'cv, A, X:
     X,
 > {
     let requirements = x509.timestamps().inputs().requirements();
-    if !matches!(
-        requirements.scope(),
-        crate::timestamp::TimestampScope::All(_)
-    ) || !matches!(
-        credentials.scope(),
-        crate::timestamp::TimestampScope::All(_)
-    ) {
-        return Err(pki::ParticipantError::Foreign {
+    if !matches!(requirements.scope(), TimestampScope::All(_))
+        || !matches!(credentials.scope(), TimestampScope::All(_))
+    {
+        return Err(ParticipantError::Foreign {
             signature: requirements.signature(),
         });
     }

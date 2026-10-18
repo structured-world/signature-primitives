@@ -1,13 +1,9 @@
 //! Source-derived actors for all-token LT or one preceding-archive obligation.
 
 use super::origin::Origin;
-use super::{
-    AuthorityClosure, AuthorityClosureError, AuthorityNode, CheckedPath, CounterPaths, PathStatuses,
-};
-use crate::certificate::CheckedPathCertificate;
-use crate::credential::{Authorities, Credentials, ParticipantCredentials};
-use crate::timestamp::{TimestampPaths, TimestampScope};
-use crate::xml::{Access, AccessError, Xml};
+use super::{AuthorityClosure, AuthorityClosureError, AuthorityNode, CheckedPath, PathStatuses};
+use crate::source::{Location, Query, ScopeError, Snapshot};
+use crate::timestamp::{ObligationError, TimestampPaths, TimestampScope};
 use structured_asn1::memory::{HashWork, MemoryError, OwnedVec, Work};
 use structured_pkix::path::EffectiveAnchor;
 
@@ -16,7 +12,8 @@ use structured_pkix::path::EffectiveAnchor;
 pub enum Participant<N> {
     /// Actual selected root signer.
     Signer(N),
-    /// Actual incorporated counter, including plain `XMLDSig` counters.
+    /// Actual incorporated countersignature, including one without signed
+    /// properties of its own.
     Counter {
         /// Original child signature.
         signature: N,
@@ -52,6 +49,141 @@ pub enum ParticipantAuthority<'path, 'document> {
     /// Explicit credential-format evidence needed no X.509 path. This does NOT
     /// prove absence/incorporation of other format-specific validation material.
     CertificateFree,
+}
+
+/// Actual certificate requirements of an authenticated credential format.
+/// These are explicit format facts, not a fallback from missing evidence.
+#[derive(Clone, Copy)]
+pub enum Authorities<'path, 'document> {
+    /// All independently checked authority paths used by authentication.
+    /// An empty slice is incomplete provider evidence, not certificate-free.
+    Paths(&'path [&'path CheckedPath<'document>]),
+    /// The credential was authenticated directly by this explicitly selected
+    /// effective trust anchor. Incorporate its existing certificate when needed;
+    /// do not invent a non-anchor chain or a revocation obligation for it.
+    DirectAnchor(&'path EffectiveAnchor<'document>),
+    /// This concrete format authenticated the original credential without
+    /// requiring X.509 certificate paths. Its format-specific evidence remains
+    /// mandatory; this does not establish any other required validation material.
+    CertificateFree,
+}
+
+/// The format layer's binding of a signature to its signing certificate's path.
+///
+/// Implemented on the format's own receipt, so a later check can require that
+/// very receipt rather than an equivalent one.
+pub trait SignerReceipt<'path, 'document> {
+    /// Original node identity.
+    type Id: Copy;
+    /// Stable document identity.
+    type Document: Copy;
+    /// Exact document generation.
+    type Generation: Copy;
+
+    /// The selected signature in its exact source generation.
+    fn signature(&self) -> Location<Self::Id, Self::Document, Self::Generation>;
+    /// The checked signer path, or `None` when the format has not established
+    /// the signing certificate or its signed path restrictions.
+    fn path(&self) -> Option<&'path CheckedPath<'document>>;
+}
+
+/// One incorporated countersignature and its signer's checked path.
+#[derive(Clone, Copy)]
+pub struct Counter<'path, 'document, N> {
+    /// Original child signature.
+    pub signature: N,
+    /// Original counter property.
+    pub property: N,
+    /// Checked path of the child's actual signer.
+    pub path: &'path CheckedPath<'document>,
+}
+
+/// The format layer's complete census of incorporated countersignatures.
+///
+/// It lists every original counter in source order, never a successful subset.
+pub trait CounterReceipts<'path, 'document> {
+    /// Original node identity.
+    type Id: Copy;
+    /// Stable document identity.
+    type Document: Copy;
+    /// Exact document generation.
+    type Generation: Copy;
+
+    /// Original root source and generation under which all counters were visited.
+    fn snapshot(&self) -> Snapshot<Self::Document, Self::Generation>;
+    /// Root signature whose complete incorporated counters were checked.
+    fn signature(&self) -> Self::Id;
+    /// Number of countersignatures in the census.
+    fn len(&self) -> usize;
+    /// Whether the census is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// The countersignature at this census ordinal.
+    ///
+    /// # Panics
+    /// When `ordinal` is not below [`Self::len`].
+    fn counter(&self, ordinal: usize) -> Counter<'path, 'document, Self::Id>;
+}
+
+/// One authenticated credential: its payload, protecting signature and authorities.
+#[derive(Clone, Copy)]
+pub struct Credential<'path, 'document, N> {
+    /// Signature protecting the credential.
+    pub signature: N,
+    /// Original credential payload.
+    pub node: N,
+    /// Actual authority inputs of its authentication.
+    pub authorities: Authorities<'path, 'document>,
+}
+
+/// Every authenticated credential of one signature, in original order.
+pub trait CredentialGroup<'path, 'document> {
+    /// Original node identity.
+    type Id: Copy;
+
+    /// Signature whose protected properties hold these credentials.
+    fn signature(&self) -> Self::Id;
+    /// Number of authenticated credentials.
+    fn len(&self) -> usize;
+    /// Whether the group is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// The credential at this ordinal.
+    ///
+    /// # Panics
+    /// When `ordinal` is not below [`Self::len`].
+    fn credential(&self, ordinal: usize) -> Credential<'path, 'document, Self::Id>;
+}
+
+/// The format layer's complete credential census of a root and its counters.
+///
+/// Counter groups appear in census order and only for counters that carry
+/// credentials; every other counter stays in the counter census.
+pub trait CredentialReceipts<'path, 'document> {
+    /// Original node identity.
+    type Id: Copy;
+    /// Stable document identity.
+    type Document: Copy;
+    /// Exact document generation.
+    type Generation: Copy;
+    /// One signature's credentials.
+    type Group: CredentialGroup<'path, 'document, Id = Self::Id>;
+
+    /// Original root source and generation for the whole participant set.
+    fn snapshot(&self) -> Snapshot<Self::Document, Self::Generation>;
+    /// Original root signature, independent of every credential issuer.
+    fn signature(&self) -> Self::Id;
+    /// The root's credentials, if it has a credential property.
+    fn root(&self) -> Option<&Self::Group>;
+    /// Number of counters with credentials.
+    fn counters(&self) -> usize;
+    /// The counter child signature and its credentials at this ordinal.
+    ///
+    /// # Panics
+    /// When `ordinal` is not below [`Self::counters`].
+    fn counter(&self, ordinal: usize) -> (Self::Id, &Self::Group);
 }
 
 /// One source actor and its actual authority, not a caller-supplied path count.
@@ -110,12 +242,11 @@ impl<'path, 'document, N: Copy, D: Copy, G: Copy>
         &self.entries
     }
 
-    // Constant-time identity only. The composition boundary admits its current
-    // source/query work before calling this; no authentication is replayed.
-    pub(crate) fn same_credentials<E>(
-        &self,
-        credentials: &ParticipantCredentials<'_, '_, E, N, D, G>,
-    ) -> bool {
+    /// Whether this census was derived from exactly this credential receipt.
+    /// Constant-time identity only: the caller admits its current query first;
+    /// no authentication is replayed.
+    #[must_use]
+    pub fn same_credentials<C>(&self, credentials: &C) -> bool {
         self.origins.credentials.matches(credentials)
     }
 
@@ -124,29 +255,25 @@ impl<'path, 'document, N: Copy, D: Copy, G: Copy>
     /// context or independently collected credentials do not establish that
     /// relation. This is a current-operation metadata query, not a replay of
     /// parsing, crypto, credential authentication or catalogue allocation.
-    pub fn require_inputs<X: Xml<Id = N, Document = D, Generation = G>, W: Work, E>(
+    pub fn require_inputs<S, C, R, Q>(
         &self,
-        signer: &CheckedPathCertificate<'_, '_, N, D, G>,
-        counters: &CounterPaths<'_, '_, N, D, G>,
-        credentials: &ParticipantCredentials<'_, '_, E, N, D, G>,
+        signer: &S,
+        counters: &C,
+        credentials: &R,
         timestamps: &TimestampPaths<'_, '_, '_, N, D, G>,
-        access: &Access<'_, X, W>,
-    ) -> Result<(), ParticipantError<X::Error, N>>
+        query: &Q,
+    ) -> Result<(), ParticipantError<N>>
     where
         D: Eq,
         G: Eq,
+        Q: Query<Id = N, Document = D, Generation = G>,
     {
         let signature = self.signature;
-        if self.scope.location().snapshot != access.snapshot() {
+        if self.scope.location().snapshot != query.snapshot() {
             return Err(ParticipantError::Foreign { signature });
         }
-        access
-            .query(signature, |_, _, work| Ok(work.charge_work(4)))
-            .map_err(ParticipantError::Access)?
-            .map_err(|cause| ParticipantError::Resource {
-                node: signature,
-                cause,
-            })?;
+        // One dispatch plus the four constant-time identity comparisons.
+        query.admit(signature, 5)?;
         if !self.origins.signer.matches(signer)
             || !self.origins.counters.matches(counters)
             || !self.same_credentials(credentials)
@@ -159,14 +286,14 @@ impl<'path, 'document, N: Copy, D: Copy, G: Copy>
 }
 
 /// Insufficient/mixed inputs and resource errors remain distinct.
-#[derive(Debug)]
-pub enum ParticipantError<E, N> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParticipantError<N> {
     /// Timestamp obligations omitted the complete actual counter-source census.
     CounterTimestamps,
-    /// Original counter timestamp membership/admission refusal.
-    Timestamp(crate::timestamp::InputError<E, N>),
+    /// Counter timestamp membership or its scope refused.
+    Obligation(ObligationError<N>),
     /// Current original source/generation/operation refused.
-    Access(AccessError<E, N>),
+    Scope(ScopeError<N>),
     /// A proof belongs to another root signature or source generation.
     Foreign {
         /// Expected original root signature.
@@ -182,6 +309,24 @@ pub enum ParticipantError<E, N> {
         /// Actual current-operation refusal.
         cause: MemoryError,
     },
+}
+
+/// Complete source-actor requirements in the query's identity domain.
+pub type ParticipantResult<'path, 'document, Q> = Result<
+    ParticipantRequirements<
+        'path,
+        'document,
+        <Q as Query>::Id,
+        <Q as Query>::Document,
+        <Q as Query>::Generation,
+    >,
+    ParticipantError<<Q as Query>::Id>,
+>;
+
+impl<N> From<ScopeError<N>> for ParticipantError<N> {
+    fn from(cause: ScopeError<N>) -> Self {
+        Self::Scope(cause)
+    }
 }
 
 /// Complete participant roots and every reachable validation authority. The
@@ -212,9 +357,9 @@ impl<'requirements, 'view, 'certificate, 'document, N, D, G>
 
 /// A missing actor input is distinct from a negative authenticated status.
 #[derive(Debug)]
-pub enum ParticipantClosureError<E, N> {
+pub enum ParticipantClosureError<N> {
     /// Source/generation/current operation refused before input processing.
-    Access(AccessError<E, N>),
+    Scope(ScopeError<N>),
     /// The requirements belong to another original source generation.
     Foreign,
     /// One root is required per Path actor, preserving source order; direct
@@ -231,48 +376,37 @@ pub enum ParticipantClosureError<E, N> {
     Resource(MemoryError),
 }
 
-/// Participant/authority input closure in the XML owner's identity domain.
-pub type ParticipantClosureResult<'requirements, 'view, 'certificate, 'document, X> = Result<
-    ParticipantClosure<
-        'requirements,
-        'view,
-        'certificate,
-        'document,
-        <X as Xml>::Id,
-        <X as Xml>::Document,
-        <X as Xml>::Generation,
-    >,
-    ParticipantClosureError<<X as Xml>::Error, <X as Xml>::Id>,
->;
-
 impl<'path, 'document, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq>
     ParticipantRequirements<'path, 'document, N, D, G>
 {
     /// Associate EVERY source-derived Path actor with its complete status inputs,
     /// then follow the existing CRL/OCSP authority kernel. Evaluation labels are
-    /// explicit original inputs, not guessed from `SigningTime` or token order;
-    /// their usability and historical trust remain separate checks. Paths may
-    /// legitimately repeat for several actors or distinct evaluation labels.
-    /// Direct anchors retain their separate certificate-material obligation.
-    /// No parse, provider, hash, status evaluation or signature is repeated.
-    pub fn close_statuses<'requirements, 'view, 'certificate, X, W>(
+    /// explicit original inputs, not guessed from a claimed signing time or
+    /// token order; their usability and historical trust remain separate checks.
+    /// Paths may legitimately repeat for several actors or distinct evaluation
+    /// labels. Direct anchors retain their separate certificate-material
+    /// obligation. No parse, provider, hash, status evaluation or signature is
+    /// repeated.
+    pub fn close_statuses<'requirements, 'view, 'certificate, Q>(
         &'requirements self,
         roots: &'view [&'view PathStatuses<'view, 'certificate, 'document>],
         supplied: &'view [AuthorityNode<'view, 'certificate, 'document>],
-        access: &Access<'_, X, W>,
-    ) -> ParticipantClosureResult<'requirements, 'view, 'certificate, 'document, X>
+        query: &Q,
+    ) -> Result<
+        ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G>,
+        ParticipantClosureError<N>,
+    >
     where
-        X: Xml<Id = N, Document = D, Generation = G>,
-        W: Work,
+        Q: Query<Id = N, Document = D, Generation = G>,
         'path: 'view,
     {
-        if self.scope.location().snapshot != access.snapshot() {
+        if self.scope.location().snapshot != query.snapshot() {
             return Err(ParticipantClosureError::Foreign);
         }
-        access
-            .query(self.signature, |_, _, _| Ok(()))
-            .map_err(ParticipantClosureError::Access)?;
-        let work = access.execution();
+        query
+            .admit(self.signature, 1)
+            .map_err(ParticipantClosureError::Scope)?;
+        let work = query.execution();
         let mut cursor = 0;
         for (participant, entry) in self.entries.iter().enumerate() {
             work.charge_work(1)
@@ -300,41 +434,19 @@ impl<'path, 'document, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq>
     }
 }
 
-/// Complete source-actor requirements in the XML owner's identity domain.
-pub type ParticipantResult<'path, 'document, X> = Result<
-    ParticipantRequirements<
-        'path,
-        'document,
-        <X as Xml>::Id,
-        <X as Xml>::Document,
-        <X as Xml>::Generation,
-    >,
-    ParticipantError<<X as Xml>::Error, <X as Xml>::Id>,
->;
-
 struct Collect<'path, 'document, N, W: Work> {
     entries: OwnedVec<ParticipantRequirement<'path, 'document, N>, W>,
 }
 
 impl<'path, 'document, N: Copy, W: Work> Collect<'path, 'document, N, W> {
-    fn admit<X: Xml<Id = N>>(
-        node: N,
-        access: &Access<'_, X, W>,
-    ) -> Result<(), ParticipantError<X::Error, N>> {
-        access
-            .query(node, |_, _, work| Ok(work.charge_work(1)))
-            .map_err(ParticipantError::Access)?
-            .map_err(|cause| ParticipantError::Resource { node, cause })
-    }
-
-    fn push<X: Xml<Id = N>>(
+    fn push<Q: Query<Id = N, Work = W>>(
         &mut self,
         participant: Participant<N>,
         authority: ParticipantAuthority<'path, 'document>,
         node: N,
-        access: &Access<'_, X, W>,
-    ) -> Result<(), ParticipantError<X::Error, N>> {
-        Self::admit(node, access)?;
+        query: &Q,
+    ) -> Result<(), ParticipantError<N>> {
+        query.admit(node, 2)?;
         self.entries
             .try_push(ParticipantRequirement {
                 participant,
@@ -343,28 +455,28 @@ impl<'path, 'document, N: Copy, W: Work> Collect<'path, 'document, N, W> {
             .map_err(|cause| ParticipantError::Resource { node, cause })
     }
 
-    fn credentials<X: Xml<Id = N>, E>(
+    fn credentials<Q: Query<Id = N, Work = W>, R: CredentialGroup<'path, 'document, Id = N>>(
         &mut self,
-        credentials: &Credentials<'path, 'document, E, N, X::Document, X::Generation>,
-        access: &Access<'_, X, W>,
-    ) -> Result<(), ParticipantError<X::Error, N>> {
-        for credential in credentials.entries() {
-            Self::admit(credentials.signature(), access)?;
-            let source = credential.source();
-            let node = source.entry().node;
+        credentials: &R,
+        query: &Q,
+    ) -> Result<(), ParticipantError<N>> {
+        for ordinal in 0..credentials.len() {
+            query.admit(credentials.signature(), 2)?;
+            let credential = credentials.credential(ordinal);
+            let node = credential.node;
             let participant = |authority| Participant::Credential {
-                signature: source.signature(),
+                signature: credential.signature,
                 node,
                 authority,
             };
-            match credential.authorities() {
+            match credential.authorities {
                 Authorities::Paths(paths) => {
                     for (index, path) in paths.iter().enumerate() {
                         self.push(
                             participant(index),
                             ParticipantAuthority::Path(path),
                             node,
-                            access,
+                            query,
                         )?;
                     }
                 }
@@ -372,13 +484,13 @@ impl<'path, 'document, N: Copy, W: Work> Collect<'path, 'document, N, W> {
                     participant(0),
                     ParticipantAuthority::Anchor(anchor),
                     node,
-                    access,
+                    query,
                 )?,
                 Authorities::CertificateFree => self.push(
                     participant(0),
                     ParticipantAuthority::CertificateFree,
                     node,
-                    access,
+                    query,
                 )?,
             }
         }
@@ -389,51 +501,51 @@ impl<'path, 'document, N: Copy, W: Work> Collect<'path, 'document, N, W> {
 // Credential groups are an ordered SUBSET of the full original counters.
 // A linear merge preserves source identity without quadratic rescanning or
 // another retained hash index. Unmatched foreign groups cannot disappear.
-fn counter_and_role_requirements<'path, 'document, X: Xml, W: Work, E>(
-    collect: &mut Collect<'path, 'document, X::Id, W>,
-    counters: &CounterPaths<'path, 'document, X::Id, X::Document, X::Generation>,
-    credentials: &ParticipantCredentials<'path, 'document, E, X::Id, X::Document, X::Generation>,
-    timestamps: &TimestampPaths<'path, '_, 'document, X::Id, X::Document, X::Generation>,
-    access: &Access<'_, X, W>,
-) -> Result<(), ParticipantError<X::Error, X::Id>> {
+fn counter_and_role_requirements<'path, 'document, C, R, Q>(
+    collect: &mut Collect<'path, 'document, Q::Id, Q::Work>,
+    counters: &C,
+    credentials: &R,
+    timestamps: &TimestampPaths<'path, '_, 'document, Q::Id, Q::Document, Q::Generation>,
+    query: &Q,
+) -> Result<(), ParticipantError<Q::Id>>
+where
+    Q: Query,
+    C: CounterReceipts<'path, 'document, Id = Q::Id>,
+    R: CredentialReceipts<'path, 'document, Id = Q::Id>,
+{
     let signature = counters.signature();
     let mut ordinal = 0;
-    while ordinal < counters.actors().len() {
-        Collect::admit(signature, access)?;
+    while ordinal < counters.len() {
+        query.admit(signature, 2)?;
         let selected = timestamps
             .required()
-            .counter_in_scope(ordinal, access)
-            .map_err(ParticipantError::Timestamp)?;
-        let actor = &counters.actors()[ordinal];
+            .counter_in_scope(ordinal, query)
+            .map_err(ParticipantError::Obligation)?;
+        let counter = counters.counter(ordinal);
         ordinal += 1;
         if !selected {
             continue;
         }
-        let source = actor.signer().counter().original();
         collect.push(
             Participant::Counter {
-                signature: source.child(),
-                property: source.node(),
+                signature: counter.signature,
+                property: counter.property,
             },
-            ParticipantAuthority::Path(actor.signer().path()),
-            source.node(),
-            access,
+            ParticipantAuthority::Path(counter.path),
+            counter.property,
+            query,
         )?;
     }
     if let Some(root) = credentials.root() {
-        collect.credentials(root, access)?;
+        collect.credentials(root, query)?;
     }
     let mut credential = 0;
     let mut ordinal = 0;
-    while ordinal < counters.actors().len() && credential < credentials.counters().len() {
-        Collect::admit(signature, access)?;
-        let actor = &counters.actors()[ordinal];
-        let counter = &credentials.counters()[credential];
-        let same = access
-            .equal_id(
-                actor.signer().counter().original().child(),
-                counter.source().original().child(),
-            )
+    while ordinal < counters.len() && credential < credentials.counters() {
+        query.admit(signature, 2)?;
+        let (child, group) = credentials.counter(credential);
+        let same = query
+            .equal(counters.counter(ordinal).signature, child)
             .map_err(|cause| ParticipantError::Resource {
                 node: signature,
                 cause,
@@ -441,16 +553,16 @@ fn counter_and_role_requirements<'path, 'document, X: Xml, W: Work, E>(
         if same {
             if timestamps
                 .required()
-                .counter_in_scope(ordinal, access)
-                .map_err(ParticipantError::Timestamp)?
+                .counter_in_scope(ordinal, query)
+                .map_err(ParticipantError::Obligation)?
             {
-                collect.credentials(counter.credentials(), access)?;
+                collect.credentials(group, query)?;
             }
             credential += 1;
         }
         ordinal += 1;
     }
-    if credential != credentials.counters().len() {
+    if credential != credentials.counters() {
         return Err(ParticipantError::Foreign { signature });
     }
     Ok(())
@@ -462,39 +574,55 @@ fn counter_and_role_requirements<'path, 'document, X: Xml, W: Work, E>(
 /// must already have completed their corresponding shared checks. The SAME
 /// kernel serves all-token LT and6.3(aa)'s preceding-archive obligations; only
 /// the latter excludes later counters/credentials and the current/later TSA
-/// using the SAME original archive-element coverage, not token success counts.
+/// using the SAME original archive coverage, not token success counts.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
 ///
 /// No provider, parse, certificate hash or signature is repeated. A late
 /// source/admission refusal releases all partial output; direct anchors and
 /// certificate-free format proofs are not silently treated as ordinary paths.
-pub fn participants<'path, 'document, X: Xml, W: Work, E>(
-    signer: &'path CheckedPathCertificate<'path, 'document, X::Id, X::Document, X::Generation>,
-    counters: &'path CounterPaths<'path, 'document, X::Id, X::Document, X::Generation>,
-    credentials: &'path ParticipantCredentials<
-        'path,
-        'document,
-        E,
-        X::Id,
-        X::Document,
-        X::Generation,
-    >,
-    timestamps: &'path TimestampPaths<'path, '_, 'document, X::Id, X::Document, X::Generation>,
-    access: &Access<'_, X, W>,
-) -> ParticipantResult<'path, 'document, X> {
-    let references = signer.selected().reference();
-    let signature = references.signature();
+pub fn participants<'path, 'document, S, C, R, Q>(
+    signer: &'path S,
+    counters: &'path C,
+    credentials: &'path R,
+    timestamps: &'path TimestampPaths<'path, '_, 'document, Q::Id, Q::Document, Q::Generation>,
+    query: &Q,
+) -> ParticipantResult<'path, 'document, Q>
+where
+    Q: Query,
+    S: SignerReceipt<
+            'path,
+            'document,
+            Id = Q::Id,
+            Document = Q::Document,
+            Generation = Q::Generation,
+        >,
+    C: CounterReceipts<
+            'path,
+            'document,
+            Id = Q::Id,
+            Document = Q::Document,
+            Generation = Q::Generation,
+        >,
+    R: CredentialReceipts<
+            'path,
+            'document,
+            Id = Q::Id,
+            Document = Q::Document,
+            Generation = Q::Generation,
+        >,
+{
+    let selected = signer.signature();
+    let signature = selected.node;
     let scope = timestamps.required().scope();
-    if references.snapshot() != access.snapshot()
-        || counters.snapshot() != access.snapshot()
-        || credentials.snapshot() != access.snapshot()
-        || scope.location().snapshot != access.snapshot()
+    if selected.snapshot != query.snapshot()
+        || counters.snapshot() != query.snapshot()
+        || credentials.snapshot() != query.snapshot()
+        || scope.location().snapshot != query.snapshot()
     {
         return Err(ParticipantError::Foreign { signature });
     }
-    let entries = access
-        .query(signature, |_, _, work| Ok(work.vector()))
-        .map_err(ParticipantError::Access)?;
+    query.admit(signature, 1)?;
+    let entries = query.execution().vector();
     for actual in [
         counters.signature(),
         credentials.signature(),
@@ -510,7 +638,7 @@ pub fn participants<'path, 'document, X: Xml, W: Work, E>(
                 node: signature,
                 cause,
             })?;
-        access
+        query
             .execution()
             .charge_work(cost)
             .map_err(|cause| ParticipantError::Resource {
@@ -521,26 +649,26 @@ pub fn participants<'path, 'document, X: Xml, W: Work, E>(
             return Err(ParticipantError::Foreign { signature });
         }
     }
-    if !signer.is_bound() {
+    let Some(path) = signer.path() else {
         return Err(ParticipantError::UnprovenSigner);
-    }
+    };
     if !timestamps
         .required()
-        .includes_counters(counters, access)
-        .map_err(ParticipantError::Timestamp)?
+        .includes_counters(counters, query)
+        .map_err(ParticipantError::Scope)?
     {
         return Err(ParticipantError::CounterTimestamps);
     }
     let mut collect = Collect { entries };
     collect.push(
         Participant::Signer(signature),
-        ParticipantAuthority::Path(signer.digests().path()),
+        ParticipantAuthority::Path(path),
         signature,
-        access,
+        query,
     )?;
-    counter_and_role_requirements(&mut collect, counters, credentials, timestamps, access)?;
+    counter_and_role_requirements(&mut collect, counters, credentials, timestamps, query)?;
     for path in timestamps.paths() {
-        Collect::admit(signature, access)?;
+        query.admit(signature, 2)?;
         let source = path.actor().verified();
         collect.push(
             Participant::Timestamp {
@@ -549,12 +677,10 @@ pub fn participants<'path, 'document, X: Xml, W: Work, E>(
             },
             ParticipantAuthority::Path(path.path()),
             source.property(),
-            access,
+            query,
         )?;
     }
-    access
-        .query(signature, |_, _, _| Ok(()))
-        .map_err(ParticipantError::Access)?;
+    query.admit(signature, 1)?;
     Ok(ParticipantRequirements {
         scope,
         signature,

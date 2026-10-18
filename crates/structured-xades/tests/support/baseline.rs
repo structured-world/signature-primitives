@@ -7,6 +7,8 @@ use structured_xades::{
     xml::{Access, Xml},
 };
 
+#[path = "baseline_archival.rs"]
+mod archival;
 #[path = "baseline_values.rs"]
 mod values;
 
@@ -59,11 +61,16 @@ fn timed_assembly_keeps_full_original_token_census_and_current_query_refusal() {
         values::Pool::CompleteOnly,
         values::Pool::DeltaOnly,
     ] {
-        run_timed_assembly(pool);
+        for requested in [
+            unsigned::Requirements::Timestamped,
+            unsigned::Requirements::LongTerm,
+        ] {
+            run_timed_assembly(pool, requested);
+        }
     }
 }
 
-fn run_timed_assembly(pool: values::Pool) {
+fn run_timed_assembly(pool: values::Pool, requested: unsigned::Requirements) {
     // Static B-T composition cannot omit an original TSA, replay token math,
     // substitute a cached successful timestamp for query funding or treat a
     // certificate-path interval as an application trust/chronology verdict.
@@ -74,8 +81,7 @@ fn run_timed_assembly(pool: values::Pool) {
     xml_digest::with_checked_path(|path, leaf, root, memory| {
         let (xml, provider, tsa) = fixture(leaf, root, pool);
         let access = Access::new(&xml, xml.snapshot(), memory);
-        let prepared =
-            prepare::prepare(&access, 0, unsigned::Requirements::Timestamped, None).unwrap();
+        let prepared = prepare::prepare(&access, 0, requested, None).unwrap();
         let fields = prepare::check_fields(&prepared, &access).unwrap();
         let counters =
             pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
@@ -149,6 +155,7 @@ fn run_timed_assembly(pool: values::Pool) {
         let held = memory.used();
         let timed = baseline::timestamped(&basic, &paths, &access).unwrap();
         assert_static_time(&timed, &basic, &paths);
+        assert_timed_level(&timed, requested);
         assert_eq!(provider.verified.get(), 1);
         check_material(
             &timed,
@@ -180,6 +187,61 @@ fn assert_static_time(
         timed.signatures()[0],
         baseline::SignatureTimeFact::Bound(_)
     ));
+}
+
+fn assert_timed_level(
+    timed: &baseline::Timed<'_, '_, '_, '_, '_, '_, usize, u8, u8>,
+    requested: unsigned::Requirements,
+) {
+    // A B-T report answers only a B-T request: a B-LT preparation also
+    // requires validation material, which these time facts do not carry.
+    let assessed = baseline::assess(baseline::Evidence::<(), _, _, _>::Timestamped(timed));
+    if requested == unsigned::Requirements::Timestamped {
+        let level = assessed.unwrap();
+        assert_eq!(level.requested(), requested);
+        assert!(level.all_requirements_met());
+    } else {
+        assert!(matches!(
+            assessed,
+            Err(baseline::LevelError::Mismatch {
+                requested: unsigned::Requirements::LongTerm,
+                supplied: unsigned::Requirements::Timestamped,
+            })
+        ));
+    }
+}
+
+type LongTermReport<'a> = baseline::LongTerm<
+    'a,
+    baseline::Timed<'a, 'a, 'a, 'a, 'a, 'a, usize, u8, u8>,
+    structured_xades::material::Checks<'a, 'a, 'a, 'a, 'a, usize, u8, u8>,
+    structured_xades::material::credentials::Report<'a, 'a, 'a, (), usize, u8, u8>,
+>;
+
+fn assert_long_term_level(report: &LongTermReport<'_>, complete: bool) {
+    // B-LT is met only when the incorporated material is complete; an absent
+    // or partial pool keeps the level negative instead of falling back to B-T.
+    let assessed = baseline::assess(baseline::Evidence::LongTerm(report));
+    let requested = report
+        .timed()
+        .basic()
+        .inputs()
+        .fields
+        .prepared()
+        .requirements();
+    if requested == unsigned::Requirements::LongTerm {
+        let level = assessed.unwrap();
+        assert_eq!(level.requested(), requested);
+        assert_eq!(level.all_requirements_met(), complete);
+    } else {
+        assert!(matches!(
+            assessed,
+            Err(baseline::LevelError::Mismatch {
+                requested: unsigned::Requirements::Timestamped,
+                supplied: unsigned::Requirements::LongTerm,
+            })
+        ));
+    }
 }
 
 fn assert_current_query(
@@ -290,6 +352,7 @@ fn check_material(
             assert!(core::ptr::eq(report.x509(), &raw const x509));
             assert!(report.credentials().all_requirements_met());
             assert_eq!(report.all_material_requirements_met(), complete);
+            assert_long_term_level(&report, complete);
             let foreign = material::credentials::check(
                 &other,
                 basic.counters,

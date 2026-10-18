@@ -101,6 +101,12 @@ trust inputs and decides whether the resulting evidence meets its policy.
    archive once, in original order. `renewed::check_prepared` separately processes
    every written root renewal's original Manifest instructions and digest pairs,
    retaining failed comparisons alongside successful ones.
+8. `baseline::assess` takes the stage reports of exactly the level that the
+   preparation requested: `basic` for B-B, `timestamped` for B-T, `long_term`
+   for B-LT, and `long_term` with `archives` for B-LTA. It refuses a different
+   level, or an archive census built from another preparation or another
+   authenticated credential census than the whole signature. The result states
+   whether every condition of that level holds, including the earlier levels.
 
 Receipts keep detailed negative findings. A material-presence predicate does
 not establish usable revocation status, historical trust, timestamp chronology

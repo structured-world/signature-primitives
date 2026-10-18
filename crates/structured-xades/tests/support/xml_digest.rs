@@ -227,6 +227,15 @@ fn basic_assembly_links_original_facts_and_preserves_inclusion_digest_and_hint_f
             assert_eq!(checked.included().is_some(), mode != 1);
             assert_eq!(checked.inputs().certificate.is_bound(), mode != 2);
             assert_basic_hints(&checked, &prepared, mode);
+            // The B-B level carries the same negative stage outcome; it is
+            // never reported as met when any root condition failed.
+            let level =
+                baseline::assess(baseline::Evidence::<(), _, _, _>::Basic(&checked)).unwrap();
+            assert_eq!(level.requested(), unsigned::Requirements::Basic);
+            assert_eq!(
+                level.all_requirements_met(),
+                checked.all_root_requirements_met()
+            );
             assert_eq!(provider.one_shot.get(), 1);
             assert_eq!(xml.scalar_calls.get(), scalar_calls);
             assert_eq!(xml.date_time_calls.get(), 1);

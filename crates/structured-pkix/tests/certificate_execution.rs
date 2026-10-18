@@ -49,13 +49,23 @@ fn empty_subject_san_lookup_cannot_bypass_producing_work() {
         tlv(0xa3, &seq(&[unrelated, san])),
     ]);
     let encoded = seq(&[tbs, algorithm, tlv(3, &[0, 1])]);
-    let baseline = memory();
-    let parser = Parser::der(baseline.clone());
-    let certificate = Certificate::read(&parser, &encoded, 400).unwrap();
-    assert!(certificate.tbs().subject().is_empty());
-    let total = u64::try_from(baseline.work_used()).unwrap();
-    drop(certificate);
-    assert_eq!(baseline.used(), 0);
+    // Map lookups pay one comparison per hash-tag match, and each map draws a
+    // random hasher seed, so a parse can cost an extra comparison now and then.
+    // The smallest of several parses is the work without one; every parse pays
+    // at least that, so one unit less must refuse whatever the seed.
+    let total = (0..32)
+        .map(|_| {
+            let baseline = memory();
+            let parser = Parser::der(baseline.clone());
+            let certificate = Certificate::read(&parser, &encoded, 400).unwrap();
+            assert!(certificate.tbs().subject().is_empty());
+            let work = u64::try_from(baseline.work_used()).unwrap();
+            drop(certificate);
+            assert_eq!(baseline.used(), 0);
+            work
+        })
+        .min()
+        .unwrap();
     let current = memory();
     let parser = Parser::new(
         Encoding::Der,

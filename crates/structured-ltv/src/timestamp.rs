@@ -1,6 +1,7 @@
 //! Retained mathematical timestamp evidence with its original source identity.
 
 use crate::source::Location;
+use core::marker::PhantomData;
 use structured_asn1::memory::{MemoryError, Work};
 use structured_cms::timestamp::{BoundUncertainty, Evidence, earliest, latest};
 use structured_pkix::temporal::{Instant, LeapTable};
@@ -8,8 +9,8 @@ use structured_pkix::{Certificate, path::WorkingKey};
 
 mod obligation;
 pub use obligation::{
-    ObligationError, RequiredToken, TimestampPathBinding, TimestampPathFailure, TimestampPaths,
-    TimestampRequirements, TimestampScope,
+    ObligationError, PathBindingResult, RequiredToken, TimestampPathBinding, TimestampPathFailure,
+    TimestampPaths, TimestampRequirements, TimestampScope,
 };
 mod signature;
 pub use signature::{
@@ -36,34 +37,39 @@ pub enum Purpose {
 
 /// Successfully checked token covering the input its format layer selected.
 ///
-/// The format layer constructs it only from its own complete token check over
-/// that input; this is not a TSA trust decision or a level.
+/// Only the holder of issuer `I` constructs it, from its own complete token
+/// check over that input (see [`crate`] on issuers); this is not a TSA trust
+/// decision or a level.
 #[derive(Debug)]
-pub struct Verified<N, D, G> {
+pub struct Verified<N, D, G, I> {
     token: Location<N, D, G>,
     signature: N,
     property: N,
     purpose: Purpose,
     evidence: Evidence,
+    issuer: PhantomData<I>,
 }
 
 /// Successful mathematical timestamp check with its actual selected signer.
 ///
 /// The certificate and effective key come from the same complete-check context,
-/// not a later caller-supplied association. This still establishes no TSA path,
-/// status or trust. Certificate/key borrows need not retain the provider or
-/// temporary context.
-pub struct CheckedActor<'certificate, 'document, N, D, G> {
-    verified: Verified<N, D, G>,
+/// not a later caller-supplied association; only the holder of issuer `I`
+/// constructs it. This still establishes no TSA path, status or trust.
+/// Certificate/key borrows need not retain the provider or temporary context.
+pub struct CheckedActor<'certificate, 'document, N, D, G, I> {
+    verified: Verified<N, D, G, I>,
     certificate: &'certificate Certificate<'document>,
     key: WorkingKey<'document>,
 }
 
-impl<'certificate, 'document, N, D, G> CheckedActor<'certificate, 'document, N, D, G> {
+impl<'certificate, 'document, N, D, G, I> CheckedActor<'certificate, 'document, N, D, G, I> {
     /// Binds evidence to the certificate and effective key its check used.
+    /// Requiring the issuer value keeps a caller of the format from
+    /// associating the evidence with another certificate.
     #[must_use]
     pub fn new(
-        verified: Verified<N, D, G>,
+        _issuer: I,
+        verified: Verified<N, D, G, I>,
         certificate: &'certificate Certificate<'document>,
         key: WorkingKey<'document>,
     ) -> Self {
@@ -88,14 +94,14 @@ impl<'certificate, 'document, N, D, G> CheckedActor<'certificate, 'document, N, 
 
     /// Independently retained mathematical evidence with original identity.
     #[must_use]
-    pub fn verified(&self) -> &Verified<N, D, G> {
+    pub fn verified(&self) -> &Verified<N, D, G, I> {
         &self.verified
     }
 
     /// Ends the borrowed signer association while moving independent evidence.
     /// This performs no copy/allocation and makes no subsequent TSA claim.
     #[must_use]
-    pub fn into_verified(self) -> Verified<N, D, G> {
+    pub fn into_verified(self) -> Verified<N, D, G, I> {
         self.verified
     }
 }
@@ -134,14 +140,16 @@ pub enum TemporalError {
     Uncertain(BoundUncertainty),
 }
 
-impl<N, D, G> Verified<N, D, G> {
+impl<N, D, G, I> Verified<N, D, G, I> {
     /// Retains a complete token check with the original identity of its input.
     ///
     /// `token` is the original token enclosure, `signature` the signature whose
     /// input was covered, `property` the timestamp property or attribute and
-    /// `purpose` the kind of input selected for the check.
+    /// `purpose` the kind of input selected for the check. Requiring the
+    /// issuer value keeps a caller of the format from relabeling evidence.
     #[must_use]
     pub fn new(
+        _issuer: I,
         token: Location<N, D, G>,
         signature: N,
         property: N,
@@ -154,11 +162,12 @@ impl<N, D, G> Verified<N, D, G> {
             property,
             purpose,
             evidence,
+            issuer: PhantomData,
         }
     }
 }
 
-impl<N: Copy, D: Copy, G: Copy> Verified<N, D, G> {
+impl<N: Copy, D: Copy, G: Copy, I> Verified<N, D, G, I> {
     /// Original token enclosure, not an offset in its decoded ASN.1 source.
     #[must_use]
     pub fn token(&self) -> Location<N, D, G> {

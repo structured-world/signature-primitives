@@ -2,6 +2,7 @@
 
 use super::{ReferenceSearch, ref_catalogue::Memo};
 use crate::{
+    Xades,
     binary::{self, BinaryXml, Location},
     certificate::{Agreement, DigestProvider},
     digest,
@@ -139,7 +140,7 @@ pub type CertificateRoleResult<'p, 'c, 'd, X, PE> = binary::BinaryResult<
 fn compare_role_candidates<'c, 'd, 'q, X: Xml, P: Digest<'q>, W: Work>(
     memo: &mut Memo<'q, 'd, P, W>,
     candidates: &mut Option<OwnedVec<ReferenceCa<'c, 'd>, W>>,
-    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
     comparisons: &mut OwnedVec<CertificateRoleComparison<'c, 'd>, W>,
     identity: crate::certificate::FormatDigest<P::Identity>,
     expected: &[u8],
@@ -230,7 +231,7 @@ pub fn check_certificate_reference_roles<
 >(
     xml: &X,
     prepared: &'p Prepared<X>,
-    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
     provider: &'q P,
     work: &W,
 ) -> CertificateRoleResult<'p, 'c, 'd, X, P::Error> {

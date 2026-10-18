@@ -11,9 +11,9 @@ use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 
 /// One actual root signature timestamp's complete static certificate binding.
 /// Negative results do not disappear because a different timestamp succeeded.
-pub enum SignatureTimeFact<'a, S, N, D, G> {
+pub enum SignatureTimeFact<'a, S, N, D, G, I> {
     /// Exact original signature input and full generation/static path interval.
-    Bound(SignatureTime<'a, S, N, D, G>),
+    Bound(SignatureTime<'a, S, N, D, G, I>),
     /// Completed insufficient root certificate/interval fact, not source refusal.
     Unproven {
         /// Original root signature timestamp property.
@@ -27,14 +27,14 @@ pub enum SignatureTimeFact<'a, S, N, D, G> {
 /// This does not assert pre-revocation chronology, current/historical status,
 /// format material completeness, algorithm-obsolescence policy or caller trust.
 /// In particular it is NOT an unconditional B-T acceptance verdict.
-pub struct Timed<'a, 'certificate, 'document, B, S, N, D, G> {
+pub struct Timed<'a, 'certificate, 'document, B, S, N, D, G, I> {
     basic: &'a B,
-    paths: &'a TimestampPaths<'a, 'certificate, 'document, N, D, G>,
-    signatures: OwnedVec<SignatureTimeFact<'a, S, N, D, G>>,
+    paths: &'a TimestampPaths<'a, 'certificate, 'document, N, D, G, I>,
+    signatures: OwnedVec<SignatureTimeFact<'a, S, N, D, G, I>>,
     static_complete: bool,
 }
 
-impl<'a, 'c, 'd, B, S, N, D, G> Timed<'a, 'c, 'd, B, S, N, D, G> {
+impl<'a, 'c, 'd, B, S, N, D, G, I> Timed<'a, 'c, 'd, B, S, N, D, G, I> {
     /// Same original basic stage.
     #[must_use]
     pub fn basic(&self) -> &'a B {
@@ -42,12 +42,12 @@ impl<'a, 'c, 'd, B, S, N, D, G> Timed<'a, 'c, 'd, B, S, N, D, G> {
     }
     /// Complete source-derived root AND nested-counter timestamp/TSA paths.
     #[must_use]
-    pub fn paths(&self) -> &'a TimestampPaths<'a, 'c, 'd, N, D, G> {
+    pub fn paths(&self) -> &'a TimestampPaths<'a, 'c, 'd, N, D, G, I> {
         self.paths
     }
     /// Every original root signature timestamp, including negative associations.
     #[must_use]
-    pub fn signatures(&self) -> &[SignatureTimeFact<'a, S, N, D, G>] {
+    pub fn signatures(&self) -> &[SignatureTimeFact<'a, S, N, D, G, I>] {
         &self.signatures
     }
     /// At least one root signature timestamp exists and every such timestamp's
@@ -82,8 +82,8 @@ pub enum TimeError<N> {
 }
 
 /// Complete original static time facts in the query's identity domain.
-pub type TimeResult<'a, 'c, 'd, B, S, Q> = Result<
-    Timed<'a, 'c, 'd, B, S, <Q as Query>::Id, <Q as Query>::Document, <Q as Query>::Generation>,
+pub type TimeResult<'a, 'c, 'd, B, S, Q, I> = Result<
+    Timed<'a, 'c, 'd, B, S, <Q as Query>::Id, <Q as Query>::Document, <Q as Query>::Generation, I>,
     TimeError<<Q as Query>::Id>,
 >;
 
@@ -94,11 +94,11 @@ pub type TimeResult<'a, 'c, 'd, B, S, Q> = Result<
 /// kinds and require EACH such timestamp before expiration/revocation. This
 /// establishes the static interval part; actual revocation facts stay explicit.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-pub fn timestamped<'a, 'c, 'd, 'path, 'document, B, Q>(
+pub fn timestamped<'a, 'c, 'd, 'path, 'document, B, Q, I>(
     basic: &'a B,
-    paths: &'a TimestampPaths<'a, 'c, 'd, Q::Id, Q::Document, Q::Generation>,
+    paths: &'a TimestampPaths<'a, 'c, 'd, Q::Id, Q::Document, Q::Generation, I>,
     query: &Q,
-) -> TimeResult<'a, 'c, 'd, B, B::Signer, Q>
+) -> TimeResult<'a, 'c, 'd, B, B::Signer, Q, I>
 where
     'document: 'path,
     B: BasicStage<'path, 'document, Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,

@@ -16,6 +16,43 @@
 //! - [`material`]: incorporated artifacts, their uses and archive coverage.
 //! - [`baseline`]: compositions over the format's stage reports.
 //!
+//! # Issuers
+//!
+//! The receipts a format asserts from its own checks (a checked timestamp,
+//! its signer, an archive input's coverage, the token census, the material
+//! index) carry an issuer type `I`, and constructing one takes a value of
+//! `I`. A format defines its issuer as a type only it can construct, so a
+//! caller of the format cannot relabel evidence or supply a fabricated
+//! receipt to the format's own APIs. Facts derived from receipts keep their
+//! issuer, and receipts of different issuers do not combine:
+//!
+//! ```
+//! # use structured_asn1::memory::Memory;
+//! # use structured_ltv::{material::Coverage, source::Query, timestamp::Verified};
+//! struct Cades;
+//! fn bind<Q: Query<Id = usize, Document = u8, Generation = u8>>(
+//!     coverage: &Coverage<usize, u8, u8, Memory, Cades>,
+//!     evidence: &Verified<usize, u8, u8, Cades>,
+//!     query: &Q,
+//! ) {
+//!     let _ = coverage.covers(evidence, 0, query);
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! # use structured_asn1::memory::Memory;
+//! # use structured_ltv::{material::Coverage, source::Query, timestamp::Verified};
+//! struct Cades;
+//! struct Pades;
+//! fn bind<Q: Query<Id = usize, Document = u8, Generation = u8>>(
+//!     coverage: &Coverage<usize, u8, u8, Memory, Cades>,
+//!     evidence: &Verified<usize, u8, u8, Pades>,
+//!     query: &Q,
+//! ) {
+//!     let _ = coverage.covers(evidence, 0, query);
+//! }
+//! ```
+//!
 //! # Examples
 //!
 //! A document owner implements [`source::Source`] over its own identities; the
@@ -42,6 +79,9 @@
 //!         Snapshot { document: 1, generation: self.generation.get() }
 //!     }
 //! }
+//! // The format's issuer: its private field keeps other crates from creating one.
+//! #[derive(Clone, Copy)]
+//! pub struct Cades(());
 //!
 //! let source = SignerInfo { generation: Cell::new(1) };
 //! let memory = Memory::new(Arc::new(MemoryAccount::new(4096, 10_000)));
@@ -49,7 +89,7 @@
 //! // Attribute 3 lies in archive attribute 5's input; attribute 7 does not.
 //! let mut items = memory.map();
 //! items.try_insert(3, true).unwrap();
-//! let coverage = Coverage::new(source.snapshot(), 0, 5, Purpose::Archive, items);
+//! let coverage = Coverage::new(Cades(()), source.snapshot(), 0, 5, Purpose::Archive, items);
 //! assert_eq!(coverage.selects(3, &query), Ok(true));
 //! assert_eq!(coverage.selects(7, &query), Ok(false));
 //! source.generation.set(2);

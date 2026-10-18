@@ -1798,7 +1798,16 @@ fn present_validation_containers_require_their_actual_signer_copies() {
 
 fn assert_whole_material_checks<W: Work, Q: Work>(
     prepared: &structured_xades::prepare::Prepared<Tree>,
-    closed: &structured_ltv::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
@@ -1839,7 +1848,16 @@ fn assert_whole_material_checks<W: Work, Q: Work>(
 }
 
 fn assert_presence<W: Work, Q: Work>(
-    closed: &structured_ltv::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
     mode: u8,
@@ -1852,7 +1870,16 @@ fn assert_presence<W: Work, Q: Work>(
 
 fn assert_conditional_refusals<W: Work, Q: Work>(
     prepared: &structured_xades::prepare::Prepared<Tree>,
-    closed: &structured_ltv::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
@@ -1920,7 +1947,16 @@ fn assert_conditional_refusals<W: Work, Q: Work>(
 
 fn assert_conditional_late_work<W: Work, Q: Work>(
     prepared: &structured_xades::prepare::Prepared<Tree>,
-    closed: &structured_ltv::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     original: &Access<'_, Tree, Q>,
@@ -2366,9 +2402,26 @@ fn with_prepared_participants<'document>(
     prepared: &structured_xades::prepare::Prepared<Tree>,
     path: &structured_ltv::pki::CheckedPath<'document>,
     credential_anchor: structured_pkix::path::Anchor<'document>,
-    prior: &structured_ltv::timestamp::TimestampPaths<'_, '_, 'document, usize, u8, u8>,
+    prior: &structured_ltv::timestamp::TimestampPaths<
+        '_,
+        '_,
+        'document,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     memory: &structured_asn1::memory::Memory,
-    check: impl FnOnce(&structured_ltv::pki::ParticipantRequirements<'_, 'document, usize, u8, u8>),
+    check: impl FnOnce(
+        &structured_ltv::pki::ParticipantRequirements<
+            '_,
+            'document,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
+    ),
 ) {
     with_prepared_inputs(
         xml,
@@ -2386,10 +2439,25 @@ fn with_prepared_inputs<'document>(
     prepared: &structured_xades::prepare::Prepared<Tree>,
     path: &structured_ltv::pki::CheckedPath<'document>,
     credential_anchor: structured_pkix::path::Anchor<'document>,
-    prior: &structured_ltv::timestamp::TimestampPaths<'_, '_, 'document, usize, u8, u8>,
+    prior: &structured_ltv::timestamp::TimestampPaths<
+        '_,
+        '_,
+        'document,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     memory: &structured_asn1::memory::Memory,
     check: impl FnOnce(
-        &structured_ltv::pki::ParticipantRequirements<'_, 'document, usize, u8, u8>,
+        &structured_ltv::pki::ParticipantRequirements<
+            '_,
+            'document,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
         &structured_xades::credential::ParticipantCredentials<'_, 'document, usize, usize, u8, u8>,
     ),
 ) {
@@ -2534,7 +2602,16 @@ fn exclusive_credential_ca_rejects_ordinary_copies_but_not_shared_or_attribute_c
 }
 
 fn assert_exclusive_material<W: Work, Q: Work>(
-    closed: &structured_ltv::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
     value: usize,
@@ -2710,8 +2787,8 @@ struct ArchiveMaterialCheck<'case, 'source, C: Work> {
     xml: &'case Tree,
     prepared: &'case structured_xades::prepare::Prepared<Tree>,
     operation: &'case structured_asn1::Reader<'source>,
-    coverage: &'case structured_ltv::material::Coverage<usize, u8, u8, C>,
-    evidence: &'case structured_ltv::timestamp::Verified<usize, u8, u8>,
+    coverage: &'case structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &'case structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     early: bool,
     general: bool,
 }
@@ -2721,7 +2798,7 @@ fn checked_timestamp_path<'v, 'c, 'd>(
     actor: &'v structured_xades::timestamp::TimestampActor<'c, 'd, Tree>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     memory: &structured_asn1::memory::Memory,
-) -> structured_ltv::pki::TimestampPath<'v, 'c, 'd, usize, u8, u8> {
+) -> structured_ltv::pki::TimestampPath<'v, 'c, 'd, usize, u8, u8, structured_xades::Xades> {
     // Every fixture token must bind its actual TSA key and complete generation
     // interval. A rejected binding never supplies an archive material actor.
     let structured_ltv::pki::TimestampBinding::Bound(path) =
@@ -2771,7 +2848,7 @@ fn participant_timestamp_requirements<W: Work>(
     prepared: &structured_xades::prepare::Prepared<Tree>,
     path: &structured_ltv::pki::CheckedPath<'_>,
     selection: structured_xades::timestamp::TimestampSelection,
-) -> structured_ltv::timestamp::TimestampRequirements<usize, u8, u8> {
+) -> structured_ltv::timestamp::TimestampRequirements<usize, u8, u8, structured_xades::Xades> {
     // Retained requirements own scalar source identities, never borrows into
     // temporary path/counter catalogues. Actual key receipts are still required.
     use structured_xades::timestamp;
@@ -2977,8 +3054,24 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
     fn all<'document>(
         &self,
         path: &structured_ltv::pki::CheckedPath<'document>,
-        prior: &structured_ltv::pki::TimestampPath<'_, '_, 'document, usize, u8, u8>,
-        archive: &structured_ltv::pki::TimestampPath<'_, '_, 'document, usize, u8, u8>,
+        prior: &structured_ltv::pki::TimestampPath<
+            '_,
+            '_,
+            'document,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
+        archive: &structured_ltv::pki::TimestampPath<
+            '_,
+            '_,
+            'document,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
     ) {
         use structured_xades::timestamp;
         let memory = self.operation.memory();
@@ -3019,7 +3112,14 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
 
     fn before<'document>(
         &self,
-        participants: &structured_ltv::pki::ParticipantRequirements<'_, 'document, usize, u8, u8>,
+        participants: &structured_ltv::pki::ParticipantRequirements<
+            '_,
+            'document,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
         path: &structured_ltv::pki::CheckedPath<'document>,
         credentials: &structured_xades::credential::ParticipantCredentials<
             '_,
@@ -3105,7 +3205,16 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
 
     fn reject_all(
         &self,
-        closed: &structured_ltv::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+        closed: &structured_ltv::pki::ParticipantClosure<
+            '_,
+            '_,
+            '_,
+            '_,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
         counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
     ) {
         // Whole-LT scope cannot be substituted for the exact antecedents of
@@ -3204,6 +3313,7 @@ fn assert_archive_pair<W: Work>(
         u8,
         u8,
         structured_xades::material::Placement<usize>,
+        structured_xades::Xades,
     >,
     format: &structured_xades::material::credentials::Report<'_, '_, '_, usize, usize, u8, u8>,
     access: &Access<'_, Tree, W>,
@@ -3280,7 +3390,17 @@ fn assert_archive_pair<W: Work>(
 }
 
 fn assert_incorporated_inputs<W: Work, Q: Work>(
-    uses: &structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    uses: &structured_ltv::material::ArtifactUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
     xml: &Tree,
@@ -3338,7 +3458,16 @@ fn assert_incorporated_inputs<W: Work, Q: Work>(
 }
 
 fn assert_timestamp_placement<W: Work, Q: Work>(
-    closed: &structured_ltv::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
     xml: &Tree,
@@ -3407,10 +3536,28 @@ fn assert_timestamp_placement<W: Work, Q: Work>(
 
 fn assert_all_participant_scope<'document>(
     xml: &Tree,
-    participants: &structured_ltv::pki::ParticipantRequirements<'_, 'document, usize, u8, u8>,
+    participants: &structured_ltv::pki::ParticipantRequirements<
+        '_,
+        'document,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     path: &structured_ltv::pki::CheckedPath<'document>,
     memory: &structured_asn1::memory::Memory,
-    check: impl FnOnce(&structured_ltv::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>),
+    check: impl FnOnce(
+        &structured_ltv::pki::ParticipantClosure<
+            '_,
+            '_,
+            '_,
+            '_,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
+    ),
 ) {
     // Same actor collector, but LT includes the archive TSA too. The roots
     // come from those original actors; no caller-written count proves coverage.
@@ -3507,10 +3654,19 @@ fn participant_material_memory() -> structured_asn1::memory::Memory {
 }
 
 fn assert_participant_archive_material<W: Work, Q: Work, C: Work>(
-    closed: &structured_ltv::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
-    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
-    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     access: &Access<'_, Tree, Q>,
     xml: &Tree,
     early: bool,
@@ -3613,7 +3769,17 @@ fn assert_participant_archive_material<W: Work, Q: Work, C: Work>(
 }
 
 fn assert_participant_artifact_uses<W: Work>(
-    uses: &structured_ltv::pki::AuthorityUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    uses: &structured_ltv::pki::AuthorityUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     access: &Access<'_, Tree, W>,
     xml: &Tree,
 ) {
@@ -3906,8 +4072,15 @@ fn archive_participant_requirements_derive_signer_counters_credentials_and_direc
 }
 
 fn assert_earlier_actor_census(
-    participants: &structured_ltv::pki::ParticipantRequirements<'_, '_, usize, u8, u8>,
-    path: &structured_ltv::pki::TimestampPath<'_, '_, '_, usize, u8, u8>,
+    participants: &structured_ltv::pki::ParticipantRequirements<
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
+    path: &structured_ltv::pki::TimestampPath<'_, '_, '_, usize, u8, u8, structured_xades::Xades>,
     expected: structured_ltv::timestamp::RequiredToken<usize>,
     archive: usize,
     provider: &super::timestamp_oracle::Oracle,
@@ -4458,7 +4631,7 @@ fn nonce_freshness_cannot_supply_an_unstated_signature_time_accuracy() {
 
 fn assert_signature_time(
     selected: &structured_xades::certificate::CheckedPathCertificate<'_, '_, usize, u8, u8>,
-    verified: &structured_ltv::timestamp::Verified<usize, u8, u8>,
+    verified: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     access: &Access<'_, Tree, structured_asn1::memory::Memory>,
     at: i64,

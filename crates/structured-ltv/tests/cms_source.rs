@@ -11,10 +11,13 @@ use structured_asn1::{
     Parser,
     memory::{HashWork, Memory, MemoryError},
 };
-use structured_ltv::material::{Coverage, CoverageError};
+use structured_ltv::material::{
+    ArtifactRef, ArtifactSource, Coverage, CoverageError, Index, IndexError, Occurrence,
+};
 use structured_ltv::pki::{
-    self, CheckedPath, Counter, CounterReceipts, Credential, CredentialGroup, CredentialReceipts,
-    Participant, ParticipantAuthority, ParticipantError, PathOutcome, SignerReceipt,
+    self, Authorities, CheckedPath, Counter, CounterReceipts, Credential, CredentialGroup,
+    CredentialReceipts, Participant, ParticipantAuthority, ParticipantError, PathOutcome,
+    SignerReceipt,
 };
 use structured_ltv::source::{Location, Scope, ScopeError, Snapshot, Source};
 use structured_ltv::timestamp::{
@@ -36,6 +39,12 @@ impl HashWork for Attribute {
     }
 }
 
+/// This test format's issuer; only the format constructs it.
+#[derive(Debug, Clone, Copy)]
+struct Cades(());
+
+const ISSUER: Cades = Cades(());
+
 const SIGNATURE: Attribute = Attribute(0);
 const COUNTER: Attribute = Attribute(1);
 const COUNTER_SIGNER: Attribute = Attribute(2);
@@ -44,6 +53,7 @@ const REVOCATION: Attribute = Attribute(4);
 const ARCHIVE: Attribute = Attribute(5);
 const ARCHIVE_TOKEN: Attribute = Attribute(6);
 const LATER: Attribute = Attribute(7);
+const ROLE: Attribute = Attribute(8);
 
 /// One CMS document whose generation changes when its attributes are rewritten.
 struct SignedData {
@@ -112,44 +122,48 @@ impl<'p, 'd> CounterReceipts<'p, 'd> for Counters<'p, 'd> {
     }
 }
 
-/// A signature without signer-attribute certificates.
-struct Credentials {
+/// The credential census: the root's signer-attribute certificates, if any.
+struct Credentials<'p, 'd> {
     snapshot: Snapshot<u8, u8>,
+    root: Option<Group<'p, 'd>>,
 }
 
-struct NoCredentials;
+/// Authenticated signer-attribute certificates of the root signature.
+struct Group<'p, 'd> {
+    credentials: Vec<Credential<'p, 'd, Attribute>>,
+}
 
-impl<'p, 'd> CredentialGroup<'p, 'd> for NoCredentials {
+impl<'p, 'd> CredentialGroup<'p, 'd> for Group<'p, 'd> {
     type Id = Attribute;
     fn signature(&self) -> Attribute {
         SIGNATURE
     }
     fn len(&self) -> usize {
-        0
+        self.credentials.len()
     }
-    fn credential(&self, _: usize) -> Credential<'p, 'd, Attribute> {
-        unreachable!("the group is empty")
+    fn credential(&self, ordinal: usize) -> Credential<'p, 'd, Attribute> {
+        self.credentials[ordinal]
     }
 }
 
-impl CredentialReceipts<'_, '_> for Credentials {
+impl<'p, 'd> CredentialReceipts<'p, 'd> for Credentials<'p, 'd> {
     type Id = Attribute;
     type Document = u8;
     type Generation = u8;
-    type Group = NoCredentials;
+    type Group = Group<'p, 'd>;
     fn snapshot(&self) -> Snapshot<u8, u8> {
         self.snapshot
     }
     fn signature(&self) -> Attribute {
         SIGNATURE
     }
-    fn root(&self) -> Option<&NoCredentials> {
-        None
+    fn root(&self) -> Option<&Group<'p, 'd>> {
+        self.root.as_ref()
     }
     fn counters(&self) -> usize {
         0
     }
-    fn counter(&self, _: usize) -> (Attribute, &NoCredentials) {
+    fn counter(&self, _: usize) -> (Attribute, &Group<'p, 'd>) {
         unreachable!("no counter carries credentials")
     }
 }
@@ -190,21 +204,28 @@ fn requirements(
     data: &SignedData,
     memory: &Memory,
     counters: bool,
-) -> TimestampRequirements<Attribute, u8, u8> {
+) -> TimestampRequirements<Attribute, u8, u8, Cades> {
     let scope = TimestampScope::All(data.location(SIGNATURE));
     let entries = memory.vector().into_owned();
     if !counters {
-        return TimestampRequirements::new(SIGNATURE, scope, entries);
+        return TimestampRequirements::new(ISSUER, SIGNATURE, scope, entries);
     }
     let mut signatures = memory.vector();
     signatures.try_push(COUNTER_SIGNER).unwrap();
-    TimestampRequirements::with_counters(SIGNATURE, scope, entries, signatures.into_owned(), None)
+    TimestampRequirements::with_counters(
+        ISSUER,
+        SIGNATURE,
+        scope,
+        entries,
+        signatures.into_owned(),
+        None,
+    )
 }
 
 fn bound<'v>(
-    required: &'v TimestampRequirements<Attribute, u8, u8>,
+    required: &'v TimestampRequirements<Attribute, u8, u8, Cades>,
     query: &Scope<'_, SignedData, Memory>,
-) -> TimestampPaths<'v, 'v, 'v, Attribute, u8, u8> {
+) -> TimestampPaths<'v, 'v, 'v, Attribute, u8, u8, Cades> {
     let TimestampPathBinding::Bound(paths) = required.bind_paths(&[], query).unwrap() else {
         panic!("an attribute set without timestamps has no token obligation")
     };
@@ -237,6 +258,7 @@ fn participant_census_follows_cms_attributes_and_their_exact_receipts() {
         };
         let credentials = Credentials {
             snapshot: data.snapshot(),
+            root: None,
         };
         let required = requirements(&data, &memory, true);
         let paths = bound(&required, &query);
@@ -263,6 +285,7 @@ fn participant_census_follows_cms_attributes_and_their_exact_receipts() {
             .unwrap();
         let equivalent = Credentials {
             snapshot: data.snapshot(),
+            root: None,
         };
         assert_eq!(
             census.require_inputs(&signer, &counters, &equivalent, &paths, &query),
@@ -288,6 +311,22 @@ fn participant_census_follows_cms_attributes_and_their_exact_receipts() {
             pki::participants(&unproven, &counters, &credentials, &paths, &query),
             Err(ParticipantError::UnprovenSigner)
         ));
+        // An authenticated credential with an empty path set is incomplete
+        // provider evidence; it must not vanish from the census.
+        let pathless = Credentials {
+            snapshot: data.snapshot(),
+            root: Some(Group {
+                credentials: vec![Credential {
+                    signature: SIGNATURE,
+                    node: ROLE,
+                    authorities: Authorities::Paths(&[]),
+                }],
+            }),
+        };
+        assert!(matches!(
+            pki::participants(&signer, &counters, &pathless, &paths, &query),
+            Err(ParticipantError::MissingAuthorities { node: ROLE })
+        ));
         data.generation.set(2);
         assert!(matches!(
             pki::participants(&signer, &counters, &credentials, &paths, &query),
@@ -296,6 +335,55 @@ fn participant_census_follows_cms_attributes_and_their_exact_receipts() {
             }))
         ));
     });
+}
+
+#[test]
+fn material_index_refuses_an_occurrence_from_another_generation() {
+    // An attribute value located in an earlier generation of the document is
+    // not material of this one, even with the same ordinal and DER.
+    let data = SignedData {
+        document: 1,
+        generation: Cell::new(2),
+    };
+    let memory = memory(1 << 20);
+    let query = Scope::new(&data, data.snapshot(), &memory);
+    let key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
+    let bytes = certificate("Root", "Root", &key, &key);
+    let parser = Parser::der(memory.clone());
+    let value = Certificate::read(&parser, &bytes, 400).unwrap();
+    let mut index: Index<'_, Attribute, u8, u8, (), (), Memory, Cades> =
+        Index::new(ISSUER, SIGNATURE, &[], &query).unwrap();
+    let earlier = Location {
+        snapshot: Snapshot {
+            document: 1,
+            generation: 1,
+        },
+        node: CERTIFICATES,
+    };
+    let occurrence = |location| Occurrence::new(ArtifactSource::Material(0), location, ());
+    assert_eq!(
+        index.insert(
+            ArtifactRef::Certificate(&value),
+            occurrence(earlier),
+            &query
+        ),
+        Err(IndexError::Foreign {
+            signature: SIGNATURE
+        })
+    );
+    index
+        .insert(
+            ArtifactRef::Certificate(&value),
+            occurrence(data.location(CERTIFICATES)),
+            &query,
+        )
+        .unwrap();
+    let mut copies = index.certificate(&value, &query).unwrap();
+    assert_eq!(
+        copies.next().unwrap().unwrap().location(),
+        data.location(CERTIFICATES)
+    );
+    assert!(copies.next().is_none());
 }
 
 #[test]
@@ -314,13 +402,21 @@ fn archive_coverage_binds_cms_attribute_selection_to_its_checked_token() {
     items.try_insert(SIGNATURE, false).unwrap();
     items.try_insert(CERTIFICATES, true).unwrap();
     items.try_insert(REVOCATION, true).unwrap();
-    let coverage = Coverage::new(data.snapshot(), SIGNATURE, ARCHIVE, Purpose::Archive, items);
+    let coverage = Coverage::new(
+        ISSUER,
+        data.snapshot(),
+        SIGNATURE,
+        ARCHIVE,
+        Purpose::Archive,
+        items,
+    );
     let input = b"certificate-values revocation-values";
     assert!(token::evidence(input, b"certificate-values", &memory).is_none());
     let evidence = token::evidence(input, input, &memory).unwrap();
     let other = |property, purpose| {
         let copy = evidence.try_copy_in(&memory).unwrap();
         Verified::new(
+            ISSUER,
             data.location(ARCHIVE_TOKEN),
             SIGNATURE,
             property,
@@ -331,6 +427,7 @@ fn archive_coverage_binds_cms_attribute_selection_to_its_checked_token() {
     let foreign = other(LATER, Purpose::Archive);
     let validation = other(ARCHIVE, Purpose::ValidationData);
     let archive = Verified::new(
+        ISSUER,
         data.location(ARCHIVE_TOKEN),
         SIGNATURE,
         ARCHIVE,

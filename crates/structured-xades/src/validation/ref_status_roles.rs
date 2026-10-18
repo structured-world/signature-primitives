@@ -10,6 +10,7 @@ use super::{
     },
 };
 use crate::{
+    Xades,
     binary::{self, BinaryXml, Location},
     certificate::{Agreement, DigestProvider, FormatDigest},
     digest,
@@ -446,7 +447,7 @@ impl<'provider, 'source, 'c, 'd, X: Xml, P: DigestProvider<'provider, X>, W: Wor
         selection: (ReferenceKind, unsigned::Role),
         identity: FormatDigest<P::Identity>,
         expected: &[u8],
-        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
         pools: CandidatePools<'_, 'source, X::Id, X::Document, X::Generation>,
         work: &W,
     ) -> Result<(), digest::Error<CertificateRoleError<'c, 'd, P::Error>, P::Error>> {
@@ -525,7 +526,7 @@ impl<'provider, 'source, 'c, 'd, X: Xml, P: DigestProvider<'provider, X>, W: Wor
         (kind, role): (ReferenceKind, unsigned::Role),
         method: usize,
         expected: &[u8],
-        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
         pools: CandidatePools<'_, 'source, X::Id, X::Document, X::Generation>,
         work: &W,
     ) -> StatusResult<'c, 'd, (), P::Error> {
@@ -585,7 +586,7 @@ impl<'provider, 'source, 'c, 'd, X: Xml, P: DigestProvider<'provider, X>, W: Wor
         &mut self,
         xml: &X,
         (property, refs, entry): OriginalRow<'_, X>,
-        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
         pools: CandidatePools<'_, 'source, X::Id, X::Document, X::Generation>,
         provider: &'provider P,
         work: &W,
@@ -684,7 +685,7 @@ pub fn check_revocation_reference_roles<
 >(
     xml: &X,
     prepared: &'p Prepared<X>,
-    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
     view: &material::View<'_, X::Id, X::Document, X::Generation>,
     tokens: Option<&CarriedMaterial<'_, X::Id, X::Document, X::Generation>>,
     provider: &'q P,

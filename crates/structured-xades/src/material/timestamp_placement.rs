@@ -1,5 +1,6 @@
 //! Actual per-TSA validation material, not a global timestamp-purpose union.
 use super::{Index, Placement};
+use crate::Xades;
 use crate::xml::{Access, Snapshot, Xml};
 use structured_asn1::memory::{HashWork, MemoryError, OwnedVec, Work};
 use structured_ltv::material::status::{ArtifactVisitError, member_source, visit_artifacts};
@@ -35,7 +36,8 @@ pub struct TimestampPlacementFinding<'certificate, 'document, N> {
 /// This is not usable revocation, historical trust, chronology, format-specific
 /// material or a complete B-LT/B-LTA verdict. Original inputs remain borrowed.
 pub struct TimestampPlacement<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G> {
-    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G>,
+    inputs:
+        &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, Xades>,
     findings: OwnedVec<TimestampPlacementFinding<'certificate, 'document, N>>,
     snapshot: Snapshot<D, G>,
 }
@@ -46,7 +48,8 @@ impl<'closure, 'requirements, 'view, 'certificate, 'document, N, D: Copy, G: Cop
     #[must_use]
     pub fn inputs(
         &self,
-    ) -> &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G> {
+    ) -> &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, Xades>
+    {
         self.inputs
     }
     /// Every missing/misplaced exact artifact once per actual TSA root.
@@ -180,6 +183,7 @@ pub fn timestamp_placement<
         X::Id,
         X::Document,
         X::Generation,
+        Xades,
     >,
     index: &Index<'_, X::Id, X::Document, X::Generation, W>,
     access: &Access<'_, X, Q>,

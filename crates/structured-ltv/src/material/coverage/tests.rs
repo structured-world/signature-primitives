@@ -38,7 +38,7 @@ fn evidence_identity_admits_each_comparison_before_equality() {
         document: 1u8,
         generation: 1u8,
     };
-    let coverage = Coverage::new(snapshot, id, id, Purpose::Archive, memory.map());
+    let coverage = Coverage::new((), snapshot, id, id, Purpose::Archive, memory.map());
     for (budget, expected_calls) in [(0, 0), (127, 0), (128, 1), (255, 1)] {
         calls.set(0);
         let current = Memory::new(Arc::new(MemoryAccount::new(0, budget)));

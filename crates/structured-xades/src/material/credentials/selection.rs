@@ -1,6 +1,7 @@
 //! Source-derived credential subset, without caller-selected successes.
 
 use super::{Error, ProcessingResult};
+use crate::Xades;
 use crate::credential::{Checked, Credentials, ParticipantCredentials};
 use crate::pki::CounterPaths;
 use crate::xml::{Access, Xml};
@@ -29,7 +30,7 @@ pub(super) fn select<'auth, 'path, 'document, X: Xml, A, W: Work, PE>(
         X::Generation,
     >,
     counters: &CounterPaths<'_, '_, X::Id, X::Document, X::Generation>,
-    required: &TimestampRequirements<X::Id, X::Document, X::Generation>,
+    required: &TimestampRequirements<X::Id, X::Document, X::Generation, Xades>,
     access: &Access<'_, X, W>,
 ) -> ProcessingResult<Selected<'auth, 'path, 'document, X, A, W>, X, PE> {
     let node = credentials.signature();

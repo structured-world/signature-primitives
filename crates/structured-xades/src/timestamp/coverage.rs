@@ -2,6 +2,7 @@
 
 use super::{Input, Part, TimestampXml};
 use crate::xml::{Access, AccessError, Node, Xml};
+use crate::{ISSUER, Xades};
 use structured_asn1::memory::{MemoryError, Work};
 use structured_ltv::material::Coverage;
 
@@ -10,7 +11,7 @@ use structured_ltv::material::Coverage;
 /// owner explicitly certified `ElementContent` for that successful reference
 /// and its actual target.
 pub type CoverageFor<X, W> =
-    Coverage<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation, W>;
+    Coverage<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation, W, Xades>;
 
 /// Refusal while selecting the original elements of one timestamp input.
 #[derive(Debug)]
@@ -107,6 +108,7 @@ impl<X: TimestampXml> Input<'_, X> {
             .query(self.timestamp, |_, _, _| Ok(()))
             .map_err(CoverageError::Access)?;
         Ok(Coverage::new(
+            ISSUER,
             self.snapshot,
             self.signature,
             self.timestamp,

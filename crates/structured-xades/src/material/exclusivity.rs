@@ -1,6 +1,7 @@
 //! Exclusive CA material in ordinary CertificateValues/RevocationValues.
 
 use super::{Index, Occurrence, Placement};
+use crate::Xades;
 use crate::xml::{Access, Snapshot, Xml};
 use core::fmt;
 use structured_asn1::memory::{MemoryError, OwnedMap, OwnedVec, Work};
@@ -211,8 +212,8 @@ pub(crate) struct ReferenceStatus<'certificate, 'document> {
     pub(crate) fact: CaFact,
 }
 
-pub(crate) fn reference_status_candidates<'certificate, 'document, N, D, G, W: Work>(
-    artifacts: &ArtifactUses<'_, '_, '_, 'certificate, 'document, N, D, G>,
+pub(crate) fn reference_status_candidates<'certificate, 'document, N, D, G, I, W: Work>(
+    artifacts: &ArtifactUses<'_, '_, '_, 'certificate, 'document, N, D, G, I>,
     work: &W,
 ) -> Result<OwnedVec<ReferenceStatus<'certificate, 'document>, W>, CaError<'certificate, 'document>>
 {
@@ -243,8 +244,8 @@ pub(crate) fn reference_status_candidates<'certificate, 'document, N, D, G, W: W
     Ok(candidates)
 }
 
-pub(crate) fn reference_certificate_candidates<'certificate, 'document, N, D, G, W: Work>(
-    artifacts: &ArtifactUses<'_, '_, '_, 'certificate, 'document, N, D, G>,
+pub(crate) fn reference_certificate_candidates<'certificate, 'document, N, D, G, I, W: Work>(
+    artifacts: &ArtifactUses<'_, '_, '_, 'certificate, 'document, N, D, G, I>,
     work: &W,
 ) -> Result<OwnedVec<ReferenceCa<'certificate, 'document>, W>, CaError<'certificate, 'document>> {
     let mut candidates = work.vector();
@@ -278,8 +279,8 @@ trait Census<'certificate, 'document> {
     fn targets(&self, ordinal: usize) -> impl Iterator<Item = usize>;
 }
 
-impl<'certificate, 'document, N, D, G> Census<'certificate, 'document>
-    for ArtifactUses<'_, '_, '_, 'certificate, 'document, N, D, G>
+impl<'certificate, 'document, N, D, G, I> Census<'certificate, 'document>
+    for ArtifactUses<'_, '_, '_, 'certificate, 'document, N, D, G, I>
 {
     fn artifact(&self, ordinal: usize) -> ArtifactRef<'certificate, 'document> {
         self.entries()[ordinal].artifact()
@@ -372,6 +373,7 @@ pub fn exclusivity<'certificate, 'document, X: Xml, W: Work, Q: Work>(
         X::Id,
         X::Document,
         X::Generation,
+        Xades,
     >,
     index: &Index<'_, X::Id, X::Document, X::Generation, W>,
     access: &Access<'_, X, Q>,

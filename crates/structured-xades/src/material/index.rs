@@ -3,6 +3,7 @@
 use super::{Opaque, Placement, Value, View};
 use crate::timestamp::CarriedMaterial;
 use crate::xml::{Access, Xml};
+use crate::{ISSUER, Xades};
 use structured_asn1::memory::Work;
 use structured_ltv::material::{
     self as ltv, ArtifactRef, ArtifactSource, CarriedOrigin, IndexError,
@@ -11,7 +12,7 @@ use structured_ltv::material::{
 /// Exact artifact index of one signature's `XAdES` material, keyed by original
 /// DER and carrying each occurrence's container placement.
 pub type Index<'source, N, D, G, W> =
-    ltv::Index<'source, N, D, G, Placement<N>, Opaque<N, D, G>, W>;
+    ltv::Index<'source, N, D, G, Placement<N>, Opaque<N, D, G>, W, Xades>;
 /// One original occurrence and its `XAdES` container placement.
 pub type Occurrence<N, D, G> = ltv::Occurrence<N, D, G, Placement<N>>;
 /// Archive availability of one artifact, with its `XAdES` placement.
@@ -35,7 +36,7 @@ pub fn index<'source, X: Xml, W: Work>(
     if view.snapshot != access.snapshot() {
         return Err(IndexError::Foreign { signature });
     }
-    let mut index = Index::new(signature, view.opaque(), access)?;
+    let mut index = Index::new(ISSUER, signature, view.opaque(), access)?;
     let mut next_basic = 0;
     for ordinal in 0..view.values.len() {
         index.admit(access)?;

@@ -4,6 +4,7 @@ use super::{InputError, Role};
 use crate::binary::Location;
 use crate::prepare::Prepared;
 use crate::xml::{Access, Xml};
+use crate::{ISSUER, Xades};
 use structured_asn1::memory::{MemoryError, Work};
 use structured_ltv::timestamp::{RequiredToken, TimestampRequirements, TimestampScope};
 
@@ -60,7 +61,7 @@ impl<E, N> From<InputError<E, N>> for RequirementError<E, N> {
 
 /// Timestamp census using this XML owner's original identity/error domain.
 pub type RequirementResult<X> = Result<
-    TimestampRequirements<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>,
+    TimestampRequirements<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation, Xades>,
     RequirementError<<X as Xml>::Error, <X as Xml>::Id>,
 >;
 
@@ -87,6 +88,7 @@ pub fn requirements<X: Xml, W: Work>(
     let (scope, entries) = root_entries(access, prepared, selection)?;
     let signature = prepared.bound().containers().signature();
     Ok(TimestampRequirements::new(
+        ISSUER,
         signature,
         scope,
         entries.into_owned(),
@@ -279,6 +281,7 @@ pub fn requirements_with_counters<X: super::TimestampXml, W: Work>(
         .query(signature, |_, _, _| Ok(()))
         .map_err(InputError::Access)?;
     Ok(TimestampRequirements::with_counters(
+        ISSUER,
         signature,
         scope,
         entries.into_owned(),

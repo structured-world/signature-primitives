@@ -2051,8 +2051,8 @@ fn archive_artifact_lookup_requires_a_covered_copy_and_exact_original_identity()
 fn assert_crl_archive<'source, W: Work + 'source, C: Work>(
     view: &material::View<'source, usize, u8, u8>,
     index: &material::Index<'source, usize, u8, u8, W>,
-    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
-    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     access: &Access<'_, Tree, W>,
     actor: (
         &'source structured_pkix::Certificate<'source>,
@@ -2158,8 +2158,8 @@ fn assert_crl_archive<'source, W: Work + 'source, C: Work>(
 fn assert_crl_archive_refusal<W: Work, C: Work>(
     qualified: &structured_pkix::crl::Coverage<'_, '_>,
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
-    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     access: &Access<'_, Tree, W>,
     xml: &Tree,
 ) {
@@ -2190,8 +2190,8 @@ fn assert_crl_path_archive<'source, W: Work, C: Work>(
         &Tree,
     ),
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
-    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     access: &Access<'_, Tree, W>,
 ) {
     // A complete actor census must use one actual path and all original status
@@ -2653,8 +2653,8 @@ fn assert_unusable_crl_readings<'source, W: Work, C: Work>(
         &Tree,
     ),
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
-    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     access: &Access<'_, Tree, W>,
 ) {
     // Actual stale processing facts cannot qualify absence, but still retain
@@ -2714,8 +2714,8 @@ fn assert_revoked_crl_reading_archive<'source, W: Work, C: Work>(
     qualified: &structured_pkix::crl::Coverage<'_, 'source>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
-    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     access: &Access<'_, Tree, W>,
 ) {
     // A current CRL with an actual revoked entry is not absence. Its missing
@@ -2786,8 +2786,8 @@ fn assert_crl_reading_archive<'source, W: Work, C: Work>(
     reading: structured_ltv::pki::CrlReading<'_, '_, 'source>,
     expected: (&structured_pkix::temporal::LeapTable<'_>, bool, usize),
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
-    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     access: &Access<'_, Tree, W>,
 ) {
     // Archive availability and negative status facts are independent. The
@@ -2860,8 +2860,8 @@ fn assert_crl_reading_archive<'source, W: Work, C: Work>(
 fn assert_ocsp_archive<'source, W: Work + 'source, C: Work>(
     view: &material::View<'source, usize, u8, u8>,
     index: &material::Index<'source, usize, u8, u8, W>,
-    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
-    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     access: &Access<'_, Tree, W>,
     actor: (
         &'source structured_pkix::Certificate<'source>,
@@ -2924,8 +2924,8 @@ fn assert_ocsp_archive<'source, W: Work + 'source, C: Work>(
 fn assert_no_check_archive<W: Work, C: Work>(
     target: &structured_ltv::pki::CheckedPath<'_>,
     index: &material::Index<'_, usize, u8, u8, W>,
-    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C>,
-    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     access: &Access<'_, Tree, W>,
 ) {
     // An actually exempt responder needs its original certificate in archive
@@ -3602,7 +3602,7 @@ fn ocsp_name_and_serial_cannot_substitute_another_issuer_or_path_target() {
 }
 
 fn assert_timestamp_path<'a, N: Copy, D: Copy, G: Copy>(
-    actor: &structured_ltv::timestamp::CheckedActor<'a, 'a, N, D, G>,
+    actor: &structured_ltv::timestamp::CheckedActor<'a, 'a, N, D, G, structured_xades::Xades>,
     root: &'a structured_pkix::Certificate<'a>,
     operation: &'a structured_asn1::Reader<'a>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
@@ -5180,7 +5180,7 @@ fn prior_timestamp_paths_require_each_actual_original_token_not_one_repeated_suc
 fn assert_prior_path_receipts(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    path: &structured_ltv::pki::TimestampPath<'_, '_, '_, usize, u8, u8>,
+    path: &structured_ltv::pki::TimestampPath<'_, '_, '_, usize, u8, u8, structured_xades::Xades>,
     work: &Memory,
 ) {
     use structured_ltv::source::ScopeError;

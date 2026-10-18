@@ -1,5 +1,6 @@
 //! Actual path status inputs required by Annex A.1.2 and A.1.4.
 
+use crate::Xades;
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 use structured_ltv::material::{
     ArtifactRef, ArtifactUses,
@@ -37,7 +38,7 @@ pub(super) struct Required<'c, 'd, W: Work> {
     pub(super) missing_input: bool,
 }
 pub(super) fn collect<'c, 'd, N: Copy, D: Copy, G: Copy, W: Work>(
-    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, N, D, G>,
+    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, N, D, G, Xades>,
     work: &W,
 ) -> Result<Required<'c, 'd, W>, MemoryError> {
     work.charge_work(1)?;
@@ -140,7 +141,7 @@ pub(super) struct CredentialRequired<'c, 'd, W: Work> {
 }
 
 pub(super) fn collect_credentials<'c, 'd, N: Copy, D: Copy, G: Copy, W: Work>(
-    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, N, D, G>,
+    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, N, D, G, Xades>,
     work: &W,
 ) -> Result<CredentialRequired<'c, 'd, W>, MemoryError> {
     let inputs = artifacts.inputs();

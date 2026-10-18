@@ -80,9 +80,9 @@ pub enum IncorporationError<N> {
 /// This necessary presence check does not replace those placement checks or
 /// assert that Unknown/stale/revoked input is Good. No parse/crypto is repeated.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-pub fn incorporation<'certificate, 'document, N, D, G, P, O, W, Q>(
-    uses: &ArtifactUses<'_, '_, '_, 'certificate, 'document, N, D, G>,
-    index: &Index<'_, N, D, G, P, O, W>,
+pub fn incorporation<'certificate, 'document, N, D, G, P, O, W, Q, I>(
+    uses: &ArtifactUses<'_, '_, '_, 'certificate, 'document, N, D, G, I>,
+    index: &Index<'_, N, D, G, P, O, W, I>,
     query: &Q,
 ) -> Result<Incorporation<'certificate, 'document, N, D, G, P>, IncorporationError<N>>
 where

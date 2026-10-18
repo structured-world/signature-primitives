@@ -2,6 +2,7 @@
 
 use super::{ReferenceDigests, ReferenceSearch};
 use crate::{
+    Xades,
     certificate::Agreement,
     pki::CounterPaths,
     unsigned,
@@ -114,7 +115,7 @@ pub type ReferencePresenceResult<'report, 'references, 'source, X> = Result<
 /// own immutable comparison catalogue.
 pub fn reference_presence<'report, 'references, 'source, X: Xml, W: Work>(
     digests: &'report ReferenceDigests<'references, 'source, X::Id, X::Document, X::Generation>,
-    required: &TimestampRequirements<X::Id, X::Document, X::Generation>,
+    required: &TimestampRequirements<X::Id, X::Document, X::Generation, Xades>,
     counters: &CounterPaths<'_, '_, X::Id, X::Document, X::Generation>,
     access: &Access<'_, X, W>,
 ) -> ReferencePresenceResult<'report, 'references, 'source, X> {
@@ -234,7 +235,7 @@ fn presence_failure<W: Work>(
 
 fn require_sources<X: Xml, W: Work>(
     digests: &ReferenceDigests<'_, '_, X::Id, X::Document, X::Generation>,
-    required: &TimestampRequirements<X::Id, X::Document, X::Generation>,
+    required: &TimestampRequirements<X::Id, X::Document, X::Generation, Xades>,
     counters: &CounterPaths<'_, '_, X::Id, X::Document, X::Generation>,
     access: &Access<'_, X, W>,
 ) -> Result<(), ReferencePresenceError<X::Error, X::Id>> {

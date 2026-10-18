@@ -23,6 +23,7 @@ type TimedReport<'a, 'c, 'd, 'r, 'p, 'v, 'bd> = composed::Timed<
     usize,
     u8,
     u8,
+    structured_xades::Xades,
 >;
 
 fn fixture(
@@ -192,7 +193,15 @@ fn run_timed_assembly(pool: values::Pool, requested: unsigned::Requirements) {
 fn assert_static_time(
     timed: &TimedReport<'_, '_, '_, '_, '_, '_, '_>,
     basic: &baseline::Basic<'_, '_, '_, '_, usize, u8, u8>,
-    paths: &structured_ltv::timestamp::TimestampPaths<'_, '_, '_, usize, u8, u8>,
+    paths: &structured_ltv::timestamp::TimestampPaths<
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
 ) {
     // Both the successful interval and exact input receipts survive assembly;
     // a report about an equivalent-looking second input would be insufficient.
@@ -312,7 +321,15 @@ impl structured_xades::material::credentials::Provider<Tree, ()> for NoCredentia
 
 fn check_material(
     timed: &TimedReport<'_, '_, '_, '_, '_, '_, '_>,
-    paths: &structured_ltv::timestamp::TimestampPaths<'_, '_, '_, usize, u8, u8>,
+    paths: &structured_ltv::timestamp::TimestampPaths<
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     path: &pki::CheckedPath<'_>,
     xml: &Tree,
     operation: &structured_asn1::Reader<'_>,

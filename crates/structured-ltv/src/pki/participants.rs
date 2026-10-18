@@ -4,6 +4,7 @@ use super::origin::Origin;
 use super::{AuthorityClosure, AuthorityClosureError, AuthorityNode, CheckedPath, PathStatuses};
 use crate::source::{Location, Query, ScopeError, Snapshot};
 use crate::timestamp::{ObligationError, TimestampPaths, TimestampScope};
+use core::marker::PhantomData;
 use structured_asn1::memory::{HashWork, MemoryError, OwnedVec, Work};
 use structured_pkix::path::EffectiveAnchor;
 
@@ -209,11 +210,13 @@ impl<'path, 'document, N: Copy> ParticipantRequirement<'path, 'document, N> {
 /// Paths shared by several actors remain separately attributed. Status-input
 /// closure, placement/coverage, format-specific material and trust are separate;
 /// this object cannot assert a baseline grade or turn negative facts into Good.
-pub struct ParticipantRequirements<'path, 'document, N, D, G> {
+/// It keeps the issuer `I` of the timestamp census it was derived from.
+pub struct ParticipantRequirements<'path, 'document, N, D, G, I> {
     scope: TimestampScope<N, D, G>,
     signature: N,
     entries: OwnedVec<ParticipantRequirement<'path, 'document, N>>,
     origins: Origins<'path>,
+    issuer: PhantomData<I>,
 }
 
 struct Origins<'a> {
@@ -223,8 +226,8 @@ struct Origins<'a> {
     timestamps: Origin<'a>,
 }
 
-impl<'path, 'document, N: Copy, D: Copy, G: Copy>
-    ParticipantRequirements<'path, 'document, N, D, G>
+impl<'path, 'document, N: Copy, D: Copy, G: Copy, I>
+    ParticipantRequirements<'path, 'document, N, D, G, I>
 {
     /// Whole selected signature or exact preceding-archive scope.
     #[must_use]
@@ -260,7 +263,7 @@ impl<'path, 'document, N: Copy, D: Copy, G: Copy>
         signer: &S,
         counters: &C,
         credentials: &R,
-        timestamps: &TimestampPaths<'_, '_, '_, N, D, G>,
+        timestamps: &TimestampPaths<'_, '_, '_, N, D, G, I>,
         query: &Q,
     ) -> Result<(), ParticipantError<N>>
     where
@@ -302,6 +305,12 @@ pub enum ParticipantError<N> {
     /// The original selected root key/certificate or its signed path digest
     /// restrictions were not established. No partial participant set escapes.
     UnprovenSigner,
+    /// An authenticated credential reported an empty authority path set: that
+    /// is incomplete provider evidence, distinct from certificate-free proof.
+    MissingAuthorities {
+        /// Original credential payload.
+        node: N,
+    },
     /// Traversal, identity comparison or retained metadata was not admitted.
     Resource {
         /// Original actor or enclosing scope source.
@@ -312,13 +321,14 @@ pub enum ParticipantError<N> {
 }
 
 /// Complete source-actor requirements in the query's identity domain.
-pub type ParticipantResult<'path, 'document, Q> = Result<
+pub type ParticipantResult<'path, 'document, Q, I> = Result<
     ParticipantRequirements<
         'path,
         'document,
         <Q as Query>::Id,
         <Q as Query>::Document,
         <Q as Query>::Generation,
+        I,
     >,
     ParticipantError<<Q as Query>::Id>,
 >;
@@ -332,19 +342,19 @@ impl<N> From<ScopeError<N>> for ParticipantError<N> {
 /// Complete participant roots and every reachable validation authority. The
 /// original participant attribution is retained even when several actors use
 /// the same path. This is input completeness, not Good status or a B-LTA grade.
-pub struct ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G> {
-    requirements: &'requirements ParticipantRequirements<'view, 'document, N, D, G>,
+pub struct ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, I> {
+    requirements: &'requirements ParticipantRequirements<'view, 'document, N, D, G, I>,
     authorities: AuthorityClosure<'view, 'certificate, 'document>,
 }
 
-impl<'requirements, 'view, 'certificate, 'document, N, D, G>
-    ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G>
+impl<'requirements, 'view, 'certificate, 'document, N, D, G, I>
+    ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, I>
 {
     /// Complete original signer/counter/credential/earlier-token requirements.
     #[must_use]
     pub fn requirements(
         &self,
-    ) -> &'requirements ParticipantRequirements<'view, 'document, N, D, G> {
+    ) -> &'requirements ParticipantRequirements<'view, 'document, N, D, G, I> {
         self.requirements
     }
 
@@ -376,8 +386,14 @@ pub enum ParticipantClosureError<N> {
     Resource(MemoryError),
 }
 
-impl<'path, 'document, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq>
-    ParticipantRequirements<'path, 'document, N, D, G>
+/// The closure of one census, or the refusal to close it.
+pub type ClosureResult<'requirements, 'view, 'certificate, 'document, N, D, G, I> = Result<
+    ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, I>,
+    ParticipantClosureError<N>,
+>;
+
+impl<'path, 'document, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, I>
+    ParticipantRequirements<'path, 'document, N, D, G, I>
 {
     /// Associate EVERY source-derived Path actor with its complete status inputs,
     /// then follow the existing CRL/OCSP authority kernel. Evaluation labels are
@@ -392,10 +408,7 @@ impl<'path, 'document, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq>
         roots: &'view [&'view PathStatuses<'view, 'certificate, 'document>],
         supplied: &'view [AuthorityNode<'view, 'certificate, 'document>],
         query: &Q,
-    ) -> Result<
-        ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G>,
-        ParticipantClosureError<N>,
-    >
+    ) -> ClosureResult<'requirements, 'view, 'certificate, 'document, N, D, G, I>
     where
         Q: Query<Id = N, Document = D, Generation = G>,
         'path: 'view,
@@ -470,6 +483,11 @@ impl<'path, 'document, N: Copy, W: Work> Collect<'path, 'document, N, W> {
                 authority,
             };
             match credential.authorities {
+                // The enum contract makes an empty path set incomplete provider
+                // evidence; letting it through would drop the credential's actor.
+                Authorities::Paths([]) => {
+                    return Err(ParticipantError::MissingAuthorities { node });
+                }
                 Authorities::Paths(paths) => {
                     for (index, path) in paths.iter().enumerate() {
                         self.push(
@@ -501,11 +519,11 @@ impl<'path, 'document, N: Copy, W: Work> Collect<'path, 'document, N, W> {
 // Credential groups are an ordered SUBSET of the full original counters.
 // A linear merge preserves source identity without quadratic rescanning or
 // another retained hash index. Unmatched foreign groups cannot disappear.
-fn counter_and_role_requirements<'path, 'document, C, R, Q>(
+fn counter_and_role_requirements<'path, 'document, C, R, Q, I>(
     collect: &mut Collect<'path, 'document, Q::Id, Q::Work>,
     counters: &C,
     credentials: &R,
-    timestamps: &TimestampPaths<'path, '_, 'document, Q::Id, Q::Document, Q::Generation>,
+    timestamps: &TimestampPaths<'path, '_, 'document, Q::Id, Q::Document, Q::Generation, I>,
     query: &Q,
 ) -> Result<(), ParticipantError<Q::Id>>
 where
@@ -580,13 +598,13 @@ where
 /// No provider, parse, certificate hash or signature is repeated. A late
 /// source/admission refusal releases all partial output; direct anchors and
 /// certificate-free format proofs are not silently treated as ordinary paths.
-pub fn participants<'path, 'document, S, C, R, Q>(
+pub fn participants<'path, 'document, S, C, R, Q, I>(
     signer: &'path S,
     counters: &'path C,
     credentials: &'path R,
-    timestamps: &'path TimestampPaths<'path, '_, 'document, Q::Id, Q::Document, Q::Generation>,
+    timestamps: &'path TimestampPaths<'path, '_, 'document, Q::Id, Q::Document, Q::Generation, I>,
     query: &Q,
-) -> ParticipantResult<'path, 'document, Q>
+) -> ParticipantResult<'path, 'document, Q, I>
 where
     Q: Query,
     S: SignerReceipt<
@@ -691,5 +709,6 @@ where
             credentials: Origin::of(credentials),
             timestamps: Origin::of(timestamps),
         },
+        issuer: PhantomData,
     })
 }

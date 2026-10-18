@@ -130,11 +130,23 @@ fn with_delta_status(
 
 fn with_artifacts(
     xml: &Tree,
-    participants: &pki::ParticipantRequirements<'_, '_, usize, u8, u8>,
+    participants: &pki::ParticipantRequirements<'_, '_, usize, u8, u8, structured_xades::Xades>,
     statuses: [&pki::PathStatuses<'_, '_, '_>; 2],
     ca: &pki::CheckedPath<'_>,
     storage: &Memory,
-    check: impl FnOnce(&structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>),
+    check: impl FnOnce(
+        &structured_ltv::material::ArtifactUses<
+            '_,
+            '_,
+            '_,
+            '_,
+            '_,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
+    ),
 ) {
     let [ordinary, credential] = statuses;
     let access = Access::new(xml, xml.snapshot(), storage);
@@ -229,7 +241,17 @@ fn credential_status_references_use_actual_sources_and_ordinary_alternatives() {
 fn check_report(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     storage: &Memory,
     case: Case,
 ) {

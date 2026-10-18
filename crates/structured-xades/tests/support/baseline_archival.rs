@@ -36,7 +36,7 @@ fn archival_fixture(leaf: &[u8], root: &[u8]) -> (Tree, timestamp_oracle::Oracle
     (xml, provider, tsa)
 }
 
-type TsaPath<'a> = pki::TimestampPath<'a, 'a, 'a, usize, u8, u8>;
+type TsaPath<'a> = pki::TimestampPath<'a, 'a, 'a, usize, u8, u8, structured_xades::Xades>;
 
 struct Tokens<'a> {
     xml: &'a Tree,
@@ -53,7 +53,7 @@ impl Tokens<'_> {
         check: impl for<'t> FnOnce(
             &TsaPath<'t>,
             &TsaPath<'t>,
-            &structured_ltv::timestamp::Verified<usize, u8, u8>,
+            &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
         ),
     ) {
         // Both original tokens are checked once with their real TSA key and
@@ -205,11 +205,28 @@ struct Chain<'a> {
     counters: &'a structured_xades::pki::CounterPaths<'a, 'a, usize, u8, u8>,
     selected: &'a certificate::CheckedPathCertificate<'a, 'a, usize, u8, u8>,
     operation: &'a structured_asn1::Reader<'a>,
-    paths: &'a structured_ltv::timestamp::TimestampPaths<'a, 'a, 'a, usize, u8, u8>,
-    prior: &'a structured_ltv::timestamp::TimestampPaths<'a, 'a, 'a, usize, u8, u8>,
+    paths: &'a structured_ltv::timestamp::TimestampPaths<
+        'a,
+        'a,
+        'a,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
+    prior: &'a structured_ltv::timestamp::TimestampPaths<
+        'a,
+        'a,
+        'a,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     timed: &'a TimedReport<'a, 'a, 'a, 'a, 'a, 'a, 'a>,
-    coverage: &'a structured_ltv::material::Coverage<usize, u8, u8, Memory>,
-    evidence: &'a structured_ltv::timestamp::Verified<usize, u8, u8>,
+    coverage:
+        &'a structured_ltv::material::Coverage<usize, u8, u8, Memory, structured_xades::Xades>,
+    evidence: &'a structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
 }
 
 type Credentials<'a> = credential::ParticipantCredentials<'a, 'a, (), usize, u8, u8>;

@@ -251,7 +251,12 @@ fn assert_material_admission<W: Work>(
     xml: &Tree,
     credentials: &credential::ParticipantCredentials<'_, '_, OwnedVec<u8>, usize, u8, u8>,
     counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
-    required: &structured_ltv::timestamp::TimestampRequirements<usize, u8, u8>,
+    required: &structured_ltv::timestamp::TimestampRequirements<
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     provider: &Materials<'_, '_>,
 ) {

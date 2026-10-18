@@ -129,12 +129,12 @@ resource and time contracts.
 
 ## Releases
 
-`structured-asn1`, `structured-pkix`, `structured-cms` and `structured-xades`
-use one release-plz version group.
+`structured-asn1`, `structured-pkix`, `structured-cms`, `structured-ltv` and
+`structured-xades` use one release-plz version group.
 Release-plz prepares a version/changelog PR using the organization release bot;
 merging that PR publishes the packages after CI succeeds on its exact main commit.
 Dependencies are published before their dependants. Git tags and release notes
-retain each package's name, even though all four packages share their version.
+retain each package's name, even though all five packages share their version.
 
 Registry publishing uses OIDC, bound to this repository, `release-plz.yml` and
 the `release` environment. Normal publication stores no long-lived crates.io
@@ -142,15 +142,17 @@ token in GitHub.
 Manual runs enforce the same exact-SHA CI and release-PR gates; they do not
 force an upload or prove token exchange when nothing requires publication.
 First-time publication requires a limited API token because crates.io cannot
-register an unpublished crate's trusted publisher. For the first XAdES version,
-the temporary repository Actions secret `XADES_BOOTSTRAP_TOKEN` selects an
-isolated publisher; existing ASN.1, PKIX and CMS packages keep OIDC. Limit that
-token to `publish-new` for `structured-xades`. After the first publication,
-register the crate's Trusted Publisher with repository owner `structured-world`,
-repository `signature-primitives`, workflow `release-plz.yml` and environment
-`release`. Then delete the `XADES_BOOTSTRAP_TOKEN` repository secret and revoke
-the temporary crates.io token. Removing the secret selects normal OIDC for all
-four packages; leaving it installed keeps the bootstrap path selected.
+register an unpublished crate's trusted publisher. For the first LTV version,
+the temporary repository Actions secret `LTV_BOOTSTRAP_TOKEN` selects three
+steps: ASN.1, PKIX and CMS publish through OIDC, `structured-ltv` publishes with
+that token, then `structured-xades`, which depends on it, publishes through
+OIDC. Limit the token to `publish-new` for `structured-ltv`. After the first
+publication, register the crate's Trusted Publisher with repository owner
+`structured-world`, repository `signature-primitives`, workflow
+`release-plz.yml` and environment `release`. Then delete the
+`LTV_BOOTSTRAP_TOKEN` repository secret and revoke the temporary crates.io
+token. Removing the secret selects normal OIDC for all five packages; leaving
+it installed keeps the bootstrap path selected.
 
 ## Dependency updates
 

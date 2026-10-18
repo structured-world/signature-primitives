@@ -2,13 +2,23 @@
 
 use super::Basic;
 use crate::{
-    certificate::CheckedPathCertificate, material, prepare::Preparation, unsigned::Requirements,
+    Xades, certificate::CheckedPathCertificate, material, prepare::Preparation,
+    unsigned::Requirements,
 };
 use structured_ltv::baseline::{ArchiveMaterial, Archives, LongTerm, Timed};
 
 type BasicOf<'a, N, D, G> = Basic<'a, 'a, 'a, 'a, N, D, G>;
-type TimedOf<'a, N, D, G> =
-    Timed<'a, 'a, 'a, BasicOf<'a, N, D, G>, CheckedPathCertificate<'a, 'a, N, D, G>, N, D, G>;
+type TimedOf<'a, N, D, G> = Timed<
+    'a,
+    'a,
+    'a,
+    BasicOf<'a, N, D, G>,
+    CheckedPathCertificate<'a, 'a, N, D, G>,
+    N,
+    D,
+    G,
+    Xades,
+>;
 type CredentialsOf<'a, A, N, D, G> = material::credentials::Report<'a, 'a, 'a, A, N, D, G>;
 type LongTermOf<'a, A, N, D, G> = LongTerm<
     'a,
@@ -31,6 +41,7 @@ type ArchivesOf<'a, A, N, D, G> = Archives<
             D,
             G,
             material::Placement<N>,
+            Xades,
         >,
         CredentialsOf<'a, A, N, D, G>,
     >,

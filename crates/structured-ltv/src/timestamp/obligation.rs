@@ -3,6 +3,7 @@
 use super::Purpose;
 use crate::pki::{CounterReceipts, TimestampPath};
 use crate::source::{Location, Query, ScopeError};
+use core::marker::PhantomData;
 use structured_asn1::memory::OwnedVec;
 
 /// Original source boundary of a set of timestamp obligations.
@@ -38,12 +39,14 @@ pub struct RequiredToken<N> {
 }
 
 /// Complete original token set for one explicit protocol scope. Failed or
-/// unreadable tokens cannot disappear behind a caller's successful subset.
-pub struct TimestampRequirements<N, D, G> {
+/// unreadable tokens cannot disappear behind a caller's successful subset:
+/// only the holder of issuer `I` derives it from the original source.
+pub struct TimestampRequirements<N, D, G, I> {
     signature: N,
     scope: TimestampScope<N, D, G>,
     entries: OwnedVec<RequiredToken<N>>,
     counters: Option<Counters<N>>,
+    issuer: PhantomData<I>,
 }
 
 // The complete counter-source census and, for an archive scope, the aligned
@@ -53,13 +56,14 @@ struct Counters<N> {
     covered: Option<OwnedVec<bool>>,
 }
 
-impl<N: Copy, D: Copy, G: Copy> TimestampRequirements<N, D, G> {
+impl<N: Copy, D: Copy, G: Copy, I> TimestampRequirements<N, D, G, I> {
     /// The complete token obligations of one signature without countersignatures.
     ///
     /// The format layer derives `entries` from every original timestamp in
     /// `scope`, in source order, failed and unsupported ones included.
     #[must_use]
     pub fn new(
+        _issuer: I,
         signature: N,
         scope: TimestampScope<N, D, G>,
         entries: OwnedVec<RequiredToken<N>>,
@@ -69,6 +73,7 @@ impl<N: Copy, D: Copy, G: Copy> TimestampRequirements<N, D, G> {
             scope,
             entries,
             counters: None,
+            issuer: PhantomData,
         }
     }
 
@@ -80,6 +85,7 @@ impl<N: Copy, D: Copy, G: Copy> TimestampRequirements<N, D, G> {
     /// actor. A whole-signature scope takes `None`.
     #[must_use]
     pub fn with_counters(
+        _issuer: I,
         signature: N,
         scope: TimestampScope<N, D, G>,
         entries: OwnedVec<RequiredToken<N>>,
@@ -94,6 +100,7 @@ impl<N: Copy, D: Copy, G: Copy> TimestampRequirements<N, D, G> {
                 signatures,
                 covered,
             }),
+            issuer: PhantomData,
         }
     }
 
@@ -116,22 +123,24 @@ impl<N: Copy, D: Copy, G: Copy> TimestampRequirements<N, D, G> {
 
 /// Checked TSA paths for every token in the SAME original scope. No token
 /// authentication, temporal acceptance or application trust is repeated here.
-pub struct TimestampPaths<'view, 'certificate, 'document, N, D, G> {
-    required: &'view TimestampRequirements<N, D, G>,
-    paths: &'view [&'view TimestampPath<'view, 'certificate, 'document, N, D, G>],
+pub struct TimestampPaths<'view, 'certificate, 'document, N, D, G, I> {
+    required: &'view TimestampRequirements<N, D, G, I>,
+    paths: &'view [&'view TimestampPath<'view, 'certificate, 'document, N, D, G, I>],
 }
 
-impl<'view, 'certificate, 'document, N, D, G>
-    TimestampPaths<'view, 'certificate, 'document, N, D, G>
+impl<'view, 'certificate, 'document, N, D, G, I>
+    TimestampPaths<'view, 'certificate, 'document, N, D, G, I>
 {
     /// Complete original token obligations; their scope cannot be relabelled.
     #[must_use]
-    pub fn required(&self) -> &'view TimestampRequirements<N, D, G> {
+    pub fn required(&self) -> &'view TimestampRequirements<N, D, G, I> {
         self.required
     }
     /// Actual paths in original obligation order, without copying.
     #[must_use]
-    pub fn paths(&self) -> &'view [&'view TimestampPath<'view, 'certificate, 'document, N, D, G>] {
+    pub fn paths(
+        &self,
+    ) -> &'view [&'view TimestampPath<'view, 'certificate, 'document, N, D, G, I>] {
         self.paths
     }
 }
@@ -149,9 +158,9 @@ pub enum TimestampPathFailure {
 }
 
 /// Complete path association or explicit insufficient original proofs.
-pub enum TimestampPathBinding<'view, 'certificate, 'document, N, D, G> {
+pub enum TimestampPathBinding<'view, 'certificate, 'document, N, D, G, I> {
     /// Every required token has its actual original TSA path.
-    Bound(TimestampPaths<'view, 'certificate, 'document, N, D, G>),
+    Bound(TimestampPaths<'view, 'certificate, 'document, N, D, G, I>),
     /// No complete proof set exists; no successful prefix is returned.
     Unproven(TimestampPathFailure),
 }
@@ -174,7 +183,11 @@ impl<N> From<ScopeError<N>> for ObligationError<N> {
     }
 }
 
-impl<N: Copy + Eq, D: Copy + Eq, G: Copy + Eq> TimestampRequirements<N, D, G> {
+/// Association of complete paths with these obligations.
+pub type PathBindingResult<'view, 'certificate, 'document, N, D, G, I> =
+    Result<TimestampPathBinding<'view, 'certificate, 'document, N, D, G, I>, ObligationError<N>>;
+
+impl<N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, I> TimestampRequirements<N, D, G, I> {
     /// Whether the countersignature at this census ordinal is an actor of this
     /// scope: every counter for the whole signature, only covered ones before
     /// an archive.
@@ -236,11 +249,12 @@ impl<N: Copy + Eq, D: Copy + Eq, G: Copy + Eq> TimestampRequirements<N, D, G> {
 
     /// Associate actual paths once per original token. The SAME source/purpose
     /// comparison governs all-token LT and preceding-archive requirements.
+    /// Paths of another issuer cannot be associated.
     pub fn bind_paths<'view, 'certificate, 'document, Q>(
         &'view self,
-        paths: &'view [&'view TimestampPath<'view, 'certificate, 'document, N, D, G>],
+        paths: &'view [&'view TimestampPath<'view, 'certificate, 'document, N, D, G, I>],
         query: &Q,
-    ) -> Result<TimestampPathBinding<'view, 'certificate, 'document, N, D, G>, ObligationError<N>>
+    ) -> PathBindingResult<'view, 'certificate, 'document, N, D, G, I>
     where
         Q: Query<Id = N, Document = D, Generation = G>,
     {

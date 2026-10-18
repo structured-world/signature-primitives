@@ -34,8 +34,8 @@ impl<'certificate, 'document> ArtifactUse<'certificate, 'document> {
 /// Complete X.509/CRL/OCSP artifact census for the same participant requirements.
 /// Credential-format-specific data remain separate. This does not assert CA
 /// status, allowed placement, freshness or baseline grade.
-pub struct ArtifactUses<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G> {
-    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G>,
+pub struct ArtifactUses<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, I> {
+    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, I>,
     entries: OwnedVec<ArtifactUse<'certificate, 'document>>,
     targets: OwnedVec<StatusTarget>,
 }
@@ -48,14 +48,15 @@ struct StatusTarget {
     next: Option<usize>,
 }
 
-impl<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G>
-    ArtifactUses<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G>
+impl<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, I>
+    ArtifactUses<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, I>
 {
     /// Same source-derived actor/status input closure, without another query.
     #[must_use]
     pub fn inputs(
         &self,
-    ) -> &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G> {
+    ) -> &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, I>
+    {
         self.inputs
     }
     /// Every distinct artifact once in first-encounter order.
@@ -96,7 +97,7 @@ impl Iterator for Targets<'_> {
 impl core::iter::FusedIterator for Targets<'_> {}
 
 /// Original source/role association and resource failures remain terminal.
-pub type ArtifactUsesResult<'closure, 'requirements, 'view, 'certificate, 'document, Q> = Result<
+pub type ArtifactUsesResult<'closure, 'requirements, 'view, 'certificate, 'document, Q, I> = Result<
     ArtifactUses<
         'closure,
         'requirements,
@@ -106,6 +107,7 @@ pub type ArtifactUsesResult<'closure, 'requirements, 'view, 'certificate, 'docum
         <Q as Query>::Id,
         <Q as Query>::Document,
         <Q as Query>::Generation,
+        I,
     >,
     UsesError<<Q as Query>::Id>,
 >;
@@ -150,7 +152,7 @@ impl<'certificate, 'document, W: Work> Census<'certificate, 'document, W> {
 /// anchors participate. No parse, provider, signature or normalization repeats.
 /// Current Work pays even when the original role census used another account;
 /// partial metadata and scratch index are released on every refusal.
-pub fn artifact_uses<'closure, 'requirements, 'view, 'certificate, 'document, Q: Query>(
+pub fn artifact_uses<'closure, 'requirements, 'view, 'certificate, 'document, Q: Query, I>(
     authorities: &AuthorityUses<
         'closure,
         'requirements,
@@ -160,9 +162,10 @@ pub fn artifact_uses<'closure, 'requirements, 'view, 'certificate, 'document, Q:
         Q::Id,
         Q::Document,
         Q::Generation,
+        I,
     >,
     query: &Q,
-) -> ArtifactUsesResult<'closure, 'requirements, 'view, 'certificate, 'document, Q> {
+) -> ArtifactUsesResult<'closure, 'requirements, 'view, 'certificate, 'document, Q, I> {
     let inputs = authorities.inputs();
     let requirements = inputs.requirements();
     if requirements.scope().location().snapshot != query.snapshot() {

@@ -39,7 +39,7 @@ impl<M, C> ArchiveMaterial<'_, M, C> {
     }
 }
 
-type X509<'a, 'r, 'v, 'c, 'd, P, Q> = ParticipantMaterial<
+type X509<'a, 'r, 'v, 'c, 'd, P, Q, I> = ParticipantMaterial<
     'a,
     'r,
     'v,
@@ -49,6 +49,7 @@ type X509<'a, 'r, 'v, 'c, 'd, P, Q> = ParticipantMaterial<
     <Q as Query>::Document,
     <Q as Query>::Generation,
     P,
+    I,
 >;
 
 /// Source, scope or input-receipt refusal, not a missing-material finding.
@@ -64,11 +65,11 @@ pub type ArchiveMaterialResult<'a, M, C, N> =
 /// EN319132-1 V1.3.1 §6.3(aa) requires all validation data before generation of
 /// each archive; final-document availability cannot repair an earlier input.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-pub fn archive_material<'s, 'a, 'r, 'v, 'c, 'd, P, C, Q>(
-    x509: &'s X509<'a, 'r, 'v, 'c, 'd, P, Q>,
+pub fn archive_material<'s, 'a, 'r, 'v, 'c, 'd, P, C, Q, I>(
+    x509: &'s X509<'a, 'r, 'v, 'c, 'd, P, Q, I>,
     credentials: &'s C,
     query: &Q,
-) -> ArchiveMaterialResult<'s, X509<'a, 'r, 'v, 'c, 'd, P, Q>, C, Q::Id>
+) -> ArchiveMaterialResult<'s, X509<'a, 'r, 'v, 'c, 'd, P, Q, I>, C, Q::Id>
 where
     C: CredentialMaterial<Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
     Q: Query,
@@ -165,19 +166,19 @@ pub enum ArchiveCensusError<N> {
 /// Complete original root-archive material census or a typed processing refusal.
 pub type ArchivesResult<'a, P, R, N> = Result<Archives<'a, P, R>, ArchiveCensusError<N>>;
 
-type Proof<'a, 'cl, 'r, 'v, 'c, 'd, P, C, Q> =
-    ArchiveMaterial<'a, X509<'cl, 'r, 'v, 'c, 'd, P, Q>, C>;
+type Proof<'a, 'cl, 'r, 'v, 'c, 'd, P, C, Q, I> =
+    ArchiveMaterial<'a, X509<'cl, 'r, 'v, 'c, 'd, P, Q, I>, C>;
 
 /// Require one paired report for EACH original root archive, not only archives
 /// whose material happened to succeed. Counter timestamps retain their separate
 /// whole-signature TSA obligations; this does not impose root baseline properties
 /// on a countersignature. No crypto, source acquisition, artifact lookup,
 /// allocation or report copy occurs in this current-query census.
-pub fn archives<'s, 'a, 'cl, 'r, 'v, 'c, 'd, A, P, C, Q>(
+pub fn archives<'s, 'a, 'cl, 'r, 'v, 'c, 'd, A, P, C, Q, I>(
     census: &'s A,
-    reports: &'s [&'s Proof<'a, 'cl, 'r, 'v, 'c, 'd, P, C, Q>],
+    reports: &'s [&'s Proof<'a, 'cl, 'r, 'v, 'c, 'd, P, C, Q, I>],
     query: &Q,
-) -> ArchivesResult<'s, A, Proof<'a, 'cl, 'r, 'v, 'c, 'd, P, C, Q>, Q::Id>
+) -> ArchivesResult<'s, A, Proof<'a, 'cl, 'r, 'v, 'c, 'd, P, C, Q, I>, Q::Id>
 where
     A: ArchiveCensus<Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
     Q: Query,

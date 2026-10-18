@@ -2,6 +2,7 @@
 
 use super::catalogue::{ContainerKind, container_kind};
 use super::{Index, Placement};
+use crate::Xades;
 use crate::pki::CounterPaths;
 use crate::prepare::Prepared;
 use crate::xml::{Access, Snapshot, Xml};
@@ -225,6 +226,7 @@ type Inputs<'requirements, 'view, 'certificate, 'document, X> = ParticipantClosu
     <X as Xml>::Id,
     <X as Xml>::Document,
     <X as Xml>::Generation,
+    Xades,
 >;
 
 struct ActorLink {
@@ -243,7 +245,7 @@ struct Owners<N: HashWork, W: Work> {
 
 impl<N: Copy + Eq + HashWork, W: Work> Owners<N, W> {
     fn build<D: Copy, G: Copy>(
-        required: &ParticipantRequirements<'_, '_, N, D, G>,
+        required: &ParticipantRequirements<'_, '_, N, D, G, Xades>,
         work: &W,
     ) -> Result<Self, MemoryError> {
         let mut result = Self {

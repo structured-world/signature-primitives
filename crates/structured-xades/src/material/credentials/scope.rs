@@ -1,6 +1,7 @@
 //! Whole incorporation or one exact earlier archive's original coverage.
 
 use super::{Error, Missing};
+use crate::Xades;
 use crate::binary::Location;
 use crate::material::{Archived, Index};
 use crate::xml::{Access, Xml};
@@ -15,7 +16,10 @@ pub struct Scope<'a, N: HashWork, D, G, C: Work = Memory> {
     archive: Option<Archive<'a, N, D, G, C>>,
 }
 
-type Archive<'a, N, D, G, C> = (&'a Coverage<N, D, G, C>, &'a Verified<N, D, G>);
+type Archive<'a, N, D, G, C> = (
+    &'a Coverage<N, D, G, C, Xades>,
+    &'a Verified<N, D, G, Xades>,
+);
 
 impl<N: HashWork, D, G> Scope<'_, N, D, G> {
     /// Whole-signature incorporation, with no archive implication.
@@ -29,8 +33,8 @@ impl<'a, N: HashWork, D, G, C: Work> Scope<'a, N, D, G, C> {
     /// Exact selected archive input and its private mathematical token receipt.
     #[must_use]
     pub fn before_archive(
-        coverage: &'a Coverage<N, D, G, C>,
-        evidence: &'a Verified<N, D, G>,
+        coverage: &'a Coverage<N, D, G, C, Xades>,
+        evidence: &'a Verified<N, D, G, Xades>,
     ) -> Self {
         Self {
             archive: Some((coverage, evidence)),
@@ -41,7 +45,7 @@ impl<'a, N: HashWork, D, G, C: Work> Scope<'a, N, D, G, C> {
 impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, C: Work> Scope<'_, N, D, G, C> {
     pub(super) fn require<X: Xml<Id = N, Document = D, Generation = G>, W: Work, Q: Work, PE>(
         &self,
-        required: &TimestampRequirements<N, D, G>,
+        required: &TimestampRequirements<N, D, G, Xades>,
         index: &Index<'_, N, D, G, W>,
         access: &Access<'_, X, Q>,
     ) -> Result<(), Error<X::Error, PE, N>> {

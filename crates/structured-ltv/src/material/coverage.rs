@@ -2,6 +2,7 @@
 
 use crate::source::{Query, ScopeError, Snapshot, equal_id};
 use crate::timestamp::{Purpose, Verified};
+use core::marker::PhantomData;
 use structured_asn1::memory::{HashWork, MemoryError, OwnedMap, Work};
 
 /// The original items one timestamp's prepared input covers in their entirety.
@@ -9,13 +10,15 @@ use structured_asn1::memory::{HashWork, MemoryError, OwnedMap, Work};
 /// The format layer builds it from the same input selection its token check
 /// used: `XAdES` from canonicalized elements, `CAdES` from `ats-hash-index-v3`.
 /// Transformed or partial input grants no whole-item coverage. Selection alone
-/// does not establish that the timestamp was checked.
-pub struct Coverage<N: HashWork, D, G, W: Work> {
+/// does not establish that the timestamp was checked. Only the holder of issuer
+/// `I` builds it, and it binds only evidence of the same issuer.
+pub struct Coverage<N: HashWork, D, G, W: Work, I> {
     snapshot: Snapshot<D, G>,
     signature: N,
     timestamp: N,
     purpose: Purpose,
     items: OwnedMap<N, bool, W>,
+    issuer: PhantomData<I>,
 }
 
 /// Source/current admission and foreign evidence are independent of absence.
@@ -37,14 +40,16 @@ pub enum CoverageError<N> {
     },
 }
 
-impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, W: Work> Coverage<N, D, G, W> {
+impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, W: Work, I> Coverage<N, D, G, W, I> {
     /// The coverage of one timestamp's input over `signature`.
     ///
     /// `items` maps each visited original item to whether it is itself a whole
     /// covered item; a `false` entry records a visited container that carries
-    /// covered descendants but is not an item claim.
+    /// covered descendants but is not an item claim. Requiring the issuer value
+    /// keeps a caller of the format from supplying a fabricated selection.
     #[must_use]
     pub fn new(
+        _issuer: I,
         snapshot: Snapshot<D, G>,
         signature: N,
         timestamp: N,
@@ -57,6 +62,7 @@ impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, W: Work> Coverage<N, D
             timestamp,
             purpose,
             items,
+            issuer: PhantomData,
         }
     }
 
@@ -82,7 +88,7 @@ impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, W: Work> Coverage<N, D
     /// TSA/path/status/chronology acceptance remains separate.
     pub fn covers<Q: Query<Id = N, Document = D, Generation = G>>(
         &self,
-        evidence: &Verified<N, D, G>,
+        evidence: &Verified<N, D, G, I>,
         node: N,
         query: &Q,
     ) -> Result<bool, CoverageError<N>> {
@@ -93,7 +99,7 @@ impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, W: Work> Coverage<N, D
     /// Requires `evidence` to be the checked token of exactly this input.
     pub fn require_evidence<Q: Query<Id = N, Document = D, Generation = G>>(
         &self,
-        evidence: &Verified<N, D, G>,
+        evidence: &Verified<N, D, G, I>,
         node: N,
         query: &Q,
     ) -> Result<(), CoverageError<N>> {

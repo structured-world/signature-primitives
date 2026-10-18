@@ -65,11 +65,20 @@ pub trait X509Material<'path, 'document> {
     type Document: Copy;
     /// Exact document generation.
     type Generation: Copy;
+    /// Issuer of the receipts the report was derived from.
+    type Issuer;
 
     /// The participant census the report was derived from.
     fn requirements(
         &self,
-    ) -> &ParticipantRequirements<'path, 'document, Self::Id, Self::Document, Self::Generation>;
+    ) -> &ParticipantRequirements<
+        'path,
+        'document,
+        Self::Id,
+        Self::Document,
+        Self::Generation,
+        Self::Issuer,
+    >;
     /// Every X.509 presence and placement requirement of the format holds.
     fn all_x509_requirements_met(&self) -> bool;
 }

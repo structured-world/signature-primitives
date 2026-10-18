@@ -248,7 +248,7 @@ fn with_participants<'d>(
     signer_path: &pki::CheckedPath<'d>,
     ca_path: &pki::CheckedPath<'d>,
     memory: &Memory,
-    check: impl FnOnce(&pki::ParticipantRequirements<'_, 'd, usize, u8, u8>),
+    check: impl FnOnce(&pki::ParticipantRequirements<'_, 'd, usize, u8, u8, structured_xades::Xades>),
 ) {
     let access = Access::new(xml, xml.snapshot(), memory);
     let signer = certificate::check_path(
@@ -400,7 +400,17 @@ fn ordinary_crl_refs_use_complete_actual_ca_target_roles_and_one_digest() {
 fn assert_crl_roles(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     view: &material::View<'_, usize, u8, u8>,
     ca_path: &pki::CheckedPath<'_>,
     storage: &Memory,
@@ -473,7 +483,17 @@ fn assert_crl_roles(
 fn assert_status_role_refusals(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     view: &material::View<'_, usize, u8, u8>,
     storage: &Memory,
 ) {
@@ -615,7 +635,7 @@ fn with_status_case(
 fn check_ocsp_graph(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    participants: &pki::ParticipantRequirements<'_, '_, usize, u8, u8>,
+    participants: &pki::ParticipantRequirements<'_, '_, usize, u8, u8, structured_xades::Xades>,
     statuses: [&pki::PathStatuses<'_, '_, '_>; 2],
     ca_path: &pki::CheckedPath<'_>,
     storage: &Memory,
@@ -834,7 +854,7 @@ fn credential_required_certificates_honor_original_protected_and_ordinary_altern
 fn assert_credential_reference_set(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    required: &pki::ParticipantRequirements<'_, '_, usize, u8, u8>,
+    required: &pki::ParticipantRequirements<'_, '_, usize, u8, u8, structured_xades::Xades>,
     storage: &Memory,
     case: CredentialRefs,
 ) {
@@ -913,7 +933,7 @@ fn assert_credential_reference_set(
 fn assert_credential_reference_refusals(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    required: &pki::ParticipantRequirements<'_, '_, usize, u8, u8>,
+    required: &pki::ParticipantRequirements<'_, '_, usize, u8, u8, structured_xades::Xades>,
     storage: &Memory,
     absent: bool,
 ) {

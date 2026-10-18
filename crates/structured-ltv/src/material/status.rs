@@ -41,11 +41,11 @@ impl<'closure, 'view, 'certificate, 'document, N, D, G, P>
 /// closure under the SAME original archive input. Reuses `archived_path`, its
 /// source index and complete/delta/whole-OCSP rules. No provider is repeated and
 /// an allocation/work/source refusal drops every partial material report.
-pub fn archived_authorities<'closure, 'view, 'certificate, 'document, N, D, G, P, O, W, Q, C>(
+pub fn archived_authorities<'closure, 'view, 'certificate, 'document, N, D, G, P, O, W, Q, C, I>(
     inputs: &'closure AuthorityClosure<'view, 'certificate, 'document>,
-    index: &Index<'_, N, D, G, P, O, W>,
-    coverage: &Coverage<N, D, G, C>,
-    evidence: &Verified<N, D, G>,
+    index: &Index<'_, N, D, G, P, O, W, I>,
+    coverage: &Coverage<N, D, G, C, I>,
+    evidence: &Verified<N, D, G, I>,
     query: &Q,
 ) -> Result<AuthorityMaterial<'closure, 'view, 'certificate, 'document, N, D, G, P>, ArchiveError<N>>
 where
@@ -123,11 +123,11 @@ impl<'view, 'certificate, 'document, N, D, G, P>
 /// Reuses the same exact-source index and archive coverage for certificates and
 /// all complete/delta/OCSP contributors. No signature/hash check is repeated,
 /// and refusal drops the accumulated reports rather than returning a subset.
-pub fn archived_path<'view, 'certificate, 'document, N, D, G, P, O, W, Q, C>(
+pub fn archived_path<'view, 'certificate, 'document, N, D, G, P, O, W, Q, C, I>(
     inputs: &'view PathStatuses<'view, 'certificate, 'document>,
-    index: &Index<'_, N, D, G, P, O, W>,
-    coverage: &Coverage<N, D, G, C>,
-    evidence: &Verified<N, D, G>,
+    index: &Index<'_, N, D, G, P, O, W, I>,
+    coverage: &Coverage<N, D, G, C, I>,
+    evidence: &Verified<N, D, G, I>,
     query: &Q,
 ) -> Result<PathMaterial<'view, 'certificate, 'document, N, D, G, P>, ArchiveError<N>>
 where
@@ -292,11 +292,11 @@ impl<'view, 'certificate, 'document, N: Copy, D: Copy, G: Copy, P>
 /// result, never from a count or a fresh private status parser here.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
 /// <https://www.rfc-editor.org/rfc/rfc5940#section-3>
-pub fn archived<'view, 'certificate, 'document, N, D, G, P, O, W, Q, C>(
+pub fn archived<'view, 'certificate, 'document, N, D, G, P, O, W, Q, C, I>(
     source: StatusSource<'view, 'certificate, 'document>,
-    index: &Index<'_, N, D, G, P, O, W>,
-    coverage: &Coverage<N, D, G, C>,
-    evidence: &Verified<N, D, G>,
+    index: &Index<'_, N, D, G, P, O, W, I>,
+    coverage: &Coverage<N, D, G, C, I>,
+    evidence: &Verified<N, D, G, I>,
     query: &Q,
 ) -> Result<StatusMaterial<'view, 'certificate, 'document, N, D, G, P>, ArchiveError<N>>
 where

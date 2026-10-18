@@ -44,7 +44,7 @@ impl<T, M, C> LongTerm<'_, T, M, C> {
 /// A different scope/input receipt is a processing refusal, not absent material.
 pub type MaterialResult<'a, T, M, C, N> = Result<LongTerm<'a, T, M, C>, ParticipantError<N>>;
 
-type TimedOf<'a, 'c, 'd, 'path, 'document, B, Q> = Timed<
+type TimedOf<'a, 'c, 'd, 'path, 'document, B, Q, I> = Timed<
     'a,
     'c,
     'd,
@@ -53,6 +53,7 @@ type TimedOf<'a, 'c, 'd, 'path, 'document, B, Q> = Timed<
     <Q as Query>::Id,
     <Q as Query>::Document,
     <Q as Query>::Generation,
+    I,
 >;
 
 /// Link the SAME complete participant/status closure and authenticated
@@ -62,12 +63,12 @@ type TimedOf<'a, 'c, 'd, 'path, 'document, B, Q> = Timed<
 /// EN319132-1 V1.3.1 §§5.4/6.3(x) require all validation material while keeping
 /// status usability and application trust distinct from incorporated presence.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-pub fn long_term<'s, 'a, 'c, 'd, 'path, 'document, B, M, C, Q>(
-    timed: &'s TimedOf<'a, 'c, 'd, 'path, 'document, B, Q>,
+pub fn long_term<'s, 'a, 'c, 'd, 'path, 'document, B, M, C, Q, I>(
+    timed: &'s TimedOf<'a, 'c, 'd, 'path, 'document, B, Q, I>,
     x509: &'s M,
     credentials: &'s C,
     query: &Q,
-) -> MaterialResult<'s, TimedOf<'a, 'c, 'd, 'path, 'document, B, Q>, M, C, Q::Id>
+) -> MaterialResult<'s, TimedOf<'a, 'c, 'd, 'path, 'document, B, Q, I>, M, C, Q::Id>
 where
     'document: 'path,
     B: BasicStage<'path, 'document, Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
@@ -77,6 +78,7 @@ where
             Id = Q::Id,
             Document = Q::Document,
             Generation = Q::Generation,
+            Issuer = I,
         >,
     C: CredentialMaterial<Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
     Q: Query,

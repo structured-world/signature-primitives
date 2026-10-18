@@ -5,6 +5,7 @@ use super::{
     TimestampPlacement, TimestampPlacementError, conditional_placement, exclusivity,
     timestamp_placement,
 };
+use crate::Xades;
 use crate::pki::CounterPaths;
 use crate::prepare::Prepared;
 use crate::xml::{Access, Xml};
@@ -70,8 +71,9 @@ impl<'v, 'd, N: Copy, D: Copy, G: Copy> X509Material<'v, 'd>
     type Id = N;
     type Document = D;
     type Generation = G;
+    type Issuer = Xades;
 
-    fn requirements(&self) -> &ParticipantRequirements<'v, 'd, N, D, G> {
+    fn requirements(&self) -> &ParticipantRequirements<'v, 'd, N, D, G, Xades> {
         self.timestamps.inputs().requirements()
     }
     fn all_x509_requirements_met(&self) -> bool {
@@ -139,6 +141,7 @@ pub fn check_participants<
         X::Id,
         X::Document,
         X::Generation,
+        Xades,
     >,
     counters: &CounterPaths<'_, 'document, X::Id, X::Document, X::Generation>,
     index: &Index<'_, X::Id, X::Document, X::Generation, W>,

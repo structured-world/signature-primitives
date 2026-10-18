@@ -30,10 +30,10 @@ mod purpose;
 pub use purpose::{AuthorityUse, AuthorityUses, Uses, UsesError, UsesResult, authority_uses};
 mod reading;
 pub use participants::{
-    Authorities, Counter, CounterReceipts, Credential, CredentialGroup, CredentialReceipts,
-    Participant, ParticipantAuthority, ParticipantClosure, ParticipantClosureError,
-    ParticipantError, ParticipantRequirement, ParticipantRequirements, ParticipantResult,
-    SignerReceipt, participants,
+    Authorities, ClosureResult, Counter, CounterReceipts, Credential, CredentialGroup,
+    CredentialReceipts, Participant, ParticipantAuthority, ParticipantClosure,
+    ParticipantClosureError, ParticipantError, ParticipantRequirement, ParticipantRequirements,
+    ParticipantResult, SignerReceipt, participants,
 };
 mod responder;
 pub use reading::{CrlReading, CrlReadingBinding, CrlReadingTarget};
@@ -117,12 +117,12 @@ impl<'a> CheckedPath<'a> {
     /// # Panics
     /// Only if the private construction invariant is violated: an accepted
     /// common path always has its original nonempty target chain.
-    pub fn bind_timestamp<'view, 'certificate, N: Copy, D: Copy, G: Copy, W: Work>(
+    pub fn bind_timestamp<'view, 'certificate, N: Copy, D: Copy, G: Copy, I, W: Work>(
         &'view self,
-        actor: &'view CheckedActor<'certificate, 'a, N, D, G>,
+        actor: &'view CheckedActor<'certificate, 'a, N, D, G, I>,
         utc: &LeapTable<'_>,
         execution: &W,
-    ) -> Result<TimestampBinding<'view, 'certificate, 'a, N, D, G>, TimestampBindingError> {
+    ) -> TimestampBindingResult<'view, 'certificate, 'a, N, D, G, I> {
         execution
             .charge_work(1)
             .map_err(TimestampBindingError::Resource)?;
@@ -211,14 +211,18 @@ pub enum TimestampBindingError {
 
 /// Privately bound mathematical timestamp and static path for its actual signer.
 /// Revocation, required material and application trust still need completion.
-pub struct TimestampPath<'view, 'certificate, 'document, N, D, G> {
+pub struct TimestampPath<'view, 'certificate, 'document, N, D, G, I> {
     path: &'view CheckedPath<'document>,
-    actor: &'view CheckedActor<'certificate, 'document, N, D, G>,
+    actor: &'view CheckedActor<'certificate, 'document, N, D, G, I>,
     generation: GenerationInterval,
 }
 
-impl<'view, 'certificate, 'document, N, D, G>
-    TimestampPath<'view, 'certificate, 'document, N, D, G>
+/// Binding of a checked path to a token actor, or the inability to bind.
+pub type TimestampBindingResult<'view, 'certificate, 'document, N, D, G, I> =
+    Result<TimestampBinding<'view, 'certificate, 'document, N, D, G, I>, TimestampBindingError>;
+
+impl<'view, 'certificate, 'document, N, D, G, I>
+    TimestampPath<'view, 'certificate, 'document, N, D, G, I>
 {
     /// Same static path that was bound to this token's actual selected signer.
     #[must_use]
@@ -227,7 +231,7 @@ impl<'view, 'certificate, 'document, N, D, G>
     }
     /// Same complete mathematical token/input receipt and selected key.
     #[must_use]
-    pub fn actor(&self) -> &'view CheckedActor<'certificate, 'document, N, D, G> {
+    pub fn actor(&self) -> &'view CheckedActor<'certificate, 'document, N, D, G, I> {
         self.actor
     }
     /// Complete generation interval covered by this static path's check.
@@ -238,9 +242,9 @@ impl<'view, 'certificate, 'document, N, D, G>
 }
 
 /// Completed binding or explicit mismatch; errors never become a false match.
-pub enum TimestampBinding<'view, 'certificate, 'document, N, D, G> {
+pub enum TimestampBinding<'view, 'certificate, 'document, N, D, G, I> {
     /// Same original signer and parameters, with full generation-time coverage.
-    Bound(TimestampPath<'view, 'certificate, 'document, N, D, G>),
+    Bound(TimestampPath<'view, 'certificate, 'document, N, D, G, I>),
     /// Completed source/key/interval mismatch.
     Rejected(TimestampBindingFailure),
 }

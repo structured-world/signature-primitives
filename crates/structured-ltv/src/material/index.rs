@@ -5,6 +5,7 @@ use crate::pki::CheckedPath;
 use crate::source::{Location, Query, ScopeError, Snapshot};
 use crate::timestamp::{Purpose, Verified};
 use core::hash::Hash;
+use core::marker::PhantomData;
 use structured_asn1::memory::{HashWork, MemoryError, OwnedMap, OwnedVec, Work};
 use structured_pkix::{Certificate, crl::CertificateList, ocsp::BasicResponse};
 
@@ -116,12 +117,15 @@ struct Entry<N, D, G, P> {
 ///
 /// `P` is the format's placement of an occurrence and `O` an entry of the
 /// format's schema-open catalogue; the index stores and returns both unread.
-pub struct Index<'source, N, D, G, P, O, W: Work> {
+/// Only the holder of issuer `I` builds it from the format's own pools, and it
+/// locates material only under coverage and evidence of the same issuer.
+pub struct Index<'source, N, D, G, P, O, W: Work, I> {
     snapshot: Snapshot<D, G>,
     signature: N,
     keys: OwnedMap<ArtifactKey<'source>, (usize, usize), W>,
     entries: OwnedVec<Entry<N, D, G, P>, W>,
     open: &'source [O],
+    issuer: PhantomData<I>,
 }
 
 /// Original source refusal is independent of index capacity/work refusal.
@@ -258,14 +262,16 @@ pub enum ArchiveError<N> {
     },
 }
 
-impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work>
-    Index<'source, N, D, G, P, O, W>
+impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
+    Index<'source, N, D, G, P, O, W, I>
 {
     /// An empty index for this signature in the query's source generation.
     ///
     /// `open` is the format's schema-open material catalogue, retained only so
-    /// that format checks find it beside the index.
+    /// that format checks find it beside the index. Requiring the issuer value
+    /// keeps a caller of the format from building an index of its own.
     pub fn new<Q: Query<Id = N, Document = D, Generation = G, Work = W>>(
+        _issuer: I,
         signature: N,
         open: &'source [O],
         query: &Q,
@@ -278,6 +284,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work>
             keys: execution.map(),
             entries: execution.vector(),
             open,
+            issuer: PhantomData,
         })
     }
 
@@ -292,6 +299,13 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work>
         occurrence: Occurrence<N, D, G, P>,
         query: &Q,
     ) -> Result<(), IndexError<N>> {
+        // Coverage lookups compare only the occurrence's node, so its source
+        // generation must already be this index's.
+        if occurrence.location.snapshot != self.snapshot || query.snapshot() != self.snapshot {
+            return Err(IndexError::Foreign {
+                signature: self.signature,
+            });
+        }
         self.insert_key(artifact.identity(), occurrence, query)?;
         if let ArtifactRef::Ocsp(response) = artifact {
             for certificate in 0..response.certificates().len() {
@@ -336,7 +350,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work>
         &'view self,
         value: &Certificate<'_>,
         query: &'query Q,
-    ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q> {
+    ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> {
         self.find(Kind::Certificate, value.as_bytes(), query)
     }
     /// Finds all whole CRL copies. An authenticated delta still needs its
@@ -345,7 +359,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work>
         &'view self,
         value: &CertificateList<'_>,
         query: &'query Q,
-    ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q> {
+    ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> {
         self.find(Kind::Crl, value.as_bytes(), query)
     }
     /// Finds the exact basic response only in retained whole OCSP envelopes.
@@ -354,7 +368,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work>
         &'view self,
         value: &BasicResponse<'_>,
         query: &'query Q,
-    ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q> {
+    ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> {
         self.find(Kind::Basic, value.as_bytes(), query)
     }
 
@@ -363,7 +377,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work>
         &'view self,
         artifact: ArtifactRef<'_, '_>,
         query: &'query Q,
-    ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q> {
+    ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> {
         let key = artifact.identity();
         self.find(key.kind, key.bytes, query)
     }
@@ -402,8 +416,8 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work>
     pub fn archived<Q: Query<Id = N, Document = D, Generation = G>, C: Work>(
         &self,
         artifact: ArtifactRef<'_, '_>,
-        coverage: &Coverage<N, D, G, C>,
-        evidence: &Verified<N, D, G>,
+        coverage: &Coverage<N, D, G, C, I>,
+        evidence: &Verified<N, D, G, I>,
         query: &Q,
     ) -> Result<Archived<N, D, G, P>, ArchiveError<N>>
     where
@@ -462,8 +476,8 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work>
     pub fn archived_path<'path, 'document, Q, C: Work>(
         &self,
         path: &'path CheckedPath<'document>,
-        coverage: &Coverage<N, D, G, C>,
-        evidence: &Verified<N, D, G>,
+        coverage: &Coverage<N, D, G, C, I>,
+        evidence: &Verified<N, D, G, I>,
         query: &Q,
     ) -> Result<PathCertificates<'path, 'document, N, D, G, P>, ArchiveError<N>>
     where
@@ -555,7 +569,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work>
         kind: Kind,
         bytes: &[u8],
         query: &'query Q,
-    ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q> {
+    ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> {
         self.admit(query)?;
         query.admit(self.signature, 1).map_err(IndexError::Scope)?;
         let next = self
@@ -575,20 +589,20 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work>
 }
 
 /// Every copy of one artifact, or the refusal to look it up.
-pub type Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q> =
-    Result<Occurrences<'view, 'query, 'source, N, D, G, P, O, W, Q>, IndexError<N>>;
+pub type Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> =
+    Result<Occurrences<'view, 'query, 'source, N, D, G, P, O, W, Q, I>, IndexError<N>>;
 
 /// Source-catalogue-order traversal of every copy; current Work pays metadata
 /// access even when index storage belongs to an earlier execution. The first
 /// source/resource refusal is returned once and fuses the iterator.
-pub struct Occurrences<'view, 'query, 'source, N, D, G, P, O, W: Work, Q> {
-    index: &'view Index<'source, N, D, G, P, O, W>,
+pub struct Occurrences<'view, 'query, 'source, N, D, G, P, O, W: Work, Q, I> {
+    index: &'view Index<'source, N, D, G, P, O, W, I>,
     query: &'query Q,
     next: Option<usize>,
 }
 
-impl<N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, Q> Iterator
-    for Occurrences<'_, '_, '_, N, D, G, P, O, W, Q>
+impl<N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, Q, I> Iterator
+    for Occurrences<'_, '_, '_, N, D, G, P, O, W, Q, I>
 where
     Q: Query<Id = N, Document = D, Generation = G>,
 {
@@ -604,8 +618,8 @@ where
     }
 }
 
-impl<N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, Q> core::iter::FusedIterator
-    for Occurrences<'_, '_, '_, N, D, G, P, O, W, Q>
+impl<N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, Q, I> core::iter::FusedIterator
+    for Occurrences<'_, '_, '_, N, D, G, P, O, W, Q, I>
 where
     Q: Query<Id = N, Document = D, Generation = G>,
 {

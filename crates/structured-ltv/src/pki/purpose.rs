@@ -70,19 +70,20 @@ impl<'view, 'certificate, 'document> AuthorityUse<'view, 'certificate, 'document
 
 /// Complete role propagation for the original participant closure. It establishes
 /// neither status usability nor material placement, and never normalizes bytes.
-pub struct AuthorityUses<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G> {
-    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G>,
+pub struct AuthorityUses<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, I> {
+    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, I>,
     entries: OwnedVec<AuthorityUse<'view, 'certificate, 'document>>,
 }
 
-impl<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G>
-    AuthorityUses<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G>
+impl<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, I>
+    AuthorityUses<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, I>
 {
     /// Same complete source-bound actor and status-authority input set.
     #[must_use]
     pub fn inputs(
         &self,
-    ) -> &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G> {
+    ) -> &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, I>
+    {
         self.inputs
     }
     /// Each reached node once, preserving original closure order.
@@ -104,7 +105,7 @@ pub enum UsesError<N> {
 }
 
 /// Purpose propagation result in the query's original identity domain.
-pub type UsesResult<'closure, 'requirements, 'view, 'certificate, 'document, Q> = Result<
+pub type UsesResult<'closure, 'requirements, 'view, 'certificate, 'document, Q, I> = Result<
     AuthorityUses<
         'closure,
         'requirements,
@@ -114,6 +115,7 @@ pub type UsesResult<'closure, 'requirements, 'view, 'certificate, 'document, Q> 
         <Q as Query>::Id,
         <Q as Query>::Document,
         <Q as Query>::Generation,
+        I,
     >,
     UsesError<<Q as Query>::Id>,
 >;
@@ -165,7 +167,7 @@ impl<'view, 'document, W: Work> Flow<'view, '_, 'document, W> {
 /// # Panics
 /// Only if a private queue invariant is violated: a queue index was admitted
 /// after its node's insertion and nodes are never removed during propagation.
-pub fn authority_uses<'closure, 'requirements, 'view, 'certificate, 'document, Q: Query>(
+pub fn authority_uses<'closure, 'requirements, 'view, 'certificate, 'document, Q: Query, I>(
     inputs: &'closure ParticipantClosure<
         'requirements,
         'view,
@@ -174,9 +176,10 @@ pub fn authority_uses<'closure, 'requirements, 'view, 'certificate, 'document, Q
         Q::Id,
         Q::Document,
         Q::Generation,
+        I,
     >,
     query: &Q,
-) -> UsesResult<'closure, 'requirements, 'view, 'certificate, 'document, Q> {
+) -> UsesResult<'closure, 'requirements, 'view, 'certificate, 'document, Q, I> {
     let requirements = inputs.requirements();
     if requirements.scope().location().snapshot != query.snapshot() {
         return Err(UsesError::Foreign);
@@ -197,11 +200,12 @@ fn derive<
     D: Copy,
     G: Copy,
     W: Work,
+    I,
 >(
-    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G>,
+    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, I>,
     work: &W,
 ) -> Result<
-    AuthorityUses<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G>,
+    AuthorityUses<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, I>,
     AuthorityClosureError,
 > {
     let mut flow = Flow {

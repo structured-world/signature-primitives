@@ -4,6 +4,7 @@ use super::{
     CheckResult, Completeness, Entry, Error, Finding, Missing, Need, ProcessingResult, Provider,
     Report, Scope, selection,
 };
+use crate::Xades;
 use crate::credential::{Checked, ParticipantCredentials};
 use crate::material::Index;
 use crate::pki::CounterPaths;
@@ -35,7 +36,7 @@ pub fn check<'auth, 'path, 'document, X: Xml, A, P: Provider<X, A>, W: Work, Q: 
         X::Generation,
     >,
     counters: &CounterPaths<'_, '_, X::Id, X::Document, X::Generation>,
-    required: &TimestampRequirements<X::Id, X::Document, X::Generation>,
+    required: &TimestampRequirements<X::Id, X::Document, X::Generation, Xades>,
     index: &Index<'_, X::Id, X::Document, X::Generation, W>,
     scope: &Scope<'_, X::Id, X::Document, X::Generation, C>,
     provider: &P,

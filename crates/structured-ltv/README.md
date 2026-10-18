@@ -55,7 +55,13 @@ errors, separate from missing or mismatching evidence.
 A format layer implements `Source` (or `Query` over its access guard) and the
 receipt traits on its own checked results, builds `TimestampRequirements` from
 every original timestamp in source order, failed and unsupported ones included,
-and builds a `material::Index` and one `Coverage` per archive input. The
+and builds a `material::Index` and one `Coverage` per archive input.
+
+These receipts carry the format's issuer type, and constructing one takes a
+value of it. A format defines that type with a private field, so its callers
+cannot relabel checked timestamp evidence, associate it with another signer or
+supply a fabricated census, index or coverage; receipts of different issuers do
+not combine. The
 integration test `tests/cms_source.rs` drives the participant census and
 archive coverage over CMS `SignerInfo` attributes identified by ordinal.
 

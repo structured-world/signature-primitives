@@ -1443,7 +1443,17 @@ fn certificate_references_classify_actual_exclusive_credential_ca_once() {
 fn assert_certificate_role_comparisons(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     certificate: &structured_pkix::Certificate<'_>,
     shared: bool,
     storage: &structured_asn1::memory::Memory,
@@ -1507,7 +1517,17 @@ fn assert_certificate_role_comparisons(
 fn assert_certificate_role_refusals(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     storage: &structured_asn1::memory::Memory,
 ) {
     // A later query receives no credit from retained actor/CA catalogues.
@@ -1555,7 +1575,17 @@ fn assert_certificate_role_refusals(
 fn assert_certificate_role_provider_refusal(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &structured_ltv::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     storage: &structured_asn1::memory::Memory,
 ) {
     // A refusal after CA decoding and stream start retains the actual provider
@@ -1857,7 +1887,12 @@ fn conditional_reference_presence_requires_complete_token_pool_and_keeps_missing
 
 fn assert_reference_presence_refusal(
     report: &structured_xades::validation::ReferenceDigests<'_, '_, usize, u8, u8>,
-    required: &structured_ltv::timestamp::TimestampRequirements<usize, u8, u8>,
+    required: &structured_ltv::timestamp::TimestampRequirements<
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
     xml: &Tree,
 ) {

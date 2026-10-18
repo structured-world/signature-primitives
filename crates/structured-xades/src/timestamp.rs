@@ -5,6 +5,7 @@ use crate::binding::{Bound, Coverage, Status};
 use crate::container::{DS, XADES};
 use crate::reference::{Boolean, LexicalSource, ReferenceXml, ReplayOutcome, Resolution};
 use crate::xml::{Access, AccessError, ChildError, Name, Snapshot, Xml};
+use crate::{ISSUER, Xades};
 use structured_asn1::{
     Reader,
     memory::{Execution, MemoryError, OwnedVec, Work},
@@ -208,7 +209,7 @@ impl<N: Copy, D: Copy, G: Copy> Stamp<N, D, G> {
 pub type Timestamp<X> = Stamp<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>;
 /// Independently retained positive timestamp using original XML identities.
 pub type VerifiedTimestamp<X> =
-    Verified<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>;
+    Verified<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation, Xades>;
 /// Successful timestamp bound to the exact certificate/key used for checking.
 pub type TimestampActor<'certificate, 'document, X> = CheckedActor<
     'certificate,
@@ -216,6 +217,7 @@ pub type TimestampActor<'certificate, 'document, X> = CheckedActor<
     <X as Xml>::Id,
     <X as Xml>::Document,
     <X as Xml>::Generation,
+    Xades,
 >;
 /// Original cause and node location survive timestamp preparation failures.
 pub type InputResult<T, X> = Result<T, InputError<<X as Xml>::Error, <X as Xml>::Id>>;
@@ -301,7 +303,7 @@ impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
         Ok(self
             .retain(bound, stamp, index, operation, recognizes)?
             .map(|verified| {
-                CheckedActor::new(verified, self.context.certificate, self.context.key)
+                CheckedActor::new(ISSUER, verified, self.context.certificate, self.context.key)
             }))
     }
 
@@ -330,6 +332,7 @@ impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
         let located = self.run(bound, stamp, index, operation, recognizes, evidence)?;
         Ok(located.value.map(|evidence| {
             Verified::new(
+                ISSUER,
                 located.location,
                 stamp.signature,
                 stamp.node,
@@ -406,7 +409,9 @@ impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
         })?;
         Ok(located.value.map(|evidence| {
             CheckedActor::new(
+                ISSUER,
                 Verified::new(
+                    ISSUER,
                     located.location,
                     stamp.signature,
                     stamp.node,
@@ -503,7 +508,9 @@ impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
             .map_err(|cause| CheckError::Input(InputError::Access(cause)))?;
         Ok(evidence.map(|evidence| {
             CheckedActor::new(
+                ISSUER,
                 Verified::new(
+                    ISSUER,
                     location,
                     stamp.signature,
                     stamp.node,

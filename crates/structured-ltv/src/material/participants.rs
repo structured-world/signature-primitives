@@ -32,22 +32,33 @@ impl<N: Copy, D, G, P> AnchorMaterial<N, D, G, P> {
 /// Source requirements and negative status facts remain available in `inputs`.
 /// This does not decide status usability, trust, exclusive material placement,
 /// credential-format-specific material, chronology or an attained baseline level.
-pub struct ParticipantMaterial<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, P>
-{
-    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G>,
+pub struct ParticipantMaterial<
+    'closure,
+    'requirements,
+    'view,
+    'certificate,
+    'document,
+    N,
+    D,
+    G,
+    P,
+    I,
+> {
+    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, I>,
     authorities: AuthorityMaterial<'closure, 'view, 'certificate, 'document, N, D, G, P>,
     anchors: OwnedVec<AnchorMaterial<N, D, G, P>>,
     all_covered: bool,
 }
 
-impl<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, P>
-    ParticipantMaterial<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, P>
+impl<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, P, I>
+    ParticipantMaterial<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, P, I>
 {
     /// Complete source-bound actor and status-authority input set.
     #[must_use]
     pub fn inputs(
         &self,
-    ) -> &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G> {
+    ) -> &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, I>
+    {
         self.inputs
     }
 
@@ -117,14 +128,15 @@ pub fn archived_participants<
     W,
     Q,
     C,
+    I,
 >(
-    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G>,
-    index: &Index<'_, N, D, G, P, O, W>,
-    coverage: &Coverage<N, D, G, C>,
-    evidence: &Verified<N, D, G>,
+    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, I>,
+    index: &Index<'_, N, D, G, P, O, W, I>,
+    coverage: &Coverage<N, D, G, C, I>,
+    evidence: &Verified<N, D, G, I>,
     query: &Q,
 ) -> Result<
-    ParticipantMaterial<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, P>,
+    ParticipantMaterial<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G, P, I>,
     ParticipantArchiveError<N>,
 >
 where

@@ -14,6 +14,7 @@ use structured_xades::{
     binary,
     certificate::{Agreement, DigestProvider},
     digest,
+    pki::participants,
     xml::{Access, AccessError, Name, Xml},
 };
 
@@ -114,7 +115,7 @@ impl DigestProvider<'_, Tree> for Oracle {
 
 pub(super) fn with_checked_path(
     check: impl FnOnce(
-        &structured_xades::pki::CheckedPath<'_>,
+        &structured_ltv::pki::CheckedPath<'_>,
         &[u8],
         &[u8],
         &structured_asn1::memory::Memory,
@@ -128,7 +129,7 @@ fn basic_assembly_links_original_facts_and_preserves_inclusion_digest_and_hint_f
     // Public assembly must use the actual selected certificate and original
     // KeyInfo, preserve readable hint faults and never repeat certificate hashes
     // or root scalar processing just to combine already checked receipts.
-    use structured_xades::{baseline, certificate, hashes, pki, prepare, properties, unsigned};
+    use structured_xades::{baseline, certificate, hashes, prepare, properties, unsigned};
     with_checked_path(|path, leaf, root, memory| {
         for mode in 0..9 {
             let mut xml = super::attribute_checks::fixture();
@@ -151,7 +152,10 @@ fn basic_assembly_links_original_facts_and_preserves_inclusion_digest_and_hint_f
                 prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
             let fields = prepare::check_fields(&prepared, &access).unwrap();
             let counters =
-                pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+                structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+                    Ok::<_, ()>(path)
+                })
+                .unwrap();
             let hashes::ParticipantBinding::Bound(hashes) =
                 hashes::check_participants(&prepared, &counters, &access).unwrap()
             else {
@@ -435,7 +439,7 @@ pub(super) fn basic_binary_routes(xml: &mut Tree, leaf: &[u8], root: &[u8], mode
 pub(super) fn checked_certificate<'a, 'd>(
     xml: &Tree,
     prepared: &'a structured_xades::prepare::Prepared<Tree>,
-    path: &'a structured_xades::pki::CheckedPath<'d>,
+    path: &'a structured_ltv::pki::CheckedPath<'d>,
     memory: &structured_asn1::memory::Memory,
 ) -> structured_xades::certificate::CheckedPathCertificate<'a, 'd, usize, u8, u8> {
     // Same actual digest/key/path helper, exposed only within this test binary.
@@ -453,7 +457,7 @@ pub(super) fn checked_certificate<'a, 'd>(
 fn with_checked_path_at(
     instant: i64,
     check: impl FnOnce(
-        &structured_xades::pki::CheckedPath<'_>,
+        &structured_ltv::pki::CheckedPath<'_>,
         &[u8],
         &[u8],
         &structured_asn1::memory::Memory,
@@ -477,8 +481,8 @@ fn with_checked_path_at(
         watch: &(),
         recognizer: &(),
     };
-    let structured_xades::pki::PathOutcome::Accepted(path) =
-        structured_xades::pki::check_path(&[&leaf], Anchor::from_certificate(&root), &context)
+    let structured_ltv::pki::PathOutcome::Accepted(path) =
+        structured_ltv::pki::check_path(&[&leaf], Anchor::from_certificate(&root), &context)
             .unwrap()
     else {
         panic!("real issuer path")
@@ -511,7 +515,8 @@ fn certificate_path_tree(first: Vec<u8>, second: Vec<u8>) -> Tree {
 fn signed_certificate_path_digests_keep_first_target_role_and_resolve_each_once() {
     // A root hash is allowed later but cannot replace the first signing-cert
     // hash. The actual checked chain is retained; no path verification repeats.
-    use structured_xades::{certificate, material::PathCertificate};
+    use structured_ltv::material::PathCertificate;
+    use structured_xades::certificate;
     with_checked_path(|path, leaf, root, memory| {
         for first in [leaf, root] {
             let xml = certificate_path_tree(
@@ -649,7 +654,7 @@ fn plain_counter_path_binding_uses_actual_selected_key_without_inventing_propert
             let original = counter::read(&access, &root, properties).unwrap();
             let checked = counter::bind(&access, original).unwrap();
             let capacity = memory.used();
-            let result = path.bind_counter(&checked, &access).unwrap();
+            let result = pki::bind_counter(path, &checked, &access).unwrap();
             match (association, result) {
                 (certificate::KeyAssociation::Same, pki::CounterBinding::Bound(bound)) => {
                     assert!(core::ptr::eq(bound.path(), path));
@@ -665,7 +670,7 @@ fn plain_counter_path_binding_uses_actual_selected_key_without_inventing_propert
             // Retain the scalar source receipt beyond the movable walk frame;
             // only the independently checked certificate path stays borrowed.
             let retained = counter::walk(&access, &root, |checked, _| {
-                path.bind_counter(checked, &access)
+                pki::bind_counter(path, checked, &access)
             })
             .unwrap();
             assert_eq!(retained.len(), 1);
@@ -684,7 +689,7 @@ fn plain_counter_path_binding_uses_actual_selected_key_without_inventing_propert
             ));
             let refused = Access::new(&xml, xml.snapshot(), &empty);
             assert!(matches!(
-                path.bind_counter(&checked, &refused),
+                pki::bind_counter(path, &checked, &refused),
                 Err(AccessError::Resource { .. })
             ));
             assert_eq!(xml.key_projection.get(), None);
@@ -692,7 +697,7 @@ fn plain_counter_path_binding_uses_actual_selected_key_without_inventing_propert
             stale.generation += 1;
             let stale = Access::new(&xml, stale, memory);
             assert!(matches!(
-                path.bind_counter(&checked, &stale),
+                pki::bind_counter(path, &checked, &stale),
                 Err(AccessError::Changed { .. })
             ));
             assert_eq!(xml.key_projection.get(), None);
@@ -806,7 +811,7 @@ fn nested_counter_timestamps_keep_own_inputs_and_archive_precedence() {
     // A root archive covers an earlier counter's entire subtree, including a
     // grandchild timestamp. A later sibling counter is not its antecedent.
     // All-token LT must nevertheless retain that later token as an obligation.
-    use structured_xades::{pki, prepare, timestamp, unsigned};
+    use structured_xades::{prepare, timestamp, unsigned};
     with_checked_path(|path, leaf, _, memory| {
         let mut xml = super::preparation_tree();
         xml.binary = leaf.to_vec();
@@ -838,8 +843,10 @@ fn nested_counter_timestamps_keep_own_inputs_and_archive_precedence() {
         );
         let access = Access::new(&xml, xml.snapshot(), memory);
         let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+            Ok::<_, ()>(path)
+        })
+        .unwrap();
         let before = memory.used();
         let stamps = timestamp::counter_timestamps(&access, &counters).unwrap();
         assert_eq!(stamps.entries().len(), 3);
@@ -889,7 +896,9 @@ fn nested_counter_timestamps_keep_own_inputs_and_archive_precedence() {
         assert_eq!(prior.entries()[2].token, grand_tokens[0]);
         assert!(matches!(
             all.bind_paths(&[], &access).unwrap(),
-            timestamp::TimestampPathBinding::Unproven(timestamp::TimestampPathFailure::Count)
+            structured_ltv::timestamp::TimestampPathBinding::Unproven(
+                structured_ltv::timestamp::TimestampPathFailure::Count
+            )
         ));
         drop(prior);
         drop(all);
@@ -903,7 +912,7 @@ fn complete_counter_material_pool_keeps_nested_and_plain_child_sources() {
     // Two X509Data in an XAdES counter and one in its plain XMLDSig child:
     // neither child needs the root's SigningCertificateV2/SigningTime/KeyInfo
     // cardinality. All six child values share ONE frozen original source pool.
-    use structured_xades::{material, pki, prepare, unsigned};
+    use structured_xades::{material, prepare, unsigned};
     with_checked_path(|path, leaf, root, memory| {
         for broken in [false, true] {
             let (xml, expected) = counter_material_tree(leaf, root, broken);
@@ -911,7 +920,10 @@ fn complete_counter_material_pool_keeps_nested_and_plain_child_sources() {
             let prepared =
                 prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
             let counters =
-                pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+                structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+                    Ok::<_, ()>(path)
+                })
+                .unwrap();
             assert_eq!(counters.actors().len(), 2);
             let parser = structured_asn1::Parser::der(memory.clone());
             let operation = parser.read(&[], 900).unwrap();
@@ -959,7 +971,7 @@ fn nested_counter_token_pool_preserves_each_source_and_drops_partial_decode() {
     // Token parsing is shared, but every token keeps its own child signature,
     // property and source bytes. A broken last token cannot yield a prefix or
     // run a visitor with missing TSA material; all temporary capacity releases.
-    use structured_xades::{pki, prepare, timestamp, unsigned};
+    use structured_xades::{prepare, timestamp, unsigned};
     with_checked_path(|path, _, _, memory| {
         let (_, token, _, _) = super::timestamp_oracle::fixture_with_root(b"inspection only");
         for broken in [false, true] {
@@ -980,7 +992,10 @@ fn nested_counter_token_pool_preserves_each_source_and_drops_partial_decode() {
             let prepared =
                 prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
             let counters =
-                pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+                structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+                    Ok::<_, ()>(path)
+                })
+                .unwrap();
             let stamps = timestamp::counter_timestamps(&access, &counters).unwrap();
             let parser = structured_asn1::Parser::der(memory.clone());
             let operation = parser.read(&[], 900).unwrap();
@@ -1030,7 +1045,7 @@ fn nested_signature_timestamp_math_binds_child_signature_value() {
         path::WorkingKey,
         temporal::{Instant, LeapTable},
     };
-    use structured_xades::{pki, prepare, timestamp, unsigned};
+    use structured_xades::{prepare, timestamp, unsigned};
     for (wrong_value, pooled) in [(false, false), (true, false), (false, true), (true, true)] {
         with_checked_path(|path, _, _, memory| {
             let mut xml = super::preparation_tree();
@@ -1054,7 +1069,10 @@ fn nested_signature_timestamp_math_binds_child_signature_value() {
             let prepared =
                 prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
             let counters =
-                pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+                structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+                    Ok::<_, ()>(path)
+                })
+                .unwrap();
             let stamps = timestamp::counter_timestamps(&access, &counters).unwrap();
             let parser = structured_asn1::Parser::der(memory.clone());
             let operation = parser.read(&[], 900).unwrap();
@@ -1146,7 +1164,7 @@ fn unsigned_counter_timestamp_cannot_borrow_another_signatures_qualifying_target
     // EN319132-1 4.3.1 binds even UNSIGNED properties to their corresponding
     // Signature via Target. An actual checked counter and valid token framing
     // cannot substitute this association; no child B-B header is required.
-    use structured_xades::{binding, container, pki, prepare, timestamp, unsigned};
+    use structured_xades::{binding, container, prepare, timestamp, unsigned};
     with_checked_path(|path, _, _, memory| {
         let mut xml = super::preparation_tree();
         xml.key_association = structured_xades::certificate::KeyAssociation::Same;
@@ -1157,8 +1175,10 @@ fn unsigned_counter_timestamp_cannot_borrow_another_signatures_qualifying_target
             .push((layout.qualifying(), super::Target::LocalBareName(0)));
         let access = Access::new(&xml, xml.snapshot(), memory);
         let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+            Ok::<_, ()>(path)
+        })
+        .unwrap();
         let held = memory.used();
         let Err(cause) = timestamp::counter_timestamps(&access, &counters) else {
             panic!("accepted a child timestamp whose Target selects the root signature");
@@ -1176,7 +1196,7 @@ fn signed_counter_timestamps_require_whole_properties_but_not_child_baseline() {
     // A signed-object timestamp cannot be read as authenticated using only the
     // counter's parent-Value reference. No fabricated SigningTime/cert property
     // is required once the actual SignedProperties reference succeeds.
-    use structured_xades::{binding, container, pki, prepare, timestamp, unsigned};
+    use structured_xades::{binding, container, prepare, timestamp, unsigned};
     with_checked_path(|path, _, _, memory| {
         for coverage in [
             None,
@@ -1216,7 +1236,10 @@ fn signed_counter_timestamps_require_whole_properties_but_not_child_baseline() {
             let prepared =
                 prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
             let counters =
-                pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+                structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+                    Ok::<_, ()>(path)
+                })
+                .unwrap();
             let before = memory.used();
             let result = timestamp::counter_timestamps(&access, &counters);
             match coverage {
@@ -1246,7 +1269,7 @@ fn counter_timestamp_source_guards_precede_decoding_and_refusals_release_capacit
     // Equal ordinals/accounts are not original document identity. A foreign
     // child pool is rejected before decoding any root token; zero current work
     // and storage never produce an empty successful timestamp census.
-    use structured_xades::{pki, prepare, timestamp, unsigned};
+    use structured_xades::{prepare, timestamp, unsigned};
     with_checked_path(|path, _, _, memory| {
         let mut xml = super::preparation_tree();
         xml.key_association = structured_xades::certificate::KeyAssociation::Same;
@@ -1254,8 +1277,10 @@ fn counter_timestamp_source_guards_precede_decoding_and_refusals_release_capacit
         super::append_timestamp(&mut xml, parent.unwrap(), timestamp::Role::Signature, 1);
         let access = Access::new(&xml, xml.snapshot(), memory);
         let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+            Ok::<_, ()>(path)
+        })
+        .unwrap();
         let stamps = timestamp::counter_timestamps(&access, &counters).unwrap();
         let mut foreign = super::preparation_tree();
         foreign.document = xml.document + 1;
@@ -1302,13 +1327,15 @@ fn counter_material_refusals_preserve_original_cause_and_release_all_sources() {
     // New current-operation admission is required even for retained counter
     // receipts. Zero memory/work cannot become an empty successful catalogue.
     use structured_asn1::memory::{Memory, MemoryAccount, MemoryError};
-    use structured_xades::{material, pki, prepare, unsigned};
+    use structured_xades::{material, prepare, unsigned};
     with_checked_path(|path, leaf, root, memory| {
         let (xml, _) = counter_material_tree(leaf, root, false);
         let access = Access::new(&xml, xml.snapshot(), memory);
         let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+            Ok::<_, ()>(path)
+        })
+        .unwrap();
         let held = memory.used();
         for (storage, work) in [(0, 1_000_000), (65_536, 0)] {
             let current = Memory::new(super::Arc::new(MemoryAccount::new(storage, work)));
@@ -1365,7 +1392,7 @@ fn counter_material_refusals_preserve_original_cause_and_release_all_sources() {
 fn foreign_counter_source_is_rejected_before_root_decoding() {
     // Same scalar node ordinals/path/account are not document identity. The
     // source guard must run before retaining even the first root certificate.
-    use structured_xades::{material, pki, prepare, unsigned};
+    use structured_xades::{material, prepare, unsigned};
     with_checked_path(|path, leaf, root, memory| {
         let (xml, _) = counter_material_tree(leaf, root, false);
         let (mut foreign, _) = counter_material_tree(leaf, root, false);
@@ -1376,8 +1403,10 @@ fn foreign_counter_source_is_rejected_before_root_decoding() {
         let selected =
             prepare::prepare(&foreign_access, 0, unsigned::Requirements::Basic, None).unwrap();
         let counters =
-            pki::bind_counters(selected.bound(), &foreign_access, |_, _| Ok::<_, ()>(path))
-                .unwrap();
+            structured_xades::pki::bind_counters(selected.bound(), &foreign_access, |_, _| {
+                Ok::<_, ()>(path)
+            })
+            .unwrap();
         let parser = structured_asn1::Parser::der(memory.clone());
         let operation = parser.read(&[], 900).unwrap();
         let held = memory.used();
@@ -1400,7 +1429,7 @@ fn plain_counter_without_key_info_does_not_acquire_root_header_requirements() {
     // XMLDSig1.1 KeyInfo is optional. The actual successful external key/path
     // remains explicit; missing child data is NOT a fabricated incorporated
     // certificate and must later remain missing in material availability.
-    use structured_xades::{material, pki, prepare, unsigned};
+    use structured_xades::{material, prepare, unsigned};
     with_checked_path(|path, leaf, root, memory| {
         let (mut xml, mut expected) = counter_material_tree(leaf, root, false);
         let child = xml.nested_counters[1].child;
@@ -1409,8 +1438,10 @@ fn plain_counter_without_key_info_does_not_acquire_root_header_requirements() {
         expected.pop();
         let access = Access::new(&xml, xml.snapshot(), memory);
         let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+            Ok::<_, ()>(path)
+        })
+        .unwrap();
         assert_eq!(counters.actors().len(), 2);
         let parser = structured_asn1::Parser::der(memory.clone());
         let operation = parser.read(&[], 900).unwrap();
@@ -1443,7 +1474,7 @@ fn complete_counter_paths_require_every_original_actor_and_drop_late_failure() {
             let root = binding::bind(&access, &layout).unwrap();
             let capacity = memory.used();
             let calls = Cell::new(0);
-            let result = pki::bind_counters(&root, &access, |counter, work| {
+            let result = structured_xades::pki::bind_counters(&root, &access, |counter, work| {
                 work.charge_work(1).unwrap();
                 calls.set(calls.get() + 1);
                 if missing && counter.original().child() == second {
@@ -1557,7 +1588,7 @@ fn counter_credentials_require_original_property_coverage_without_child_baseline
             let root = binding::bind(&access, &layout).unwrap();
             let before = memory.used();
             let selections = Cell::new(0);
-            let result = pki::bind_counters(&root, &access, |_, _| {
+            let result = structured_xades::pki::bind_counters(&root, &access, |_, _| {
                 selections.set(selections.get() + 1);
                 Ok::<_, ()>(path)
             });
@@ -1583,7 +1614,7 @@ fn counter_credentials_require_original_property_coverage_without_child_baseline
 }
 
 struct CredentialAuthorities<'path, 'document> {
-    paths: &'path [&'path structured_xades::pki::CheckedPath<'document>],
+    paths: &'path [&'path structured_ltv::pki::CheckedPath<'document>],
     anchor: &'path structured_pkix::path::EffectiveAnchor<'document>,
 }
 
@@ -1599,7 +1630,8 @@ impl<'path, 'document> structured_xades::credential::Provider<'path, 'document, 
     ) -> Result<structured_xades::credential::Authentication<'path, 'document, usize>, MemoryError>
     {
         // Metadata-only authority/source oracle, not credential mathematics.
-        use structured_xades::credential::{Authentication, Authorities};
+        use structured_ltv::pki::Authorities;
+        use structured_xades::credential::Authentication;
         access.execution().charge_work(1)?;
         let authorities = if source.signature() == 0 {
             Authorities::Paths(self.paths)
@@ -1664,7 +1696,8 @@ fn present_validation_containers_require_their_actual_signer_copies() {
     // permit another container to replace the credential signer's mandatory
     // copy. General availability and mandatory placement are separate facts.
     // Both original complete and delta CRLs must participate, not just one.
-    use structured_xades::{material, pki, prepare, timestamp, unsigned};
+    use structured_ltv::{pki, timestamp::TimestampPathBinding};
+    use structured_xades::{material, pki::bind_counters, prepare, timestamp, unsigned};
     for mode in 0..8 {
         with_checked_path(|path, leaf, root, memory| {
             let (mut xml, _, _, _, archive) = participant_tree(leaf, memory);
@@ -1674,8 +1707,8 @@ fn present_validation_containers_require_their_actual_signer_copies() {
             let access = Access::new(&xml, xml.snapshot(), memory);
             let prepared =
                 prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
-            let counters =
-                pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+            let counters = bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path));
+            let counters = counters.unwrap();
             let stamps = timestamp::counter_timestamps(&access, &counters).unwrap();
             let all = timestamp::requirements_with_counters(
                 &access,
@@ -1684,8 +1717,7 @@ fn present_validation_containers_require_their_actual_signer_copies() {
                 timestamp::TimestampSelection::All,
             )
             .unwrap();
-            let timestamp::TimestampPathBinding::Bound(all) = all.bind_paths(&[], &access).unwrap()
-            else {
+            let TimestampPathBinding::Bound(all) = all.bind_paths(&[], &access).unwrap() else {
                 panic!("no original timestamps");
             };
             let parser = structured_asn1::Parser::der(memory.clone());
@@ -1715,7 +1747,7 @@ fn present_validation_containers_require_their_actual_signer_copies() {
                             |query, view| {
                                 let work = query.execution();
                                 let access = Access::new(&xml, xml.snapshot(), &work);
-                                let index = material::Index::build(&view, &access).unwrap();
+                                let index = material::index(&view, &access).unwrap();
                                 assert_presence(&closed, &index, &access, mode);
                                 let before = memory.used();
                                 let result = material::conditional_placement(
@@ -1767,7 +1799,16 @@ fn present_validation_containers_require_their_actual_signer_copies() {
 
 fn assert_whole_material_checks<W: Work, Q: Work>(
     prepared: &structured_xades::prepare::Prepared<Tree>,
-    closed: &structured_xades::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
@@ -1796,7 +1837,7 @@ fn assert_whole_material_checks<W: Work, Q: Work>(
         assert!(matches!(
             material::check_participants(prepared, closed, counters, index, &current),
             Err(material::CheckError::Conditional(
-                material::ConditionalError::Index(material::IndexError::Resource {
+                material::ConditionalError::Index(structured_ltv::material::IndexError::Resource {
                     cause: MemoryError::WorkExceeded,
                     ..
                 })
@@ -1808,21 +1849,38 @@ fn assert_whole_material_checks<W: Work, Q: Work>(
 }
 
 fn assert_presence<W: Work, Q: Work>(
-    closed: &structured_xades::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
     mode: u8,
 ) {
-    use structured_xades::{material, pki};
-    let purposes = pki::authority_uses(closed, access).unwrap();
-    let artifacts = material::artifact_uses(&purposes, access).unwrap();
-    let presence = material::incorporation(&artifacts, index, access).unwrap();
+    let purposes = structured_ltv::pki::authority_uses(closed, access).unwrap();
+    let artifacts = structured_ltv::material::artifact_uses(&purposes, access).unwrap();
+    let presence = structured_ltv::material::incorporation(&artifacts, index, access).unwrap();
     assert_eq!(presence.all_present(), mode != 2);
 }
 
 fn assert_conditional_refusals<W: Work, Q: Work>(
     prepared: &structured_xades::prepare::Prepared<Tree>,
-    closed: &structured_xades::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
@@ -1845,8 +1903,10 @@ fn assert_conditional_refusals<W: Work, Q: Work>(
         assert!(matches!(
             material::conditional_placement(prepared, closed, counters, index, &current),
             Err(material::ConditionalError::Index(
-                material::IndexError::Resource { .. }
-                    | material::IndexError::Access(AccessError::Resource { .. })
+                structured_ltv::material::IndexError::Resource { .. }
+                    | structured_ltv::material::IndexError::Scope(
+                        structured_ltv::source::ScopeError::Resource { .. },
+                    )
             ))
         ));
         assert_eq!(denied.used(), 0);
@@ -1863,7 +1923,7 @@ fn assert_conditional_refusals<W: Work, Q: Work>(
     assert!(matches!(
         material::conditional_placement(prepared, closed, counters, index, &foreign),
         Err(material::ConditionalError::Index(
-            material::IndexError::Foreign { signature: 0 }
+            structured_ltv::material::IndexError::Foreign { signature: 0 }
         ))
     ));
     assert_eq!(access.execution().memory().used(), before);
@@ -1879,7 +1939,7 @@ fn assert_conditional_refusals<W: Work, Q: Work>(
         assert!(matches!(
             material::conditional_placement(prepared, closed, &substituted, index, access),
             Err(material::ConditionalError::Index(
-                material::IndexError::Foreign { signature: 0 }
+                structured_ltv::material::IndexError::Foreign { signature: 0 }
             ))
         ));
         assert_eq!(access.execution().memory().used(), held);
@@ -1888,7 +1948,16 @@ fn assert_conditional_refusals<W: Work, Q: Work>(
 
 fn assert_conditional_late_work<W: Work, Q: Work>(
     prepared: &structured_xades::prepare::Prepared<Tree>,
-    closed: &structured_xades::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     original: &Access<'_, Tree, Q>,
@@ -1920,7 +1989,7 @@ fn assert_conditional_late_work<W: Work, Q: Work>(
     assert!(matches!(
         material::conditional_placement(prepared, closed, counters, index, &current),
         Err(material::ConditionalError::Index(
-            material::IndexError::Resource {
+            structured_ltv::material::IndexError::Resource {
                 cause: MemoryError::WorkExceeded,
                 ..
             }
@@ -2090,7 +2159,8 @@ fn assert_conditional_findings(
     root: &[u8],
     leaf: &[u8],
 ) {
-    use structured_xades::{material, pki};
+    use structured_ltv::pki;
+    use structured_xades::material;
     assert_eq!(result.snapshot(), xml.snapshot());
     assert_eq!(result.signature(), 0);
     assert_eq!(
@@ -2112,7 +2182,10 @@ fn assert_conditional_findings(
                 material::ConditionalFailure::Missing => missing += 1,
                 material::ConditionalFailure::Elsewhere => elsewhere += 1,
             }
-            if matches!(finding.artifact, material::ArtifactRef::Crl(_)) {
+            if matches!(
+                finding.artifact,
+                structured_ltv::material::ArtifactRef::Crl(_)
+            ) {
                 statuses += 1;
             }
             assert!(matches!(
@@ -2133,7 +2206,7 @@ fn assert_conditional_findings(
             matches!(finding.participant, pki::Participant::Credential { signature, .. } if signature == owner)
         );
         assert!(
-            matches!(finding.artifact, material::ArtifactRef::Certificate(certificate) if certificate.as_bytes() == root)
+            matches!(finding.artifact, structured_ltv::material::ArtifactRef::Certificate(certificate) if certificate.as_bytes() == root)
         );
         assert_eq!(finding.cause, material::ConditionalFailure::Elsewhere);
     }
@@ -2149,10 +2222,10 @@ fn assert_conditional_findings(
             assert_eq!(finding.cause, material::ConditionalFailure::Elsewhere);
         }
         assert!(
-            matches!(result.findings()[0].artifact, material::ArtifactRef::Certificate(certificate) if certificate.as_bytes() == root)
+            matches!(result.findings()[0].artifact, structured_ltv::material::ArtifactRef::Certificate(certificate) if certificate.as_bytes() == root)
         );
         assert!(
-            matches!(result.findings()[1].artifact, material::ArtifactRef::Certificate(certificate) if certificate.as_bytes() == leaf)
+            matches!(result.findings()[1].artifact, structured_ltv::material::ArtifactRef::Certificate(certificate) if certificate.as_bytes() == leaf)
         );
     }
 }
@@ -2260,17 +2333,17 @@ fn participant_archive_tree(
 }
 
 pub(super) fn with_original_delta_statuses(
-    path: &structured_xades::pki::CheckedPath<'_>,
+    path: &structured_ltv::pki::CheckedPath<'_>,
     memory: &structured_asn1::memory::Memory,
-    check: impl FnOnce(&structured_xades::pki::PathStatuses<'_, '_, '_>),
+    check: impl FnOnce(&structured_ltv::pki::PathStatuses<'_, '_, '_>),
 ) {
     // Fixture setup uses the existing shared CRL pipeline, not written Good flags.
+    use structured_ltv::pki;
     use structured_pkix::{
         crl,
         path::WorkingKey,
         temporal::{Instant, LeapTable},
     };
-    use structured_xades::pki;
     let (base_bytes, delta_bytes) = super::timestamp_oracle::crl_pair();
     let parser = structured_asn1::Parser::der(memory.clone());
     let base = crl::CertificateList::read(&parser, &base_bytes, 5000).unwrap();
@@ -2328,11 +2401,28 @@ pub(super) fn with_original_delta_statuses(
 fn with_prepared_participants<'document>(
     xml: &Tree,
     prepared: &structured_xades::prepare::Prepared<Tree>,
-    path: &structured_xades::pki::CheckedPath<'document>,
+    path: &structured_ltv::pki::CheckedPath<'document>,
     credential_anchor: structured_pkix::path::Anchor<'document>,
-    prior: &structured_xades::timestamp::TimestampPaths<'_, '_, 'document, usize, u8, u8>,
+    prior: &structured_ltv::timestamp::TimestampPaths<
+        '_,
+        '_,
+        'document,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     memory: &structured_asn1::memory::Memory,
-    check: impl FnOnce(&structured_xades::pki::ParticipantRequirements<'_, 'document, usize, u8, u8>),
+    check: impl FnOnce(
+        &structured_ltv::pki::ParticipantRequirements<
+            '_,
+            'document,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
+    ),
 ) {
     with_prepared_inputs(
         xml,
@@ -2348,17 +2438,32 @@ fn with_prepared_participants<'document>(
 fn with_prepared_inputs<'document>(
     xml: &Tree,
     prepared: &structured_xades::prepare::Prepared<Tree>,
-    path: &structured_xades::pki::CheckedPath<'document>,
+    path: &structured_ltv::pki::CheckedPath<'document>,
     credential_anchor: structured_pkix::path::Anchor<'document>,
-    prior: &structured_xades::timestamp::TimestampPaths<'_, '_, 'document, usize, u8, u8>,
+    prior: &structured_ltv::timestamp::TimestampPaths<
+        '_,
+        '_,
+        'document,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     memory: &structured_asn1::memory::Memory,
     check: impl FnOnce(
-        &structured_xades::pki::ParticipantRequirements<'_, 'document, usize, u8, u8>,
+        &structured_ltv::pki::ParticipantRequirements<
+            '_,
+            'document,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
         &structured_xades::credential::ParticipantCredentials<'_, 'document, usize, usize, u8, u8>,
     ),
 ) {
     use structured_pkix::path::WorkingKey;
-    use structured_xades::{certificate, credential, pki};
+    use structured_xades::{certificate, credential};
     let access = Access::new(xml, xml.snapshot(), memory);
     let digest = Oracle::new(Mode::Ready);
     let signer = certificate::check_path(
@@ -2370,7 +2475,9 @@ fn with_prepared_inputs<'document>(
         memory,
     )
     .unwrap();
-    let counters = pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+    let counters =
+        structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path))
+            .unwrap();
     let anchor = structured_pkix::path::EffectiveAnchor::bind(
         credential_anchor,
         WorkingKey::standing(credential_anchor.key()),
@@ -2389,7 +2496,7 @@ fn with_prepared_inputs<'document>(
         &access,
     )
     .unwrap();
-    let participants = pki::participants(&signer, &counters, &credentials, prior, &access).unwrap();
+    let participants = participants(&signer, &counters, &credentials, prior, &access).unwrap();
     check(&participants, &credentials);
 }
 
@@ -2397,8 +2504,9 @@ fn with_prepared_inputs<'document>(
 fn exclusive_credential_ca_rejects_ordinary_copies_but_not_shared_or_attribute_copies() {
     // Genuine certificates/path signatures, metadata credential owner. This
     // isolates the EN5.4.2(5) rule, not SAML authentication or a full B level.
+    use structured_ltv::pki;
     use structured_pkix::path::Anchor;
-    use structured_xades::{material, pki, prepare, timestamp, unsigned};
+    use structured_xades::{material, prepare, timestamp, unsigned};
     for (shared, attribute) in [(false, false), (false, true), (true, false)] {
         with_checked_path(|path, leaf, _, memory| {
             let (mut xml, _, _, _, archive) = participant_tree(leaf, memory);
@@ -2434,7 +2542,10 @@ fn exclusive_credential_ca_rejects_ordinary_copies_but_not_shared_or_attribute_c
             let prepared =
                 prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
             let counters =
-                pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+                structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+                    Ok::<_, ()>(path)
+                })
+                .unwrap();
             let stamps = timestamp::counter_timestamps(&access, &counters).unwrap();
             let all = timestamp::requirements_with_counters(
                 &access,
@@ -2444,7 +2555,8 @@ fn exclusive_credential_ca_rejects_ordinary_copies_but_not_shared_or_attribute_c
             )
             .unwrap();
             assert!(all.entries().is_empty());
-            let timestamp::TimestampPathBinding::Bound(all) = all.bind_paths(&[], &access).unwrap()
+            let structured_ltv::timestamp::TimestampPathBinding::Bound(all) =
+                all.bind_paths(&[], &access).unwrap()
             else {
                 panic!("complete original zero-token set")
             };
@@ -2469,7 +2581,7 @@ fn exclusive_credential_ca_rejects_ordinary_copies_but_not_shared_or_attribute_c
                         material::with_values(&xml, &prepared, &operation, |query, view| {
                             let work = query.execution();
                             let access = Access::new(&xml, xml.snapshot(), &work);
-                            let index = material::Index::build(&view, &access).unwrap();
+                            let index = material::index(&view, &access).unwrap();
                             assert_exclusive_material(
                                 &closed,
                                 &index,
@@ -2490,7 +2602,16 @@ fn exclusive_credential_ca_rejects_ordinary_copies_but_not_shared_or_attribute_c
 }
 
 fn assert_exclusive_material<W: Work, Q: Work>(
-    closed: &structured_xades::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
     value: usize,
@@ -2499,10 +2620,11 @@ fn assert_exclusive_material<W: Work, Q: Work>(
     xml: &Tree,
 ) {
     use structured_asn1::memory::{Memory, MemoryAccount};
-    use structured_xades::{material, pki};
+    use structured_ltv::pki;
+    use structured_xades::material;
     let before = access.execution().memory().used();
     let uses = pki::authority_uses(closed, access).unwrap();
-    let artifacts = material::artifact_uses(&uses, access).unwrap();
+    let artifacts = structured_ltv::material::artifact_uses(&uses, access).unwrap();
     assert_incorporated_inputs(&artifacts, index, access, xml, false);
     let retained = access.execution().memory().used();
     let checked = material::exclusivity(&artifacts, index, access).unwrap();
@@ -2514,7 +2636,7 @@ fn assert_exclusive_material<W: Work, Q: Work>(
         assert_eq!(finding.occurrence().location().node, value);
         assert!(matches!(
             finding.artifact(),
-            material::ArtifactRef::Certificate(_)
+            structured_ltv::material::ArtifactRef::Certificate(_)
         ));
     } else {
         assert!(checked.findings().is_empty());
@@ -2546,7 +2668,9 @@ fn assert_exclusive_material<W: Work, Q: Work>(
     assert!(matches!(
         material::exclusivity(&artifacts, index, &denied_access),
         Err(material::ExclusivityError::Index(
-            material::IndexError::Access(AccessError::Resource { .. })
+            structured_ltv::material::IndexError::Scope(
+                structured_ltv::source::ScopeError::Resource { .. },
+            )
         ))
     ));
     drop(artifacts);
@@ -2613,7 +2737,7 @@ fn participant_archive_material_keeps_direct_anchor_coverage_and_late_refusal() 
             let selection = timestamp::TimestampSelection::BeforeArchive(at);
             let required = participant_timestamp_requirements(&access, &prepared, path, selection);
             let prior_paths = [&prior_path];
-            let timestamp::TimestampPathBinding::Bound(prior) =
+            let structured_ltv::timestamp::TimestampPathBinding::Bound(prior) =
                 required.bind_paths(&prior_paths, &access).unwrap()
             else {
                 panic!("complete original earlier-token set")
@@ -2663,21 +2787,21 @@ struct ArchiveMaterialCheck<'case, 'source, C: Work> {
     xml: &'case Tree,
     prepared: &'case structured_xades::prepare::Prepared<Tree>,
     operation: &'case structured_asn1::Reader<'source>,
-    coverage: &'case structured_xades::timestamp::ElementCoverage<usize, u8, u8, C>,
-    evidence: &'case structured_xades::timestamp::Verified<usize, u8, u8>,
+    coverage: &'case structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &'case structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     early: bool,
     general: bool,
 }
 
 fn checked_timestamp_path<'v, 'c, 'd>(
-    path: &'v structured_xades::pki::CheckedPath<'d>,
+    path: &'v structured_ltv::pki::CheckedPath<'d>,
     actor: &'v structured_xades::timestamp::TimestampActor<'c, 'd, Tree>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     memory: &structured_asn1::memory::Memory,
-) -> structured_xades::pki::TimestampPath<'v, 'c, 'd, usize, u8, u8> {
+) -> structured_ltv::pki::TimestampPath<'v, 'c, 'd, usize, u8, u8, structured_xades::Xades> {
     // Every fixture token must bind its actual TSA key and complete generation
     // interval. A rejected binding never supplies an archive material actor.
-    let structured_xades::pki::TimestampBinding::Bound(path) =
+    let structured_ltv::pki::TimestampBinding::Bound(path) =
         path.bind_timestamp(actor, utc, memory).unwrap()
     else {
         panic!("actual TSA key and full generation interval must bind")
@@ -2712,7 +2836,7 @@ impl structured_xades::material::credentials::Provider<Tree, usize> for ArchiveF
             .map_err(VisitError::Processing)?;
         self.calls.set(self.calls.get() + 1);
         visitor(material::credentials::Need::Known(
-            material::ArtifactRef::Certificate(self.certificate),
+            structured_ltv::material::ArtifactRef::Certificate(self.certificate),
         ))
         .map_err(VisitError::Visitor)?;
         Ok(material::credentials::Completeness::Complete)
@@ -2722,13 +2846,15 @@ impl structured_xades::material::credentials::Provider<Tree, usize> for ArchiveF
 fn participant_timestamp_requirements<W: Work>(
     access: &Access<'_, Tree, W>,
     prepared: &structured_xades::prepare::Prepared<Tree>,
-    path: &structured_xades::pki::CheckedPath<'_>,
+    path: &structured_ltv::pki::CheckedPath<'_>,
     selection: structured_xades::timestamp::TimestampSelection,
-) -> structured_xades::timestamp::TimestampRequirements<usize, u8, u8> {
+) -> structured_ltv::timestamp::TimestampRequirements<usize, u8, u8, structured_xades::Xades> {
     // Retained requirements own scalar source identities, never borrows into
     // temporary path/counter catalogues. Actual key receipts are still required.
-    use structured_xades::{pki, timestamp};
-    let counters = pki::bind_counters(prepared.bound(), access, |_, _| Ok::<_, ()>(path)).unwrap();
+    use structured_xades::timestamp;
+    let counters =
+        structured_xades::pki::bind_counters(prepared.bound(), access, |_, _| Ok::<_, ()>(path))
+            .unwrap();
     let stamps = timestamp::counter_timestamps(access, &counters).unwrap();
     timestamp::requirements_with_counters(access, prepared, &stamps, selection).unwrap()
 }
@@ -2778,14 +2904,16 @@ fn whole_participant_census_refuses_root_only_timestamp_requirements() {
     // An empty root antecedent list cannot prove that incorporated counters
     // have no timestamp obligations. Even this zero-child-token fixture needs
     // the complete source census; no caller-written successful subset is used.
+    use structured_ltv::{pki, timestamp::TimestampPathBinding};
     use structured_pkix::path::{EffectiveAnchor, WorkingKey};
-    use structured_xades::{certificate, credential, pki, prepare, timestamp, unsigned};
+    use structured_xades::{
+        certificate, credential, pki::bind_counters, prepare, timestamp, unsigned,
+    };
     with_checked_path(|path, leaf, _, memory| {
         let (xml, _, _, _, archive) = participant_tree(leaf, memory);
         let access = Access::new(&xml, xml.snapshot(), memory);
         let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
         let anchor = EffectiveAnchor::bind(
             path.anchor(),
             WorkingKey::standing(path.anchor().key()),
@@ -2821,26 +2949,22 @@ fn whole_participant_census_refuses_root_only_timestamp_requirements() {
         let selection = timestamp::TimestampSelection::BeforeArchive(at);
         let partial = timestamp::requirements(&access, &prepared, selection).unwrap();
         assert!(partial.entries().is_empty());
-        let timestamp::TimestampPathBinding::Bound(partial) =
-            partial.bind_paths(&[], &access).unwrap()
-        else {
+        let TimestampPathBinding::Bound(partial) = partial.bind_paths(&[], &access).unwrap() else {
             panic!("root source has no earlier tokens")
         };
         assert!(matches!(
-            pki::participants(&signer, &counters, &credentials, &partial, &access),
+            participants(&signer, &counters, &credentials, &partial, &access),
             Err(pki::ParticipantError::CounterTimestamps)
         ));
         let stamps = timestamp::counter_timestamps(&access, &counters).unwrap();
         let complete =
             timestamp::requirements_with_counters(&access, &prepared, &stamps, selection).unwrap();
         assert_archive_census_refusal(&xml, &prepared, &stamps, selection, memory);
-        let timestamp::TimestampPathBinding::Bound(complete) =
-            complete.bind_paths(&[], &access).unwrap()
+        let TimestampPathBinding::Bound(complete) = complete.bind_paths(&[], &access).unwrap()
         else {
             panic!("all child sources really have no earlier tokens")
         };
-        let report =
-            pki::participants(&signer, &counters, &credentials, &complete, &access).unwrap();
+        let report = participants(&signer, &counters, &credentials, &complete, &access).unwrap();
         assert_participant_origins(
             &counters,
             &prepared,
@@ -2880,7 +3004,9 @@ fn whole_participant_census_refuses_root_only_timestamp_requirements() {
         assert_eq!(all.entries().len(), 1);
         assert!(matches!(
             all.bind_paths(&[], &access).unwrap(),
-            timestamp::TimestampPathBinding::Unproven(timestamp::TimestampPathFailure::Count)
+            structured_ltv::timestamp::TimestampPathBinding::Unproven(
+                structured_ltv::timestamp::TimestampPathFailure::Count
+            )
         ));
     });
 }
@@ -2888,20 +3014,22 @@ fn whole_participant_census_refuses_root_only_timestamp_requirements() {
 fn assert_participant_origins(
     counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
     prepared: &structured_xades::prepare::Prepared<Tree>,
-    path: &structured_xades::pki::CheckedPath<'_>,
+    path: &structured_ltv::pki::CheckedPath<'_>,
     xml: &Tree,
     memory: &structured_asn1::memory::Memory,
     check: impl Fn(
         &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
         &Access<'_, Tree, structured_asn1::memory::Memory>,
-    ) -> Result<(), structured_xades::pki::ParticipantError<super::Cause, usize>>,
+    ) -> Result<(), structured_ltv::pki::ParticipantError<usize>>,
 ) {
     // Identical document/node IDs are insufficient: a separately collected
     // catalogue could carry different selected paths or authentication inputs.
-    use structured_xades::pki;
+    use structured_ltv::pki;
     let access = Access::new(xml, xml.snapshot(), memory);
     check(counters, &access).unwrap();
-    let other = pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+    let other =
+        structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path))
+            .unwrap();
     assert!(matches!(
         check(&other, &access),
         Err(pki::ParticipantError::Foreign { signature: 0 })
@@ -2912,8 +3040,8 @@ fn assert_participant_origins(
     let denied_access = Access::new(xml, access.snapshot(), &denied);
     assert!(matches!(
         check(counters, &denied_access),
-        Err(pki::ParticipantError::Access(
-            structured_xades::xml::AccessError::Resource {
+        Err(pki::ParticipantError::Scope(
+            structured_ltv::source::ScopeError::Resource {
                 cause: MemoryError::WorkExceeded,
                 ..
             }
@@ -2924,9 +3052,25 @@ fn assert_participant_origins(
 impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
     fn all<'document>(
         &self,
-        path: &structured_xades::pki::CheckedPath<'document>,
-        prior: &structured_xades::pki::TimestampPath<'_, '_, 'document, usize, u8, u8>,
-        archive: &structured_xades::pki::TimestampPath<'_, '_, 'document, usize, u8, u8>,
+        path: &structured_ltv::pki::CheckedPath<'document>,
+        prior: &structured_ltv::pki::TimestampPath<
+            '_,
+            '_,
+            'document,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
+        archive: &structured_ltv::pki::TimestampPath<
+            '_,
+            '_,
+            'document,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
     ) {
         use structured_xades::timestamp;
         let memory = self.operation.memory();
@@ -2945,7 +3089,7 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
         )
         .unwrap();
         let paths = [prior, archive];
-        let timestamp::TimestampPathBinding::Bound(all) =
+        let structured_ltv::timestamp::TimestampPathBinding::Bound(all) =
             required.bind_paths(&paths, &access).unwrap()
         else {
             panic!("every original token has its actual TSA path")
@@ -2967,8 +3111,15 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
 
     fn before<'document>(
         &self,
-        participants: &structured_xades::pki::ParticipantRequirements<'_, 'document, usize, u8, u8>,
-        path: &structured_xades::pki::CheckedPath<'document>,
+        participants: &structured_ltv::pki::ParticipantRequirements<
+            '_,
+            'document,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
+        path: &structured_ltv::pki::CheckedPath<'document>,
         credentials: &structured_xades::credential::ParticipantCredentials<
             '_,
             'document,
@@ -2978,11 +3129,15 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
             u8,
         >,
     ) {
-        use structured_xades::{material, pki, timestamp};
+        use structured_ltv::pki;
+        use structured_xades::{material, timestamp};
         let memory = self.operation.memory();
         let access = Access::new(self.xml, self.xml.snapshot(), memory);
         let counters =
-            pki::bind_counters(self.prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+            structured_xades::pki::bind_counters(self.prepared.bound(), &access, |_, _| {
+                Ok::<_, ()>(path)
+            })
+            .unwrap();
         let ordinal = self
             .prepared
             .timestamps()
@@ -3011,7 +3166,7 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
             material::with_values(self.xml, self.prepared, self.operation, |query, view| {
                 let work = query.execution();
                 let access = Access::new(self.xml, self.xml.snapshot(), &work);
-                let index = material::Index::build(&view, &access).unwrap();
+                let index = material::index(&view, &access).unwrap();
                 assert_participant_archive_material(
                     &closed,
                     &index,
@@ -3032,7 +3187,7 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
                 )
                 .unwrap();
                 assert_format_archive(&report, &format, self.early);
-                let x509 = material::archived_participants(
+                let x509 = structured_ltv::material::archived_participants(
                     &closed,
                     &index,
                     self.coverage,
@@ -3049,7 +3204,16 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
 
     fn reject_all(
         &self,
-        closed: &structured_xades::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+        closed: &structured_ltv::pki::ParticipantClosure<
+            '_,
+            '_,
+            '_,
+            '_,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
         counters: &structured_xades::pki::CounterPaths<'_, '_, usize, u8, u8>,
     ) {
         // Whole-LT scope cannot be substituted for the exact antecedents of
@@ -3058,7 +3222,7 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
         material::with_values(self.xml, self.prepared, self.operation, |query, view| {
             let work = query.execution();
             let access = Access::new(self.xml, self.xml.snapshot(), &work);
-            let index = material::Index::build(&view, &access).unwrap();
+            let index = material::index(&view, &access).unwrap();
             let before = work.memory().used();
             // The composed LT check must visit the same six original actors,
             // including BOTH real TSA paths. Ordinary incorporated copies alone
@@ -3079,8 +3243,8 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
             drop(combined);
             assert_eq!(work.memory().used(), before);
             assert_timestamp_placement(closed, &index, &access, self.xml, self.general);
-            let uses = structured_xades::pki::authority_uses(closed, &access).unwrap();
-            let artifacts = material::artifact_uses(&uses, &access).unwrap();
+            let uses = structured_ltv::pki::authority_uses(closed, &access).unwrap();
+            let artifacts = structured_ltv::material::artifact_uses(&uses, &access).unwrap();
             assert_incorporated_inputs(&artifacts, &index, &access, self.xml, true);
             let placement = material::exclusivity(&artifacts, &index, &access).unwrap();
             assert_eq!(
@@ -3093,11 +3257,13 @@ impl<C: Work> ArchiveMaterialCheck<'_, '_, C> {
             drop(artifacts);
             drop(uses);
             assert_eq!(work.memory().used(), before);
-            assert!(matches!(material::archived_participants(closed, &index,
+            assert!(
+                matches!(structured_ltv::material::archived_participants(closed, &index,
                 self.coverage, self.evidence, &access),
-                Err(material::ParticipantArchiveError::Foreign { expected, actual })
+                Err(structured_ltv::material::ParticipantArchiveError::Foreign { expected, actual })
                 if expected == self.prepared.bound().containers().signature()
-                    && actual == self.evidence.property()));
+                    && actual == self.evidence.property())
+            );
             assert_eq!(work.memory().used(), before);
             Ok::<_, ()>(())
         })
@@ -3136,7 +3302,18 @@ fn assert_format_archive(
 }
 
 fn assert_archive_pair<W: Work>(
-    x509: &structured_xades::material::ParticipantMaterial<'_, '_, '_, '_, '_, usize, u8, u8>,
+    x509: &structured_ltv::material::ParticipantMaterial<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::material::Placement<usize>,
+        structured_xades::Xades,
+    >,
     format: &structured_xades::material::credentials::Report<'_, '_, '_, usize, usize, u8, u8>,
     access: &Access<'_, Tree, W>,
     xml: &Tree,
@@ -3145,7 +3322,7 @@ fn assert_archive_pair<W: Work>(
 ) {
     // Joined material must retain both complete reports and exact original
     // credential identity, without reauthentication, copying or query credit.
-    use structured_xades::{baseline, pki};
+    use structured_ltv::{baseline, pki};
     let held = access.execution().memory().used();
     let combined = baseline::archive_material(x509, format, access).unwrap();
     assert_eq!(combined.all_material_covered(), covered);
@@ -3169,7 +3346,7 @@ fn assert_archive_pair<W: Work>(
             Err(baseline::ArchiveCensusError::Missing {property}) if property==second));
     } else {
         let census = baseline::archives(prepared, &reports, access).unwrap();
-        assert!(core::ptr::eq(census.prepared(), prepared));
+        assert!(core::ptr::eq(census.census(), prepared));
         assert_eq!(census.reports().len(), 1);
         assert_eq!(census.all_archive_material_covered(), covered);
     }
@@ -3192,16 +3369,18 @@ fn assert_archive_pair<W: Work>(
     let query = Access::new(xml, xml.snapshot(), &denied);
     assert!(matches!(
         baseline::archive_material(x509, format, &query),
-        Err(pki::ParticipantError::Access(AccessError::Resource {
-            cause: MemoryError::WorkExceeded,
-            ..
-        }))
+        Err(pki::ParticipantError::Scope(
+            structured_ltv::source::ScopeError::Resource {
+                cause: MemoryError::WorkExceeded,
+                ..
+            }
+        ))
     ));
     assert_eq!(denied.used(), 0);
     assert!(matches!(
         baseline::archives(prepared, &reports, &query),
-        Err(baseline::ArchiveCensusError::Access(
-            AccessError::Resource {
+        Err(baseline::ArchiveCensusError::Scope(
+            structured_ltv::source::ScopeError::Resource {
                 cause: MemoryError::WorkExceeded,
                 ..
             }
@@ -3210,7 +3389,17 @@ fn assert_archive_pair<W: Work>(
 }
 
 fn assert_incorporated_inputs<W: Work, Q: Work>(
-    uses: &structured_xades::material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    uses: &structured_ltv::material::ArtifactUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
     xml: &Tree,
@@ -3220,15 +3409,14 @@ fn assert_incorporated_inputs<W: Work, Q: Work>(
     // exclusivity fixture has certificate copies but neither contributing CRL;
     // successful authentication/acquisition alone must not become incorporation.
     use structured_asn1::memory::{Memory, MemoryAccount};
-    use structured_xades::material;
     let before = access.execution().memory().used();
-    let report = material::incorporation(uses, index, access).unwrap();
+    let report = structured_ltv::material::incorporation(uses, index, access).unwrap();
     assert_eq!(report.snapshot(), xml.snapshot());
     assert_eq!(report.signature(), 0);
     assert_eq!(report.all_present(), present);
     let mut statuses = 0;
     for entry in report.entries() {
-        if let material::ArtifactRef::Crl(_) = entry.artifact() {
+        if let structured_ltv::material::ArtifactRef::Crl(_) = entry.artifact() {
             statuses += 1;
             assert_eq!(entry.occurrence().is_some(), present);
         }
@@ -3242,9 +3430,9 @@ fn assert_incorporated_inputs<W: Work, Q: Work>(
     let denied = Memory::new(std::sync::Arc::new(MemoryAccount::new(0, 1 << 24)));
     let denied_access = Access::new(xml, access.snapshot(), &denied);
     assert!(matches!(
-        material::incorporation(uses, index, &denied_access),
-        Err(material::IncorporationError::Index(
-            material::IndexError::Resource {
+        structured_ltv::material::incorporation(uses, index, &denied_access),
+        Err(structured_ltv::material::IncorporationError::Index(
+            structured_ltv::material::IndexError::Resource {
                 cause: MemoryError::LimitExceeded,
                 ..
             }
@@ -3261,15 +3449,24 @@ fn assert_incorporated_inputs<W: Work, Q: Work>(
         access.execution(),
     );
     assert!(matches!(
-        material::incorporation(uses, index, &foreign),
-        Err(material::IncorporationError::Index(
-            material::IndexError::Foreign { signature: 0 }
+        structured_ltv::material::incorporation(uses, index, &foreign),
+        Err(structured_ltv::material::IncorporationError::Index(
+            structured_ltv::material::IndexError::Foreign { signature: 0 }
         ))
     ));
 }
 
 fn assert_timestamp_placement<W: Work, Q: Work>(
-    closed: &structured_xades::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
     access: &Access<'_, Tree, Q>,
     xml: &Tree,
@@ -3277,7 +3474,8 @@ fn assert_timestamp_placement<W: Work, Q: Work>(
 ) {
     // This XML-only pool has all four exact artifacts in ordinary containers.
     // They cover archive input but cannot satisfy §6.3(x) for EITHER real TSA.
-    use structured_xades::{material, pki};
+    use structured_ltv::pki;
+    use structured_xades::material;
     let before = access.execution().memory().used();
     let checked = material::timestamp_placement(closed, index, access).unwrap();
     assert!(std::ptr::eq(checked.inputs(), closed));
@@ -3311,17 +3509,19 @@ fn assert_timestamp_placement<W: Work, Q: Work>(
             assert!(matches!(
                 refusal,
                 Err(material::TimestampPlacementError::Index(
-                    material::IndexError::Access(AccessError::Resource {
-                        cause: MemoryError::WorkExceeded,
-                        ..
-                    })
+                    structured_ltv::material::IndexError::Scope(
+                        structured_ltv::source::ScopeError::Resource {
+                            cause: MemoryError::WorkExceeded,
+                            ..
+                        }
+                    )
                 ))
             ));
         } else {
             assert!(matches!(
                 refusal,
                 Err(material::TimestampPlacementError::Index(
-                    material::IndexError::Resource {
+                    structured_ltv::material::IndexError::Resource {
                         cause: MemoryError::LimitExceeded,
                         ..
                     }
@@ -3335,17 +3535,35 @@ fn assert_timestamp_placement<W: Work, Q: Work>(
 
 fn assert_all_participant_scope<'document>(
     xml: &Tree,
-    participants: &structured_xades::pki::ParticipantRequirements<'_, 'document, usize, u8, u8>,
-    path: &structured_xades::pki::CheckedPath<'document>,
+    participants: &structured_ltv::pki::ParticipantRequirements<
+        '_,
+        'document,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
+    path: &structured_ltv::pki::CheckedPath<'document>,
     memory: &structured_asn1::memory::Memory,
-    check: impl FnOnce(&structured_xades::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>),
+    check: impl FnOnce(
+        &structured_ltv::pki::ParticipantClosure<
+            '_,
+            '_,
+            '_,
+            '_,
+            usize,
+            u8,
+            u8,
+            structured_xades::Xades,
+        >,
+    ),
 ) {
     // Same actor collector, but LT includes the archive TSA too. The roots
     // come from those original actors; no caller-written count proves coverage.
-    use structured_xades::{pki, timestamp};
+    use structured_ltv::pki;
     assert_eq!(
         participants.scope(),
-        timestamp::TimestampScope::All(binary::Location {
+        structured_ltv::timestamp::TimestampScope::All(binary::Location {
             snapshot: xml.snapshot(),
             node: participants.signature()
         })
@@ -3378,13 +3596,13 @@ fn assert_all_participant_scope<'document>(
 }
 
 fn assert_individual_root_attribution(
-    closure: &structured_xades::pki::AuthorityClosure<'_, '_, '_>,
+    closure: &structured_ltv::pki::AuthorityClosure<'_, '_, '_>,
     original: &structured_asn1::memory::Memory,
 ) {
     // Two real TSA actors and the ordinary actors deliberately share this
     // cyclic CRL-authority graph. Aggregate purpose bits must not erase which
     // original actor needs the data; one visit per root/node, no crypto replay.
-    use structured_xades::pki::{AuthorityClosureError, AuthorityVisitError};
+    use structured_ltv::pki::{AuthorityClosureError, AuthorityVisitError};
     assert_eq!(closure.nodes().len(), 1);
     let before = original.used();
     let mut visited = [0usize; 5];
@@ -3435,10 +3653,19 @@ fn participant_material_memory() -> structured_asn1::memory::Memory {
 }
 
 fn assert_participant_archive_material<W: Work, Q: Work, C: Work>(
-    closed: &structured_xades::pki::ParticipantClosure<'_, '_, '_, '_, usize, u8, u8>,
+    closed: &structured_ltv::pki::ParticipantClosure<
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     index: &structured_xades::material::Index<'_, usize, u8, u8, W>,
-    coverage: &structured_xades::timestamp::ElementCoverage<usize, u8, u8, C>,
-    evidence: &structured_xades::timestamp::Verified<usize, u8, u8>,
+    coverage: &structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
+    evidence: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     access: &Access<'_, Tree, Q>,
     xml: &Tree,
     early: bool,
@@ -3447,23 +3674,24 @@ fn assert_participant_archive_material<W: Work, Q: Work, C: Work>(
     use structured_xades::material::{self, Archived};
     let memory = access.execution().memory();
     let before = memory.used();
-    let uses = structured_xades::pki::authority_uses(closed, access).unwrap();
+    let uses = structured_ltv::pki::authority_uses(closed, access).unwrap();
     assert_eq!(uses.entries().len(), 1);
     assert!(uses.entries()[0].uses().signature());
     assert!(uses.entries()[0].uses().credential());
     assert!(uses.entries()[0].uses().timestamp());
     assert_participant_artifact_uses(&uses, access, xml);
-    let artifacts = material::artifact_uses(&uses, access).unwrap();
+    let artifacts = structured_ltv::material::artifact_uses(&uses, access).unwrap();
     assert!(matches!(material::exclusivity(&artifacts, index, access),
         Err(material::ExclusivityError::Scope { node }) if node == closed.requirements().scope().location().node));
     assert!(matches!(
-        material::incorporation(&artifacts, index, access),
-        Err(material::IncorporationError::Scope)
+        structured_ltv::material::incorporation(&artifacts, index, access),
+        Err(structured_ltv::material::IncorporationError::Scope)
     ));
     drop(artifacts);
     drop(uses);
     let report =
-        material::archived_participants(closed, index, coverage, evidence, access).unwrap();
+        structured_ltv::material::archived_participants(closed, index, coverage, evidence, access)
+            .unwrap();
     assert!(core::ptr::eq(report.inputs(), closed));
     assert_eq!(report.all_x509_artifacts_covered(), early);
     assert_eq!(report.authorities().paths().len(), 1);
@@ -3482,7 +3710,7 @@ fn assert_participant_archive_material<W: Work, Q: Work, C: Work>(
     drop(report);
     assert_eq!(memory.used(), before);
     // Admit exactly the reached paths; refuse subsequent anchor-report capacity.
-    let paths = material::status::archived_authorities(
+    let paths = structured_ltv::material::status::archived_authorities(
         closed.authorities(),
         index,
         coverage,
@@ -3496,22 +3724,32 @@ fn assert_participant_archive_material<W: Work, Q: Work, C: Work>(
     let limited = Memory::new(std::sync::Arc::new(MemoryAccount::new(capacity, 1 << 26)));
     let limited_access = Access::new(xml, access.snapshot(), &limited);
     assert!(matches!(
-        material::archived_participants(closed, index, coverage, evidence, &limited_access),
-        Err(material::ParticipantArchiveError::Resource {
-            cause: MemoryError::LimitExceeded,
-            ..
-        })
+        structured_ltv::material::archived_participants(
+            closed,
+            index,
+            coverage,
+            evidence,
+            &limited_access
+        ),
+        Err(
+            structured_ltv::material::ParticipantArchiveError::Resource {
+                cause: MemoryError::LimitExceeded,
+                ..
+            }
+        )
     ));
     assert_eq!(limited.used(), 0);
     assert_eq!(memory.used(), before);
     let denied = super::memory(0);
     let denied = Access::new(xml, access.snapshot(), &denied);
     assert!(matches!(
-        material::archived_participants(closed, index, coverage, evidence, &denied),
-        Err(material::ParticipantArchiveError::Material(
-            material::ArchiveError::Index(material::IndexError::Access(
-                AccessError::Resource { .. }
-            ))
+        structured_ltv::material::archived_participants(closed, index, coverage, evidence, &denied),
+        Err(structured_ltv::material::ParticipantArchiveError::Material(
+            structured_ltv::material::ArchiveError::Index(
+                structured_ltv::material::IndexError::Scope(
+                    structured_ltv::source::ScopeError::Resource { .. },
+                )
+            )
         ))
     ));
     let foreign = Access::new(
@@ -3523,24 +3761,34 @@ fn assert_participant_archive_material<W: Work, Q: Work, C: Work>(
         access.execution(),
     );
     assert!(
-        matches!(material::archived_participants(closed,index,coverage,evidence,&foreign),
-        Err(material::ParticipantArchiveError::Foreign {expected,actual}) if expected==closed.requirements().scope().location().node && actual==evidence.property())
+        matches!(structured_ltv::material::archived_participants(closed,index,coverage,evidence,&foreign),
+        Err(structured_ltv::material::ParticipantArchiveError::Foreign {expected,actual}) if expected==closed.requirements().scope().location().node && actual==evidence.property())
     );
     assert_eq!(memory.used(), before);
 }
 
 fn assert_participant_artifact_uses<W: Work>(
-    uses: &structured_xades::pki::AuthorityUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    uses: &structured_ltv::pki::AuthorityUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     access: &Access<'_, Tree, W>,
     xml: &Tree,
 ) {
     // One shared root/leaf and actual complete+delta CRLs: identity is original
     // DER, not every path/status occurrence. All three real actor uses survive.
     use structured_asn1::memory::{Memory, MemoryAccount};
-    use structured_xades::{material, pki};
+    use structured_ltv::pki;
     let memory = access.execution().memory();
     let before = memory.used();
-    let artifacts = material::artifact_uses(uses, access).unwrap();
+    let artifacts = structured_ltv::material::artifact_uses(uses, access).unwrap();
     assert!(core::ptr::eq(artifacts.inputs(), uses.inputs()));
     assert_eq!(artifacts.entries().len(), 4);
     let mut certificates = 0;
@@ -3550,9 +3798,11 @@ fn assert_participant_artifact_uses<W: Work>(
         assert!(entry.uses().credential());
         assert!(entry.uses().timestamp());
         match entry.artifact() {
-            material::ArtifactRef::Certificate(_) => certificates += 1,
-            material::ArtifactRef::Crl(_) => crls += 1,
-            material::ArtifactRef::Ocsp(_) => panic!("actual source uses only CRLs"),
+            structured_ltv::material::ArtifactRef::Certificate(_) => certificates += 1,
+            structured_ltv::material::ArtifactRef::Crl(_) => crls += 1,
+            structured_ltv::material::ArtifactRef::Ocsp(_) => {
+                panic!("actual source uses only CRLs")
+            }
         }
     }
     assert_eq!((certificates, crls), (2, 2));
@@ -3562,7 +3812,7 @@ fn assert_participant_artifact_uses<W: Work>(
     let limited = Memory::new(std::sync::Arc::new(MemoryAccount::new(0, 1 << 26)));
     let limited_access = Access::new(xml, access.snapshot(), &limited);
     assert!(matches!(
-        material::artifact_uses(uses, &limited_access),
+        structured_ltv::material::artifact_uses(uses, &limited_access),
         Err(pki::UsesError::Closure(
             pki::AuthorityClosureError::Resource(MemoryError::LimitExceeded)
         ))
@@ -3571,8 +3821,10 @@ fn assert_participant_artifact_uses<W: Work>(
     let denied = super::memory(0);
     let denied_access = Access::new(xml, access.snapshot(), &denied);
     assert!(matches!(
-        material::artifact_uses(uses, &denied_access),
-        Err(pki::UsesError::Access(AccessError::Resource { .. }))
+        structured_ltv::material::artifact_uses(uses, &denied_access),
+        Err(pki::UsesError::Scope(
+            structured_ltv::source::ScopeError::Resource { .. }
+        ))
     ));
     let foreign = Access::new(
         xml,
@@ -3583,17 +3835,17 @@ fn assert_participant_artifact_uses<W: Work>(
         access.execution(),
     );
     assert!(matches!(
-        material::artifact_uses(uses, &foreign),
+        structured_ltv::material::artifact_uses(uses, &foreign),
         Err(pki::UsesError::Foreign)
     ));
     assert_eq!(memory.used(), before);
 }
 
 pub(super) fn assert_participant_status_closure<'document>(
-    path: &structured_xades::pki::CheckedPath<'document>,
-    inputs: &structured_xades::pki::PathStatuses<'_, '_, 'document>,
+    path: &structured_ltv::pki::CheckedPath<'document>,
+    inputs: &structured_ltv::pki::PathStatuses<'_, '_, 'document>,
 ) {
-    let nodes = [structured_xades::pki::AuthorityNode {
+    let nodes = [structured_ltv::pki::AuthorityNode {
         statuses: inputs,
         responders: &[],
     }];
@@ -3601,14 +3853,15 @@ pub(super) fn assert_participant_status_closure<'document>(
 }
 
 pub(super) fn assert_participant_nodes<'document>(
-    path: &structured_xades::pki::CheckedPath<'document>,
-    inputs: &structured_xades::pki::PathStatuses<'_, '_, 'document>,
-    nodes: &[structured_xades::pki::AuthorityNode<'_, '_, 'document>],
+    path: &structured_ltv::pki::CheckedPath<'document>,
+    inputs: &structured_ltv::pki::PathStatuses<'_, '_, 'document>,
+    nodes: &[structured_ltv::pki::AuthorityNode<'_, '_, 'document>],
 ) {
     // Real original CRL census from the enclosing archive test is required for
     // EVERY path actor, even when signer/counter/credential share that path.
     // Anchor-only credential material must not become an extra status root.
-    use structured_xades::{certificate, credential, pki, prepare, timestamp, unsigned};
+    use structured_ltv::pki;
+    use structured_xades::{certificate, credential, prepare, timestamp, unsigned};
     // Independent source-query scenario: do not spend the enclosing archive
     // fixture's remaining operation budget on this additional XML document.
     let memory = &funded();
@@ -3630,7 +3883,9 @@ pub(super) fn assert_participant_nodes<'document>(
         memory,
     )
     .unwrap();
-    let counters = pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+    let counters =
+        structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path))
+            .unwrap();
     let anchor = path.anchor();
     let anchor = structured_pkix::path::EffectiveAnchor::bind(
         anchor,
@@ -3654,12 +3909,12 @@ pub(super) fn assert_participant_nodes<'document>(
     let stamps = timestamp::counter_timestamps(&access, &counters).unwrap();
     let required =
         timestamp::requirements_with_counters(&access, &prepared, &stamps, selection).unwrap();
-    let timestamp::TimestampPathBinding::Bound(prior) = required.bind_paths(&[], &access).unwrap()
+    let structured_ltv::timestamp::TimestampPathBinding::Bound(prior) =
+        required.bind_paths(&[], &access).unwrap()
     else {
         panic!("complete empty earlier-token set")
     };
-    let participants =
-        pki::participants(&signer, &counters, &credentials, &prior, &access).unwrap();
+    let participants = participants(&signer, &counters, &credentials, &prior, &access).unwrap();
     let roots = [inputs; 3];
     let before = memory.used();
     let closed = participants.close_statuses(&roots, nodes, &access).unwrap();
@@ -3704,8 +3959,8 @@ pub(super) fn assert_participant_nodes<'document>(
     let denied = Access::new(&xml, xml.snapshot(), &denied);
     assert!(matches!(
         participants.close_statuses(&roots, nodes, &denied),
-        Err(pki::ParticipantClosureError::Access(
-            AccessError::Resource { .. }
+        Err(pki::ParticipantClosureError::Scope(
+            structured_ltv::source::ScopeError::Resource { .. }
         ))
     ));
     assert_eq!(memory.used(), before);
@@ -3715,7 +3970,10 @@ pub(super) fn assert_participant_nodes<'document>(
 fn archive_participant_requirements_derive_signer_counters_credentials_and_direct_anchor() {
     // Exact source actors determine X509 material inputs, not a success-list or
     // a count of carried values. This is NOT a positive B-LTA/real-C14N oracle.
-    use structured_xades::{certificate, credential, pki, prepare, timestamp, unsigned};
+    use structured_ltv::{pki, source::ScopeError, timestamp::TimestampPathBinding};
+    use structured_xades::{
+        certificate, credential, pki::bind_counters, prepare, timestamp, unsigned,
+    };
     with_checked_path(|path, leaf, _, memory| {
         let (xml, child, root_credential, child_credential, archive) =
             participant_tree_before_archive(leaf, memory);
@@ -3732,8 +3990,7 @@ fn archive_participant_requirements_derive_signer_counters_credentials_and_direc
         )
         .unwrap();
         assert!(signer.is_bound());
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
         let anchor = path.anchor();
         let key = structured_pkix::path::WorkingKey::standing(anchor.key());
         let anchor = structured_pkix::path::EffectiveAnchor::bind(anchor, key, memory)
@@ -3758,18 +4015,15 @@ fn archive_participant_requirements_derive_signer_counters_credentials_and_direc
             timestamp::TimestampSelection::BeforeArchive(at),
         );
         assert!(required.entries().is_empty());
-        let timestamp::TimestampPathBinding::Bound(prior) =
-            required.bind_paths(&[], &access).unwrap()
-        else {
+        let TimestampPathBinding::Bound(prior) = required.bind_paths(&[], &access).unwrap() else {
             panic!("complete empty antecedent set")
         };
         let before = memory.used();
-        let participants =
-            pki::participants(&signer, &counters, &credentials, &prior, &access).unwrap();
+        let census = participants(&signer, &counters, &credentials, &prior, &access).unwrap();
         assert!(
-            matches!(participants.scope(), timestamp::TimestampScope::BeforeArchive(location) if location.node == archive)
+            matches!(census.scope(), structured_ltv::timestamp::TimestampScope::BeforeArchive(location) if location.node == archive)
         );
-        assert_eq!(participants.signature(), 0);
+        assert_eq!(census.signature(), 0);
         let expected = [
             pki::Participant::Signer(0),
             pki::Participant::Counter {
@@ -3787,8 +4041,8 @@ fn archive_participant_requirements_derive_signer_counters_credentials_and_direc
                 authority: 0,
             },
         ];
-        assert_eq!(participants.entries().len(), expected.len());
-        for (index, entry) in participants.entries().iter().enumerate() {
+        assert_eq!(census.entries().len(), expected.len());
+        for (index, entry) in census.entries().iter().enumerate() {
             assert_eq!(entry.participant(), expected[index]);
             if index == 3 {
                 let pki::ParticipantAuthority::Anchor(actual) = entry.authority() else {
@@ -3802,26 +4056,33 @@ fn archive_participant_requirements_derive_signer_counters_credentials_and_direc
                 assert!(core::ptr::eq(actual, path));
             }
         }
-        drop(participants);
+        drop(census);
         assert_eq!(memory.used(), before);
         let denied = super::memory(0);
         let denied = Access::new(&xml, xml.snapshot(), &denied);
         assert!(matches!(
-            pki::participants(&signer, &counters, &credentials, &prior, &denied),
-            Err(pki::ParticipantError::Access(AccessError::Resource { .. }))
+            participants(&signer, &counters, &credentials, &prior, &denied),
+            Err(pki::ParticipantError::Scope(ScopeError::Resource { .. }))
         ));
         assert_eq!(memory.used(), before);
     });
 }
 
 fn assert_earlier_actor_census(
-    participants: &structured_xades::pki::ParticipantRequirements<'_, '_, usize, u8, u8>,
-    path: &structured_xades::pki::TimestampPath<'_, '_, '_, usize, u8, u8>,
-    expected: structured_xades::timestamp::RequiredToken<usize>,
+    participants: &structured_ltv::pki::ParticipantRequirements<
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
+    path: &structured_ltv::pki::TimestampPath<'_, '_, '_, usize, u8, u8, structured_xades::Xades>,
+    expected: structured_ltv::timestamp::RequiredToken<usize>,
     archive: usize,
     provider: &super::timestamp_oracle::Oracle,
 ) {
-    use structured_xades::pki;
+    use structured_ltv::pki;
     assert_eq!(participants.entries().len(), 5);
     let entry = &participants.entries()[4];
     assert_eq!(
@@ -3836,7 +4097,7 @@ fn assert_earlier_actor_census(
     };
     assert!(core::ptr::eq(actual, path.path()));
     assert!(
-        matches!(participants.scope(), structured_xades::timestamp::TimestampScope::BeforeArchive(location) if location.node == archive)
+        matches!(participants.scope(), structured_ltv::timestamp::TimestampScope::BeforeArchive(location) if location.node == archive)
     );
     assert_eq!(provider.verified.get(), 1);
 }
@@ -3873,11 +4134,13 @@ fn prior_participant_tree(
 fn archive_participants_require_the_actual_earlier_tsa_and_exclude_own_and_later_tokens() {
     // Real TSP mathematics supplies only its original earlier actor. Synthetic
     // XML framing is not a C14N or complete B-LTA interoperability oracle.
+    use structured_ltv::pki;
+    use structured_ltv::timestamp::{TimestampPathBinding, TimestampPathFailure};
     use structured_pkix::{
         path::WorkingKey,
         temporal::{Instant, LeapTable},
     };
-    use structured_xades::{certificate, credential, pki, timestamp};
+    use structured_xades::{certificate, credential, pki::bind_counters, timestamp};
     with_checked_path(|path, leaf, _, memory| {
         let (xml, prepared, archive, provider, tsa_bytes) = prior_participant_tree(leaf, memory);
         let stamp = &prepared.timestamps()[0];
@@ -3893,8 +4156,7 @@ fn archive_participants_require_the_actual_earlier_tsa_and_exclude_own_and_later
             memory,
         )
         .unwrap();
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
         let anchor = path.anchor();
         let anchor = structured_pkix::path::EffectiveAnchor::bind(
             anchor,
@@ -3958,17 +4220,15 @@ fn archive_participants_require_the_actual_earlier_tsa_and_exclude_own_and_later
         assert_eq!(expected.property, 8);
         assert!(matches!(
             required.bind_paths(&[], &access).unwrap(),
-            timestamp::TimestampPathBinding::Unproven(timestamp::TimestampPathFailure::Count)
+            TimestampPathBinding::Unproven(TimestampPathFailure::Count)
         ));
         let supplied = [&tsa_path];
-        let timestamp::TimestampPathBinding::Bound(prior) =
-            required.bind_paths(&supplied, &access).unwrap()
+        let TimestampPathBinding::Bound(prior) = required.bind_paths(&supplied, &access).unwrap()
         else {
             panic!("complete original earlier TSA set")
         };
         let before = memory.used();
-        let participants =
-            pki::participants(&signer, &counters, &credentials, &prior, &access).unwrap();
+        let participants = participants(&signer, &counters, &credentials, &prior, &access).unwrap();
         assert_earlier_actor_census(&participants, &tsa_path, expected, archive, &provider);
         drop(participants);
         assert_eq!(memory.used(), before);
@@ -4043,10 +4303,11 @@ impl<W: Work> structured_pkix::path::Verify<W> for MetadataSignature {
 fn selected_key_binding_receives_inherited_original_parameters() {
     // A standing leaf has no parameters; the checked path's effective key
     // does. Reconstructing standing here would lose the selected-key contract.
+    use structured_ltv::pki;
     use structured_pkix::path::{
         Anchor, Interval, ValidationBounds, ValidationContext, WorkingKey,
     };
-    use structured_xades::{binding, certificate, container, pki};
+    use structured_xades::{binding, certificate, container};
     let leaf_bytes = inheritance_certificate(false);
     let root_bytes = inheritance_certificate(true);
     let memory = funded();
@@ -4255,7 +4516,7 @@ fn signature_time_binding_keeps_role_source_key_and_full_static_interval() {
 
 fn assert_cached_signature_time(
     selected: &structured_xades::certificate::CheckedPathCertificate<'_, '_, usize, u8, u8>,
-    path: &structured_xades::pki::CheckedPath<'_>,
+    path: &structured_ltv::pki::CheckedPath<'_>,
     actor: &structured_xades::timestamp::TimestampActor<'_, '_, Tree>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     access: &Access<'_, Tree, structured_asn1::memory::Memory>,
@@ -4264,7 +4525,11 @@ fn assert_cached_signature_time(
     // A previously established full TSA interval must give the same static
     // association as original UTC evaluation. It must not widen role/key
     // acceptance or turn an inadmissible current query into a cached success.
-    use structured_xades::{certificate::SignatureTimeBinding, pki};
+    use structured_ltv::pki;
+    use structured_ltv::source::ScopeError;
+    use structured_ltv::timestamp::{
+        SignatureTimeBinding, SignatureTimeError, signature_time, signature_time_path,
+    };
     let pki::TimestampBinding::Bound(timestamp) =
         path.bind_timestamp(actor, utc, access.execution()).unwrap()
     else {
@@ -4276,28 +4541,26 @@ fn assert_cached_signature_time(
         structured_asn1::memory::MemoryAccount::new(0, 1),
     ));
     let lower = Access::new(xml, access.snapshot(), &short);
-    assert!(
-        matches!(selected.bind_signature_time_path(&timestamp, &lower),
-        Err(structured_xades::certificate::SignatureTimeError::Access(
-            AccessError::Resource {node, cause:structured_asn1::memory::MemoryError::WorkExceeded}
-        )) if node == actor.verified().property())
-    );
+    assert!(matches!(signature_time_path(selected, &timestamp, &lower),
+        Err(SignatureTimeError::Scope(
+            ScopeError::Resource {node, cause:structured_asn1::memory::MemoryError::WorkExceeded}
+        )) if node == actor.verified().property()));
     assert_eq!(short.work_remaining(), 1);
     match (
-        selected.bind_signature_time(actor.verified(), utc, access),
-        selected.bind_signature_time_path(&timestamp, access),
+        signature_time(selected, actor.verified(), utc, access),
+        signature_time_path(selected, &timestamp, access),
     ) {
         (Ok(SignatureTimeBinding::Bound(original)), Ok(SignatureTimeBinding::Bound(cached))) => {
             assert_eq!(original.generation(), cached.generation());
             assert!(core::ptr::eq(cached.timestamp(), actor.verified()));
-            assert!(core::ptr::eq(cached.certificate(), selected));
+            assert!(core::ptr::eq(cached.signer(), selected));
         }
         (Ok(SignatureTimeBinding::Unproven(a)), Ok(SignatureTimeBinding::Unproven(b))) => {
             assert_eq!(a, b);
         }
         (
-            Err(structured_xades::certificate::SignatureTimeError::Role { property: a }),
-            Err(structured_xades::certificate::SignatureTimeError::Role { property: b }),
+            Err(SignatureTimeError::Purpose { property: a }),
+            Err(SignatureTimeError::Purpose { property: b }),
         ) => {
             assert_eq!(a, b);
         }
@@ -4356,7 +4619,7 @@ fn nonce_freshness_cannot_supply_an_unstated_signature_time_accuracy() {
             .unwrap()
             .expect("valid requested nonce and original mathematical coverage");
         assert!(
-            matches!(selected.bind_signature_time(&verified,&utc,&access),Err(certificate::SignatureTimeError::Time {property,cause:timestamp::TemporalError::Uncertain(BoundUncertainty::AccuracyUnstated)}) if property==node)
+            matches!(structured_ltv::timestamp::signature_time(&selected,&verified,&utc,&access),Err(structured_ltv::timestamp::SignatureTimeError::Time {property,cause:structured_ltv::timestamp::TemporalError::Uncertain(BoundUncertainty::AccuracyUnstated)}) if property==node)
         );
         assert_eq!(provider.verified.get(), 1);
     });
@@ -4364,20 +4627,21 @@ fn nonce_freshness_cannot_supply_an_unstated_signature_time_accuracy() {
 
 fn assert_signature_time(
     selected: &structured_xades::certificate::CheckedPathCertificate<'_, '_, usize, u8, u8>,
-    verified: &structured_xades::timestamp::Verified<usize, u8, u8>,
+    verified: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
     utc: &structured_pkix::temporal::LeapTable<'_>,
     access: &Access<'_, Tree, structured_asn1::memory::Memory>,
     at: i64,
     association: structured_xades::certificate::KeyAssociation,
     xml: &Tree,
 ) {
-    use structured_xades::{
-        certificate::{self, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure},
-        timestamp,
+    use structured_ltv::source::ScopeError;
+    use structured_ltv::timestamp::{
+        Purpose, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure, signature_time,
     };
-    let result = selected.bind_signature_time(verified, utc, access);
-    if verified.role() != timestamp::Role::Signature {
-        assert!(matches!(result, Err(SignatureTimeError::Role { .. })));
+    use structured_xades::certificate;
+    let result = signature_time(selected, verified, utc, access);
+    if verified.purpose() != Purpose::Signature {
+        assert!(matches!(result, Err(SignatureTimeError::Purpose { .. })));
     } else if association != certificate::KeyAssociation::Same {
         assert!(matches!(
             result.unwrap(),
@@ -4392,7 +4656,7 @@ fn assert_signature_time(
         let SignatureTimeBinding::Bound(link) = result.unwrap() else {
             panic!("same signature at its actual generation")
         };
-        assert!(core::ptr::eq(link.certificate(), selected));
+        assert!(core::ptr::eq(link.signer(), selected));
         assert!(core::ptr::eq(link.timestamp(), verified));
         assert_eq!(link.generation().earliest.seconds(), 1_767_225_600);
         assert_eq!(link.generation().earliest, link.generation().latest);
@@ -4402,8 +4666,8 @@ fn assert_signature_time(
     ));
     let denied_access = Access::new(xml, xml.snapshot(), &denied);
     assert!(matches!(
-        selected.bind_signature_time(verified, utc, &denied_access),
-        Err(SignatureTimeError::Access(AccessError::Resource { .. }))
+        signature_time(selected, verified, utc, &denied_access),
+        Err(SignatureTimeError::Scope(ScopeError::Resource { .. }))
     ));
     let foreign = Access::new(
         xml,
@@ -4414,13 +4678,13 @@ fn assert_signature_time(
         access.execution(),
     );
     assert!(matches!(
-        selected.bind_signature_time(verified, utc, &foreign),
+        signature_time(selected, verified, utc, &foreign),
         Err(SignatureTimeError::Foreign { .. })
     ));
     xml.generation.set(xml.generation.get() + 1);
     assert!(matches!(
-        selected.bind_signature_time(verified, utc, access),
-        Err(SignatureTimeError::Access(AccessError::Changed { .. }))
+        signature_time(selected, verified, utc, access),
+        Err(SignatureTimeError::Scope(ScopeError::Changed { .. }))
     ));
 }
 impl Digest<'_> for Oracle {

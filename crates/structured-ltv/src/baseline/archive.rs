@@ -1,10 +1,10 @@
 //! Join every participant's material under one original archive's coverage.
 
-use crate::{
-    material, pki,
-    timestamp::TimestampScope,
-    xml::{Access, Xml},
-};
+use super::{ArchiveCensus, CredentialMaterial};
+use crate::material::ParticipantMaterial;
+use crate::pki::ParticipantError;
+use crate::source::{Query, ScopeError};
+use crate::timestamp::TimestampScope;
 use structured_asn1::memory::{MemoryError, Work};
 
 /// Original X.509 and credential-format material checked BEFORE the SAME
@@ -39,69 +39,62 @@ impl<M, C> ArchiveMaterial<'_, M, C> {
     }
 }
 
-type X509<'a, 'r, 'v, 'c, 'd, X> = material::ParticipantMaterial<
+type X509<'a, 'r, 'v, 'c, 'd, P, Q, I> = ParticipantMaterial<
     'a,
     'r,
     'v,
     'c,
     'd,
-    <X as Xml>::Id,
-    <X as Xml>::Document,
-    <X as Xml>::Generation,
+    <Q as Query>::Id,
+    <Q as Query>::Document,
+    <Q as Query>::Generation,
+    P,
+    I,
 >;
-type Credentials<'a, 'p, 'd, A, X> = material::credentials::Report<
-    'a,
-    'p,
-    'd,
-    A,
-    <X as Xml>::Id,
-    <X as Xml>::Document,
-    <X as Xml>::Generation,
->;
+
 /// Source, scope or input-receipt refusal, not a missing-material finding.
-pub type ArchiveMaterialResult<'a, M, C, X> =
-    Result<ArchiveMaterial<'a, M, C>, pki::ParticipantError<<X as Xml>::Error, <X as Xml>::Id>>;
+pub type ArchiveMaterialResult<'a, M, C, N> =
+    Result<ArchiveMaterial<'a, M, C>, ParticipantError<N>>;
 
 /// Combine both original material reports for one exact preceding-archive
-/// scope. The X.509 report already establishes the original element coverage
-/// and mathematical token binding; the format report must use that SAME scope
-/// and actual authenticated credential input. Neither source work nor provider
+/// scope. The X.509 report already establishes the original coverage and
+/// mathematical token binding; the format report must use that SAME scope and
+/// actual authenticated credential input. Neither source work nor provider
 /// interpretation is replayed; the fresh metadata query is still admitted.
 ///
 /// EN319132-1 V1.3.1 §6.3(aa) requires all validation data before generation of
 /// each archive; final-document availability cannot repair an earlier input.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
-pub fn archive_material<'s, 'a, 'r, 'v, 'c, 'd, 'au, 'p, A, X: Xml, W: Work>(
-    x509: &'s X509<'a, 'r, 'v, 'c, 'd, X>,
-    credentials: &'s Credentials<'au, 'p, 'd, A, X>,
-    access: &Access<'_, X, W>,
-) -> ArchiveMaterialResult<'s, X509<'a, 'r, 'v, 'c, 'd, X>, Credentials<'au, 'p, 'd, A, X>, X> {
+pub fn archive_material<'s, 'a, 'r, 'v, 'c, 'd, P, C, Q, I>(
+    x509: &'s X509<'a, 'r, 'v, 'c, 'd, P, Q, I>,
+    credentials: &'s C,
+    query: &Q,
+) -> ArchiveMaterialResult<'s, X509<'a, 'r, 'v, 'c, 'd, P, Q, I>, C, Q::Id>
+where
+    C: CredentialMaterial<Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
+    Q: Query,
+{
     let required = x509.inputs().requirements();
     let scope = required.scope();
     let original = scope.location();
     let supplied = credentials.scope();
-    let foreign = || pki::ParticipantError::Foreign {
+    let foreign = || ParticipantError::Foreign {
         signature: required.signature(),
     };
     if !matches!(scope, TimestampScope::BeforeArchive(_))
         || !matches!(supplied, TimestampScope::BeforeArchive(_))
-        || original.snapshot != access.snapshot()
+        || original.snapshot != query.snapshot()
         || supplied.location().snapshot != original.snapshot
         || credentials.snapshot() != original.snapshot
     {
         return Err(foreign());
     }
-    access
-        .query(original.node, |_, _, work| Ok(work.charge_work(1)))
-        .map_err(pki::ParticipantError::Access)?
-        .map_err(|cause| pki::ParticipantError::Resource {
-            node: original.node,
-            cause,
-        })?;
+    // One dispatch plus the paid identity metadata pass.
+    query.admit(original.node, 2)?;
     if !required.same_credentials(credentials.credentials())
-        || !access
-            .equal_id(original.node, supplied.location().node)
-            .map_err(|cause| pki::ParticipantError::Resource {
+        || !query
+            .equal(original.node, supplied.location().node)
+            .map_err(|cause| ParticipantError::Resource {
                 node: original.node,
                 cause,
             })?
@@ -116,20 +109,20 @@ pub fn archive_material<'s, 'a, 'r, 'v, 'c, 'd, 'au, 'p, A, X: Xml, W: Work>(
 }
 
 /// Every original root archive's paired material facts in source order. The
-/// original preparation determines the census; a supplied successful subset
+/// original timestamp census determines the set; a supplied successful subset
 /// cannot create it. Historical authority/path contexts remain on each report,
 /// since they need not be identical at different original archive times.
 pub struct Archives<'a, P, R> {
-    prepared: &'a P,
+    census: &'a P,
     reports: &'a [&'a R],
     covered: bool,
 }
 
 impl<P, R> Archives<'_, P, R> {
-    /// Same selected original preparation, including requested profile.
+    /// Same original timestamp census.
     #[must_use]
-    pub fn prepared(&self) -> &P {
-        self.prepared
+    pub fn census(&self) -> &P {
+        self.census
     }
     /// Every actual root archive once, preserving all its detailed gaps.
     #[must_use]
@@ -145,9 +138,9 @@ impl<P, R> Archives<'_, P, R> {
 }
 
 /// Original processing/admission failure, never a failed document digest.
-#[derive(Debug)]
-pub enum ArchiveCensusError<E, N> {
-    /// The supplied preparation/report belongs to a different source or root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveCensusError<N> {
+    /// The supplied census/report belongs to a different source or root.
     Foreign {
         /// Original expected signature/archive.
         node: N,
@@ -160,7 +153,7 @@ pub enum ArchiveCensusError<E, N> {
     /// Extra/duplicate supplied reports do not belong to this exact census.
     Extra,
     /// Original source/current query failure.
-    Access(crate::xml::AccessError<E, N>),
+    Scope(ScopeError<N>),
     /// Admission refused before metadata traversal or identity comparison.
     Resource {
         /// Original selecting signature/archive.
@@ -170,50 +163,58 @@ pub enum ArchiveCensusError<E, N> {
     },
 }
 
-type Proof<'a, 'cl, 'r, 'v, 'c, 'd, 'au, 'p, A, X> =
-    ArchiveMaterial<'a, X509<'cl, 'r, 'v, 'c, 'd, X>, Credentials<'au, 'p, 'd, A, X>>;
 /// Complete original root-archive material census or a typed processing refusal.
-pub type ArchivesResult<'a, P, R, X> =
-    Result<Archives<'a, P, R>, ArchiveCensusError<<X as Xml>::Error, <X as Xml>::Id>>;
+pub type ArchivesResult<'a, P, R, N> = Result<Archives<'a, P, R>, ArchiveCensusError<N>>;
+
+type Proof<'a, 'cl, 'r, 'v, 'c, 'd, P, C, Q, I> =
+    ArchiveMaterial<'a, X509<'cl, 'r, 'v, 'c, 'd, P, Q, I>, C>;
 
 /// Require one paired report for EACH original root archive, not only archives
 /// whose material happened to succeed. Counter timestamps retain their separate
 /// whole-signature TSA obligations; this does not impose root baseline properties
-/// on a plain `XMLDSig` countersignature. No crypto, source acquisition, artifact
-/// lookup, allocation or report copy occurs in this current-query census.
-pub fn archives<'s, 'a, 'cl, 'r, 'v, 'c, 'd, 'au, 'p, A, X: Xml, W: Work>(
-    prepared: &'s crate::prepare::Prepared<X>,
-    reports: &'s [&'s Proof<'a, 'cl, 'r, 'v, 'c, 'd, 'au, 'p, A, X>],
-    access: &Access<'_, X, W>,
-) -> ArchivesResult<'s, crate::prepare::Prepared<X>, Proof<'a, 'cl, 'r, 'v, 'c, 'd, 'au, 'p, A, X>, X>
+/// on a countersignature. No crypto, source acquisition, artifact lookup,
+/// allocation or report copy occurs in this current-query census.
+pub fn archives<'s, 'a, 'cl, 'r, 'v, 'c, 'd, A, P, C, Q, I>(
+    census: &'s A,
+    reports: &'s [&'s Proof<'a, 'cl, 'r, 'v, 'c, 'd, P, C, Q, I>],
+    query: &Q,
+) -> ArchivesResult<'s, A, Proof<'a, 'cl, 'r, 'v, 'c, 'd, P, C, Q, I>, Q::Id>
+where
+    A: ArchiveCensus<Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
+    Q: Query,
 {
-    let layout = prepared.bound().containers();
-    let signature = layout.signature();
-    if layout.snapshot() != access.snapshot() {
+    let selected = census.signature();
+    let signature = selected.node;
+    if selected.snapshot != query.snapshot() {
         return Err(ArchiveCensusError::Foreign { node: signature });
     }
-    access
-        .query(signature, |_, _, _| Ok(()))
-        .map_err(ArchiveCensusError::Access)?;
+    query
+        .admit(signature, 1)
+        .map_err(ArchiveCensusError::Scope)?;
     let mut cursor = 0;
     let mut covered = true;
-    for stamp in prepared.timestamps() {
-        let node = stamp.node();
-        let resource = |cause| ArchiveCensusError::Resource { node, cause };
-        access.execution().charge_work(1).map_err(resource)?;
-        if stamp.role() != crate::timestamp::Role::Archive {
+    for ordinal in 0..census.timestamps() {
+        query
+            .execution()
+            .charge_work(1)
+            .map_err(|cause| ArchiveCensusError::Resource {
+                node: signature,
+                cause,
+            })?;
+        let Some(node) = census.archive(ordinal) else {
             continue;
-        }
+        };
+        let resource = |cause| ArchiveCensusError::Resource { node, cause };
         let Some(report) = reports.get(cursor) else {
             return Err(ArchiveCensusError::Missing { property: node });
         };
         let required = report.x509.inputs().requirements();
         let location = required.scope().location();
-        if location.snapshot != access.snapshot()
-            || !access
-                .equal_id(required.signature(), signature)
+        if location.snapshot != query.snapshot()
+            || !query
+                .equal(required.signature(), signature)
                 .map_err(resource)?
-            || !access.equal_id(location.node, node).map_err(resource)?
+            || !query.equal(location.node, node).map_err(resource)?
         {
             return Err(ArchiveCensusError::Foreign { node });
         }
@@ -228,11 +229,11 @@ pub fn archives<'s, 'a, 'cl, 'r, 'v, 'c, 'd, 'au, 'p, A, X: Xml, W: Work>(
     if cursor == 0 {
         covered = false;
     }
-    access
-        .query(signature, |_, _, _| Ok(()))
-        .map_err(ArchiveCensusError::Access)?;
+    query
+        .admit(signature, 1)
+        .map_err(ArchiveCensusError::Scope)?;
     Ok(Archives {
-        prepared,
+        census,
         reports,
         covered,
     })

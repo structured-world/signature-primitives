@@ -8,20 +8,11 @@ use structured_asn1::{
     universal,
 };
 use structured_cms::signed::OtherRevocationInfo;
+use structured_ltv::material::CarriedOrigin;
 use structured_pkix::{
     crl::CertificateList,
     ocsp::{BasicResponse, ResponseBytes},
 };
-
-/// Exact token-pool identity of a carried revocation choice. These indices do
-/// not address the separate XML CertificateValues/RevocationValues source pool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CarriedOrigin {
-    /// Ordinal in the frozen timestamp token-source set.
-    pub token: usize,
-    /// Original choice ordinal inside that token's `SignedData` revocation set.
-    pub choice: usize,
-}
 
 /// One original carried artifact; availability is not authorization or status.
 pub struct Carried<T> {

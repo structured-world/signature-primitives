@@ -15,12 +15,10 @@ use structured_cms::ess::IssuerSerialReading;
 use structured_pkix::{Certificate, path::WorkingKey};
 
 mod path;
-mod time;
 pub use path::{
     CheckedPathCertificate, PathCheckResult, PathDigest, PathDigestResult, PathDigests, check_path,
     match_path,
 };
-pub use time::{SignatureTime, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure};
 
 /// Association with the key that actually verified the selected XML signature.
 /// Trust and source association are independent: a caller-trusted key may still

@@ -2,19 +2,20 @@
 
 use super::{ReferenceDigestError, ReferenceSearch, ref_catalogue::Memo};
 use crate::{
+    Xades,
     binary::{self, BinaryXml, Location},
     certificate::{Agreement, DigestProvider, FormatDigest},
     digest,
-    material::PathCertificate,
-    pki::{Participant, ParticipantAuthority, ParticipantRequirements},
     prepare::{Preparation, Prepared},
-    timestamp::TimestampScope,
     unsigned,
     xml::{Access, Xml},
 };
 use core::ops::Range;
 use structured_asn1::digest::Digest;
 use structured_asn1::memory::{MemoryError, OwnedMap, OwnedVec, Work};
+use structured_ltv::material::PathCertificate;
+use structured_ltv::pki::{Participant, ParticipantAuthority, ParticipantRequirements};
+use structured_ltv::timestamp::TimestampScope;
 use structured_pkix::Certificate;
 
 /// Source of an original certificate reference; protected and ordinary copies
@@ -161,7 +162,7 @@ pub type CredentialCertificateResult<'p, 'v, 'd, X, E> = binary::BinaryResult<
 >;
 
 fn candidates<'v, 'd, N: Copy, D: Copy, G: Copy, W: Work>(
-    required: &ParticipantRequirements<'v, 'd, N, D, G>,
+    required: &ParticipantRequirements<'v, 'd, N, D, G, Xades>,
     work: &W,
 ) -> Result<OwnedVec<CredentialCertificate<'v, 'd>, W>, MemoryError> {
     let mut values = work.vector();
@@ -217,7 +218,7 @@ impl<'q, 'v, 'd, P: Digest<'q>, W: Work> CredentialScan<'q, 'v, 'd, P, W> {
         identity: FormatDigest<P::Identity>,
         expected: &[u8],
         place: CredentialReferencePlace,
-        required: &ParticipantRequirements<'v, 'd, N, D, G>,
+        required: &ParticipantRequirements<'v, 'd, N, D, G, Xades>,
         work: &W,
     ) -> Result<(), digest::Error<structured_cms::stream::RangesError, P::Error>> {
         let method = self.memo.method(identity, work)?;
@@ -294,7 +295,7 @@ pub fn check_credential_certificate_references<
 >(
     xml: &X,
     prepared: &'p Prepared<X>,
-    required: &ParticipantRequirements<'v, 'd, X::Id, X::Document, X::Generation>,
+    required: &ParticipantRequirements<'v, 'd, X::Id, X::Document, X::Generation, Xades>,
     provider: &'q P,
     work: &W,
 ) -> CredentialCertificateResult<'p, 'v, 'd, X, P::Error> {
@@ -327,7 +328,7 @@ pub fn check_credential_certificate_references<
 fn process<'p, 'v, 'd, 'q, X: BinaryXml, P: DigestProvider<'q, X>, W: Work>(
     xml: &X,
     prepared: &'p Prepared<X>,
-    required: &ParticipantRequirements<'v, 'd, X::Id, X::Document, X::Generation>,
+    required: &ParticipantRequirements<'v, 'd, X::Id, X::Document, X::Generation, Xades>,
     provider: &'q P,
     access: &Access<'_, X, W>,
     location: Location<X::Id, X::Document, X::Generation>,

@@ -32,3 +32,18 @@ pub mod timestamp;
 pub mod unsigned;
 pub mod validation;
 pub mod xml;
+
+/// Issuer of the long-term validation receipts this crate builds from its own
+/// checks: timestamp evidence and its signer, archive coverage, the token
+/// census, the material index and the participant census
+/// ([`pki::participants`]). Only this crate constructs it, so a caller
+/// cannot relabel evidence or supply a fabricated receipt to these APIs.
+///
+/// ```compile_fail
+/// let issuer = structured_xades::Xades(());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Xades(());
+
+/// The value this crate passes when it builds a receipt.
+pub(crate) const ISSUER: Xades = Xades(());

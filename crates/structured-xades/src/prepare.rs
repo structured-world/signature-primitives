@@ -7,6 +7,8 @@ use crate::{
     properties, renewed, role, timestamp, unsigned, validation,
 };
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::baseline::ArchiveCensus;
+use structured_ltv::source::Location;
 
 mod uri;
 pub use uri::{UriError, UriResult, check_uris};
@@ -151,6 +153,27 @@ impl<N, D, G> Preparation<N, D, G> {
     #[must_use]
     pub fn validation_references(&self) -> &[validation::ReferenceProperty<N, D, G>] {
         &self.references
+    }
+}
+
+impl<N: Copy, D: Copy, G: Copy> ArchiveCensus for Preparation<N, D, G> {
+    type Id = N;
+    type Document = D;
+    type Generation = G;
+
+    fn signature(&self) -> Location<N, D, G> {
+        let layout = self.bound.containers();
+        Location {
+            snapshot: layout.snapshot(),
+            node: layout.signature(),
+        }
+    }
+    fn timestamps(&self) -> usize {
+        self.timestamps.len()
+    }
+    fn archive(&self, ordinal: usize) -> Option<N> {
+        let stamp = &self.timestamps[ordinal];
+        (stamp.role() == timestamp::Role::Archive).then(|| stamp.node())
     }
 }
 

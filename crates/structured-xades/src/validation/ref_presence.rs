@@ -2,13 +2,14 @@
 
 use super::{ReferenceDigests, ReferenceSearch};
 use crate::{
+    Xades,
     certificate::Agreement,
     pki::CounterPaths,
-    timestamp::{self, TimestampRequirements, TimestampScope},
     unsigned,
     xml::{Access, AccessError, Xml},
 };
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::timestamp::{TimestampRequirements, TimestampScope};
 
 /// Why a referenced value's required incorporation was not established.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,10 +73,9 @@ impl<'report, 'references, 'source, N, D, G>
 /// Invalid scope/census and processing refusal are not absent material.
 #[derive(Debug)]
 pub enum ReferencePresenceError<E, N> {
-    /// Current original source/generation refused.
+    /// Current original source/generation refused, including the complete
+    /// timestamp/counter source verification.
     Access(AccessError<E, N>),
-    /// Complete timestamp/counter source verification refused.
-    Tokens(timestamp::InputError<E, N>),
     /// Requirements, counter receipt or source pool does not cover the same
     /// whole selected signature; a preceding-archive subset is insufficient.
     Scope,
@@ -115,7 +115,7 @@ pub type ReferencePresenceResult<'report, 'references, 'source, X> = Result<
 /// own immutable comparison catalogue.
 pub fn reference_presence<'report, 'references, 'source, X: Xml, W: Work>(
     digests: &'report ReferenceDigests<'references, 'source, X::Id, X::Document, X::Generation>,
-    required: &TimestampRequirements<X::Id, X::Document, X::Generation>,
+    required: &TimestampRequirements<X::Id, X::Document, X::Generation, Xades>,
     counters: &CounterPaths<'_, '_, X::Id, X::Document, X::Generation>,
     access: &Access<'_, X, W>,
 ) -> ReferencePresenceResult<'report, 'references, 'source, X> {
@@ -235,7 +235,7 @@ fn presence_failure<W: Work>(
 
 fn require_sources<X: Xml, W: Work>(
     digests: &ReferenceDigests<'_, '_, X::Id, X::Document, X::Generation>,
-    required: &TimestampRequirements<X::Id, X::Document, X::Generation>,
+    required: &TimestampRequirements<X::Id, X::Document, X::Generation, Xades>,
     counters: &CounterPaths<'_, '_, X::Id, X::Document, X::Generation>,
     access: &Access<'_, X, W>,
 ) -> Result<(), ReferencePresenceError<X::Error, X::Id>> {
@@ -263,7 +263,7 @@ fn require_sources<X: Xml, W: Work>(
             .map_err(ReferencePresenceError::Resource)?
         || !required
             .includes_counters(counters, access)
-            .map_err(ReferencePresenceError::Tokens)?
+            .map_err(|cause| ReferencePresenceError::Access(cause.into()))?
     {
         return Err(ReferencePresenceError::Scope);
     }
@@ -282,7 +282,7 @@ fn require_sources<X: Xml, W: Work>(
             .charge_work(1)
             .map_err(ReferencePresenceError::Resource)?;
         if source.location().snapshot != original.snapshot()
-            || source.role() != entry.role
+            || source.role().purpose() != entry.purpose
             || !access
                 .equal_id(source.signature(), entry.signature)
                 .map_err(ReferencePresenceError::Resource)?

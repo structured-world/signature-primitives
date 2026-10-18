@@ -11,13 +11,14 @@ mod selection;
 pub use check::check;
 pub use scope::Scope;
 
-use super::{ArchiveError, ArtifactRef, IndexError};
 use crate::binary::Location;
 use crate::credential::{Checked, Credential, ParticipantCredentials};
 use crate::reference::VisitError;
-use crate::timestamp::TimestampScope;
 use crate::xml::{Access, AccessError, Snapshot, Xml};
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::baseline::CredentialMaterial;
+use structured_ltv::material::{ArchiveError, ArtifactRef, IndexError};
+use structured_ltv::timestamp::{ObligationError, TimestampScope};
 
 /// One actual format dependency. Borrowed binary artifacts are queried during
 /// the callback and cannot escape it; no DER copy or fingerprint substitutes.
@@ -163,6 +164,28 @@ impl<'auth, 'path, 'document, A, N: Copy, D: Copy, G: Copy>
     }
 }
 
+impl<'path, 'document, A, N: Copy, D: Copy, G: Copy> CredentialMaterial
+    for Report<'_, 'path, 'document, A, N, D, G>
+{
+    type Id = N;
+    type Document = D;
+    type Generation = G;
+    type Credentials = ParticipantCredentials<'path, 'document, A, N, D, G>;
+
+    fn scope(&self) -> TimestampScope<N, D, G> {
+        self.scope
+    }
+    fn snapshot(&self) -> Snapshot<D, G> {
+        self.credentials.snapshot()
+    }
+    fn credentials(&self) -> &Self::Credentials {
+        self.credentials
+    }
+    fn all_requirements_met(&self) -> bool {
+        self.complete
+    }
+}
+
 /// Terminal source, scope, callback or resource failure. No successful partial
 /// report is returned, and external handler side effects cannot be rolled back.
 #[derive(Debug)]
@@ -175,11 +198,11 @@ pub enum Error<E, PE, N> {
     /// Original XML/current-operation/source refusal.
     Access(AccessError<E, N>),
     /// Original scope/membership query refusal.
-    Input(crate::timestamp::InputError<E, N>),
+    Obligation(ObligationError<N>),
     /// Original known artifact lookup refusal.
-    Index(IndexError<E, N>),
+    Index(IndexError<N>),
     /// Original archive evidence/coverage/lookup refusal.
-    Archive(ArchiveError<E, N>),
+    Archive(ArchiveError<N>),
     /// Original credential format handler refused.
     Provider {
         /// Original credential payload.

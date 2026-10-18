@@ -58,21 +58,29 @@ assert.equal(release.if, undefined);
 console.log("PASS: supported main triggers require exact-SHA CI before OIDC publication.");
 
 // A new crate cannot mint an OIDC token before its first publication. Its
-// narrowly scoped API token must never replace existing-package authentication.
+// narrowly scoped API token must never replace existing-package authentication;
+// packages depending on it return to OIDC once it is in the registry.
 const selection = publish.steps.find(step => step.id === "bootstrap");
-const firstXades = publish.steps.find(step => step.name === "Publish the first XAdES version");
-assert.ok(selection && firstXades);
+const firstLtv = publish.steps.find(step => step.name === "Publish the first LTV version");
+const dependents = publish.steps.find(step => step.name === "Publish packages depending on LTV");
+assert.ok(selection && firstLtv && dependents);
 assert.ok(gate < publish.steps.indexOf(selection));
 assert.ok(publish.steps.indexOf(selection) < publish.steps.indexOf(release));
-assert.ok(publish.steps.indexOf(release) < publish.steps.indexOf(firstXades));
+assert.ok(publish.steps.indexOf(release) < publish.steps.indexOf(firstLtv));
+assert.ok(publish.steps.indexOf(firstLtv) < publish.steps.indexOf(dependents));
 assert.equal(release.env.CARGO_REGISTRY_TOKEN, undefined);
-assert.equal(firstXades.env.CARGO_REGISTRY_TOKEN, "${{ secrets.XADES_BOOTSTRAP_TOKEN }}");
-assert.equal(firstXades.with.config, ".github/release-xades.toml");
-assert.equal(firstXades.with.command, "release");
-assert.equal(firstXades.with.version, release.with.version);
+assert.equal(dependents.env.CARGO_REGISTRY_TOKEN, undefined);
+assert.equal(firstLtv.env.CARGO_REGISTRY_TOKEN, "${{ secrets.LTV_BOOTSTRAP_TOKEN }}");
+assert.equal(firstLtv.with.config, ".github/release-ltv.toml");
+assert.equal(dependents.with.config, ".github/release-dependents.toml");
+for (const step of [firstLtv, dependents]) {
+  assert.equal(step.with.command, "release");
+  assert.equal(step.with.version, release.with.version);
+}
 for (const enabled of ["true", "false"]) {
   const values = { steps: { bootstrap: { outputs: { enabled } } } };
-  assert.equal(evaluate(firstXades.if, values), enabled === "true");
+  assert.equal(evaluate(firstLtv.if, values), enabled === "true");
+  assert.equal(evaluate(dependents.if, values), enabled === "true");
   const expression = release.with.config.slice(3, -2).trim();
   const parsed = new Parser(new Lexer(expression).lex().tokens, ["steps"], []).parse();
   const selected = new Evaluator(parsed, context(values)).evaluate();
@@ -83,14 +91,28 @@ try {
   for (const token of ["", "synthetic-bootstrap-credential"]) {
     const output = join(modeOutput, token ? "present" : "absent");
     execFileSync("bash", ["-eu", "-c", selection.run], {
-      env: { ...process.env, XADES_BOOTSTRAP_TOKEN: token, GITHUB_OUTPUT: output }, stdio: "pipe",
+      env: { ...process.env, LTV_BOOTSTRAP_TOKEN: token, GITHUB_OUTPUT: output }, stdio: "pipe",
     });
     assert.equal(readFileSync(output, "utf8"), `enabled=${token ? "true" : "false"}\n`);
   }
 } finally {
   rmSync(modeOutput, { recursive: true, force: true });
 }
-console.log("PASS: first XAdES publication uses its own token only after OIDC dependencies; absent token selects normal OIDC.");
+console.log("PASS: first LTV publication uses its own token between OIDC steps; absent token selects normal OIDC.");
+
+// release-plz's own readiness check can pass before a dependent's cargo publish
+// resolves the new version (release-plz#2946). The dependents step must wait
+// for actual resolution of a freshly published LTV, and only then.
+const resolution = publish.steps.find(step => step.name === "Wait until LTV resolves for dependents");
+assert.ok(resolution, "a resolver wait must separate LTV from its dependents");
+assert.ok(publish.steps.indexOf(firstLtv) < publish.steps.indexOf(resolution));
+assert.ok(publish.steps.indexOf(resolution) < publish.steps.indexOf(dependents));
+assert.equal(resolution.run, "bash scripts/wait-registry-resolution.sh structured-ltv");
+for (const created of ["true", "false", ""]) {
+  const values = { steps: { "first-ltv": { outputs: { releases_created: created } } } };
+  assert.equal(evaluate(resolution.if, values), created === "true");
+}
+console.log("PASS: dependents publish only after a newly published LTV version resolves.");
 
 // CI completion used to prepare the next release while the second package was
 // still publishing, yielding a spurious version-only 0.1.5 after 0.1.4.
@@ -139,18 +161,26 @@ try {
 console.log("PASS: actual preparation step attaches main without substituting a later revision.");
 
 // Registry qualification reads what crates.io serves for this revision, so it
-// follows an actual publication by either publishing step and nothing else.
+// follows an actual publication by any publishing step and nothing else.
 const registry = workflow.jobs.registry;
 assert.equal(registry.needs, "publish");
 assert.equal(registry.steps.find(step => step.uses?.startsWith("actions/checkout@")).with.ref, "${{ github.sha }}");
 assert.equal(registry.steps.find(step => step.uses?.startsWith("actions/checkout@")).with["fetch-depth"], 0);
 assert.ok(registry.steps.some(step => step.run === "bash scripts/qualify-registry.sh"));
 assert.equal(publish.steps.find(step => step.id === "release"), release);
-assert.equal(publish.steps.find(step => step.id === "first-xades"), firstXades);
+assert.equal(publish.steps.find(step => step.id === "first-ltv"), firstLtv);
+assert.equal(publish.steps.find(step => step.id === "dependents"), dependents);
 const released = publish.outputs.released.slice(3, -2).trim();
-for (const [core, xades] of [["true", ""], ["false", "true"], ["true", "true"], ["false", "false"], ["false", ""], ["", ""]]) {
-  const created = core === "true" || xades === "true";
-  const steps = { release: { outputs: { releases_created: core } }, "first-xades": { outputs: { releases_created: xades } } };
+for (const [core, ltv, dependent] of [
+  ["true", "", ""], ["false", "true", ""], ["false", "false", "true"], ["true", "true", "true"],
+  ["false", "false", "false"], ["false", "", ""], ["", "", ""],
+]) {
+  const created = core === "true" || ltv === "true" || dependent === "true";
+  const steps = {
+    release: { outputs: { releases_created: core } },
+    "first-ltv": { outputs: { releases_created: ltv } },
+    dependents: { outputs: { releases_created: dependent } },
+  };
   assert.equal(evaluate(released, { steps }), created);
   assert.equal(evaluate(registry.if, { needs: { publish: { outputs: { released: String(created) } } } }), created);
 }

@@ -1,11 +1,13 @@
 //! B-LTA level over one original preparation's complete stage chain.
 
 use super::{
-    LongTermReport, NoCredentials, Tree, fixture, funded, timestamp_oracle, values, xml_digest,
+    LongTermReport, NoCredentials, TimedReport, Tree, fixture, funded, timestamp_oracle, values,
+    xml_digest,
 };
 use structured_asn1::memory::{Memory, Work};
+use structured_ltv::{baseline as composed, pki};
 use structured_xades::{
-    baseline, certificate, credential, material, pki, prepare, timestamp, unsigned,
+    baseline, certificate, credential, material, prepare, timestamp, unsigned,
     xml::{Access, Xml},
 };
 
@@ -34,7 +36,7 @@ fn archival_fixture(leaf: &[u8], root: &[u8]) -> (Tree, timestamp_oracle::Oracle
     (xml, provider, tsa)
 }
 
-type TsaPath<'a> = pki::TimestampPath<'a, 'a, 'a, usize, u8, u8>;
+type TsaPath<'a> = pki::TimestampPath<'a, 'a, 'a, usize, u8, u8, structured_xades::Xades>;
 
 struct Tokens<'a> {
     xml: &'a Tree,
@@ -48,7 +50,11 @@ impl Tokens<'_> {
         &self,
         path: &pki::CheckedPath<'_>,
         memory: &Memory,
-        check: impl for<'t> FnOnce(&TsaPath<'t>, &TsaPath<'t>, &timestamp::Verified<usize, u8, u8>),
+        check: impl for<'t> FnOnce(
+            &TsaPath<'t>,
+            &TsaPath<'t>,
+            &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
+        ),
     ) {
         // Both original tokens are checked once with their real TSA key and
         // bound to the actual checked path; later stages reuse these receipts.
@@ -117,8 +123,10 @@ fn archival_level_joins_whole_and_archive_material_of_one_preparation() {
         let prepared =
             prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
         let fields = prepare::check_fields(&prepared, &access).unwrap();
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+            Ok::<_, ()>(path)
+        })
+        .unwrap();
         let structured_xades::hashes::ParticipantBinding::Bound(hashes) =
             structured_xades::hashes::check_participants(&prepared, &counters, &access).unwrap()
         else {
@@ -152,19 +160,19 @@ fn archival_level_joins_whole_and_archive_material_of_one_preparation() {
             };
             let whole = select(timestamp::TimestampSelection::All);
             let all_paths = [signature_path, archive_path];
-            let timestamp::TimestampPathBinding::Bound(paths) =
+            let structured_ltv::timestamp::TimestampPathBinding::Bound(paths) =
                 whole.bind_paths(&all_paths, &access).unwrap()
             else {
                 panic!("complete original token census")
             };
             let earlier = select(timestamp::TimestampSelection::BeforeArchive(1));
             let prior_paths = [signature_path];
-            let timestamp::TimestampPathBinding::Bound(prior) =
+            let structured_ltv::timestamp::TimestampPathBinding::Bound(prior) =
                 earlier.bind_paths(&prior_paths, &access).unwrap()
             else {
                 panic!("complete original earlier-token census")
             };
-            let timed = baseline::timestamped(&basic, &paths, &access).unwrap();
+            let timed = composed::timestamped(&basic, &paths, &access).unwrap();
             let coverage = timestamp::Input::prepare(
                 &xml,
                 prepared.bound(),
@@ -194,14 +202,31 @@ fn archival_level_joins_whole_and_archive_material_of_one_preparation() {
 struct Chain<'a> {
     xml: &'a Tree,
     prepared: &'a prepare::Prepared<Tree>,
-    counters: &'a pki::CounterPaths<'a, 'a, usize, u8, u8>,
+    counters: &'a structured_xades::pki::CounterPaths<'a, 'a, usize, u8, u8>,
     selected: &'a certificate::CheckedPathCertificate<'a, 'a, usize, u8, u8>,
     operation: &'a structured_asn1::Reader<'a>,
-    paths: &'a timestamp::TimestampPaths<'a, 'a, 'a, usize, u8, u8>,
-    prior: &'a timestamp::TimestampPaths<'a, 'a, 'a, usize, u8, u8>,
-    timed: &'a baseline::Timed<'a, 'a, 'a, 'a, 'a, 'a, usize, u8, u8>,
-    coverage: &'a timestamp::ElementCoverage<usize, u8, u8, Memory>,
-    evidence: &'a timestamp::Verified<usize, u8, u8>,
+    paths: &'a structured_ltv::timestamp::TimestampPaths<
+        'a,
+        'a,
+        'a,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
+    prior: &'a structured_ltv::timestamp::TimestampPaths<
+        'a,
+        'a,
+        'a,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
+    timed: &'a TimedReport<'a, 'a, 'a, 'a, 'a, 'a, 'a>,
+    coverage:
+        &'a structured_ltv::material::Coverage<usize, u8, u8, Memory, structured_xades::Xades>,
+    evidence: &'a structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
 }
 
 type Credentials<'a> = credential::ParticipantCredentials<'a, 'a, (), usize, u8, u8>;
@@ -221,7 +246,7 @@ impl Chain<'_> {
         let other =
             credential::check_participants(self.prepared, self.counters, &NoCredentials, access)
                 .unwrap();
-        let participants = pki::participants(
+        let participants = structured_xades::pki::participants(
             self.selected,
             self.counters,
             &credentials,
@@ -245,7 +270,7 @@ impl Chain<'_> {
                 |query, view| {
                     let work = query.execution();
                     let access = Access::new(self.xml, self.xml.snapshot(), &work);
-                    let index = material::Index::build(&view, &access).unwrap();
+                    let index = material::index(&view, &access).unwrap();
                     let x509 = material::check_participants(
                         self.prepared,
                         &closure,
@@ -265,7 +290,7 @@ impl Chain<'_> {
                     )
                     .unwrap();
                     let long_term =
-                        baseline::long_term(self.timed, &x509, &format, &access).unwrap();
+                        composed::long_term(self.timed, &x509, &format, &access).unwrap();
                     assert!(long_term.all_material_requirements_met());
                     let archive = Archive {
                         chain: self,
@@ -309,14 +334,25 @@ impl Archive<'_> {
         // Material before the archive is checked against its own original
         // coverage; only the census identity differs between both calls.
         let chain = self.chain;
-        let earlier =
-            pki::participants(chain.selected, chain.counters, census, chain.prior, access).unwrap();
+        let earlier = structured_xades::pki::participants(
+            chain.selected,
+            chain.counters,
+            census,
+            chain.prior,
+            access,
+        )
+        .unwrap();
         // Signer plus the earlier signature-timestamp TSA.
         let roots = [self.statuses; 2];
         let closed = earlier.close_statuses(&roots, self.nodes, access).unwrap();
-        let x509 =
-            material::archived_participants(&closed, index, chain.coverage, chain.evidence, access)
-                .unwrap();
+        let x509 = structured_ltv::material::archived_participants(
+            &closed,
+            index,
+            chain.coverage,
+            chain.evidence,
+            access,
+        )
+        .unwrap();
         let format = material::credentials::check(
             census,
             chain.counters,
@@ -327,9 +363,9 @@ impl Archive<'_> {
             access,
         )
         .unwrap();
-        let pair = baseline::archive_material(&x509, &format, access).unwrap();
+        let pair = composed::archive_material(&x509, &format, access).unwrap();
         let reports = [&pair];
-        let census = baseline::archives(chain.prepared, &reports, access).unwrap();
+        let census = composed::archives(chain.prepared, &reports, access).unwrap();
         assert!(census.all_archive_material_covered());
         let assessed = baseline::assess(baseline::Evidence::Archival {
             long_term: self.long_term,

@@ -1,14 +1,18 @@
 //! Cohesive whole-signature X.509 validation-material assessment.
 
 use super::{
-    ConditionalError, ConditionalPlacement, ExclusivePlacement, ExclusivityError, Incorporation,
-    IncorporationError, Index, TimestampPlacement, TimestampPlacementError, artifact_uses,
-    conditional_placement, exclusivity, incorporation, timestamp_placement,
+    ConditionalError, ConditionalPlacement, ExclusivePlacement, ExclusivityError, Index, Placement,
+    TimestampPlacement, TimestampPlacementError, conditional_placement, exclusivity,
+    timestamp_placement,
 };
-use crate::pki::{self, CounterPaths, ParticipantClosure};
+use crate::Xades;
+use crate::pki::CounterPaths;
 use crate::prepare::Prepared;
 use crate::xml::{Access, Xml};
 use structured_asn1::memory::Work;
+use structured_ltv::baseline::X509Material;
+use structured_ltv::material::{Incorporation, IncorporationError, artifact_uses, incorporation};
+use structured_ltv::pki::{ParticipantClosure, ParticipantRequirements, UsesError, authority_uses};
 
 /// All whole-signature X.509 presence and placement checks derived from the
 /// SAME complete participant/status closure and original artifact index.
@@ -18,7 +22,7 @@ use structured_asn1::memory::Work;
 /// coverage and application trust are separate. In particular a certificate-free
 /// credential does not make its other format-specific evidence unnecessary.
 pub struct Checks<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G> {
-    presence: Incorporation<'certificate, 'document, N, D, G>,
+    presence: Incorporation<'certificate, 'document, N, D, G, Placement<N>>,
     conditional: ConditionalPlacement<'certificate, 'document, N, D, G>,
     exclusive: ExclusivePlacement<'certificate, 'document, N, D, G>,
     timestamps:
@@ -28,7 +32,7 @@ pub struct Checks<'closure, 'requirements, 'view, 'certificate, 'document, N, D,
 impl<N: Copy, D: Copy, G: Copy> Checks<'_, '_, '_, '_, '_, N, D, G> {
     /// Complete incorporated presence, including explicitly missing artifacts.
     #[must_use]
-    pub fn presence(&self) -> &Incorporation<'_, '_, N, D, G> {
+    pub fn presence(&self) -> &Incorporation<'_, '_, N, D, G, Placement<N>> {
         &self.presence
     }
 
@@ -61,19 +65,35 @@ impl<N: Copy, D: Copy, G: Copy> Checks<'_, '_, '_, '_, '_, N, D, G> {
     }
 }
 
+impl<'v, 'd, N: Copy, D: Copy, G: Copy> X509Material<'v, 'd>
+    for Checks<'_, '_, 'v, '_, 'd, N, D, G>
+{
+    type Id = N;
+    type Document = D;
+    type Generation = G;
+    type Issuer = Xades;
+
+    fn requirements(&self) -> &ParticipantRequirements<'v, 'd, N, D, G, Xades> {
+        self.timestamps.inputs().requirements()
+    }
+    fn all_x509_requirements_met(&self) -> bool {
+        Checks::all_x509_requirements_met(self)
+    }
+}
+
 /// Terminal cause at its actual stage; no partial success report is returned.
 #[derive(Debug)]
 pub enum CheckError<'certificate, 'document, E, N> {
     /// Whole-source/counter scope or container-rule refusal.
     Conditional(ConditionalError<E, N>),
     /// Original authority attribution or artifact-census refusal.
-    Uses(pki::UsesError<E, N>),
+    Uses(UsesError<N>),
     /// Original incorporated-value lookup refusal.
-    Presence(IncorporationError<E, N>),
+    Presence(IncorporationError<N>),
     /// Original certificate classification or exclusive-container refusal.
-    Exclusive(ExclusivityError<'certificate, 'document, E, N>),
+    Exclusive(ExclusivityError<'certificate, 'document, N>),
     /// Original per-token authority/placement refusal.
-    Timestamp(TimestampPlacementError<E, N>),
+    Timestamp(TimestampPlacementError<N>),
 }
 
 /// Whole-signature material result in the XML owner's identity/error domain.
@@ -121,6 +141,7 @@ pub fn check_participants<
         X::Id,
         X::Document,
         X::Generation,
+        Xades,
     >,
     counters: &CounterPaths<'_, 'document, X::Id, X::Document, X::Generation>,
     index: &Index<'_, X::Id, X::Document, X::Generation, W>,
@@ -128,7 +149,7 @@ pub fn check_participants<
 ) -> CheckResult<'closure, 'requirements, 'view, 'certificate, 'document, X> {
     let conditional = conditional_placement(prepared, inputs, counters, index, access)
         .map_err(CheckError::Conditional)?;
-    let purposes = pki::authority_uses(inputs, access).map_err(CheckError::Uses)?;
+    let purposes = authority_uses(inputs, access).map_err(CheckError::Uses)?;
     let artifacts = artifact_uses(&purposes, access).map_err(CheckError::Uses)?;
     let presence = incorporation(&artifacts, index, access).map_err(CheckError::Presence)?;
     let exclusive = exclusivity(&artifacts, index, access).map_err(CheckError::Exclusive)?;

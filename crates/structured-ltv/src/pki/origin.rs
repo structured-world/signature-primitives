@@ -7,9 +7,13 @@ use core::marker::PhantomData;
 // without imposing its concrete type on every authority/material report. There
 // is no dereference, unsafe operation, allocation, global ID or refcount.
 // ZST addresses do NOT establish distinct instances, so they are excluded at
-// monomorphization. All callers select full receipts with actual owned metadata.
+// monomorphization. An address alone is shared by a repr(C) wrapper and its
+// first field, so the receipt's size and type name are compared too; the
+// receipts here are generic and not `'static`, which rules out `TypeId`.
 pub(super) struct Origin<'a> {
     address: usize,
+    size: usize,
+    kind: &'static str,
     borrow: PhantomData<&'a ()>,
 }
 
@@ -20,6 +24,8 @@ impl<'a> Origin<'a> {
         }
         Self {
             address: core::ptr::from_ref(value).addr(),
+            size: core::mem::size_of::<T>(),
+            kind: core::any::type_name::<T>(),
             borrow: PhantomData,
         }
     }
@@ -28,22 +34,12 @@ impl<'a> Origin<'a> {
         const {
             assert!(core::mem::size_of::<T>() > 0);
         }
+        let kind = core::any::type_name::<T>();
         self.address == core::ptr::from_ref(value).addr()
+            && self.size == core::mem::size_of::<T>()
+            && (core::ptr::eq(self.kind, kind) || self.kind == kind)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::Origin;
-
-    #[test]
-    fn origin_compares_live_instances_without_copying_their_payload() {
-        // Equal payload is not the same selected receipt. The scoped reference
-        // keeps identity valid without retaining/cloning an opaque provider.
-        let first = [7u8; 8];
-        let second = first;
-        let origin = Origin::of(&first);
-        assert!(origin.matches(&first));
-        assert!(!origin.matches(&second));
-    }
-}
+mod tests;

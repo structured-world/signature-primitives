@@ -1,0 +1,31 @@
+[package]
+name = "structured-ltv"
+description = "Format-neutral long-term signature validation facts over PKIX, CMS and caller-owned sources"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["ades", "ltv", "signature", "timestamp", "no-std"]
+categories = ["cryptography", "no-std"]
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
+
+[features]
+default = []
+std = ["structured-asn1/std", "structured-pkix/std", "structured-cms/std"]
+alloc = ["structured-asn1/alloc", "structured-pkix/alloc", "structured-cms/alloc"]
+
+[dependencies]
+structured-asn1 = { version = "0.7.0", path = "../structured-asn1", default-features = false }
+structured-pkix = { version = "0.7.0", path = "../structured-pkix", default-features = false }
+structured-cms = { version = "0.7.0", path = "../structured-cms", default-features = false }
+
+[dev-dependencies]
+# Test-only fixed-curve oracles, using the same pinned engines as CMS tests.
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["fast"] }
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
+sha2 = { version = "=0.11.1", default-features = false }
+
+[lints]
+workspace = true

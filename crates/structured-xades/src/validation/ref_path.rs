@@ -5,8 +5,6 @@ use crate::{
     binary::{self, BinaryXml, Location},
     certificate::{Agreement, CheckedPathCertificate, DigestProvider},
     digest,
-    material::PathCertificate,
-    pki::CheckedPath,
     prepare::{Preparation, Prepared},
     unsigned,
     xml::{Access, Xml},
@@ -14,6 +12,8 @@ use crate::{
 use core::ops::Range;
 use structured_asn1::digest::Digest;
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::material::PathCertificate;
+use structured_ltv::pki::CheckedPath;
 
 /// One original `CompleteCertificateRefsV2` entry and its root-path comparisons.
 pub struct RootReferenceRow<N> {

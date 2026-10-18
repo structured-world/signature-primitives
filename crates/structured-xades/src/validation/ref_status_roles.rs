@@ -10,20 +10,23 @@ use super::{
     },
 };
 use crate::{
+    Xades,
     binary::{self, BinaryXml, Location},
     certificate::{Agreement, DigestProvider, FormatDigest},
     digest,
     material::{
-        self, ArtifactRef, ArtifactSource, ArtifactUses, ExclusiveFindingKind,
+        self, ExclusiveFindingKind,
         exclusivity::{self, CaError, CaFact, ReferenceStatus},
     },
     prepare::{Preparation, Prepared},
-    timestamp::{CarriedMaterial, TimestampScope},
+    timestamp::CarriedMaterial,
     unsigned,
     xml::{Access, Xml},
 };
 use core::ops::Range;
 use structured_asn1::memory::{MemoryError, OwnedMap, OwnedVec, Work};
+use structured_ltv::material::{ArtifactRef, ArtifactSource, ArtifactUses};
+use structured_ltv::timestamp::TimestampScope;
 use structured_pkix::{Certificate, ocsp::Response};
 
 /// Whole-envelope absence is an unproven relation, never a hash of a basic payload.
@@ -268,7 +271,7 @@ fn envelope_index<'source, N: Copy, D: Copy, G: Copy, W: Work>(
             insert_envelope(
                 &mut index,
                 response,
-                ArtifactSource::Xml(ordinal),
+                ArtifactSource::Material(ordinal),
                 value.location,
                 work,
             )?;
@@ -444,7 +447,7 @@ impl<'provider, 'source, 'c, 'd, X: Xml, P: DigestProvider<'provider, X>, W: Wor
         selection: (ReferenceKind, unsigned::Role),
         identity: FormatDigest<P::Identity>,
         expected: &[u8],
-        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
         pools: CandidatePools<'_, 'source, X::Id, X::Document, X::Generation>,
         work: &W,
     ) -> Result<(), digest::Error<CertificateRoleError<'c, 'd, P::Error>, P::Error>> {
@@ -523,7 +526,7 @@ impl<'provider, 'source, 'c, 'd, X: Xml, P: DigestProvider<'provider, X>, W: Wor
         (kind, role): (ReferenceKind, unsigned::Role),
         method: usize,
         expected: &[u8],
-        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
         pools: CandidatePools<'_, 'source, X::Id, X::Document, X::Generation>,
         work: &W,
     ) -> StatusResult<'c, 'd, (), P::Error> {
@@ -583,7 +586,7 @@ impl<'provider, 'source, 'c, 'd, X: Xml, P: DigestProvider<'provider, X>, W: Wor
         &mut self,
         xml: &X,
         (property, refs, entry): OriginalRow<'_, X>,
-        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+        artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
         pools: CandidatePools<'_, 'source, X::Id, X::Document, X::Generation>,
         provider: &'provider P,
         work: &W,
@@ -682,7 +685,7 @@ pub fn check_revocation_reference_roles<
 >(
     xml: &X,
     prepared: &'p Prepared<X>,
-    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
     view: &material::View<'_, X::Id, X::Document, X::Generation>,
     tokens: Option<&CarriedMaterial<'_, X::Id, X::Document, X::Generation>>,
     provider: &'q P,

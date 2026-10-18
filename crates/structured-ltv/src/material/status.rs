@@ -1,32 +1,32 @@
 //! Original status artifacts derived from common authenticated evidence.
 
-use super::{ArchiveError, Archived, ArtifactRef, Index, IndexError};
-use crate::binary::Location;
-use crate::timestamp::{ElementCoverage, Verified};
-use crate::xml::{Access, Xml};
-use structured_asn1::memory::{HashWork, OwnedVec, Work};
+use super::{ArchiveError, Archived, ArtifactRef, Coverage, Index, IndexError, PathCertificates};
+use crate::pki::{AuthorityClosure, CrlReading, MemberStatus, PathStatuses};
+use crate::source::{Location, Query, ScopeError};
+use crate::timestamp::Verified;
+use structured_asn1::memory::{HashWork, MemoryError, OwnedVec, Work};
 use structured_pkix::{crl, ocsp};
 
 /// Archive-material census for every path actually reached through the selected
 /// actor/status-authority inputs. This proves artifact availability only; it
 /// preserves every original status/time/authority fact without accepting it.
-pub struct AuthorityMaterial<'closure, 'view, 'certificate, 'document, N, D, G> {
-    inputs: &'closure crate::pki::AuthorityClosure<'view, 'certificate, 'document>,
-    paths: OwnedVec<PathMaterial<'view, 'certificate, 'document, N, D, G>>,
+pub struct AuthorityMaterial<'closure, 'view, 'certificate, 'document, N, D, G, P> {
+    inputs: &'closure AuthorityClosure<'view, 'certificate, 'document>,
+    paths: OwnedVec<PathMaterial<'view, 'certificate, 'document, N, D, G, P>>,
     all_covered: bool,
 }
 
-impl<'closure, 'view, 'certificate, 'document, N, D, G>
-    AuthorityMaterial<'closure, 'view, 'certificate, 'document, N, D, G>
+impl<'closure, 'view, 'certificate, 'document, N, D, G, P>
+    AuthorityMaterial<'closure, 'view, 'certificate, 'document, N, D, G, P>
 {
     /// Complete original root/authority input closure, not a selected subset.
     #[must_use]
-    pub fn inputs(&self) -> &'closure crate::pki::AuthorityClosure<'view, 'certificate, 'document> {
+    pub fn inputs(&self) -> &'closure AuthorityClosure<'view, 'certificate, 'document> {
         self.inputs
     }
     /// Material for every reached path, preserving the same closure order.
     #[must_use]
-    pub fn paths(&self) -> &[PathMaterial<'view, 'certificate, 'document, N, D, G>] {
+    pub fn paths(&self) -> &[PathMaterial<'view, 'certificate, 'document, N, D, G, P>] {
         &self.paths
     }
     /// Whether all actually required original artifacts precede this archive.
@@ -37,58 +37,38 @@ impl<'closure, 'view, 'certificate, 'document, N, D, G>
     }
 }
 
-/// Original closure/archive association in the XML owner's identity domain.
-pub type AuthorityArchiveResult<'closure, 'view, 'certificate, 'document, X> = Result<
-    AuthorityMaterial<
-        'closure,
-        'view,
-        'certificate,
-        'document,
-        <X as Xml>::Id,
-        <X as Xml>::Document,
-        <X as Xml>::Generation,
-    >,
-    ArchiveError<<X as Xml>::Error, <X as Xml>::Id>,
->;
-
 /// Census every path/status/authority artifact actually required by this input
 /// closure under the SAME original archive input. Reuses `archived_path`, its
 /// source index and complete/delta/whole-OCSP rules. No provider is repeated and
 /// an allocation/work/source refusal drops every partial material report.
-pub fn archived_authorities<
-    'closure,
-    'view,
-    'certificate,
-    'document,
-    X: Xml,
-    W: Work,
-    Q: Work,
-    C: Work,
->(
-    inputs: &'closure crate::pki::AuthorityClosure<'view, 'certificate, 'document>,
-    index: &Index<'_, X::Id, X::Document, X::Generation, W>,
-    coverage: &ElementCoverage<X::Id, X::Document, X::Generation, C>,
-    evidence: &Verified<X::Id, X::Document, X::Generation>,
-    access: &Access<'_, X, Q>,
-) -> AuthorityArchiveResult<'closure, 'view, 'certificate, 'document, X>
+pub fn archived_authorities<'closure, 'view, 'certificate, 'document, N, D, G, P, O, W, Q, C, I>(
+    inputs: &'closure AuthorityClosure<'view, 'certificate, 'document>,
+    index: &Index<'_, N, D, G, P, O, W, I>,
+    coverage: &Coverage<N, D, G, C, I>,
+    evidence: &Verified<N, D, G, I>,
+    query: &Q,
+) -> Result<AuthorityMaterial<'closure, 'view, 'certificate, 'document, N, D, G, P>, ArchiveError<N>>
 where
-    X::Id: HashWork,
+    N: Copy + Eq + HashWork,
+    D: Copy + Eq,
+    G: Copy + Eq,
+    P: Copy,
+    W: Work,
+    C: Work,
+    Q: Query<Id = N, Document = D, Generation = G>,
 {
     let signature = evidence.signature();
     let resource = |cause| ArchiveError::Index(IndexError::Resource { signature, cause });
-    let mut paths = access
-        .query(signature, |_, _, work| Ok(work.vector()))
-        .map_err(|cause| ArchiveError::Index(IndexError::Access(cause)))?;
+    let scope = |cause| ArchiveError::Index(IndexError::Scope(cause));
+    query.admit(signature, 1).map_err(scope)?;
+    let mut paths = query.execution().vector();
     paths
         .try_reserve_exact(inputs.nodes().len())
         .map_err(resource)?;
     let mut all_covered = true;
     for node in inputs.nodes() {
-        access
-            .query(signature, |_, _, work| Ok(work.charge_work(1)))
-            .map_err(|cause| ArchiveError::Index(IndexError::Access(cause)))?
-            .map_err(resource)?;
-        let material = archived_path(node.statuses, index, coverage, evidence, access)?;
+        query.admit(signature, 2).map_err(scope)?;
+        let material = archived_path(node.statuses, index, coverage, evidence, query)?;
         if !material.all_artifacts_covered() {
             all_covered = false;
         }
@@ -104,31 +84,31 @@ where
 /// Complete certificate/status artifact census for the SAME actual path and
 /// original evaluation inputs. This is one actor's contribution to an archive;
 /// other actors, status acceptance and historical trust remain separate.
-pub struct PathMaterial<'view, 'certificate, 'document, N, D, G> {
-    inputs: &'view crate::pki::PathStatuses<'view, 'certificate, 'document>,
-    certificates: super::PathCertificates<'view, 'document, N, D, G>,
-    statuses: OwnedVec<StatusMaterial<'view, 'certificate, 'document, N, D, G>>,
+pub struct PathMaterial<'view, 'certificate, 'document, N, D, G, P> {
+    inputs: &'view PathStatuses<'view, 'certificate, 'document>,
+    certificates: PathCertificates<'view, 'document, N, D, G, P>,
+    statuses: OwnedVec<StatusMaterial<'view, 'certificate, 'document, N, D, G, P>>,
     all_covered: bool,
 }
 
-impl<'view, 'certificate, 'document, N, D, G>
-    PathMaterial<'view, 'certificate, 'document, N, D, G>
+impl<'view, 'certificate, 'document, N, D, G, P>
+    PathMaterial<'view, 'certificate, 'document, N, D, G, P>
 {
     /// Original complete per-member input census; no caller-written actor count.
     #[must_use]
-    pub fn inputs(&self) -> &'view crate::pki::PathStatuses<'view, 'certificate, 'document> {
+    pub fn inputs(&self) -> &'view PathStatuses<'view, 'certificate, 'document> {
         self.inputs
     }
     /// Same actual checked-path certificate set, including its existing anchor.
     #[must_use]
-    pub fn certificates(&self) -> &super::PathCertificates<'view, 'document, N, D, G> {
+    pub fn certificates(&self) -> &PathCertificates<'view, 'document, N, D, G, P> {
         &self.certificates
     }
     /// Original contributing status sources/signers for members requiring a
     /// status lookup. The original input census separately retains a validated
     /// responder noCheck exemption; it never manufactures an OCSP Good result.
     #[must_use]
-    pub fn statuses(&self) -> &[StatusMaterial<'view, 'certificate, 'document, N, D, G>] {
+    pub fn statuses(&self) -> &[StatusMaterial<'view, 'certificate, 'document, N, D, G, P>] {
         &self.statuses
     }
     /// Whether all these exact inputs have covered original copies. This is
@@ -139,60 +119,47 @@ impl<'view, 'certificate, 'document, N, D, G>
     }
 }
 
-/// Complete actor-path census in the XML owner's original identity domain.
-pub type PathArchiveResult<'view, 'certificate, 'document, X> = Result<
-    PathMaterial<
-        'view,
-        'certificate,
-        'document,
-        <X as Xml>::Id,
-        <X as Xml>::Document,
-        <X as Xml>::Generation,
-    >,
-    ArchiveError<<X as Xml>::Error, <X as Xml>::Id>,
->;
-
 /// Derive archive obligations from a complete original path-status census.
 /// Reuses the same exact-source index and archive coverage for certificates and
 /// all complete/delta/OCSP contributors. No signature/hash check is repeated,
 /// and refusal drops the accumulated reports rather than returning a subset.
-pub fn archived_path<'view, 'certificate, 'document, X: Xml, W: Work, Q: Work, C: Work>(
-    inputs: &'view crate::pki::PathStatuses<'view, 'certificate, 'document>,
-    index: &Index<'_, X::Id, X::Document, X::Generation, W>,
-    coverage: &ElementCoverage<X::Id, X::Document, X::Generation, C>,
-    evidence: &Verified<X::Id, X::Document, X::Generation>,
-    access: &Access<'_, X, Q>,
-) -> PathArchiveResult<'view, 'certificate, 'document, X>
+pub fn archived_path<'view, 'certificate, 'document, N, D, G, P, O, W, Q, C, I>(
+    inputs: &'view PathStatuses<'view, 'certificate, 'document>,
+    index: &Index<'_, N, D, G, P, O, W, I>,
+    coverage: &Coverage<N, D, G, C, I>,
+    evidence: &Verified<N, D, G, I>,
+    query: &Q,
+) -> Result<PathMaterial<'view, 'certificate, 'document, N, D, G, P>, ArchiveError<N>>
 where
-    X::Id: HashWork,
+    N: Copy + Eq + HashWork,
+    D: Copy + Eq,
+    G: Copy + Eq,
+    P: Copy,
+    W: Work,
+    C: Work,
+    Q: Query<Id = N, Document = D, Generation = G>,
 {
-    let certificates = index.archived_path(inputs.path(), coverage, evidence, access)?;
+    let certificates = index.archived_path(inputs.path(), coverage, evidence, query)?;
     let mut all_covered = certificates.all_certificates_covered();
     let signature = evidence.signature();
     let resource = |cause| ArchiveError::Index(IndexError::Resource { signature, cause });
-    let mut statuses = access
-        .query(signature, |_, _, work| Ok(work.vector()))
-        .map_err(|cause| ArchiveError::Index(IndexError::Access(cause)))?;
+    let scope = |cause| ArchiveError::Index(IndexError::Scope(cause));
+    query.admit(signature, 1).map_err(scope)?;
+    let mut statuses = query.execution().vector();
     let mut count = 0;
     for input in inputs.entries() {
-        access
-            .query(signature, |_, _, work| Ok(work.charge_work(1)))
-            .map_err(|cause| ArchiveError::Index(IndexError::Access(cause)))?
-            .map_err(resource)?;
-        if !matches!(input, crate::pki::MemberStatus::ResponderNoCheck(_)) {
+        query.admit(signature, 2).map_err(scope)?;
+        if !matches!(input, MemberStatus::ResponderNoCheck(_)) {
             count += 1;
         }
     }
     statuses.try_reserve_exact(count).map_err(resource)?;
     for input in inputs.entries() {
-        access
-            .query(signature, |_, _, work| Ok(work.charge_work(1)))
-            .map_err(|cause| ArchiveError::Index(IndexError::Access(cause)))?
-            .map_err(resource)?;
+        query.admit(signature, 2).map_err(scope)?;
         let Some(source) = member_source(input) else {
             continue;
         };
-        let status = archived(source, index, coverage, evidence, access)?;
+        let status = archived(source, index, coverage, evidence, query)?;
         if !status.all_artifacts_covered() {
             all_covered = false;
         }
@@ -214,24 +181,24 @@ pub enum StatusSource<'view, 'certificate, 'document> {
     Crl(&'view crl::Coverage<'certificate, 'document>),
     /// Original complete/delta facts whose entry/window may be negative. This
     /// retains actual sources without constructing an absence assertion.
-    CrlReading(crate::pki::CrlReading<'view, 'certificate, 'document>),
+    CrlReading(CrlReading<'view, 'certificate, 'document>),
     /// Common issuer/request/time result. Its original status may be Good,
     /// Unknown or Revoked; incorporation does not change that status.
     Ocsp(&'view ocsp::BoundEvidence<'certificate, 'document, 'certificate, 'document>),
 }
 
-// One mapping for archive material and purpose classification. noCheck omits
-// only a status artifact; its actual responder certificate remains in the path.
-pub(crate) fn member_source<'view, 'certificate, 'document>(
-    input: &'view crate::pki::MemberStatus<'view, 'certificate, 'document>,
+/// The status source of one member's status input; `None` for a validated
+/// responder noCheck exemption, whose responder certificate stays in the path.
+/// One mapping serves archive material and every format's placement checks.
+#[must_use]
+pub fn member_source<'view, 'certificate, 'document>(
+    input: &'view MemberStatus<'view, 'certificate, 'document>,
 ) -> Option<StatusSource<'view, 'certificate, 'document>> {
     match input {
-        crate::pki::MemberStatus::Crl(bound) => Some(StatusSource::Crl(bound.coverage())),
-        crate::pki::MemberStatus::CrlReading(bound) => {
-            Some(StatusSource::CrlReading(bound.reading()))
-        }
-        crate::pki::MemberStatus::Ocsp(bound) => Some(StatusSource::Ocsp(bound.evidence())),
-        crate::pki::MemberStatus::ResponderNoCheck(_) => None,
+        MemberStatus::Crl(bound) => Some(StatusSource::Crl(bound.coverage())),
+        MemberStatus::CrlReading(bound) => Some(StatusSource::CrlReading(bound.reading())),
+        MemberStatus::Ocsp(bound) => Some(StatusSource::Ocsp(bound.evidence())),
+        MemberStatus::ResponderNoCheck(_) => None,
     }
 }
 
@@ -271,40 +238,27 @@ pub enum StatusPart {
 
 /// One required source artifact; ordinals address the retained evidence below.
 #[derive(Debug)]
-pub struct ArchivedStatus<N, D, G> {
+pub struct ArchivedStatus<N, D, G, P> {
     /// Contributing CRL reason-source ordinal, or zero for one OCSP response.
     pub source: usize,
     /// Exact artifact role, not inferred from how many values were carried.
     pub part: StatusPart,
     /// Mathematical availability under this particular archive input.
-    pub availability: Archived<N, D, G>,
+    pub availability: Archived<N, D, G, P>,
 }
 
 /// Complete artifact census for exactly one borrowed common status result.
 /// Status usability, actor/path association and additional delegated-responder
 /// checking remain explicit; this is not an attained baseline-level receipt.
-pub struct StatusMaterial<'view, 'certificate, 'document, N, D, G> {
+pub struct StatusMaterial<'view, 'certificate, 'document, N, D, G, P> {
     source: StatusSource<'view, 'certificate, 'document>,
     archive: Location<N, D, G>,
-    entries: OwnedVec<ArchivedStatus<N, D, G>>,
+    entries: OwnedVec<ArchivedStatus<N, D, G, P>>,
     all_covered: bool,
 }
 
-/// Status census result in this XML owner's original source/error domains.
-pub type StatusArchiveResult<'view, 'certificate, 'document, X> = Result<
-    StatusMaterial<
-        'view,
-        'certificate,
-        'document,
-        <X as Xml>::Id,
-        <X as Xml>::Document,
-        <X as Xml>::Generation,
-    >,
-    ArchiveError<<X as Xml>::Error, <X as Xml>::Id>,
->;
-
-impl<'view, 'certificate, 'document, N: Copy, D: Copy, G: Copy>
-    StatusMaterial<'view, 'certificate, 'document, N, D, G>
+impl<'view, 'certificate, 'document, N: Copy, D: Copy, G: Copy, P>
+    StatusMaterial<'view, 'certificate, 'document, N, D, G, P>
 {
     /// Same original common result; another target/status cannot replace it.
     #[must_use]
@@ -318,7 +272,7 @@ impl<'view, 'certificate, 'document, N: Copy, D: Copy, G: Copy>
     }
     /// Every original status source and actual signer, including missing copies.
     #[must_use]
-    pub fn entries(&self) -> &[ArchivedStatus<N, D, G>] {
+    pub fn entries(&self) -> &[ArchivedStatus<N, D, G, P>] {
         &self.entries
     }
     /// Whether all these exact artifacts have covered copies. This does not
@@ -338,23 +292,30 @@ impl<'view, 'certificate, 'document, N: Copy, D: Copy, G: Copy>
 /// result, never from a count or a fresh private status parser here.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
 /// <https://www.rfc-editor.org/rfc/rfc5940#section-3>
-pub fn archived<'view, 'certificate, 'document, X: Xml, W: Work, Q: Work, C: Work>(
+pub fn archived<'view, 'certificate, 'document, N, D, G, P, O, W, Q, C, I>(
     source: StatusSource<'view, 'certificate, 'document>,
-    index: &Index<'_, X::Id, X::Document, X::Generation, W>,
-    coverage: &ElementCoverage<X::Id, X::Document, X::Generation, C>,
-    evidence: &Verified<X::Id, X::Document, X::Generation>,
-    access: &Access<'_, X, Q>,
-) -> StatusArchiveResult<'view, 'certificate, 'document, X>
+    index: &Index<'_, N, D, G, P, O, W, I>,
+    coverage: &Coverage<N, D, G, C, I>,
+    evidence: &Verified<N, D, G, I>,
+    query: &Q,
+) -> Result<StatusMaterial<'view, 'certificate, 'document, N, D, G, P>, ArchiveError<N>>
 where
-    X::Id: HashWork,
+    N: Copy + Eq + HashWork,
+    D: Copy + Eq,
+    G: Copy + Eq,
+    P: Copy,
+    W: Work,
+    C: Work,
+    Q: Query<Id = N, Document = D, Generation = G>,
 {
     let signature = evidence.signature();
-    let mut entries = access
-        .query(signature, |_, _, work| Ok(work.vector()))
-        .map_err(|cause| ArchiveError::Index(IndexError::Access(cause)))?;
+    query
+        .admit(signature, 1)
+        .map_err(|cause| ArchiveError::Index(IndexError::Scope(cause)))?;
+    let mut entries = query.execution().vector();
     let mut all_covered = true;
     let mut record = |artifact, ordinal, part| {
-        let availability = index.archived(artifact, coverage, evidence, access)?;
+        let availability = index.archived(artifact, coverage, evidence, query)?;
         if !matches!(availability, Archived::Present(_)) {
             all_covered = false;
         }
@@ -366,11 +327,8 @@ where
             })
             .map_err(|cause| ArchiveError::Index(IndexError::Resource { signature, cause }))
     };
-    visit_artifacts(source, signature, access, &mut record).map_err(|cause| match cause {
-        ArtifactVisitError::Access(cause) => ArchiveError::Index(IndexError::Access(cause)),
-        ArtifactVisitError::Resource(cause) => {
-            ArchiveError::Index(IndexError::Resource { signature, cause })
-        }
+    visit_artifacts(source, signature, query, &mut record).map_err(|cause| match cause {
+        ArtifactVisitError::Scope(cause) => ArchiveError::Index(IndexError::Scope(cause)),
         ArtifactVisitError::Visitor(cause) => cause,
     })?;
     Ok(StatusMaterial {
@@ -421,45 +379,39 @@ fn record_crl<'certificate, 'document, E>(
     Ok(())
 }
 
-pub(crate) enum ArtifactVisitError<E, V, N> {
-    Access(crate::xml::AccessError<E, N>),
-    Resource(structured_asn1::memory::MemoryError),
+/// A source refusal while enumerating status artifacts, or the visitor's own.
+#[derive(Debug)]
+pub enum ArtifactVisitError<V, N> {
+    /// Source generation or current operation refused.
+    Scope(ScopeError<N>),
+    /// The visitor's unchanged cause.
     Visitor(V),
 }
 
-// Both archive availability and exclusive-use classification must enumerate the
-// same original complete/delta/OCSP sources and actual authentication signers.
-// A visitor's failure preserves its cause, rather than becoming missing data.
-pub(crate) fn visit_artifacts<'certificate, 'document, X: Xml, W: Work, V>(
+/// Enumerates every original complete/delta/OCSP source and actual
+/// authentication signer of one status result, each step admitted under the
+/// current query. Archive availability and every format's placement check
+/// share this one walk; a visitor failure keeps its cause.
+pub fn visit_artifacts<'certificate, 'document, Q: Query, V>(
     source: StatusSource<'_, 'certificate, 'document>,
-    signature: X::Id,
-    access: &Access<'_, X, W>,
+    signature: Q::Id,
+    query: &Q,
     mut record: impl FnMut(ArtifactRef<'certificate, 'document>, usize, StatusPart) -> Result<(), V>,
-) -> Result<(), ArtifactVisitError<X::Error, V, X::Id>> {
-    let pay = || {
-        access
-            .query(signature, |_, _, work| Ok(work.charge_work(1)))
-            .map_err(ArtifactVisitError::Access)?
-            .map_err(ArtifactVisitError::Resource)
-    };
+) -> Result<(), ArtifactVisitError<V, Q::Id>> {
+    let pay = || query.admit(signature, 2).map_err(ArtifactVisitError::Scope);
     let record = |artifact, ordinal, part| {
         record(artifact, ordinal, part).map_err(ArtifactVisitError::Visitor)
     };
     walk_artifacts(source, pay, record)
 }
 
-// Source identity is checked by the enclosing original-reference operation.
-// Reuse the exact same source walker when that operation needs only current
-// admission, rather than an XML callback for every immutable binary source.
-pub(crate) fn visit_artifacts_in<'c, 'd, W: Work>(
+/// The same walk when the enclosing operation has already checked the source
+/// and needs only current admission.
+pub fn visit_artifacts_in<'c, 'd, W: Work>(
     source: StatusSource<'_, 'c, 'd>,
     work: &W,
-    record: impl FnMut(
-        ArtifactRef<'c, 'd>,
-        usize,
-        StatusPart,
-    ) -> Result<(), structured_asn1::memory::MemoryError>,
-) -> Result<(), structured_asn1::memory::MemoryError> {
+    record: impl FnMut(ArtifactRef<'c, 'd>, usize, StatusPart) -> Result<(), MemoryError>,
+) -> Result<(), MemoryError> {
     walk_artifacts(source, || work.charge_work(1), record)
 }
 

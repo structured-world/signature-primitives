@@ -5,6 +5,7 @@ use crate::binding::{Bound, Coverage, Status};
 use crate::container::{DS, XADES};
 use crate::reference::{Boolean, LexicalSource, ReferenceXml, ReplayOutcome, Resolution};
 use crate::xml::{Access, AccessError, ChildError, Name, Snapshot, Xml};
+use crate::{ISSUER, Xades};
 use structured_asn1::{
     Reader,
     memory::{Execution, MemoryError, OwnedVec, Work},
@@ -14,12 +15,11 @@ use structured_cms::{
     provider::SignatureProvider,
     timestamp::{CheckContext, CheckedTimestamp, TokenExtension},
 };
+use structured_ltv::timestamp::{CheckedActor, Purpose, Verified};
 
 /// Namespace of the current archive timestamp property.
 pub const XADES_141: &str = "http://uri.etsi.org/01903/v1.4.1#";
 
-mod verified;
-pub use verified::{BoundaryRelation, CheckedActor, Interval, TemporalError, Verified};
 mod counters;
 mod coverage;
 mod material;
@@ -27,17 +27,14 @@ pub use counters::{
     CounterStamp, CounterTimestampError, CounterTimestampResult, CounterTimestamps,
     counter_timestamps,
 };
-pub use coverage::{CoverageError, CoverageFor, ElementCoverage};
+pub use coverage::{CoverageError, CoverageFor};
 mod profile;
 mod selection;
 mod tokens;
-pub use material::{
-    Carried, CarriedCause, CarriedError, CarriedMaterial, CarriedOrigin, OtherCarried,
-};
+pub use material::{Carried, CarriedCause, CarriedError, CarriedMaterial, OtherCarried};
 pub use profile::{DigestError, DigestUse};
 pub use selection::{
-    RequiredToken, RequirementError, RequirementResult, TimestampPathBinding, TimestampPathFailure,
-    TimestampPaths, TimestampRequirements, TimestampScope, TimestampSelection, requirements,
+    RequirementError, RequirementResult, TimestampSelection, requirements,
     requirements_with_counters,
 };
 pub use tokens::{
@@ -60,6 +57,19 @@ pub enum Role {
     ReferencesOnly,
     /// Original reference outputs and earlier signature/validation components.
     Archive,
+}
+
+impl Role {
+    /// What a timestamp of this role proves the existence of.
+    #[must_use]
+    pub fn purpose(self) -> Purpose {
+        match self {
+            Self::AllDataObjects | Self::IndividualDataObjects => Purpose::Content,
+            Self::Signature => Purpose::Signature,
+            Self::SignatureAndReferences | Self::ReferencesOnly => Purpose::ValidationData,
+            Self::Archive => Purpose::Archive,
+        }
+    }
 }
 
 /// Failure to select or acquire an original timestamp input.
@@ -199,7 +209,7 @@ impl<N: Copy, D: Copy, G: Copy> Stamp<N, D, G> {
 pub type Timestamp<X> = Stamp<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>;
 /// Independently retained positive timestamp using original XML identities.
 pub type VerifiedTimestamp<X> =
-    Verified<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>;
+    Verified<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation, Xades>;
 /// Successful timestamp bound to the exact certificate/key used for checking.
 pub type TimestampActor<'certificate, 'document, X> = CheckedActor<
     'certificate,
@@ -207,6 +217,7 @@ pub type TimestampActor<'certificate, 'document, X> = CheckedActor<
     <X as Xml>::Id,
     <X as Xml>::Document,
     <X as Xml>::Generation,
+    Xades,
 >;
 /// Original cause and node location survive timestamp preparation failures.
 pub type InputResult<T, X> = Result<T, InputError<<X as Xml>::Error, <X as Xml>::Id>>;
@@ -291,10 +302,8 @@ impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
     {
         Ok(self
             .retain(bound, stamp, index, operation, recognizes)?
-            .map(|verified| CheckedActor {
-                verified,
-                certificate: self.context.certificate,
-                key: self.context.key,
+            .map(|verified| {
+                CheckedActor::new(ISSUER, verified, self.context.certificate, self.context.key)
             }))
     }
 
@@ -321,12 +330,15 @@ impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
             checked.into_evidence()
         }
         let located = self.run(bound, stamp, index, operation, recognizes, evidence)?;
-        Ok(located.value.map(|evidence| Verified {
-            token: located.location,
-            signature: stamp.signature,
-            property: stamp.node,
-            role: stamp.role,
-            evidence,
+        Ok(located.value.map(|evidence| {
+            Verified::new(
+                ISSUER,
+                located.location,
+                stamp.signature,
+                stamp.node,
+                stamp.role.purpose(),
+                evidence,
+            )
         }))
     }
 
@@ -395,16 +407,20 @@ impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
         let located = self.run_prepared(stamp, index, operation, input, recognizes, |checked| {
             checked.into_evidence()
         })?;
-        Ok(located.value.map(|evidence| CheckedActor {
-            verified: Verified {
-                token: located.location,
-                signature: stamp.signature,
-                property: stamp.node,
-                role: stamp.role,
-                evidence,
-            },
-            certificate: self.context.certificate,
-            key: self.context.key,
+        Ok(located.value.map(|evidence| {
+            CheckedActor::new(
+                ISSUER,
+                Verified::new(
+                    ISSUER,
+                    located.location,
+                    stamp.signature,
+                    stamp.node,
+                    stamp.role.purpose(),
+                    evidence,
+                ),
+                self.context.certificate,
+                self.context.key,
+            )
         }))
     }
 
@@ -490,16 +506,20 @@ impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
         access
             .query(stamp.node, |_, _, _| Ok(()))
             .map_err(|cause| CheckError::Input(InputError::Access(cause)))?;
-        Ok(evidence.map(|evidence| CheckedActor {
-            verified: Verified {
-                token: location,
-                signature: stamp.signature,
-                property: stamp.node,
-                role: stamp.role,
-                evidence,
-            },
-            certificate: self.context.certificate,
-            key: self.context.key,
+        Ok(evidence.map(|evidence| {
+            CheckedActor::new(
+                ISSUER,
+                Verified::new(
+                    ISSUER,
+                    location,
+                    stamp.signature,
+                    stamp.node,
+                    stamp.role.purpose(),
+                    evidence,
+                ),
+                self.context.certificate,
+                self.context.key,
+            )
         }))
     }
 

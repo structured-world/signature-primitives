@@ -4,13 +4,14 @@ use super::{
     CheckResult, Completeness, Entry, Error, Finding, Missing, Need, ProcessingResult, Provider,
     Report, Scope, selection,
 };
+use crate::Xades;
 use crate::credential::{Checked, ParticipantCredentials};
 use crate::material::Index;
 use crate::pki::CounterPaths;
 use crate::reference::VisitError;
-use crate::timestamp::TimestampRequirements;
 use crate::xml::{Access, AccessError, Xml};
 use structured_asn1::memory::{MemoryError, OwnedMap, Work};
+use structured_ltv::timestamp::TimestampRequirements;
 
 type EntryFor<X> = Entry<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>;
 
@@ -35,7 +36,7 @@ pub fn check<'auth, 'path, 'document, X: Xml, A, P: Provider<X, A>, W: Work, Q: 
         X::Generation,
     >,
     counters: &CounterPaths<'_, '_, X::Id, X::Document, X::Generation>,
-    required: &TimestampRequirements<X::Id, X::Document, X::Generation>,
+    required: &TimestampRequirements<X::Id, X::Document, X::Generation, Xades>,
     index: &Index<'_, X::Id, X::Document, X::Generation, W>,
     scope: &Scope<'_, X::Id, X::Document, X::Generation, C>,
     provider: &P,
@@ -75,7 +76,7 @@ fn open_index<X: Xml, W: Work, Q: Work, PE>(
     access: &Access<'_, X, Q>,
 ) -> ProcessingResult<OwnedMap<X::Id, (), Q>, X, PE> {
     let mut open = access.execution().map();
-    for entry in index.opaque {
+    for entry in index.open() {
         let node = entry.location.node;
         access
             .execution()
@@ -104,7 +105,7 @@ fn one<X: Xml, A, P: Provider<X, A>, W: Work, Q: Work, C: Work>(
     let mut ordinal = 0usize;
     let mut first = None;
     let result = access.query_fallible(node, |_, _, work| {
-        let result = provider.visit(credential, index.opaque, access, |need| {
+        let result = provider.visit(credential, index.open(), access, |need| {
             if first.is_some() {
                 return Err(());
             }

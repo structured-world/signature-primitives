@@ -1,4 +1,4 @@
-# Existing packages keep OIDC while the first XAdES publication uses its own token.
+# Existing packages keep OIDC while the first LTV publication uses its own token.
 [workspace]
 release_always = false
 git_release_enable = true
@@ -7,7 +7,12 @@ git_release_enable = true
 name = "structured-cms"
 git_tag_name = "v{{ version }}"
 
-# XAdES needs its own first-publication configuration.
+# LTV needs its own first-publication configuration.
+[[package]]
+name = "structured-ltv"
+release = false
+
+# XAdES depends on LTV and follows its first publication.
 [[package]]
 name = "structured-xades"
 release = false

@@ -22,7 +22,8 @@ structured-pkix = { version = "0.7.0", path = "../structured-pkix", default-feat
 structured-cms = { version = "0.7.0", path = "../structured-cms", default-features = false }
 
 [dev-dependencies]
-# Test-only fixed-curve oracle, using the same pinned engines as CMS tests.
+# Test-only fixed-curve oracles, using the same pinned engines as CMS tests.
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["fast"] }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
 sha2 = { version = "=0.11.1", default-features = false }
 

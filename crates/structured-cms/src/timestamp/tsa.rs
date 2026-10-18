@@ -88,7 +88,7 @@ impl<'a> TsaReading<'a> {
         })
     }
 
-    /// Whole original explicit [0] wrapper range.
+    /// Whole original explicit \[0\] wrapper range.
     #[must_use]
     pub fn span(&self) -> Span {
         self.wrapper.span()

@@ -717,22 +717,47 @@ fn local_growth_exhaustion_refuses_in_the_allocator_before_the_backend() {
     panic!("no local ceiling funded the growth");
 }
 
+/// A key whose every instance collides, so paid comparisons do not depend on
+/// the per-map random hasher seed and fresh maps cost the same work.
+#[derive(PartialEq, Eq)]
+struct Colliding(usize);
+impl Hash for Colliding {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u8(0);
+    }
+}
+impl HashWork for Colliding {
+    fn hash_work(&self) -> Result<u64, MemoryError> {
+        Ok(1)
+    }
+}
+
+fn full_colliding_map(storage: &Memory) -> OwnedMap<Colliding, usize> {
+    let mut map = storage.map();
+    for key in 0..3 {
+        map.try_insert(Colliding(key), key).unwrap();
+    }
+    assert_eq!(map.values.capacity(), map.len());
+    map
+}
+
 #[test]
 fn aggregate_growth_exhaustion_refuses_in_the_allocator_before_the_backend() {
     // The same sweep on the aggregate account alone, with a fresh account per
-    // ceiling so that only this growth decides the outcome.
+    // ceiling so that only this growth decides the outcome. Each fresh map
+    // must cost exactly the measured base, hence keys independent of the seed.
     let base = {
         let storage = memory(1 << 20, usize::MAX);
-        full_map(&storage);
+        full_colliding_map(&storage);
         storage.work_used()
     };
     let mut allocator_refusals = 0;
     for extra in 0..100_000 {
         let storage = memory(1 << 20, base + extra);
-        let mut map = full_map(&storage);
+        let mut map = full_colliding_map(&storage);
         let capacity = storage.used();
         map.values.allocator().clear_failure();
-        let result = map.try_insert(99, 99);
+        let result = map.try_insert(Colliding(99), 99);
         if storage.used() != capacity {
             assert!(allocator_refusals > 0);
             return;

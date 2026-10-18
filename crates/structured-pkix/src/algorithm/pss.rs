@@ -243,31 +243,10 @@ fn open_parameter<'a: 'operation, 'operation, W: Work>(
     field: &'static str,
 ) -> Result<Option<(Reader<'a, 'operation>, Element<'a>)>> {
     charge(parent, 1, identifier.offset())?;
-    let Some(parameters) = identifier.parameters() else {
+    let Some(parameters) = identifier.parameters_nested() else {
         return Ok(None);
     };
-    let at = identifier.offset()
-        + identifier
-            .parameter_start
-            .expect("written parameters")
-            .get() as u64;
-    let mut reader = execution
-        .read_scoped_nested(
-            identifier.parser,
-            parameters,
-            at,
-            identifier.encoding,
-            identifier.outer,
-        )
-        .field(field)?;
-    let element = reader
-        .next_element()
-        .field(field)?
-        .ok_or_else(|| Error::new(ErrorCode::MissingField, field, reader.offset()))?;
-    if !reader.is_empty() {
-        return Err(Error::new(ErrorCode::TrailingData, field, reader.offset()));
-    }
-    Ok(Some((reader, element)))
+    parameters.open(execution, field).map(Some)
 }
 
 fn decode<'a>(

@@ -61,7 +61,7 @@ impl GeneralName<'_> {
     /// # Errors
     /// Resource refusal remains an error, rather than a mismatch. A retained
     /// value carries no universal document span, so this query returns an
-    /// unlocated error code. Producing reads use [`matches`] for location.
+    /// unlocated error code. Producing reads use [`matches()`] for location.
     ///
     /// # Examples
     /// ```

@@ -12,9 +12,9 @@ const FIELD: &str = "tstInfo.accuracy";
 pub enum Component {
     /// Optional universal INTEGER seconds component.
     Seconds,
-    /// Optional primitive IMPLICIT [0] milliseconds component.
+    /// Optional primitive IMPLICIT \[0\] milliseconds component.
     Millis,
-    /// Optional primitive IMPLICIT [1] microseconds component.
+    /// Optional primitive IMPLICIT \[1\] microseconds component.
     Micros,
 }
 
@@ -83,7 +83,7 @@ pub struct AccuracyReading<'a> {
 }
 
 impl<'a> AccuracyReading<'a> {
-    /// Reads SEQUENCE with optional seconds and primitive IMPLICIT [0]/[1].
+    /// Reads SEQUENCE with optional seconds and primitive IMPLICIT \[0\]/\[1\].
     ///
     /// RFC3161 §2.4.2 gives millis/micros the range 1..999 and defaults each
     /// absent component to zero. Present empty Accuracy is zero, whereas an

@@ -25,11 +25,12 @@
 //! the same [`crate::renewed::check`] kernel, independently of incorporation.
 //!
 //! The requested structural profile remains on the original preparation.
-//! Additional containers never promote it. Inspect all detailed negative facts:
-//! material incorporation is not usable revocation, static validity is not
-//! pre-revocation chronology, and mathematical timestamps are not historical
-//! application trust or algorithm-longevity policy. These report components
-//! deliberately expose no unconditional attained-level or trust constructor.
+//! Additional containers never promote it. [`assess`] joins the stage reports
+//! of exactly that level and states whether all of its conditions hold.
+//! Inspect all detailed negative facts: material incorporation is not usable
+//! revocation, static validity is not pre-revocation chronology, and
+//! mathematical timestamps are not historical application trust or
+//! algorithm-longevity policy. No report here is a trust verdict.
 
 mod basic;
 pub use basic::{Basic, BasicError, BasicInput, BasicResult, Hint, HintSource, basic};
@@ -42,3 +43,5 @@ pub use archive::{
     ArchiveCensusError, ArchiveMaterial, ArchiveMaterialResult, Archives, ArchivesResult,
     archive_material, archives,
 };
+mod level;
+pub use level::{Assessment, Evidence, LevelError, assess};

@@ -41,6 +41,48 @@ pub fn check(directory: &Path) {
     compare(&xml, archive, directory, "archive-input.bin", 1);
 }
 
+/// Called by the pinned external corpus runner for a signature with exactly
+/// one root signature timestamp and no archive.
+///
+/// # Panics
+/// Fails the qualification if an oracle file is missing or common input bytes
+/// differ from the independently verified signature-timestamp imprint.
+pub fn check_signature(directory: &Path) {
+    // EN319132-1 §5.3: only the canonicalized SignatureValue is covered, so
+    // the same common Input must select exactly that one independent piece.
+    compare_signature(directory, 0, true);
+}
+
+/// Same input selection for a token copied from another signature: the
+/// common Input still equals the independent C14N, and its digest must
+/// differ from the copied imprint. `token` is the ordinal of the
+/// `SignatureTimeStamp` token among the document's tokens.
+///
+/// # Panics
+/// Fails the qualification if an oracle file is missing, the common input
+/// differs from libxml2, or the copied imprint happens to match.
+pub fn check_foreign_signature(directory: &Path, token: usize) {
+    compare_signature(directory, token, false);
+}
+
+fn compare_signature(directory: &Path, token: usize, imprint_matches: bool) {
+    let mut xml = Tree::normal();
+    append(&mut xml, 8, DS, "CanonicalizationMethod");
+    append(&mut xml, 8, XADES, "EncapsulatedTimeStamp");
+    xml.canonical_routes.push((
+        12,
+        std::fs::read(directory.join("signature-value.bin")).unwrap(),
+    ));
+    compare_with(
+        &xml,
+        8,
+        directory,
+        "signature-input.bin",
+        token,
+        imprint_matches,
+    );
+}
+
 fn append(xml: &mut Tree, parent: usize, namespace: &'static str, local: &'static str) -> usize {
     let node = xml.nodes.len();
     xml.nodes.push(element(Some(parent), namespace, local));
@@ -48,6 +90,17 @@ fn append(xml: &mut Tree, parent: usize, namespace: &'static str, local: &'stati
 }
 
 fn compare(xml: &Tree, node: usize, directory: &Path, expected: &str, token: usize) {
+    compare_with(xml, node, directory, expected, token, true);
+}
+
+fn compare_with(
+    xml: &Tree,
+    node: usize,
+    directory: &Path,
+    expected: &str,
+    token: usize,
+    imprint_matches: bool,
+) {
     use sha2::{Digest, Sha256};
     // Check exact bytes BEFORE their digest: omitting an apparently redundant
     // final ds:Object must not pass merely because all references were verified.
@@ -77,8 +130,9 @@ fn compare(xml: &Tree, node: usize, directory: &Path, expected: &str, token: usi
         .with_info(&operation, |info, _, _| {
             assert!(!info.has_faults());
             assert_eq!(
-                Sha256::digest(sink.bytes()).as_slice(),
-                info.imprint().hashed().as_one().unwrap()
+                Sha256::digest(sink.bytes()).as_slice()
+                    == info.imprint().hashed().as_one().unwrap(),
+                imprint_matches
             );
             Ok::<_, ()>(())
         })

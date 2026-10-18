@@ -101,6 +101,13 @@ trust inputs and decides whether the resulting evidence meets its policy.
    archive once, in original order. `renewed::check_prepared` separately processes
    every written root renewal's original Manifest instructions and digest pairs,
    retaining failed comparisons alongside successful ones.
+8. `baseline::assess` takes the stage reports of exactly the level that the
+   preparation requested: `Evidence::basic` for B-B, `Evidence::timestamped`
+   for B-T, `Evidence::LongTerm` for B-LT, and `Evidence::Archival` (the
+   `long_term` and `archives` reports) for B-LTA. It refuses a different
+   level, or an archive census built from another preparation or another
+   authenticated credential census than the whole signature. The result states
+   whether every condition of that level holds, including the earlier levels.
 
 Receipts keep detailed negative findings. A material-presence predicate does
 not establish usable revocation status, historical trust, timestamp chronology
@@ -153,11 +160,13 @@ contains no second XML parser, canonicalizer, URI resolver or crypto backend.
 Synthetic XML fixtures exercise the generic contracts; actual XML adapter and
 interoperability qualification are separate requirements.
 
-The repository's `python3 scripts/qualify-xades-corpus.py` checks a SHA256-pinned
-public DSS fixture using test-only xmlsec1/OpenSSL and libxml2 C14N through lxml.
-It compares the common signature/archive input streams byte-for-byte with
-independently canonicalized/transformed inputs and their signed token imprints,
-and verifies XML/CMS mathematics, including an isolated signature mutation.
+The repository's `scripts/qualify-xades-corpus.py` checks SHA256-pinned public
+DSS fixtures (B-B, B-LT and B-LTA, negative and signature-wrapping cases, and a
+document with two signatures) using test-only xmlsec1/OpenSSL and libxml2 C14N
+through lxml. It compares the common signature/archive input streams
+byte-for-byte with independently canonicalized/transformed inputs and their
+signed token imprints, verifies XML/CMS and OCSP mathematics, including isolated
+signature and data mutations, and checks each negative fixture's stated defect.
 Upstream payloads and their licence notice remain outside packages in `target/`.
 These external tools are test oracles; the Rust runtime gains no FFI dependency.
 Historical trust, revocation acceptance and the bounded native XML adapter

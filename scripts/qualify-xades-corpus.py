@@ -58,6 +58,7 @@ def fetch(path):
 def fixture_bytes(output, spec):
     output.mkdir(parents=True, exist_ok=True)
     target = output / spec["file"]
+    target.parent.mkdir(parents=True, exist_ok=True)
     original = target.read_bytes() if target.exists() else fetch(VALIDATION + spec["file"])
     if hashlib.sha256(original).hexdigest() != spec["sha256"]:
         raise RuntimeError(f"independent fixture SHA256 mismatch: {spec['file']}")
@@ -139,11 +140,59 @@ NEGATIVE = {
                                        # signing, so SignatureValue no longer verifies.
                                        "xmlsec": "SIGNATURE", "defect": "SignedProperties",
                                        "sha256": "e4f8b7de169136fd2fff39415e6e753ef53ad2cbbcedebb13d44eb76b14e9bad"},
+    # Signature wrapping: XMLDSig math holds, the XAdES binding must not.
+    "wrapped-signed-properties": {"file": "xsw/XSW-enveloped-fake-signedProperties.xml",
+                                  "xmlsec": "valid", "defect": "WrappedSignedProperties",
+                                  "sha256": "ad7d46193d6d30050f5d5106aa128342c3485372ac85a91280a1c165328d4c03"},
+    "unreferenced-object": {"file": "xsw/XSW-enveloping-fake-object.xml",
+                            "xmlsec": "valid", "defect": "UnreferencedObject",
+                            "sha256": "34a13993f34ab97ce5b60f2ed50371cdd4ea6bec6d78e4dc3396a4a912e79f73"},
     # The KeyInfo certificate bytes were altered until they no longer decode.
     "tampered-keyinfo": {"file": "xades-tampered-keyinfo.xml", "xmlsec": "error",
                          "defect": "KeyInfoCertificate",
                          "sha256": "738f026a774d062eceb0f4e7b27c5a076088c277f2c7693b919c600134ab1223"},
 }
+
+
+# Several signatures in one document.
+MULTIPLE = {"file": "doubleSignedTest.xml",
+            "sha256": "65709385b3cff732b602048c1346eed48ffd3b45de848f810fdf225c3c739494"}
+
+
+def xmlsec_signature(directory, target, certificate, extra):
+    key = directory / "signer.pem"
+    key.write_text(ssl.DER_cert_to_PEM_cert(base64.b64decode(certificate.text)))
+    result = subprocess.run(["xmlsec1", "--verify", "--print-debug", "--insecure",
+                             "--pubkey-cert-pem", str(key),
+                             "--id-attr:Id", f"{XADES}:SignedProperties"] + extra + [str(target)],
+                            capture_output=True, cwd=directory)
+    return result.returncode, result.stdout + result.stderr
+
+
+def qualify_multiple(output):
+    # Two signatures in one document are selected and judged separately:
+    # the oracle verifies each by its Id, and only one of them carries the
+    # SigningCertificateV2 that EN319132-1 table 2 requires.
+    directory = output / "multiple"
+    target, original = fixture_bytes(directory, MULTIPLE)
+    tree = ET.fromstring(original)
+    signatures = list(tree.iter(f"{{{DS}}}Signature"))
+    if len(signatures) != 2:
+        raise RuntimeError("independent signature census changed")
+    versions = []
+    for ordinal, signature in enumerate(signatures):
+        certificate = signature.find(f"{{{DS}}}KeyInfo/{{{DS}}}X509Data/{{{DS}}}X509Certificate")
+        code, log = xmlsec_signature(directory, target, certificate,
+                                     ["--enabled-reference-uris", "empty,same-doc",
+                                      "--id-attr:Id", f"{DS}:Signature",
+                                      "--node-id", signature.get("Id")])
+        (directory / f"xmlsec-{ordinal}.log").write_bytes(log)
+        if code != 0:
+            raise RuntimeError(f"signature {ordinal} does not verify")
+        versions.append([len(list(signature.iter(f"{{{XADES}}}{name}")))
+                         for name in ("SigningCertificateV2", "SigningCertificate")])
+    if sorted(versions) != [[0, 1], [1, 0]]:
+        raise RuntimeError(f"independent signing-certificate split changed: {versions}")
 
 
 def xmlsec_outcome(output, target, tree):
@@ -183,6 +232,26 @@ def defect_present(tree, defect):
         return (tree.find(f".//{{{XADES}}}SignedProperties") is not None
                 and not [node for node in references
                          if node.get("Type", "").endswith("#SignedProperties")])
+    referenced = {node.get("URI", "")[1:] for node in references
+                  if node.get("URI", "").startswith("#")}
+    if defect == "WrappedSignedProperties":
+        # EN319132-1 §4.3/§4.4: the signed SignedProperties is the child of the
+        # one QualifyingProperties; a copy elsewhere cannot carry the properties.
+        inside = {node.get("Id") for node in tree.iterfind(
+            f".//{{{XADES}}}QualifyingProperties/{{{XADES}}}SignedProperties")}
+        signed = {node.get("Id") for node in tree.iter(f"{{{XADES}}}SignedProperties")
+                  if node.get("Id") in referenced}
+        return bool(signed) and not (signed & inside)
+    if defect == "UnreferencedObject":
+        # A ds:Object reached by no SignedInfo or Manifest reference is unsigned.
+        for manifest in tree.iter(f"{{{DS}}}Manifest"):
+            referenced |= {node.get("URI", "")[1:] for node in manifest.iter(f"{{{DS}}}Reference")
+                           if node.get("URI", "").startswith("#")}
+        objects = [node for node in tree.iter(f"{{{DS}}}Object")
+                   if node.find(f"{{{XADES}}}QualifyingProperties") is None]
+        return any(node.get("Id") not in referenced
+                   and not any(child.get("Id") in referenced for child in node)
+                   for node in objects)
     raise RuntimeError(f"unknown defect {defect}")
 
 
@@ -382,6 +451,7 @@ def qualify_shared(output):
         "negative": {name: {"file": spec["file"], "sha256": spec["sha256"],
                             "defect": spec["defect"], "xmlsec": spec["xmlsec"]}
                      for name, spec in NEGATIVE.items()},
+        "multiple": {"file": MULTIPLE["file"], "sha256": MULTIPLE["sha256"]},
         "source_sha256": before, "harness_sha256": fixture_before,
         "xmlsec": run(["xmlsec1", "--version"]).stdout.decode().strip(),
         "openssl": run(["openssl", "version"]).stdout.decode().strip(),
@@ -411,11 +481,13 @@ def main():
         (output / "lt" / FIXTURES["lt"]["file"]).read_bytes()))
     archive_inputs(output / "lta", output / "lta" / FIXTURES["lta"]["file"])
     qualify_negative(output)
+    qualify_multiple(output)
     qualify_shared(output)
     print(f"Independent DSS {REVISION} B-B/B-LT/B-LTA fixtures: "
           "XML signatures + references PASS; isolated signature and data mutations refused; "
           "3 CMS token signatures and 1 OCSP response signature PASS; "
-          f"{len(NEGATIVE)} negative fixtures show their stated defect. "
+          f"{len(NEGATIVE)} negative fixtures show their stated defect; "
+          "two signatures in one document verified separately. "
           "No trust/archive-coverage verdict.")
 
 

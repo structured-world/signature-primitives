@@ -37,7 +37,6 @@ fn empty_subject_san_lookup_cannot_bypass_producing_work() {
         tlv(1, &[0xff]),
         tlv(4, &seq(&[tlv(0x82, b"example.com")])),
     ]);
-    let unrelated = seq(&[tlv(6, &[43]), tlv(4, &[])]);
     let tbs = seq(&[
         tlv(0xa0, &[2, 1, 2]),
         tlv(2, &[7]),
@@ -46,7 +45,10 @@ fn empty_subject_san_lookup_cannot_bypass_producing_work() {
         seq(&[tlv(23, b"240101000000Z"), tlv(23, b"300101000000Z")]),
         seq(&[]),
         seq(&[algorithm.clone(), tlv(3, &[0, 1])]),
-        tlv(0xa3, &seq(&[unrelated, san])),
+        // The only extension: the duplicate-extension set then holds one key and
+        // never compares hash-tag candidates, whose count depends on the map's
+        // random hasher seed. A second extension would make the work vary.
+        tlv(0xa3, &seq(&[san])),
     ]);
     let encoded = seq(&[tbs, algorithm, tlv(3, &[0, 1])]);
     let baseline = memory();

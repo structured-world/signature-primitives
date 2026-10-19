@@ -1,0 +1,580 @@
+//! EN 319 122-1 §5.5 `ats-hash-index-v3` coverage and `archive-time-stamp-v3`
+//! imprint input over original encodings.
+
+use core::cmp::Ordering;
+use sha2::{Digest as _, Sha256};
+use std::cell::Cell;
+use std::sync::Arc;
+use structured_asn1::digest::{Digest, Resolution};
+use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, Work};
+use structured_asn1::{Parser, Reader};
+use structured_cms::archive::{
+    self, AttributeValue, HashIndex, IndexList, Unmatched, check_index, imprint_input,
+};
+use structured_cms::digest::DigestError;
+use structured_cms::{ErrorCode, SignedData, oid};
+use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
+
+const SHA256_OID: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 1];
+const SHA384_OID: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 2];
+
+fn memory(work: usize) -> Memory {
+    Memory::new(Arc::new(MemoryAccount::new(1_048_576, work)))
+}
+
+fn tlv(tag: u8, contents: &[u8]) -> Vec<u8> {
+    let mut encoded = vec![tag];
+    let length = contents.len();
+    if length < 0x80 {
+        encoded.push(u8::try_from(length).unwrap());
+    } else if length < 0x100 {
+        encoded.extend([0x81, u8::try_from(length).unwrap()]);
+    } else {
+        encoded.extend([0x82, u8::try_from(length >> 8).unwrap()]);
+        encoded.push(u8::try_from(length & 0xff).unwrap());
+    }
+    encoded.extend_from_slice(contents);
+    encoded
+}
+
+fn sha256(parts: &[&[u8]]) -> Vec<u8> {
+    let mut state = Sha256::new();
+    for part in parts {
+        state.update(part);
+    }
+    state.finalize().to_vec()
+}
+
+/// SHA-256 only, charging its work like a provider must, and counting hashes.
+#[derive(Default)]
+struct Provider {
+    starts: Cell<usize>,
+}
+
+impl Digest<'_> for Provider {
+    type Identity = ();
+    type State = Sha256;
+    type Output = [u8; 32];
+    type Error = MemoryError;
+
+    fn width(&self, (): &()) -> Option<usize> {
+        Some(32)
+    }
+    fn compare<W: Work>(&self, (): &(), (): &(), work: &W) -> Result<Ordering, MemoryError> {
+        work.charge_work(1)?;
+        Ok(Ordering::Equal)
+    }
+    fn start<W: Work>(&self, (): &(), work: &W) -> Result<Resolution<Sha256>, MemoryError> {
+        work.charge_work(1)?;
+        self.starts.set(self.starts.get() + 1);
+        Ok(Resolution::Supported(Sha256::new()))
+    }
+    fn update<W: Work>(
+        &self,
+        state: &mut Sha256,
+        bytes: &[u8],
+        work: &W,
+    ) -> Result<(), MemoryError> {
+        work.charge_work(bytes.len() as u64)?;
+        state.update(bytes);
+        Ok(())
+    }
+    fn finish<W: Work>(&self, state: Sha256, work: &W) -> Result<[u8; 32], MemoryError> {
+        work.charge_work(1)?;
+        Ok(state.finalize().into())
+    }
+    fn matches<W: Work>(
+        &self,
+        (): &(),
+        output: &[u8; 32],
+        expected: &[u8],
+        work: &W,
+    ) -> Result<bool, MemoryError> {
+        work.charge_work(32)?;
+        Ok(output.as_slice() == expected)
+    }
+}
+
+impl AsnDigest<'_> for Provider {
+    fn identity(&self, algorithm: Algorithm) -> Option<()> {
+        (algorithm == Algorithm::Sha256).then_some(())
+    }
+}
+
+/// Original elements of one synthetic signature, in their written encodings.
+struct Fixture {
+    certificates: Vec<Vec<u8>>,
+    revocations: Vec<Vec<u8>>,
+    /// Each unsigned attribute's `attrType` encoding and its values.
+    attributes: Vec<(Vec<u8>, Vec<Vec<u8>>)>,
+    signer_fields: Vec<u8>,
+    encoded: Vec<u8>,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let certificates = vec![
+            // Version-1 attribute certificate and an other-format choice,
+            // preserved as encoded without X.509 parsing.
+            tlv(0xa1, &tlv(0x30, &[2, 1, 1])),
+            tlv(0xa3, &[tlv(6, &[0x2a, 5]), vec![5, 0]].concat()),
+        ];
+        let revocations = vec![
+            tlv(0xa1, &[tlv(6, &[0x2a, 6]), tlv(4, &[9])].concat()),
+            tlv(0xa1, &[tlv(6, &[0x2a, 7]), tlv(4, &[10, 11])].concat()),
+        ];
+        let attributes = vec![
+            (tlv(6, &[0x2a, 3]), vec![tlv(2, &[1]), tlv(2, &[2])]),
+            (tlv(6, &[0x2a, 4]), vec![tlv(12, b"x")]),
+        ];
+        let signer_fields = [
+            vec![2, 1, 3],
+            vec![0x80, 1, 7],
+            tlv(0x30, &tlv(6, &[0x2a])),
+            tlv(0x30, &tlv(6, &[0x2b])),
+            tlv(4, &[8]),
+        ]
+        .concat();
+        let unsigned = attributes
+            .iter()
+            .map(|(kind, values)| tlv(0x30, &[kind.clone(), tlv(0x31, &values.concat())].concat()))
+            .collect::<Vec<_>>()
+            .concat();
+        let signer = tlv(
+            0x30,
+            &[signer_fields.clone(), tlv(0xa1, &unsigned)].concat(),
+        );
+        let mut inside = vec![2, 1, 5, 0x31, 0];
+        inside.extend(tlv(0x30, &tlv(6, oid::DATA.as_bytes())));
+        inside.extend(tlv(0xa0, &certificates.concat()));
+        inside.extend(tlv(0xa1, &revocations.concat()));
+        inside.extend(tlv(0x31, &signer));
+        let envelope = [
+            tlv(6, oid::SIGNED_DATA.as_bytes()),
+            tlv(0xa0, &tlv(0x30, &inside)),
+        ]
+        .concat();
+        Self {
+            certificates,
+            revocations,
+            attributes,
+            signer_fields,
+            encoded: tlv(0x30, &envelope),
+        }
+    }
+
+    fn certificate_hashes(&self) -> Vec<Vec<u8>> {
+        self.certificates
+            .iter()
+            .map(|element| sha256(&[element]))
+            .collect()
+    }
+    fn revocation_hashes(&self) -> Vec<Vec<u8>> {
+        self.revocations
+            .iter()
+            .map(|element| sha256(&[element]))
+            .collect()
+    }
+    fn value_hashes(&self) -> Vec<Vec<u8>> {
+        self.attributes
+            .iter()
+            .flat_map(|(kind, values)| values.iter().map(move |value| sha256(&[kind, value])))
+            .collect()
+    }
+}
+
+fn index(algorithm: &[u8], lists: [&[Vec<u8>]; 3]) -> Vec<u8> {
+    let mut fields = tlv(0x30, &tlv(6, algorithm));
+    for list in lists {
+        let entries = list
+            .iter()
+            .map(|hash| tlv(4, hash))
+            .collect::<Vec<_>>()
+            .concat();
+        fields.extend(tlv(0x30, &entries));
+    }
+    tlv(0x30, &fields)
+}
+
+fn read_index<'a>(parser: &'a Parser, encoded: &'a [u8]) -> structured_cms::Result<HashIndex<'a>> {
+    let mut reader = parser.read(encoded, 900).unwrap();
+    let value = reader.next_element().unwrap().unwrap();
+    HashIndex::read(&reader, &value)
+}
+
+/// Parses with a generous account and checks under `check`, so a ceiling
+/// measures the check alone.
+fn coverage_in(
+    fixture: &Fixture,
+    encoded_index: &[u8],
+    check: &Memory,
+) -> Result<Resolution<archive::IndexCoverage>, DigestError<MemoryError>> {
+    let account = memory(1_000_000);
+    let parser = Parser::ber(account.clone());
+    let signed = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
+    let index_parser = Parser::der(account);
+    let index = read_index(&index_parser, encoded_index).unwrap();
+    let operation = Parser::ber(check.clone());
+    let query: Reader<'_> = operation.read(&[], 0).unwrap();
+    let provider = Provider::default();
+    let result = check_index(&index, &signed, &signed.signers()[0], &provider, &query);
+    // A completed check hashes each original element exactly once, however
+    // many entries name it; an unresolved algorithm hashes nothing.
+    match &result {
+        Ok(Resolution::Supported(_)) => assert_eq!(provider.starts.get(), 7),
+        Ok(_) => assert_eq!(provider.starts.get(), 0),
+        Err(_) => {}
+    }
+    result
+}
+
+fn coverage(
+    fixture: &Fixture,
+    encoded_index: &[u8],
+    work: usize,
+) -> Result<Resolution<archive::IndexCoverage>, DigestError<MemoryError>> {
+    coverage_in(fixture, encoded_index, &memory(work))
+}
+
+fn supported(result: Resolution<archive::IndexCoverage>) -> archive::IndexCoverage {
+    match result {
+        Resolution::Supported(coverage) => coverage,
+        other => panic!("index algorithm not answered as supported: {other:?}"),
+    }
+}
+
+#[test]
+fn a_complete_index_protects_every_original_element() {
+    // §5.5.2: every certificate, revocation and unsigned attribute value present
+    // when the time-stamp was requested has its hash in the index.
+    let fixture = Fixture::new();
+    let encoded = index(
+        SHA256_OID,
+        [
+            &fixture.certificate_hashes(),
+            &fixture.revocation_hashes(),
+            &fixture.value_hashes(),
+        ],
+    );
+    let coverage = supported(coverage(&fixture, &encoded, 1_000_000).unwrap());
+    assert!(coverage.is_valid());
+    assert_eq!(coverage.certificates(), &[true, true]);
+    assert_eq!(coverage.revocations(), &[true, true]);
+    let values = coverage.attribute_values();
+    assert_eq!(values.len(), 3);
+    assert!(values.iter().all(|(_, covered)| *covered));
+    assert_eq!(
+        values[2].0,
+        AttributeValue {
+            attribute: 1,
+            value: 0
+        }
+    );
+}
+
+#[test]
+fn an_element_added_after_the_timestamp_is_unprotected_not_invalid() {
+    // §5.5.2 NOTE 5: certificates, revocation values and unsigned attributes
+    // may be added after an archive time-stamp without invalidating it; they
+    // are simply not covered by that time-stamp.
+    let fixture = Fixture::new();
+    let values = fixture.value_hashes();
+    let encoded = index(
+        SHA256_OID,
+        [&fixture.certificate_hashes()[..1], &[], &values[..2]],
+    );
+    let coverage = supported(coverage(&fixture, &encoded, 1_000_000).unwrap());
+    assert!(coverage.is_valid());
+    assert_eq!(coverage.certificates(), &[true, false]);
+    assert_eq!(coverage.revocations(), &[false, false]);
+    let covered: Vec<bool> = coverage
+        .attribute_values()
+        .iter()
+        .map(|(_, c)| *c)
+        .collect();
+    assert_eq!(covered, [true, true, false]);
+}
+
+#[test]
+fn an_entry_without_its_element_invalidates_the_index() {
+    // §5.5.2: an entry that corresponds to no original element makes the
+    // ats-hash-index-v3 invalid, whichever list holds it.
+    let fixture = Fixture::new();
+    let foreign = sha256(&[b"not in this signature"]);
+    let mut certificates = fixture.certificate_hashes();
+    certificates.push(foreign.clone());
+    let mut values = fixture.value_hashes();
+    values.insert(1, foreign);
+    let encoded = index(
+        SHA256_OID,
+        [&certificates, &fixture.revocation_hashes(), &values],
+    );
+    let coverage = supported(coverage(&fixture, &encoded, 1_000_000).unwrap());
+    assert!(!coverage.is_valid());
+    assert_eq!(
+        coverage.unmatched(),
+        &[
+            Unmatched {
+                list: IndexList::Certificates,
+                ordinal: 2
+            },
+            Unmatched {
+                list: IndexList::AttributeValues,
+                ordinal: 1
+            },
+        ]
+    );
+    // The real elements are still reported as covered.
+    assert_eq!(coverage.certificates(), &[true, true]);
+}
+
+#[test]
+fn entries_match_in_any_written_order() {
+    // §5.5.2 lists the hashes per element without requiring the element order.
+    let fixture = Fixture::new();
+    let mut certificates = fixture.certificate_hashes();
+    certificates.reverse();
+    let mut values = fixture.value_hashes();
+    values.rotate_left(1);
+    let encoded = index(
+        SHA256_OID,
+        [&certificates, &fixture.revocation_hashes(), &values],
+    );
+    let coverage = supported(coverage(&fixture, &encoded, 1_000_000).unwrap());
+    assert!(coverage.is_valid());
+    assert!(
+        coverage
+            .attribute_values()
+            .iter()
+            .all(|(_, covered)| *covered)
+    );
+}
+
+#[test]
+fn a_hash_over_another_encoding_of_the_same_value_does_not_match() {
+    // §5.5.2: hashes cover the entire encoded component; a BER long-form
+    // length of the same certificate choice is another octet string.
+    let fixture = Fixture::new();
+    let mut certificates = fixture.certificate_hashes();
+    let original = &fixture.certificates[0];
+    let mut respelled = vec![original[0], 0x81];
+    respelled.extend_from_slice(&original[1..]);
+    certificates[0] = sha256(&[&respelled]);
+    // The value alone, without its attrType, is not the §5.5.2 octet stream.
+    let mut values = fixture.value_hashes();
+    values[0] = sha256(&[&fixture.attributes[0].1[0]]);
+    let encoded = index(
+        SHA256_OID,
+        [&certificates, &fixture.revocation_hashes(), &values],
+    );
+    let coverage = supported(coverage(&fixture, &encoded, 1_000_000).unwrap());
+    assert_eq!(
+        coverage.unmatched(),
+        &[
+            Unmatched {
+                list: IndexList::Certificates,
+                ordinal: 0
+            },
+            Unmatched {
+                list: IndexList::AttributeValues,
+                ordinal: 0
+            },
+        ]
+    );
+    assert_eq!(coverage.certificates(), &[false, true]);
+}
+
+#[test]
+fn an_unknown_index_algorithm_is_answered_not_guessed() {
+    // The provider cannot hash with SHA-384 here; nothing is hashed or matched.
+    let fixture = Fixture::new();
+    let encoded = index(SHA384_OID, [&[], &[], &[]]);
+    assert!(matches!(
+        coverage(&fixture, &encoded, 1_000_000).unwrap(),
+        Resolution::Unsupported
+    ));
+    // Parameters other than NULL make a known identifier malformed.
+    let mut malformed = tlv(0x30, &[tlv(6, SHA256_OID), tlv(2, &[1])].concat());
+    for _ in 0..3 {
+        malformed.extend(tlv(0x30, &[]));
+    }
+    let encoded = tlv(0x30, &malformed);
+    assert!(matches!(
+        coverage(&fixture, &encoded, 1_000_000).unwrap(),
+        Resolution::Malformed
+    ));
+}
+
+#[test]
+fn a_zero_sized_provider_is_refused_before_hashing() {
+    // Distinct zero-sized providers may share an address, so like every other
+    // provider-driven check this one refuses them before any work.
+    struct Unit;
+    impl Digest<'_> for Unit {
+        type Identity = ();
+        type State = Sha256;
+        type Output = [u8; 32];
+        type Error = MemoryError;
+        fn width(&self, (): &()) -> Option<usize> {
+            Some(32)
+        }
+        fn compare<W: Work>(&self, (): &(), (): &(), _: &W) -> Result<Ordering, MemoryError> {
+            Ok(Ordering::Equal)
+        }
+        fn start<W: Work>(&self, (): &(), _: &W) -> Result<Resolution<Sha256>, MemoryError> {
+            panic!("a refused provider must not be started")
+        }
+        fn update<W: Work>(&self, _: &mut Sha256, _: &[u8], _: &W) -> Result<(), MemoryError> {
+            unreachable!()
+        }
+        fn finish<W: Work>(&self, _: Sha256, _: &W) -> Result<[u8; 32], MemoryError> {
+            unreachable!()
+        }
+        fn matches<W: Work>(
+            &self,
+            (): &(),
+            _: &[u8; 32],
+            _: &[u8],
+            _: &W,
+        ) -> Result<bool, MemoryError> {
+            unreachable!()
+        }
+    }
+    impl AsnDigest<'_> for Unit {
+        fn identity(&self, _: Algorithm) -> Option<()> {
+            Some(())
+        }
+    }
+    let fixture = Fixture::new();
+    let account = memory(1_000_000);
+    let parser = Parser::ber(account.clone());
+    let signed = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
+    let encoded = index(SHA256_OID, [&fixture.certificate_hashes(), &[], &[]]);
+    let index_parser = Parser::der(account);
+    let index = read_index(&index_parser, &encoded).unwrap();
+    let query = parser.read(&[], 0).unwrap();
+    match check_index(&index, &signed, &signed.signers()[0], &Unit, &query) {
+        Err(DigestError::Processing(error)) => {
+            assert_eq!(error.code(), ErrorCode::ProviderMismatch);
+        }
+        other => panic!("zero-sized provider was not refused: {other:?}"),
+    }
+}
+
+#[test]
+fn a_malformed_index_value_is_refused() {
+    // Annex D: four fields, hashIndAlgorithm without DEFAULT, OCTET STRING
+    // entries, DER encoding (§5.5.2).
+    let parser = Parser::der(memory(1_000_000));
+    let three = tlv(
+        0x30,
+        &[tlv(0x30, &[]), tlv(0x30, &[]), tlv(0x30, &[])].concat(),
+    );
+    assert!(read_index(&parser, &three).is_err());
+    let integer_entry = tlv(
+        0x30,
+        &[
+            tlv(0x30, &tlv(6, SHA256_OID)),
+            tlv(0x30, &tlv(2, &[1])),
+            tlv(0x30, &[]),
+            tlv(0x30, &[]),
+        ]
+        .concat(),
+    );
+    assert_eq!(
+        read_index(&parser, &integer_entry).unwrap_err().code(),
+        ErrorCode::UnexpectedTag
+    );
+    let mut trailing = vec![tlv(0x30, &tlv(6, SHA256_OID))];
+    trailing.extend([
+        tlv(0x30, &[]),
+        tlv(0x30, &[]),
+        tlv(0x30, &[]),
+        tlv(0x30, &[]),
+    ]);
+    let trailing = tlv(0x30, &trailing.concat());
+    assert_eq!(
+        read_index(&parser, &trailing).unwrap_err().code(),
+        ErrorCode::TrailingData
+    );
+    // The same index with a non-minimal length is not DER.
+    let good = index(SHA256_OID, [&[], &[], &[]]);
+    let mut long = vec![0x30, 0x81];
+    long.extend_from_slice(&good[1..]);
+    let ber = Parser::ber(memory(1_000_000));
+    let mut reader = ber.read(&long, 0).unwrap();
+    let value = reader.next_element().unwrap().unwrap();
+    assert!(HashIndex::read(&reader, &value).is_err());
+}
+
+#[test]
+fn a_spent_work_ceiling_refuses_the_whole_check() {
+    // Every hash and comparison is paid before it runs; a ceiling below the
+    // whole check is a resource refusal, never a partial coverage.
+    let fixture = Fixture::new();
+    let encoded = index(
+        SHA256_OID,
+        [
+            &fixture.certificate_hashes(),
+            &fixture.revocation_hashes(),
+            &fixture.value_hashes(),
+        ],
+    );
+    let measured = memory(1_000_000);
+    assert!(supported(coverage_in(&fixture, &encoded, &measured).unwrap()).is_valid());
+    let total = measured.work_used();
+    // Exactly the measured work completes the same check again.
+    assert!(coverage(&fixture, &encoded, total).is_ok());
+    match coverage(&fixture, &encoded, total - 1) {
+        Err(DigestError::Processing(error)) => assert!(error.is_resource()),
+        Err(DigestError::Callback(MemoryError::WorkExceeded)) => {}
+        other => panic!("one unit below the whole check was not refused: {other:?}"),
+    }
+}
+
+#[test]
+fn the_imprint_input_is_the_four_original_ranges_in_order() {
+    // §5.5.3 steps 1-4: eContentType, the content hash, version through
+    // signature of the archived signer, and the ATSHashIndexV3 value.
+    let fixture = Fixture::new();
+    let account = memory(1_000_000);
+    let parser = Parser::ber(account.clone());
+    let message = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
+    let signer = &message.signers()[0];
+    assert_eq!(signer.signed_fields(), fixture.signer_fields.as_slice());
+    let encoded = index(SHA256_OID, [&[], &[], &[]]);
+    let index_parser = Parser::der(account.clone());
+    let index = read_index(&index_parser, &encoded).unwrap();
+    let content = sha256(&[b"content"]);
+    let input = imprint_input(&message, signer, &index, &content);
+    assert_eq!(input[0], tlv(6, oid::DATA.as_bytes()).as_slice());
+    assert_eq!(input[1], content.as_slice());
+    assert_eq!(input[2], fixture.signer_fields.as_slice());
+    assert_eq!(input[3], encoded.as_slice());
+    // The attribute type encoding keeps its tag and length.
+    let attributes = signer.unsigned_attributes().unwrap().items();
+    assert_eq!(
+        attributes[1].kind_encoding(),
+        fixture.attributes[1].0.as_slice()
+    );
+}
+
+#[test]
+fn the_index_algorithm_must_be_the_imprint_algorithm() {
+    // §5.5.2: hashIndAlgorithm is the algorithm of the time-stamp's imprint.
+    let account = memory(1_000_000);
+    let parser = Parser::der(account.clone());
+    let encoded = index(SHA256_OID, [&[], &[], &[]]);
+    let index = read_index(&parser, &encoded).unwrap();
+    for (imprint, expected) in [(SHA256_OID, true), (SHA384_OID, false)] {
+        let identifier = tlv(0x30, &tlv(6, imprint));
+        let mut reader = parser.read(&identifier, 0).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let algorithm =
+            structured_pkix::algorithm::read(&reader, &element, "messageImprint").unwrap();
+        assert_eq!(
+            archive::same_algorithm(&index, &algorithm, &account).unwrap(),
+            Resolution::Supported(expected)
+        );
+    }
+}

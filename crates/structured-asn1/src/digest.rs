@@ -74,6 +74,12 @@ pub trait Digest<'a> {
 
     /// Compares this provider's finished output with declared bytes, admitting
     /// the whole scan and applying the backend's comparison strategy.
+    ///
+    /// The answer is whether `expected` is exactly the bytes of `output`. A
+    /// strategy, such as a constant-time scan, governs how those bytes are
+    /// compared, never which differing byte strings count as equal; callers
+    /// rely on this to find the one output an expected value can name by its
+    /// bytes.
     fn matches<W: Work>(
         &self,
         identity: &Self::Identity,

@@ -67,6 +67,9 @@ pub const CONTENT_TIMESTAMP: Oid<'static> =
 pub const MIME_TYPE: Oid<'static> = Oid::from_bytes(&[4, 0, 0x8d, 0x45, 2, 1]);
 /// Signed `signer-attributes-v2`, `0.4.0.19122.1.1` (EN 319 122-1 §5.2.6.1).
 pub const SIGNER_ATTRIBUTES_V2: Oid<'static> = Oid::from_bytes(&[4, 0, 0x81, 0x95, 0x32, 1, 1]);
+/// `claimed-SAML-assertion`, `0.4.0.19122.1.2`, carried only inside
+/// `signer-attributes-v2` (EN 319 122-1 §5.2.6.2).
+pub const CLAIMED_SAML_ASSERTION: Oid<'static> = Oid::from_bytes(&[4, 0, 0x81, 0x95, 0x32, 1, 2]);
 /// Unsigned `signature-policy-store`, `0.4.0.19122.1.3` (EN 319 122-1 §5.2.10).
 pub const SIGNATURE_POLICY_STORE: Oid<'static> = Oid::from_bytes(&[4, 0, 0x81, 0x95, 0x32, 1, 3]);
 /// Unsigned `ats-hash-index-v3`, `0.4.0.19122.1.5` (EN 319 122-1 §5.5.2).

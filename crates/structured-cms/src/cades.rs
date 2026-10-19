@@ -28,6 +28,8 @@ pub enum Role {
 enum Set {
     Signed,
     Unsigned,
+    // Allowed in neither top-level set, only nested in another attribute.
+    Neither,
 }
 
 struct Rule {
@@ -65,7 +67,7 @@ const fn ess(kind: Oid<'static>, field: &'static str) -> Rule {
 // §5.2-5.5 attribute. Rules the CMS and ESS readers already apply (content
 // type, message digest, signing time, algorithm protection, signing
 // certificates) are not repeated here.
-const RULES: [Rule; 13] = [
+const RULES: [Rule; 14] = [
     // §5.2.3
     rule(
         oid::COMMITMENT_TYPE_INDICATION,
@@ -91,6 +93,14 @@ const RULES: [Rule; 13] = [
         Set::Signed,
         true,
         "signerAttributesV2",
+    ),
+    // §5.2.6.2: only in signer-attributes-v2 claimedAttributes; "It shall
+    // not be used anywhere else."
+    rule(
+        oid::CLAIMED_SAML_ASSERTION,
+        Set::Neither,
+        false,
+        "claimedSamlAssertion",
     ),
     // §5.2.8
     rule(
@@ -124,13 +134,17 @@ const RULES: [Rule; 13] = [
         true,
         "signatureTimeStamp",
     ),
-    // §5.5.2: an unsigned attribute of the archive time-stamp token's signer.
-    rule(
-        oid::ATS_HASH_INDEX_V3,
-        Set::Unsigned,
-        true,
-        "atsHashIndexV3",
-    ),
+    // §5.5.2: an unsigned attribute of the archive time-stamp token's signer;
+    // §5.5.3: the token carries "a single ats-hash-index-v3 attribute".
+    Rule {
+        unique: true,
+        ..rule(
+            oid::ATS_HASH_INDEX_V3,
+            Set::Unsigned,
+            true,
+            "atsHashIndexV3",
+        )
+    },
     // §5.5.3
     rule(
         oid::ARCHIVE_TIMESTAMP_V3,
@@ -207,11 +221,14 @@ pub fn profile_faults<'a>(
     let execution = parent.execution();
     let mut faults = execution.vector();
     for rule in &RULES {
+        let protected = signer.signed_attributes();
+        let unprotected = signer.unsigned_attributes();
         let (allowed, forbidden) = match rule.set {
-            Set::Signed => (signer.signed_attributes(), signer.unsigned_attributes()),
-            Set::Unsigned => (signer.unsigned_attributes(), signer.signed_attributes()),
+            Set::Signed => (protected, [unprotected, None]),
+            Set::Unsigned => (unprotected, [protected, None]),
+            Set::Neither => (None, [protected, unprotected]),
         };
-        if let Some(set) = forbidden {
+        for set in forbidden.into_iter().flatten() {
             report(set, rule, parent, &mut faults, |_, _| {
                 Some(ErrorCode::AttributePlacement)
             })?;

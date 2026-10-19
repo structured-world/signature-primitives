@@ -122,6 +122,11 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_empty_attributes(0)
+    }
+
+    /// Adds `empty` unsigned attributes whose value sets are empty.
+    fn with_empty_attributes(empty: usize) -> Self {
         let certificates = vec![
             // Version-1 attribute certificate and an other-format choice,
             // preserved as encoded without X.509 parsing.
@@ -132,10 +137,11 @@ impl Fixture {
             tlv(0xa1, &[tlv(6, &[0x2a, 6]), tlv(4, &[9])].concat()),
             tlv(0xa1, &[tlv(6, &[0x2a, 7]), tlv(4, &[10, 11])].concat()),
         ];
-        let attributes = vec![
+        let mut attributes = vec![
             (tlv(6, &[0x2a, 3]), vec![tlv(2, &[1]), tlv(2, &[2])]),
             (tlv(6, &[0x2a, 4]), vec![tlv(12, b"x")]),
         ];
+        attributes.extend((0..empty).map(|_| (tlv(6, &[0x2a, 9]), Vec::new())));
         let signer_fields = [
             vec![2, 1, 3],
             vec![0x80, 1, 7],
@@ -513,6 +519,30 @@ fn every_entry_is_judged_by_the_provider_comparison() {
         check_index(&index, &message, signer, &refusing, &query),
         Err(DigestError::Callback(MemoryError::WorkExceeded))
     ));
+}
+
+#[test]
+fn every_unsigned_attribute_scanned_is_paid_for() {
+    // Attributes with empty value sets are never hashed, yet scanning them is
+    // work: a signer with many of them must cost more than one without.
+    let used = |fixture: &Fixture| {
+        let account = memory(1_000_000);
+        let parser = Parser::ber(account.clone());
+        let message = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
+        let encoded = index(SHA256_OID, [&[], &[], &[]]);
+        let index = read_index(&parser, &encoded).unwrap();
+        let query = parser.read(&[], 0).unwrap();
+        let before = account.work_used();
+        let provider = Provider::default();
+        check_index(&index, &message, &message.signers()[0], &provider, &query).unwrap();
+        account.work_used() - before
+    };
+    let plain = used(&Fixture::new());
+    let padded = used(&Fixture::with_empty_attributes(50));
+    assert!(
+        padded >= plain + 50,
+        "{padded} work for 50 more attributes, {plain} without"
+    );
 }
 
 #[test]

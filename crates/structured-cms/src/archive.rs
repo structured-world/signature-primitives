@@ -408,6 +408,8 @@ pub fn check_index<'a, P: AsnDigest<'a>>(
     let mut value_hashes = execution.vector();
     let mut values = execution.vector();
     for (attribute_ordinal, attribute) in attributes.iter().enumerate() {
+        // Each attribute inspected is paid, including one with no values.
+        execution.charge_work(1).map_err(refusal)?;
         for (value_ordinal, value) in attribute.values().iter().enumerate() {
             value_hashes.try_reserve(1).map_err(refusal)?;
             values.try_reserve(1).map_err(refusal)?;
@@ -569,10 +571,11 @@ impl<'a, P: Digest<'a>> Hasher<'_, 'a, P> {
 // entry could equal: the first not ordered before it, or the last hash when the
 // entry is ordered after all of them. The provider's own comparison then judges
 // that pair, so every entry reaches the provider whenever any hash exists, at
-// one provider comparison and log n byte comparisons. A comparison strategy
-// decides how bytes are compared, not which differing bytes are equal, so no
-// other hash can match an entry its nearest one does not. Equal hashes name
-// equal encodings and are all marked.
+// one provider comparison and log n byte comparisons. `Digest::matches` answers
+// exact byte equality (its strategy governs how bytes are compared, not which
+// differing bytes are equal), so no other hash can match an entry its nearest
+// one does not, and every hash need not be tried. Equal hashes name equal
+// encodings and are all marked.
 fn mark<'a, P: Digest<'a>>(
     digest: &Hasher<'_, 'a, P>,
     hashes: &[P::Output],

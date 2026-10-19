@@ -295,6 +295,35 @@ fn a_repeated_ess_content_attribute_is_refused() {
 }
 
 #[test]
+fn a_claimed_saml_assertion_belongs_only_inside_signer_attributes() {
+    // §5.2.6.2: claimed-SAML-assertion is carried in signer-attributes-v2
+    // claimedAttributes; "It shall not be used anywhere else."
+    let saml = attribute(oid::CLAIMED_SAML_ASSERTION.as_bytes(), &[tlv(12, b"<a/>")]);
+    assert_eq!(
+        codes(
+            std::slice::from_ref(&saml),
+            std::slice::from_ref(&saml),
+            Role::Signature
+        ),
+        [
+            (ErrorCode::AttributePlacement, "claimedSamlAssertion"),
+            (ErrorCode::AttributePlacement, "claimedSamlAssertion"),
+        ]
+    );
+}
+
+#[test]
+fn a_repeated_ats_hash_index_is_refused() {
+    // §5.5.3: the archive time-stamp token carries "a single
+    // ats-hash-index-v3 attribute"; the second instance is reported.
+    let index = attribute(oid::ATS_HASH_INDEX_V3.as_bytes(), &[tlv(0x30, &[])]);
+    assert_eq!(
+        codes(&[], &[index.clone(), index], Role::Signature),
+        [(ErrorCode::DuplicateAttribute, "atsHashIndexV3")]
+    );
+}
+
+#[test]
 fn a_foreign_reader_is_refused_before_inspection() {
     // The producing parser's ceilings fund the scans; another parser's
     // account cannot stand in for them.

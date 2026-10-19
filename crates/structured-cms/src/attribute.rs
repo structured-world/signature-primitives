@@ -153,6 +153,10 @@ impl<'a> Attribute<'a> {
         self.element.as_bytes()
     }
 
+    pub(crate) fn element(&self) -> &Element<'a> {
+        &self.element
+    }
+
     /// Opens one original value in the current account and inherited parser depth.
     ///
     /// The index selects this attribute's catalogue, so a foreign element cannot

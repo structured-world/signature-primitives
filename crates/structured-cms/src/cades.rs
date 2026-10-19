@@ -34,6 +34,7 @@ struct Rule {
     kind: Oid<'static>,
     set: Set,
     single: bool,
+    unique: bool,
     no_countersignature: bool,
     field: &'static str,
 }
@@ -43,8 +44,19 @@ const fn rule(kind: Oid<'static>, set: Set, single: bool, field: &'static str) -
         kind,
         set,
         single,
+        unique: false,
         no_countersignature: false,
         field,
+    }
+}
+
+// An attribute type defined in ESS: "A signerInfo MUST NOT include multiple
+// instances of any of the attribute types defined in ESS", each with "a single
+// instance of AttributeValue" (RFC 2634 §1.3.4).
+const fn ess(kind: Oid<'static>, field: &'static str) -> Rule {
+    Rule {
+        unique: true,
+        ..rule(kind, Set::Signed, true, field)
     }
 }
 
@@ -61,10 +73,10 @@ const RULES: [Rule; 13] = [
         true,
         "commitmentTypeIndication",
     ),
-    // §5.2.4.1: signed, and not within a countersignature.
+    // §5.2.4.1: ESS, signed, and not within a countersignature.
     Rule {
         no_countersignature: true,
-        ..rule(oid::CONTENT_HINTS, Set::Signed, false, "contentHints")
+        ..ess(oid::CONTENT_HINTS, "contentHints")
     },
     // §5.2.4.2: signed, one value, and not within a countersignature.
     Rule {
@@ -101,20 +113,10 @@ const RULES: [Rule; 13] = [
         true,
         "signaturePolicyStore",
     ),
-    // §5.2.11
-    rule(
-        oid::CONTENT_REFERENCE,
-        Set::Signed,
-        false,
-        "contentReference",
-    ),
-    // §5.2.12
-    rule(
-        oid::CONTENT_IDENTIFIER,
-        Set::Signed,
-        false,
-        "contentIdentifier",
-    ),
+    // §5.2.11: ESS.
+    ess(oid::CONTENT_REFERENCE, "contentReference"),
+    // §5.2.12: ESS.
+    ess(oid::CONTENT_IDENTIFIER, "contentIdentifier"),
     // §5.3
     rule(
         oid::SIGNATURE_TIMESTAMP,
@@ -143,7 +145,8 @@ const RULES: [Rule; 13] = [
 ///
 /// `signing` is the signer's already read ESS attributes, whose `policies`
 /// field §§5.2.2.2-5.2.2.3 forbid. An attribute this crate does not read is
-/// judged only by its placement and value count, plus the
+/// judged only by its placement, value count and, for the ESS content
+/// attributes, a repeated instance (RFC 2634 §1.3.4), plus the
 /// `signaturePolicyImplied` choice that §5.2.9.1 forbids. An empty result is
 /// not a level or validity verdict.
 ///
@@ -198,6 +201,8 @@ pub fn profile_faults(
     role: Role,
     parent: &Reader<'_>,
 ) -> Result<OwnedVec<Error>> {
+    // The producing parser's ceilings fund every scan below.
+    signer.require_session(parent, "signerInfo")?;
     let execution = parent.execution();
     let mut faults = execution.vector();
     for rule in &RULES {
@@ -206,16 +211,18 @@ pub fn profile_faults(
             Set::Unsigned => (signer.unsigned_attributes(), signer.signed_attributes()),
         };
         if let Some(set) = forbidden {
-            report(set, rule, parent, &mut faults, |_| {
+            report(set, rule, parent, &mut faults, |_, _| {
                 Some(ErrorCode::AttributePlacement)
             })?;
         }
         let Some(set) = allowed else {
             continue;
         };
-        report(set, rule, parent, &mut faults, |attribute| {
+        report(set, rule, parent, &mut faults, |attribute, instance| {
             if role == Role::Countersignature && rule.no_countersignature {
                 Some(ErrorCode::AttributePlacement)
+            } else if rule.unique && instance > 0 {
+                Some(ErrorCode::DuplicateAttribute)
             } else if rule.single && attribute.values().len() != 1 {
                 Some(ErrorCode::AttributeCardinality)
             } else {
@@ -265,11 +272,11 @@ fn report<W: Work>(
     rule: &Rule,
     parent: &Reader<'_>,
     faults: &mut OwnedVec<Error, W>,
-    judge: impl Fn(&crate::attribute::Attribute<'_>) -> Option<ErrorCode>,
+    judge: impl Fn(&crate::attribute::Attribute<'_>, usize) -> Option<ErrorCode>,
 ) -> Result<()> {
-    for result in set.all_in(rule.kind, parent) {
+    for (instance, result) in set.all_in(rule.kind, parent).enumerate() {
         let attribute = result?;
-        if let Some(code) = judge(attribute) {
+        if let Some(code) = judge(attribute, instance) {
             push(
                 faults,
                 Error::schema(code, rule.field, attribute.span().start),

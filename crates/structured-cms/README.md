@@ -58,7 +58,8 @@ structured-cms = "0.8"
 - `cades::profile_faults` reports where a SignerInfo uses the freedom of the
   generic CMS and ESS schemas against the CAdES profile (EN 319 122-1
   §§5.2-5.5): an attribute in the wrong set, a single-valued attribute with
-  another value count, content-hints or mime-type inside a countersignature,
+  another value count, a repeated ESS content attribute (RFC 2634 §1.3.4),
+  content-hints or mime-type inside a countersignature,
   ESS `policies` and an implied signature policy. Level requirements and
   verdicts stay with the application.
 

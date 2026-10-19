@@ -202,22 +202,23 @@ fn read_index<'a>(parser: &'a Parser, encoded: &'a [u8]) -> structured_cms::Resu
     HashIndex::read(&reader, &value)
 }
 
-/// Parses with a generous account and checks under `check`, so a ceiling
-/// measures the check alone.
-fn coverage_in(
-    fixture: &Fixture,
-    encoded_index: &[u8],
-    check: &Memory,
-) -> Result<Resolution<archive::IndexCoverage>, DigestError<MemoryError>> {
-    let account = memory(1_000_000);
+type Coverage = Result<Resolution<archive::IndexCoverage>, DigestError<MemoryError>>;
+
+/// Parses with one parser, then leaves exactly `work` units for the check, so
+/// a ceiling measures the check alone. Returns the result and the work used.
+fn coverage_measured(fixture: &Fixture, encoded_index: &[u8], work: usize) -> (Coverage, usize) {
+    // Parsing is paid from the margin above `work`.
+    let account = memory(work + 100_000);
     let parser = Parser::ber(account.clone());
-    let signed = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
-    let index_parser = Parser::der(account);
-    let index = read_index(&index_parser, encoded_index).unwrap();
-    let operation = Parser::ber(check.clone());
-    let query: Reader<'_> = operation.read(&[], 0).unwrap();
+    let message = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
+    let index = read_index(&parser, encoded_index).unwrap();
+    let query: Reader<'_> = parser.read(&[], 0).unwrap();
+    account
+        .charge_work((account.work_remaining() - work) as u64)
+        .unwrap();
+    let before = account.work_used();
     let provider = Provider::default();
-    let result = check_index(&index, &signed, &signed.signers()[0], &provider, &query);
+    let result = check_index(&index, &message, &message.signers()[0], &provider, &query);
     // A completed check hashes each original element exactly once, however
     // many entries name it; an unresolved algorithm hashes nothing.
     match &result {
@@ -225,15 +226,11 @@ fn coverage_in(
         Ok(_) => assert_eq!(provider.starts.get(), 0),
         Err(_) => {}
     }
-    result
+    (result, account.work_used() - before)
 }
 
-fn coverage(
-    fixture: &Fixture,
-    encoded_index: &[u8],
-    work: usize,
-) -> Result<Resolution<archive::IndexCoverage>, DigestError<MemoryError>> {
-    coverage_in(fixture, encoded_index, &memory(work))
+fn coverage(fixture: &Fixture, encoded_index: &[u8], work: usize) -> Coverage {
+    coverage_measured(fixture, encoded_index, work).0
 }
 
 fn supported(result: Resolution<archive::IndexCoverage>) -> archive::IndexCoverage {
@@ -406,6 +403,28 @@ fn an_unknown_index_algorithm_is_answered_not_guessed() {
 }
 
 #[test]
+fn a_foreign_reader_is_refused_before_hashing() {
+    // The producing parser's ceilings fund every hash and comparison; another
+    // parser's account cannot stand in for them.
+    let fixture = Fixture::new();
+    let parser = Parser::ber(memory(1_000_000));
+    let message = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
+    let encoded = index(SHA256_OID, [&fixture.certificate_hashes(), &[], &[]]);
+    let index = read_index(&parser, &encoded).unwrap();
+    let foreign = Parser::ber(memory(1_000_000));
+    let other = foreign.read(&[], 0).unwrap();
+    let provider = Provider::default();
+    match check_index(&index, &message, &message.signers()[0], &provider, &other) {
+        Err(DigestError::Processing(error)) => assert_eq!(
+            error.code(),
+            ErrorCode::Pkix(structured_pkix::ErrorCode::ForeignReader)
+        ),
+        other => panic!("foreign reader was not refused: {other:?}"),
+    }
+    assert_eq!(provider.starts.get(), 0);
+}
+
+#[test]
 fn a_zero_sized_provider_is_refused_before_hashing() {
     // Distinct zero-sized providers may share an address, so like every other
     // provider-driven check this one refuses them before any work.
@@ -446,14 +465,12 @@ fn a_zero_sized_provider_is_refused_before_hashing() {
         }
     }
     let fixture = Fixture::new();
-    let account = memory(1_000_000);
-    let parser = Parser::ber(account.clone());
-    let signed = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
+    let parser = Parser::ber(memory(1_000_000));
+    let message = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
     let encoded = index(SHA256_OID, [&fixture.certificate_hashes(), &[], &[]]);
-    let index_parser = Parser::der(account);
-    let index = read_index(&index_parser, &encoded).unwrap();
+    let index = read_index(&parser, &encoded).unwrap();
     let query = parser.read(&[], 0).unwrap();
-    match check_index(&index, &signed, &signed.signers()[0], &Unit, &query) {
+    match check_index(&index, &message, &message.signers()[0], &Unit, &query) {
         Err(DigestError::Processing(error)) => {
             assert_eq!(error.code(), ErrorCode::ProviderMismatch);
         }
@@ -520,9 +537,8 @@ fn a_spent_work_ceiling_refuses_the_whole_check() {
             &fixture.value_hashes(),
         ],
     );
-    let measured = memory(1_000_000);
-    assert!(supported(coverage_in(&fixture, &encoded, &measured).unwrap()).is_valid());
-    let total = measured.work_used();
+    let (result, total) = coverage_measured(&fixture, &encoded, 500_000);
+    assert!(supported(result.unwrap()).is_valid());
     // Exactly the measured work completes the same check again.
     assert!(coverage(&fixture, &encoded, total).is_ok());
     match coverage(&fixture, &encoded, total - 1) {

@@ -244,3 +244,80 @@ fn a_spent_work_ceiling_refuses_instead_of_reporting_less() {
     let error = profile_faults(info, &signing, Role::Signature, &query).unwrap_err();
     assert!(error.is_resource());
 }
+
+#[test]
+fn ess_content_attributes_carry_exactly_one_value() {
+    // RFC 2634 §1.3.4, imported by EN 319 122-1 §§5.2.4.1, 5.2.11-5.2.12:
+    // "there MUST NOT be zero, or multiple, instances of AttributeValue".
+    let signed = [
+        attribute(
+            oid::CONTENT_HINTS.as_bytes(),
+            &[tlv(0x30, &tlv(6, &[0x2a])), tlv(0x30, &tlv(6, &[0x2b]))],
+        ),
+        attribute(oid::CONTENT_IDENTIFIER.as_bytes(), &[]),
+        attribute(
+            oid::CONTENT_REFERENCE.as_bytes(),
+            &[tlv(0x30, &[]), tlv(0x30, &[0x05, 0])],
+        ),
+    ];
+    assert_eq!(
+        codes(&signed, &[], Role::Signature),
+        [
+            (ErrorCode::AttributeCardinality, "contentHints"),
+            (ErrorCode::AttributeCardinality, "contentReference"),
+            (ErrorCode::AttributeCardinality, "contentIdentifier"),
+        ]
+    );
+}
+
+#[test]
+fn a_repeated_ess_content_attribute_is_refused() {
+    // RFC 2634 §1.3.4: "A signerInfo MUST NOT include multiple instances of
+    // any of the attribute types defined in ESS." The first instance stands;
+    // each later one is reported where it is written.
+    let reference = attribute(
+        oid::CONTENT_REFERENCE.as_bytes(),
+        &[tlv(0x30, &tlv(6, &[0x2a]))],
+    );
+    let identifier = attribute(oid::CONTENT_IDENTIFIER.as_bytes(), &[tlv(4, &[1])]);
+    let other = attribute(oid::CONTENT_IDENTIFIER.as_bytes(), &[tlv(4, &[2])]);
+    assert_eq!(
+        codes(
+            &[reference.clone(), reference, identifier, other],
+            &[],
+            Role::Signature
+        ),
+        [
+            (ErrorCode::DuplicateAttribute, "contentReference"),
+            (ErrorCode::DuplicateAttribute, "contentIdentifier"),
+        ]
+    );
+    // Single-valued CAdES attributes without the ESS rule may repeat.
+    let location = attribute(oid::SIGNER_LOCATION.as_bytes(), &[tlv(0x30, &[])]);
+    assert_eq!(
+        codes(&[location.clone(), location], &[], Role::Signature),
+        NONE
+    );
+}
+
+#[test]
+fn a_foreign_reader_is_refused_before_inspection() {
+    // The producing parser's ceilings fund the scans; another parser's
+    // account cannot stand in for them.
+    let encoded = message(
+        &[attribute(oid::MIME_TYPE.as_bytes(), &[tlv(12, b"a")])],
+        &[],
+    );
+    let parser = Parser::ber(memory(1_000_000));
+    let value = SignedData::read(&parser, &encoded, 0).unwrap();
+    let query = parser.read(&[], 0).unwrap();
+    let info = &value.signers()[0];
+    let signing = SigningAttributes::read(info, &query).unwrap();
+    let foreign = Parser::ber(memory(1_000_000));
+    let other = foreign.read(&[], 0).unwrap();
+    let error = profile_faults(info, &signing, Role::Signature, &other).unwrap_err();
+    assert_eq!(
+        error.code(),
+        ErrorCode::Pkix(structured_pkix::ErrorCode::ForeignReader)
+    );
+}

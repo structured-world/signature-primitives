@@ -41,12 +41,14 @@ impl<'a> HashIndex<'a> {
     /// Reads the single `ats-hash-index-v3` of an archive time-stamp token.
     ///
     /// EN 319 122-1 §5.5.3 requires exactly one such attribute in the token's
-    /// unsigned attributes, and §5.5.2 exactly one value, DER encoded.
+    /// unsigned attributes, and §5.5.2 exactly one value, with the whole
+    /// attribute DER encoded.
     ///
     /// # Errors
     ///
-    /// A missing or repeated attribute, a value count other than one, a value
-    /// that is not DER or not an `ATSHashIndexV3`, or a spent work ceiling.
+    /// A missing or repeated attribute, a value count other than one, an
+    /// attribute that is not DER, a value that is not an `ATSHashIndexV3`, a
+    /// foreign reader, or a spent work ceiling.
     pub fn of_token(token: &Token<'a>, parent: &Reader<'a>) -> Result<Self> {
         const FIELD: &str = "archiveTimeStampV3.atsHashIndexV3";
         let signer = token.signer();
@@ -67,11 +69,31 @@ impl<'a> HashIndex<'a> {
                 )
             })?;
         attribute.single(FIELD)?;
-        let mut reader = attribute
-            .value_reader_in(0, parent, FIELD)?
-            .ok_or_else(|| Error::schema(ErrorCode::MissingField, FIELD, attribute.span().start))?;
-        let value = required(&mut reader, FIELD)?;
-        Self::read(&reader, &value)
+        // Session check before rereading the attribute's own range.
+        attribute.value_reader_in(0, parent, FIELD)?;
+        // §5.5.2 "The ats-hash-index-v3 attribute shall be DER encoded": the
+        // Attribute SEQUENCE, its attrType and its attrValues SET, not only
+        // the value the index is read from.
+        let mut strict = parent
+            .reread(attribute.element(), Encoding::Der)
+            .map_err(|error| Error::encoding(error, FIELD))?;
+        let whole = strict
+            .expect(Tag::constructed(universal::SEQUENCE))
+            .map_err(|error| Error::encoding(error, FIELD))?;
+        let mut fields = strict
+            .enter(&whole)
+            .map_err(|error| Error::encoding(error, FIELD))?;
+        fields
+            .expect(Tag::primitive(universal::OID))
+            .map_err(|error| Error::encoding(error, FIELD))?;
+        let set = fields
+            .expect(Tag::constructed(universal::SET))
+            .map_err(|error| Error::encoding(error, FIELD))?;
+        let mut values = fields
+            .enter(&set)
+            .map_err(|error| Error::encoding(error, FIELD))?;
+        let value = required(&mut values, FIELD)?;
+        Self::read(&values, &value)
     }
 }
 
@@ -323,8 +345,9 @@ pub type CoverageResult<E> = core::result::Result<Resolution<IndexCoverage>, Dig
 ///
 /// # Errors
 ///
-/// A zero-sized provider, a spent work ceiling, a provider failure, or a
-/// provider output whose width contradicts its identity.
+/// A zero-sized provider, a signer or index from another parser than
+/// `parent`'s, a spent work ceiling, a provider failure, or a provider output
+/// whose width contradicts its identity.
 pub fn check_index<'a, P: AsnDigest<'a>>(
     index: &HashIndex<'_>,
     message: &SignedData<'_>,
@@ -336,7 +359,7 @@ pub fn check_index<'a, P: AsnDigest<'a>>(
     let at = index.span().start;
     let field = "atsHashIndexV3";
     let refusal = |reason| DigestError::Processing(Error::resource(reason, field, at));
-    crate::provider::require_instance(provider, field, at).map_err(DigestError::Processing)?;
+    admit(index, signer, provider, parent).map_err(DigestError::Processing)?;
     let identity = match asn_digest::resolve(provider, index.algorithm(), &execution)
         .map_err(|error| DigestError::Processing(Error::pkix(error)))?
     {
@@ -435,6 +458,28 @@ pub fn check_index<'a, P: AsnDigest<'a>>(
         attribute_values: values.into_owned(),
         unmatched: unmatched.into_owned(),
     }))
+}
+
+// Refuses before any work: a zero-sized provider has no instance identity, and
+// only the producing parser's ceilings may fund the hashes and comparisons.
+fn admit<P>(
+    index: &HashIndex<'_>,
+    signer: &SignerInfo<'_>,
+    provider: &P,
+    parent: &Reader<'_>,
+) -> Result<()> {
+    const FIELD: &str = "atsHashIndexV3";
+    let at = index.span().start;
+    crate::provider::require_instance(provider, FIELD, at)?;
+    signer.require_session(parent, FIELD)?;
+    if !index.algorithm().same_session(parent) {
+        return Err(Error::pkix(structured_pkix::Error::new(
+            structured_pkix::ErrorCode::ForeignReader,
+            FIELD,
+            at,
+        )));
+    }
+    Ok(())
 }
 
 struct Hasher<'p, 'a, P: Digest<'a>> {

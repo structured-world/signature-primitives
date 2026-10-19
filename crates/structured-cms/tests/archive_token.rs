@@ -119,6 +119,28 @@ fn a_repeated_index_attribute_or_value_is_refused() {
 }
 
 #[test]
+fn the_whole_index_attribute_must_be_der() {
+    // §5.5.2 "The ats-hash-index-v3 attribute shall be DER encoded": a DER
+    // value inside a non-minimal attrValues length is still refused.
+    let value = index();
+    let mut values = vec![0x31, 0x81, u8::try_from(value.len()).unwrap()];
+    values.extend(&value);
+    let lax = tlv(
+        0x30,
+        &[tlv(6, oid::ATS_HASH_INDEX_V3.as_bytes()), values].concat(),
+    );
+    assert!(index_of(&[lax]).is_err());
+    let mut kind = vec![
+        6,
+        0x81,
+        u8::try_from(oid::ATS_HASH_INDEX_V3.as_bytes().len()).unwrap(),
+    ];
+    kind.extend(oid::ATS_HASH_INDEX_V3.as_bytes());
+    let lax_kind = tlv(0x30, &[kind, tlv(0x31, &value)].concat());
+    assert!(index_of(&[lax_kind]).is_err());
+}
+
+#[test]
 fn the_archive_attribute_yields_its_one_token() {
     // §5.5.3 "exactly one component of AttributeValue type".
     let inner = token(&[attribute(oid::ATS_HASH_INDEX_V3.as_bytes(), &[index()])]);

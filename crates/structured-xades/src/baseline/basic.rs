@@ -13,6 +13,7 @@ use structured_asn1::{
     Reader,
     memory::{MemoryError, OwnedVec, Work},
 };
+use structured_ltv::baseline::BasicStage;
 
 #[path = "hints.rs"]
 mod hints;
@@ -109,6 +110,24 @@ impl<'r, 'p, 'v, 'd, N: Copy, D: Copy, G: Copy> Basic<'r, 'p, 'v, 'd, N, D, G> {
     #[must_use]
     pub fn all_root_requirements_met(&self) -> bool {
         self.input.certificate.is_bound() && self.included.is_some() && self.hint_encodings_conform
+    }
+}
+
+impl<'v, 'd, N: Copy, D: Copy, G: Copy> BasicStage<'v, 'd> for Basic<'_, '_, 'v, 'd, N, D, G> {
+    type Id = N;
+    type Document = D;
+    type Generation = G;
+    type Signer = CheckedPathCertificate<'v, 'd, N, D, G>;
+    type Counters = CounterPaths<'v, 'd, N, D, G>;
+
+    fn signer(&self) -> &Self::Signer {
+        self.input.certificate
+    }
+    fn counters(&self) -> &Self::Counters {
+        self.input.counters
+    }
+    fn all_requirements_met(&self) -> bool {
+        self.all_root_requirements_met()
     }
 }
 

@@ -3,7 +3,7 @@
 [workspace]
 release_always = true
 git_release_enable = true
-git_tag_name = "structured-xades-v{{ version }}"
+git_tag_name = "structured-ltv-v{{ version }}"
 
 [[package]]
 name = "structured-asn1"
@@ -15,4 +15,8 @@ release = false
 
 [[package]]
 name = "structured-cms"
+release = false
+
+[[package]]
+name = "structured-xades"
 release = false

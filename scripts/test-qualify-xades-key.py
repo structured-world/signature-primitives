@@ -22,7 +22,8 @@ class SourceHashTests(unittest.TestCase):
             root = Path(directory)
             (root / "Cargo.toml").write_text("[workspace]\n")
             (root / "Cargo.lock").write_text("version = 4\n")
-            for name in ("structured-asn1", "structured-pkix", "structured-cms", "structured-xades"):
+            for name in ("structured-asn1", "structured-pkix", "structured-cms", "structured-ltv",
+                         "structured-xades"):
                 package = root / "crates" / name
                 (package / "src").mkdir(parents=True)
                 (package / "Cargo.toml").write_text("[package]\n")

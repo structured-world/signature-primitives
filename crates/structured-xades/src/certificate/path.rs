@@ -5,10 +5,10 @@ use super::{
     Expected, References,
 };
 use crate::binary::{self, BinaryXml, Location};
-use crate::material::PathCertificate;
-use crate::pki::CheckedPath;
 use crate::xml::{Access, Xml};
 use structured_asn1::memory::{OwnedVec, Work};
+use structured_ltv::material::PathCertificate;
+use structured_ltv::pki::{CheckedPath, SignerReceipt};
 
 /// Completed digest result for one original signed certificate reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +62,27 @@ impl<'view, 'document, N, D, G> CheckedPathCertificate<'view, 'document, N, D, G
     #[must_use]
     pub fn is_bound(&self) -> bool {
         self.selected.is_bound() && self.digests.all_match()
+    }
+}
+
+// The signing-certificate binding is the common participant census's signer.
+impl<'view, 'document, N: Copy, D: Copy, G: Copy> SignerReceipt<'view, 'document>
+    for CheckedPathCertificate<'view, 'document, N, D, G>
+{
+    type Id = N;
+    type Document = D;
+    type Generation = G;
+
+    fn signature(&self) -> Location<N, D, G> {
+        let references = self.selected.reference();
+        Location {
+            snapshot: references.snapshot(),
+            node: references.signature(),
+        }
+    }
+
+    fn path(&self) -> Option<&'view CheckedPath<'document>> {
+        self.is_bound().then_some(self.digests.path)
     }
 }
 

@@ -5,8 +5,9 @@ mod credential_status;
 
 use super::*;
 use structured_asn1::{Parser, memory::Memory};
+use structured_ltv::pki;
 use structured_pkix::path::{Anchor, Interval, ValidationBounds, ValidationContext, WorkingKey};
-use structured_xades::{certificate, credential, pki, timestamp, validation};
+use structured_xades::{certificate, credential, timestamp, validation};
 
 fn with_ca_path(root_bytes: &[u8], memory: &Memory, check: impl FnOnce(&pki::CheckedPath<'_>)) {
     // A real signed CA certificate is the credential authority, not the
@@ -247,7 +248,7 @@ fn with_participants<'d>(
     signer_path: &pki::CheckedPath<'d>,
     ca_path: &pki::CheckedPath<'d>,
     memory: &Memory,
-    check: impl FnOnce(&pki::ParticipantRequirements<'_, 'd, usize, u8, u8>),
+    check: impl FnOnce(&pki::ParticipantRequirements<'_, 'd, usize, u8, u8, structured_xades::Xades>),
 ) {
     let access = Access::new(xml, xml.snapshot(), memory);
     let signer = certificate::check_path(
@@ -259,8 +260,10 @@ fn with_participants<'d>(
         memory,
     )
     .unwrap();
-    let counters =
-        pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(signer_path)).unwrap();
+    let counters = structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+        Ok::<_, ()>(signer_path)
+    })
+    .unwrap();
     let stamps = timestamp::counter_timestamps(&access, &counters).unwrap();
     let required = timestamp::requirements_with_counters(
         &access,
@@ -269,7 +272,8 @@ fn with_participants<'d>(
         timestamp::TimestampSelection::All,
     )
     .unwrap();
-    let timestamp::TimestampPathBinding::Bound(prior) = required.bind_paths(&[], &access).unwrap()
+    let structured_ltv::timestamp::TimestampPathBinding::Bound(prior) =
+        required.bind_paths(&[], &access).unwrap()
     else {
         panic!("complete zero-token scope")
     };
@@ -289,7 +293,8 @@ fn with_participants<'d>(
     let credentials =
         credential::check_participants(prepared, &counters, &provider, &access).unwrap();
     let participants =
-        pki::participants(&signer, &counters, &credentials, &prior, &access).unwrap();
+        structured_xades::pki::participants(&signer, &counters, &credentials, &prior, &access)
+            .unwrap();
     check(&participants);
 }
 
@@ -366,7 +371,8 @@ fn ordinary_crl_refs_use_complete_actual_ca_target_roles_and_one_digest() {
                                         .unwrap();
                                     let uses = pki::authority_uses(&closed, &access).unwrap();
                                     let artifacts =
-                                        material::artifact_uses(&uses, &access).unwrap();
+                                        structured_ltv::material::artifact_uses(&uses, &access)
+                                            .unwrap();
                                     let parser = Parser::der(storage.clone());
                                     let operation = parser.read(&[], 900).unwrap();
                                     material::with_values(
@@ -395,7 +401,17 @@ fn ordinary_crl_refs_use_complete_actual_ca_target_roles_and_one_digest() {
 fn assert_crl_roles(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     view: &material::View<'_, usize, u8, u8>,
     ca_path: &pki::CheckedPath<'_>,
     storage: &Memory,
@@ -416,7 +432,10 @@ fn assert_crl_roles(
     for source in report.root_sources() {
         assert_eq!(source.member(), 0);
         assert_eq!(source.contributor(), 0);
-        assert!(matches!(source.artifact(), material::ArtifactRef::Crl(_)));
+        assert!(matches!(
+            source.artifact(),
+            structured_ltv::material::ArtifactRef::Crl(_)
+        ));
     }
     assert!(core::ptr::eq(report.prepared(), prepared));
     for row in 0..2 {
@@ -442,7 +461,7 @@ fn assert_crl_roles(
         );
         assert!(matches!(
             compared[0].artifact(),
-            material::ArtifactRef::Crl(_)
+            structured_ltv::material::ArtifactRef::Crl(_)
         ));
         assert!(compared[0].envelope().is_none());
         let root = report.root_comparisons(row).unwrap();
@@ -465,7 +484,17 @@ fn assert_crl_roles(
 fn assert_status_role_refusals(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    artifacts: &material::ArtifactUses<'_, '_, '_, '_, '_, usize, u8, u8>,
+    artifacts: &structured_ltv::material::ArtifactUses<
+        '_,
+        '_,
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     view: &material::View<'_, usize, u8, u8>,
     storage: &Memory,
 ) {
@@ -607,7 +636,7 @@ fn with_status_case(
 fn check_ocsp_graph(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    participants: &pki::ParticipantRequirements<'_, '_, usize, u8, u8>,
+    participants: &pki::ParticipantRequirements<'_, '_, usize, u8, u8, structured_xades::Xades>,
     statuses: [&pki::PathStatuses<'_, '_, '_>; 2],
     ca_path: &pki::CheckedPath<'_>,
     storage: &Memory,
@@ -642,7 +671,7 @@ fn check_ocsp_graph(
         .close_statuses(&roots, &nodes, &access)
         .unwrap();
     let uses = pki::authority_uses(&closed, &access).unwrap();
-    let artifacts = material::artifact_uses(&uses, &access).unwrap();
+    let artifacts = structured_ltv::material::artifact_uses(&uses, &access).unwrap();
     let parser = Parser::der(storage.clone());
     let operation = parser.read(&[], 900).unwrap();
     material::with_values(xml, prepared, &operation, |_, view| {
@@ -673,7 +702,7 @@ fn check_ocsp_graph(
             assert_eq!(source.presence(), (false, include_envelope));
             assert!(matches!(
                 source.source().artifact(),
-                material::ArtifactRef::Ocsp(_)
+                structured_ltv::material::ArtifactRef::Ocsp(_)
             ));
             assert!(matches!(
                 participants.entries()[source.participant()].participant(),
@@ -737,13 +766,13 @@ fn assert_ocsp_row(
         );
         assert!(matches!(
             comparison.artifact(),
-            material::ArtifactRef::Ocsp(_)
+            structured_ltv::material::ArtifactRef::Ocsp(_)
         ));
         assert_eq!(comparison.agreement(), expected);
         if include_envelope {
             assert!(matches!(
                 comparison.envelope(),
-                Some((material::ArtifactSource::Xml(_), _))
+                Some((structured_ltv::material::ArtifactSource::Material(_), _))
             ));
         } else {
             assert!(comparison.envelope().is_none());
@@ -826,7 +855,7 @@ fn credential_required_certificates_honor_original_protected_and_ordinary_altern
 fn assert_credential_reference_set(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    required: &pki::ParticipantRequirements<'_, '_, usize, u8, u8>,
+    required: &pki::ParticipantRequirements<'_, '_, usize, u8, u8, structured_xades::Xades>,
     storage: &Memory,
     case: CredentialRefs,
 ) {
@@ -863,17 +892,17 @@ fn assert_credential_reference_set(
             assert_eq!(
                 protected,
                 matches!(case, CredentialRefs::Protected)
-                    && candidate.role() == material::PathCertificate::Anchor
+                    && candidate.role() == structured_ltv::material::PathCertificate::Anchor
             );
             assert_eq!(
                 ordinary,
                 matches!(case, CredentialRefs::Ordinary | CredentialRefs::Redundant)
-                    && candidate.role() == material::PathCertificate::Anchor
+                    && candidate.role() == structured_ltv::material::PathCertificate::Anchor
             );
             if matches!(case, CredentialRefs::Missing) {
                 assert_eq!(
                     attribute,
-                    candidate.role() == material::PathCertificate::Anchor
+                    candidate.role() == structured_ltv::material::PathCertificate::Anchor
                 );
             } else {
                 assert!(protected || ordinary || attribute);
@@ -905,7 +934,7 @@ fn assert_credential_reference_set(
 fn assert_credential_reference_refusals(
     xml: &Tree,
     prepared: &prepare::Prepared<Tree>,
-    required: &pki::ParticipantRequirements<'_, '_, usize, u8, u8>,
+    required: &pki::ParticipantRequirements<'_, '_, usize, u8, u8, structured_xades::Xades>,
     storage: &Memory,
     absent: bool,
 ) {

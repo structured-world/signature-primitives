@@ -1,13 +1,15 @@
 //! Actual per-TSA validation material, not a global timestamp-purpose union.
-use super::index::Key;
-use super::status::{ArtifactVisitError, member_source, visit_artifacts};
-use super::{ArtifactRef, Index, IndexError, Placement};
-use crate::pki::{
-    AuthorityVisitError, Participant, ParticipantAuthority, ParticipantClosure, UsesError,
-};
-use crate::timestamp::TimestampScope;
+use super::{Index, Placement};
+use crate::Xades;
 use crate::xml::{Access, Snapshot, Xml};
 use structured_asn1::memory::{HashWork, MemoryError, OwnedVec, Work};
+use structured_ltv::material::status::{ArtifactVisitError, member_source, visit_artifacts};
+use structured_ltv::material::{ArtifactKey, ArtifactRef, IndexError};
+use structured_ltv::pki::{
+    AuthorityVisitError, Participant, ParticipantAuthority, ParticipantClosure, UsesError,
+};
+use structured_ltv::source::ScopeError;
+use structured_ltv::timestamp::TimestampScope;
 
 /// Why required original X.509 material has no eligible copy for this TSA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +36,8 @@ pub struct TimestampPlacementFinding<'certificate, 'document, N> {
 /// This is not usable revocation, historical trust, chronology, format-specific
 /// material or a complete B-LT/B-LTA verdict. Original inputs remain borrowed.
 pub struct TimestampPlacement<'closure, 'requirements, 'view, 'certificate, 'document, N, D, G> {
-    inputs: &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G>,
+    inputs:
+        &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, Xades>,
     findings: OwnedVec<TimestampPlacementFinding<'certificate, 'document, N>>,
     snapshot: Snapshot<D, G>,
 }
@@ -45,7 +48,8 @@ impl<'closure, 'requirements, 'view, 'certificate, 'document, N, D: Copy, G: Cop
     #[must_use]
     pub fn inputs(
         &self,
-    ) -> &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G> {
+    ) -> &'closure ParticipantClosure<'requirements, 'view, 'certificate, 'document, N, D, G, Xades>
+    {
         self.inputs
     }
     /// Every missing/misplaced exact artifact once per actual TSA root.
@@ -62,13 +66,13 @@ impl<'closure, 'requirements, 'view, 'certificate, 'document, N, D: Copy, G: Cop
 
 /// Input/source/current-operation refusal, never a missing-material finding.
 #[derive(Debug)]
-pub enum TimestampPlacementError<E, N> {
+pub enum TimestampPlacementError<N> {
     /// A preceding-archive subset omits the current/later TSA and is insufficient.
     Scope,
     /// Source generation or selected signature/index was substituted.
-    Index(IndexError<E, N>),
+    Index(IndexError<N>),
     /// Original actor-authority traversal/current storage refusal.
-    Uses(UsesError<E, N>),
+    Uses(UsesError<N>),
 }
 
 /// Placement result in the original XML identity/error domain.
@@ -84,13 +88,13 @@ pub type TimestampPlacementResult<'closure, 'requirements, 'view, 'certificate, 
             <X as Xml>::Document,
             <X as Xml>::Generation,
         >,
-        TimestampPlacementError<<X as Xml>::Error, <X as Xml>::Id>,
+        TimestampPlacementError<<X as Xml>::Id>,
     >;
 
 #[derive(Hash, PartialEq, Eq)]
 struct Seen<'document> {
     root: usize,
-    artifact: Key<'document>,
+    artifact: ArtifactKey<'document>,
 }
 impl HashWork for Seen<'_> {
     fn hash_work(&self) -> Result<u64, MemoryError> {
@@ -126,7 +130,7 @@ fn availability<X: Xml, W: Work, Q: Work>(
     property: X::Id,
     token: X::Id,
     access: &Access<'_, X, Q>,
-) -> Result<Option<TimestampPlacementFailure>, IndexError<X::Error, X::Id>> {
+) -> Result<Option<TimestampPlacementFailure>, IndexError<X::Id>> {
     let mut present = false;
     for occurrence in index.artifact(artifact, access)? {
         let occurrence = occurrence?;
@@ -179,6 +183,7 @@ pub fn timestamp_placement<
         X::Id,
         X::Document,
         X::Generation,
+        Xades,
     >,
     index: &Index<'_, X::Id, X::Document, X::Generation, W>,
     access: &Access<'_, X, Q>,
@@ -255,10 +260,12 @@ pub fn timestamp_placement<
                 if let Some(source) = member_source(input) {
                     visit_artifacts(source, signature, access, |artifact, _, _| record(artifact))
                         .map_err(|cause| match cause {
-                        ArtifactVisitError::Access(cause) => {
-                            TimestampPlacementError::Uses(UsesError::Access(cause))
+                        ArtifactVisitError::Scope(ScopeError::Resource { cause, .. }) => {
+                            resource(cause)
                         }
-                        ArtifactVisitError::Resource(cause) => resource(cause),
+                        ArtifactVisitError::Scope(cause) => {
+                            TimestampPlacementError::Uses(UsesError::Scope(cause))
+                        }
                         ArtifactVisitError::Visitor(cause) => cause,
                     })?;
                 }
@@ -279,68 +286,4 @@ pub fn timestamp_placement<
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::timestamp::Role;
-
-    #[test]
-    fn another_timestamp_token_cannot_supply_self_carried_validation_data() {
-        // Siblings and two tokens inside the SAME property are distinct. No
-        // URI hint, global timestamp-purpose bit or encoding hash reassigns it.
-        for (property, token, expected, cost) in
-            [(4, 8, true, 2), (4, 9, false, 2), (5, 8, false, 1)]
-        {
-            let mut calls = 0;
-            let placement = Placement::TimestampToken {
-                property,
-                token,
-                role: Role::Signature,
-            };
-            assert_eq!(
-                allowed(placement, 4, 8, &mut |left, right| {
-                    calls += 1;
-                    Ok::<_, ()>(left == right)
-                }),
-                Ok(expected)
-            );
-            assert_eq!(calls, cost);
-        }
-        for placement in [Placement::General(1), Placement::Timestamp(2)] {
-            assert_eq!(
-                allowed(placement, 4, 8, &mut |_, _| -> Result<bool, ()> {
-                    panic!("no fabricated token association")
-                }),
-                Ok(true)
-            );
-        }
-        for placement in [
-            Placement::KeyInfo(1),
-            Placement::Signature(2),
-            Placement::Attribute(3),
-        ] {
-            assert_eq!(
-                allowed(placement, 4, 8, &mut |_, _| -> Result<bool, ()> {
-                    panic!("placement is already excluded")
-                }),
-                Ok(false)
-            );
-        }
-    }
-
-    #[test]
-    fn token_identity_refusal_does_not_become_missing_or_allowed_material() {
-        // Both original IDs are paid before comparison; preserve the first
-        // failure instead of treating a budget error as a nonmatching copy.
-        let placement = Placement::TimestampToken {
-            property: 4,
-            token: 8,
-            role: Role::Signature,
-        };
-        assert_eq!(
-            allowed(placement, 4, 8, &mut |_, _| Err::<bool, _>(
-                MemoryError::WorkExceeded
-            )),
-            Err(MemoryError::WorkExceeded)
-        );
-    }
-}
+mod tests;

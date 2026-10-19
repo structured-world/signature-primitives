@@ -26,32 +26,17 @@ pub use pipeline::{
 pub(crate) mod exclusivity;
 #[cfg(test)]
 mod fixture;
-mod incorporation;
 mod index;
-pub use incorporation::{
-    IncorporatedArtifact, Incorporation, IncorporationError, IncorporationResult, incorporation,
-};
-mod participants;
+pub use index::{Archived, Index, IndexResult, Occurrence, index, index_with_tokens};
 mod timestamp_placement;
-pub use timestamp_placement::{
-    TimestampPlacement, TimestampPlacementError, TimestampPlacementFailure,
-    TimestampPlacementFinding, TimestampPlacementResult, timestamp_placement,
-};
-pub mod status;
-mod uses;
 pub use exclusivity::{
     ExclusiveFinding, ExclusiveFindingKind, ExclusivePlacement, ExclusivityError,
     ExclusivityResult, exclusivity,
 };
-pub use index::{
-    ArchiveError, Archived, ArchivedCertificate, ArtifactRef, ArtifactSource, Index, IndexError,
-    Occurrence, Occurrences, PathCertificate, PathCertificates,
+pub use timestamp_placement::{
+    TimestampPlacement, TimestampPlacementError, TimestampPlacementFailure,
+    TimestampPlacementFinding, TimestampPlacementResult, timestamp_placement,
 };
-pub use participants::{
-    AnchorMaterial, ParticipantArchiveError, ParticipantArchiveResult, ParticipantMaterial,
-    archived_participants,
-};
-pub use uses::{ArtifactUse, ArtifactUses, ArtifactUsesResult, artifact_uses};
 
 /// The `XAdES` schema of one original encapsulated material element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

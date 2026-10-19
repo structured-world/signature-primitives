@@ -78,8 +78,11 @@ trust inputs and decides whether the resulting evidence meets its policy.
    digest identifies the list, while unreadable time prevents provider dispatch.
    None of these facts alone establishes a grade.
 3. `certificate`, `counter`, `hashes`, `credential`, `timestamp` and `pki`
-   establish their respective source-bound facts. The participant census
-   includes plain countersignatures and timestamps nested in countersignatures.
+   establish their respective source-bound facts. Format-neutral path, status,
+   participant, timestamp-interval and material facts live in `structured-ltv`;
+   `XAdES` receipts implement its traits, and `xml::Access` is its source query. The participant census
+   (`pki::participants`, derived from these receipts only) includes plain
+   countersignatures and timestamps nested in countersignatures.
    The timestamp census also retains the optional Annex A signature/reference
    and reference-only timestamps; their implicit inputs preserve original
    preceding-property order rather than reusing archive coverage.
@@ -92,15 +95,16 @@ trust inputs and decides whether the resulting evidence meets its policy.
    `IssuerSerialV2` contents are retrieval hints: their agreement is not an
    additional binding requirement. The hint reports describe DER syntax,
    rather than asserting that their issuer/serial matches a selected certificate.
-5. `baseline::timestamped` requires the complete token census and records each
-   root signature timestamp's static time association.
+5. `structured_ltv::baseline::timestamped` requires the complete token census
+   and records each root signature timestamp's static time association.
 6. `material::check_participants` and `material::credentials::check` examine
-   the complete participant/status closure. `baseline::long_term` joins those
-   original reports with the preceding receipts.
+   the complete participant/status closure. `structured_ltv::baseline::long_term`
+   joins those original reports with the preceding receipts.
 7. For each archive, derive the preceding-participant closure and original
-   element coverage. `baseline::archive_material` joins the X.509 and credential
-   material reports for that archive; `baseline::archives` requires every root
-   archive once, in original order. `renewed::check_prepared` separately processes
+   element coverage. `structured_ltv::baseline::archive_material` joins the
+   X.509 and credential material reports for that archive;
+   `structured_ltv::baseline::archives` requires every root archive once, in
+   original order. `renewed::check_prepared` separately processes
    every written root renewal's original Manifest instructions and digest pairs,
    retaining failed comparisons alongside successful ones.
 8. `baseline::assess` takes the stage reports of exactly the level that the

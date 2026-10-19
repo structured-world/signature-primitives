@@ -2,8 +2,9 @@
 
 use super::{Tree, attribute_checks, funded, timestamp_oracle, xml_digest};
 use structured_asn1::memory::{MemoryError, Work};
+use structured_ltv::{baseline as composed, pki};
 use structured_xades::{
-    baseline, certificate, hashes, pki, prepare, timestamp, unsigned,
+    baseline, certificate, hashes, prepare, timestamp, unsigned,
     xml::{Access, Xml},
 };
 
@@ -11,6 +12,19 @@ use structured_xades::{
 mod archival;
 #[path = "baseline_values.rs"]
 mod values;
+
+/// The format-neutral time report over this format's basic stage.
+type TimedReport<'a, 'c, 'd, 'r, 'p, 'v, 'bd> = composed::Timed<
+    'a,
+    'c,
+    'd,
+    baseline::Basic<'r, 'p, 'v, 'bd, usize, u8, u8>,
+    certificate::CheckedPathCertificate<'v, 'bd, usize, u8, u8>,
+    usize,
+    u8,
+    u8,
+    structured_xades::Xades,
+>;
 
 fn fixture(
     leaf: &[u8],
@@ -83,8 +97,10 @@ fn run_timed_assembly(pool: values::Pool, requested: unsigned::Requirements) {
         let access = Access::new(&xml, xml.snapshot(), memory);
         let prepared = prepare::prepare(&access, 0, requested, None).unwrap();
         let fields = prepare::check_fields(&prepared, &access).unwrap();
-        let counters =
-            pki::bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
+        let counters = structured_xades::pki::bind_counters(prepared.bound(), &access, |_, _| {
+            Ok::<_, ()>(path)
+        })
+        .unwrap();
         let hashes::ParticipantBinding::Bound(hashes) =
             hashes::check_participants(&prepared, &counters, &access).unwrap()
         else {
@@ -144,16 +160,18 @@ fn run_timed_assembly(pool: values::Pool, requested: unsigned::Requirements) {
         .unwrap();
         assert!(matches!(
             required.bind_paths(&[], &access).unwrap(),
-            timestamp::TimestampPathBinding::Unproven(timestamp::TimestampPathFailure::Count)
+            structured_ltv::timestamp::TimestampPathBinding::Unproven(
+                structured_ltv::timestamp::TimestampPathFailure::Count
+            )
         ));
         let supplied = [&tsa_path];
-        let timestamp::TimestampPathBinding::Bound(paths) =
+        let structured_ltv::timestamp::TimestampPathBinding::Bound(paths) =
             required.bind_paths(&supplied, &access).unwrap()
         else {
             panic!("complete original token census")
         };
         let held = memory.used();
-        let timed = baseline::timestamped(&basic, &paths, &access).unwrap();
+        let timed = composed::timestamped(&basic, &paths, &access).unwrap();
         assert_static_time(&timed, &basic, &paths);
         assert_timed_level(&timed, requested);
         assert_eq!(provider.verified.get(), 1);
@@ -173,9 +191,17 @@ fn run_timed_assembly(pool: values::Pool, requested: unsigned::Requirements) {
 }
 
 fn assert_static_time(
-    timed: &baseline::Timed<'_, '_, '_, '_, '_, '_, usize, u8, u8>,
+    timed: &TimedReport<'_, '_, '_, '_, '_, '_, '_>,
     basic: &baseline::Basic<'_, '_, '_, '_, usize, u8, u8>,
-    paths: &timestamp::TimestampPaths<'_, '_, '_, usize, u8, u8>,
+    paths: &structured_ltv::timestamp::TimestampPaths<
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
 ) {
     // Both the successful interval and exact input receipts survive assembly;
     // a report about an equivalent-looking second input would be insufficient.
@@ -185,12 +211,12 @@ fn assert_static_time(
     assert_eq!(timed.signatures().len(), 1);
     assert!(matches!(
         timed.signatures()[0],
-        baseline::SignatureTimeFact::Bound(_)
+        composed::SignatureTimeFact::Bound(_)
     ));
 }
 
 fn assert_timed_level(
-    timed: &baseline::Timed<'_, '_, '_, '_, '_, '_, usize, u8, u8>,
+    timed: &TimedReport<'_, '_, '_, '_, '_, '_, '_>,
     requested: unsigned::Requirements,
 ) {
     // A B-T report answers only a B-T request: a B-LT preparation also
@@ -211,9 +237,9 @@ fn assert_timed_level(
     }
 }
 
-type LongTermReport<'a> = baseline::LongTerm<
+type LongTermReport<'a> = composed::LongTerm<
     'a,
-    baseline::Timed<'a, 'a, 'a, 'a, 'a, 'a, usize, u8, u8>,
+    TimedReport<'a, 'a, 'a, 'a, 'a, 'a, 'a>,
     structured_xades::material::Checks<'a, 'a, 'a, 'a, 'a, usize, u8, u8>,
     structured_xades::material::credentials::Report<'a, 'a, 'a, (), usize, u8, u8>,
 >;
@@ -244,10 +270,7 @@ fn assert_long_term_level(report: &LongTermReport<'_>, complete: bool) {
     }
 }
 
-fn assert_current_query(
-    timed: &baseline::Timed<'_, '_, '_, '_, '_, '_, usize, u8, u8>,
-    xml: &Tree,
-) {
+fn assert_current_query(timed: &TimedReport<'_, '_, '_, '_, '_, '_, '_>, xml: &Tree) {
     // Cached interval facts do not pay for a later operation's source/selection
     // checks, and a refused query must not retain partial report capacity.
     let denied = structured_asn1::memory::Memory::new(std::sync::Arc::new(
@@ -255,8 +278,8 @@ fn assert_current_query(
     ));
     let query = Access::new(xml, xml.snapshot(), &denied);
     assert!(matches!(
-        baseline::timestamped(timed.basic(), timed.paths(), &query),
-        Err(baseline::TimeError::Resource {
+        composed::timestamped(timed.basic(), timed.paths(), &query),
+        Err(composed::TimeError::Resource {
             cause: MemoryError::WorkExceeded,
             ..
         })
@@ -297,8 +320,16 @@ impl structured_xades::material::credentials::Provider<Tree, ()> for NoCredentia
 }
 
 fn check_material(
-    timed: &baseline::Timed<'_, '_, '_, '_, '_, '_, usize, u8, u8>,
-    paths: &timestamp::TimestampPaths<'_, '_, '_, usize, u8, u8>,
+    timed: &TimedReport<'_, '_, '_, '_, '_, '_, '_>,
+    paths: &structured_ltv::timestamp::TimestampPaths<
+        '_,
+        '_,
+        '_,
+        usize,
+        u8,
+        u8,
+        structured_xades::Xades,
+    >,
     path: &pki::CheckedPath<'_>,
     xml: &Tree,
     operation: &structured_asn1::Reader<'_>,
@@ -315,7 +346,7 @@ fn check_material(
         credential::check_participants(prepared, basic.counters, &NoCredentials, access).unwrap();
     let other =
         credential::check_participants(prepared, basic.counters, &NoCredentials, access).unwrap();
-    let participants = pki::participants(
+    let participants = structured_xades::pki::participants(
         basic.certificate,
         basic.counters,
         &credentials,
@@ -333,7 +364,7 @@ fn check_material(
         material::with_counter_values(xml, prepared, basic.counters, operation, |query, view| {
             let work = query.execution();
             let access = Access::new(xml, xml.snapshot(), &work);
-            let index = material::Index::build(&view, &access).unwrap();
+            let index = material::index(&view, &access).unwrap();
             let x509 =
                 material::check_participants(prepared, &closure, basic.counters, &index, &access)
                     .unwrap();
@@ -347,7 +378,7 @@ fn check_material(
                 &access,
             )
             .unwrap();
-            let report = baseline::long_term(timed, &x509, &format, &access).unwrap();
+            let report = composed::long_term(timed, &x509, &format, &access).unwrap();
             assert!(core::ptr::eq(report.timed(), timed));
             assert!(core::ptr::eq(report.x509(), &raw const x509));
             assert!(report.credentials().all_requirements_met());
@@ -364,7 +395,7 @@ fn check_material(
             )
             .unwrap();
             assert!(matches!(
-                baseline::long_term(timed, &x509, &foreign, &access),
+                composed::long_term(timed, &x509, &foreign, &access),
                 Err(pki::ParticipantError::Foreign { signature: 0 })
             ));
             Ok::<_, ()>(())

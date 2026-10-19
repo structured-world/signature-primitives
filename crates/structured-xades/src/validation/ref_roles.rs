@@ -2,21 +2,23 @@
 
 use super::{ReferenceSearch, ref_catalogue::Memo};
 use crate::{
+    Xades,
     binary::{self, BinaryXml, Location},
     certificate::{Agreement, DigestProvider},
     digest,
     material::{
-        ArtifactUses, ExclusiveFindingKind,
+        ExclusiveFindingKind,
         exclusivity::{self, CaError, CaFact, ReferenceCa},
     },
     prepare::{Preparation, Prepared},
-    timestamp::TimestampScope,
     unsigned,
     xml::{Access, Xml},
 };
 use core::ops::Range;
 use structured_asn1::digest::Digest;
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
+use structured_ltv::material::ArtifactUses;
+use structured_ltv::timestamp::TimestampScope;
 use structured_pkix::Certificate;
 
 /// One original ordinary Cert reference and all exclusive-credential CA comparisons.
@@ -138,7 +140,7 @@ pub type CertificateRoleResult<'p, 'c, 'd, X, PE> = binary::BinaryResult<
 fn compare_role_candidates<'c, 'd, 'q, X: Xml, P: Digest<'q>, W: Work>(
     memo: &mut Memo<'q, 'd, P, W>,
     candidates: &mut Option<OwnedVec<ReferenceCa<'c, 'd>, W>>,
-    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
     comparisons: &mut OwnedVec<CertificateRoleComparison<'c, 'd>, W>,
     identity: crate::certificate::FormatDigest<P::Identity>,
     expected: &[u8],
@@ -229,7 +231,7 @@ pub fn check_certificate_reference_roles<
 >(
     xml: &X,
     prepared: &'p Prepared<X>,
-    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation>,
+    artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
     provider: &'q P,
     work: &W,
 ) -> CertificateRoleResult<'p, 'c, 'd, X, P::Error> {

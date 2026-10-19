@@ -1,4 +1,4 @@
-"""First-publication selection cannot grant the XAdES token existing packages."""
+"""First-publication selection cannot grant the LTV token existing packages."""
 
 import pathlib
 import tomllib
@@ -30,10 +30,17 @@ class BootstrapPackages(unittest.TestCase):
         core = tomllib.loads((ROOT / ".github/release-core.toml").read_text())
         core_cms = next(p for p in core["package"] if p["name"] == "structured-cms")
         self.assertEqual(core_cms["git_tag_name"], cms["git_tag_name"])
+        ltv = next(p for p in normal["package"] if p["name"] == "structured-ltv")
+        bootstrap = tomllib.loads((ROOT / ".github/release-ltv.toml").read_text())
+        self.assertEqual(ltv["git_tag_name"], "structured-ltv-v{{ version }}")
+        self.assertEqual(bootstrap["workspace"]["git_tag_name"], ltv["git_tag_name"])
+        # A single released package would otherwise take release-plz's
+        # one-package default tag instead of the existing XAdES series.
         xades = next(p for p in normal["package"] if p["name"] == "structured-xades")
-        bootstrap = tomllib.loads((ROOT / ".github/release-xades.toml").read_text())
+        dependents = tomllib.loads((ROOT / ".github/release-dependents.toml").read_text())
+        dependent = next(p for p in dependents["package"] if p["name"] == "structured-xades")
         self.assertEqual(xades["git_tag_name"], "structured-xades-v{{ version }}")
-        self.assertEqual(bootstrap["workspace"]["git_tag_name"], xades["git_tag_name"])
+        self.assertEqual(dependent["git_tag_name"], xades["git_tag_name"])
 
     def test_exact_package_partition_and_release_commit_gate(self):
         # Parse the committed TOML rather than a second hand-written model of
@@ -45,16 +52,19 @@ class BootstrapPackages(unittest.TestCase):
             if manifest["package"].get("publish", True) is not False:
                 names.add(manifest["package"]["name"])
         existing = {"structured-asn1", "structured-pkix", "structured-cms"}
-        self.assertEqual(names, existing | {"structured-xades"})
+        new = {"structured-ltv"}
+        dependents = {"structured-xades"}
+        self.assertEqual(names, existing | new | dependents)
         for filename, expected in [
             ("release-core.toml", existing),
-            ("release-xades.toml", {"structured-xades"}),
+            ("release-ltv.toml", new),
+            ("release-dependents.toml", dependents),
             ("../release-plz.toml", names),
         ]:
             config = tomllib.loads((ROOT / ".github" / filename).read_text())
-            # Only the explicitly credential-selected first XAdES publication
+            # Only the explicitly credential-selected first LTV publication
             # may run without a version PR; ordinary releases retain that gate.
-            self.assertIs(config["workspace"]["release_always"], filename == "release-xades.toml")
+            self.assertIs(config["workspace"]["release_always"], filename == "release-ltv.toml")
             self.assertIs(config["workspace"]["git_release_enable"], True)
             disabled = {package["name"] for package in config["package"]
                         if package.get("release") is False}

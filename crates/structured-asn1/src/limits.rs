@@ -121,6 +121,14 @@ impl<'a> BudgetView<'a> {
         }
         Ok(())
     }
+    /// The largest amount both local ceilings of [`Self::work_in`] admit now.
+    pub(crate) fn work_remaining(self) -> u64 {
+        let origin = self.origin.limits.max_work - self.origin.work.get();
+        match self.operation {
+            Some(operation) => origin.min(operation.limits.max_work - operation.work.get()),
+            None => origin,
+        }
+    }
     pub(crate) fn local_work(self, amount: u64) -> Result<(), Limit> {
         if amount > self.origin.limits.max_work - self.origin.work.get() {
             return Err(Limit::Work);

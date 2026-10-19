@@ -332,17 +332,17 @@ impl<'a> SignedData<'a> {
         Ok(())
     }
     /// Refuses a `SignerInfo` that is not one of these signers, by identity.
+    ///
+    /// Constant work: a reference to one of these signers lies inside their
+    /// storage, so an address range test replaces a scan of every signer.
     pub(crate) fn require_signer(
         &self,
         signer: &SignerInfo<'_>,
         field: &'static str,
     ) -> Result<()> {
-        if !self.signers.iter().any(|own| {
-            core::ptr::eq(
-                core::ptr::from_ref(own).cast::<u8>(),
-                core::ptr::from_ref(signer).cast::<u8>(),
-            )
-        }) {
+        let storage = self.signers.as_ptr_range();
+        let address = core::ptr::from_ref(signer).cast::<SignerInfo<'a>>();
+        if !storage.contains(&address) {
             return Err(Error::schema(
                 ErrorCode::InvalidLocation,
                 field,

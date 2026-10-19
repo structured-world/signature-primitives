@@ -143,8 +143,9 @@ const RULES: [Rule; 13] = [
 /// Reports every `CAdES` profile violation of one `SignerInfo`, in rule order,
 /// with original locations.
 ///
-/// `signing` is the signer's already read ESS attributes, whose `policies`
-/// field §§5.2.2.2-5.2.2.3 forbid. An attribute this crate does not read is
+/// The signer's own ESS signing-certificate attributes are read here, so the
+/// `policies` field §§5.2.2.2-5.2.2.3 forbid is always judged on this signer,
+/// never on attributes read from another. An attribute this crate does not read is
 /// judged only by its placement, value count and, for the ESS content
 /// attributes, a repeated instance (RFC 2634 §1.3.4), plus the
 /// `signaturePolicyImplied` choice that §5.2.9.1 forbids. An empty result is
@@ -157,7 +158,6 @@ const RULES: [Rule; 13] = [
 /// use structured_asn1::Parser;
 /// use structured_asn1::memory::{Memory, MemoryAccount};
 /// use structured_cms::cades::{Role, profile_faults};
-/// use structured_cms::ess::SigningAttributes;
 /// use structured_cms::{ErrorCode, SignedData, oid};
 ///
 /// fn tlv(tag: u8, contents: &[u8]) -> Vec<u8> {
@@ -186,23 +186,24 @@ const RULES: [Rule; 13] = [
 /// let value = SignedData::read(&parser, &message, 0).unwrap();
 /// let query = parser.read(&[], 0).unwrap();
 /// let info = &value.signers()[0];
-/// let signing = SigningAttributes::read(info, &query).unwrap();
-/// assert!(profile_faults(info, &signing, Role::Signature, &query).unwrap().is_empty());
-/// let faults = profile_faults(info, &signing, Role::Countersignature, &query).unwrap();
+/// assert!(profile_faults(info, Role::Signature, &query).unwrap().is_empty());
+/// let faults = profile_faults(info, Role::Countersignature, &query).unwrap();
 /// assert_eq!(faults[0].code(), ErrorCode::AttributePlacement);
 /// ```
 ///
 /// # Errors
 ///
-/// A foreign reader, or a spent work or memory ceiling; never a violation.
-pub fn profile_faults(
-    signer: &SignerInfo<'_>,
-    signing: &SigningAttributes<'_>,
+/// A foreign reader, signing-certificate attributes the ESS reader refuses
+/// ([`SigningAttributes::read`]), or a spent work or memory ceiling; never a
+/// violation.
+pub fn profile_faults<'a>(
+    signer: &SignerInfo<'a>,
     role: Role,
-    parent: &Reader<'_>,
+    parent: &Reader<'a>,
 ) -> Result<OwnedVec<Error>> {
     // The producing parser's ceilings fund every scan below.
     signer.require_session(parent, "signerInfo")?;
+    let signing = SigningAttributes::read(signer, parent)?;
     let execution = parent.execution();
     let mut faults = execution.vector();
     for rule in &RULES {

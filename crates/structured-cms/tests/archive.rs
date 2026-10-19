@@ -516,6 +516,31 @@ fn every_entry_is_judged_by_the_provider_comparison() {
 }
 
 #[test]
+fn an_entry_after_every_hash_still_reaches_the_provider() {
+    // Ordered after every computed hash, the entry is judged against the last
+    // one, so the provider's answer or failure stands instead of `false`.
+    let fixture = Fixture::new();
+    let encoded = index(SHA256_OID, [&[vec![0xff; 32]], &[], &[]]);
+    let parser = Parser::ber(memory(1_000_000));
+    let message = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
+    let after = read_index(&parser, &encoded).unwrap();
+    let query = parser.read(&[], 0).unwrap();
+    let signer = &message.signers()[0];
+    let refusing = Provider {
+        refuse: true,
+        ..Provider::default()
+    };
+    assert!(matches!(
+        check_index(&after, &message, signer, &refusing, &query),
+        Err(DigestError::Callback(MemoryError::WorkExceeded))
+    ));
+    let provider = Provider::default();
+    let coverage = supported(check_index(&after, &message, signer, &provider, &query).unwrap());
+    assert_eq!(coverage.unmatched().len(), 1);
+    assert_eq!(provider.comparisons.get(), 1);
+}
+
+#[test]
 fn a_zero_sized_provider_is_refused_before_hashing() {
     // Distinct zero-sized providers may share an address, so like every other
     // provider-driven check this one refuses them before any work.

@@ -5,7 +5,6 @@ use std::sync::Arc;
 use structured_asn1::Parser;
 use structured_asn1::memory::{Memory, MemoryAccount};
 use structured_cms::cades::{Role, profile_faults};
-use structured_cms::ess::SigningAttributes;
 use structured_cms::{ErrorCode, SignedData, oid};
 
 fn memory(work: usize) -> Memory {
@@ -68,8 +67,7 @@ fn codes(
     let value = SignedData::read(&parser, &encoded, 0).unwrap();
     let query = parser.read(&[], 0).unwrap();
     let info = &value.signers()[0];
-    let signing = SigningAttributes::read(info, &query).unwrap();
-    profile_faults(info, &signing, role, &query)
+    profile_faults(info, role, &query)
         .unwrap()
         .iter()
         .map(|fault| (fault.code(), fault.field()))
@@ -222,12 +220,9 @@ fn a_spent_work_ceiling_refuses_instead_of_reporting_less() {
     let value = SignedData::read(&parser, &encoded, 0).unwrap();
     let query = parser.read(&[], 0).unwrap();
     let info = &value.signers()[0];
-    let signing = SigningAttributes::read(info, &query).unwrap();
     let before = account.work_used();
     assert_eq!(
-        profile_faults(info, &signing, Role::Signature, &query)
-            .unwrap()
-            .len(),
+        profile_faults(info, Role::Signature, &query).unwrap().len(),
         1
     );
     let needed = account.work_used() - before;
@@ -237,11 +232,10 @@ fn a_spent_work_ceiling_refuses_instead_of_reporting_less() {
     let value = SignedData::read(&parser, &encoded, 0).unwrap();
     let query = parser.read(&[], 0).unwrap();
     let info = &value.signers()[0];
-    let signing = SigningAttributes::read(info, &query).unwrap();
     spent
         .charge_work((spent.work_remaining() - (needed - 1)) as u64)
         .unwrap();
-    let error = profile_faults(info, &signing, Role::Signature, &query).unwrap_err();
+    let error = profile_faults(info, Role::Signature, &query).unwrap_err();
     assert!(error.is_resource());
 }
 
@@ -310,12 +304,10 @@ fn a_foreign_reader_is_refused_before_inspection() {
     );
     let parser = Parser::ber(memory(1_000_000));
     let value = SignedData::read(&parser, &encoded, 0).unwrap();
-    let query = parser.read(&[], 0).unwrap();
     let info = &value.signers()[0];
-    let signing = SigningAttributes::read(info, &query).unwrap();
     let foreign = Parser::ber(memory(1_000_000));
     let other = foreign.read(&[], 0).unwrap();
-    let error = profile_faults(info, &signing, Role::Signature, &other).unwrap_err();
+    let error = profile_faults(info, Role::Signature, &other).unwrap_err();
     assert_eq!(
         error.code(),
         ErrorCode::Pkix(structured_pkix::ErrorCode::ForeignReader)

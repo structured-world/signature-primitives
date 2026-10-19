@@ -566,9 +566,13 @@ impl<'a, P: Digest<'a>> Hasher<'_, 'a, P> {
 }
 
 // Sorts the element hashes once and finds, by binary search, the one hash each
-// entry could equal; the provider's own comparison then judges that pair, so
-// each entry costs one provider comparison and log n byte comparisons. Equal
-// hashes name equal encodings and are all marked.
+// entry could equal: the first not ordered before it, or the last hash when the
+// entry is ordered after all of them. The provider's own comparison then judges
+// that pair, so every entry reaches the provider whenever any hash exists, at
+// one provider comparison and log n byte comparisons. A comparison strategy
+// decides how bytes are compared, not which differing bytes are equal, so no
+// other hash can match an entry its nearest one does not. Equal hashes name
+// equal encodings and are all marked.
 fn mark<'a, P: Digest<'a>>(
     digest: &Hasher<'_, 'a, P>,
     hashes: &[P::Output],
@@ -597,13 +601,18 @@ fn mark<'a, P: Digest<'a>>(
     }
     for (ordinal, entry) in entries.iter().enumerate() {
         let first = lower_bound(&order, hashes, entry, execution).map_err(refusal)?;
-        let matched = match order.get(first) {
+        // No hash at all leaves nothing an entry could name.
+        let nearest = order.get(first).or_else(|| order.last());
+        let matched = match nearest {
             Some(&candidate) => digest.matches(&hashes[candidate], entry, execution)?,
             None => false,
         };
-        if matched {
-            let candidate = hashes[order[first]].as_ref();
-            let mut position = first;
+        if let Some(&nearest) = nearest
+            && matched
+        {
+            let candidate = hashes[nearest].as_ref();
+            let mut position =
+                lower_bound(&order, hashes, candidate, execution).map_err(refusal)?;
             while position < order.len()
                 && compare(hashes[order[position]].as_ref(), candidate, execution)
                     .map_err(refusal)?

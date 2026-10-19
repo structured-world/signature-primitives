@@ -36,6 +36,32 @@ pub trait Work: Clone + private::Sealed {
     /// Admits work before execution, against every applicable ceiling.
     fn charge_work(&self, amount: u64) -> Result<(), MemoryError>;
 
+    /// The largest amount [`Work::charge_work`] would admit now, across every
+    /// ceiling it checks, without reserving it.
+    ///
+    /// Use it to bound work that cannot be charged step by step, such as an
+    /// external engine given a work limit up front. Concurrent consumption can
+    /// lower the observation, so the work must still be charged before it runs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use structured_asn1::{Encoding, Limits, Parser, memory::{Memory, MemoryAccount, Work}};
+    /// let memory = Memory::new(Arc::new(MemoryAccount::new(1024, 1_000)));
+    /// let limits = Limits { max_work: 40, ..Limits::default() };
+    /// let parser = Parser::new(Encoding::Der, limits, memory);
+    /// let reader = parser.read(&[], 0)?;
+    /// let execution = reader.execution();
+    /// // The parser session is tighter than the shared account.
+    /// let remaining = execution.work_remaining();
+    /// assert_eq!(remaining, 40);
+    /// execution.charge_work(remaining as u64).unwrap();
+    /// assert!(execution.charge_work(1).is_err());
+    /// # Ok::<(), structured_asn1::Error>(())
+    /// ```
+    fn work_remaining(&self) -> usize;
+
     /// Opens original input while borrowing this operation only for decoding.
     /// Parsed elements and scalar views retain the longer original input
     /// lifetime; no result needs to keep a completed operation alive merely
@@ -209,6 +235,10 @@ impl Work for Memory {
         Memory::charge_work(self, amount)
     }
 
+    fn work_remaining(&self) -> usize {
+        Memory::work_remaining(self)
+    }
+
     fn read_scoped_source<'source: 'operation, 'operation>(
         &'operation self,
         parser: &'source Parser,
@@ -306,6 +336,14 @@ impl Work for Execution<'_> {
         self.budget
             .work_in(amount, self.memory)
             .map_err(|_| MemoryError::WorkExceeded)
+    }
+
+    fn work_remaining(&self) -> usize {
+        let aggregate = self.memory.work_remaining();
+        // The aggregate remainder fits usize, so a session remainder that does
+        // not fit can never be the smaller of the two.
+        usize::try_from(self.budget.work_remaining())
+            .map_or(aggregate, |session| session.min(aggregate))
     }
 
     fn read_scoped_source<'source: 'operation, 'operation>(

@@ -1,107 +1,61 @@
-# Signature primitives: Rust ASN.1, X.509, CMS, long-term validation and XAdES libraries
+# Signature primitives
+
+**Rust libraries for validating digital signatures: ASN.1, X.509 certificates, CMS, RFC 3161 timestamps, long-term validation and XAdES.**
 
 [![CI](https://github.com/structured-world/signature-primitives/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/structured-world/signature-primitives/actions/workflows/ci.yml)
 [![Rust 1.92+](https://img.shields.io/badge/Rust-1.92%2B-93450a?logo=rust)](https://github.com/structured-world/signature-primitives/blob/main/Cargo.toml)
 [![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-Read ASN.1 BER/DER and X.509 certificates in Rust while preserving the original
-signed bytes. Build certification paths using your own cryptographic provider,
-trust inputs and resource budgets. Check CMS signatures and RFC 3161 timestamps
-through injected providers. Establish format-neutral long-term validation facts
-(the participant census, revocation material, timestamp intervals and archive
-coverage) once for every AdES format. Process XAdES signed properties,
-timestamp/archive inputs and B-B/B-T/B-LT/B-LTA evidence through an explicit XML
-adapter. The libraries support **`no_std + alloc`**.
+Checking an electronic signature takes more than one cryptographic call. You
+parse the signed structure, find the signer's certificate, build and validate a
+certification path, check revocation, verify timestamps, and for archived
+documents prove that all of this still holds years later. These crates give you
+those building blocks as plain Rust libraries: pure Rust, `no_std` friendly, and
+with no hidden network, file or clock access.
 
-Since version 0.1.1, PKIX also checks an already supplied leaf-first certificate chain
-through `structured_pkix::path::validate`, returning typed static facts or
-located rejections; see the [supplied-chain contract](crates/structured-pkix/README.md#check-an-already-supplied-chain).
+They are the foundation for signature validators, document-signing services,
+timestamp and archive checks, and AdES tooling: XAdES is included, and CAdES or
+PAdES layers can build on the same long-term validation core.
 
-PKIX also provides caller-supplied CRL, delta-CRL and OCSP evidence
-processing, with exact signature provenance and explicit issuer, request and
-time facts, published since version 0.1.3; see the
-[revocation contract](crates/structured-pkix/README.md#crl-delta-crl-and-ocsp-evidence).
+## Which crate do I need?
 
-## Choose a crate
-
-| Crate | Use it for | crates.io | API docs |
+| Crate | What it does | crates.io | Docs |
 | --- | --- | --- | --- |
-| [**structured-asn1**](crates/structured-asn1/README.md) | Borrowed BER/DER parsing, OIDs, exact byte ranges and shared memory/work budgets | [![version](https://img.shields.io/crates/v/structured-asn1)](https://crates.io/crates/structured-asn1) [![downloads](https://img.shields.io/crates/d/structured-asn1)](https://crates.io/crates/structured-asn1) | [![docs.rs](https://img.shields.io/docsrs/structured-asn1)](https://docs.rs/structured-asn1) |
-| [**structured-pkix**](crates/structured-pkix/README.md) | Borrowed X.509 certificates, names, extensions, UTC time and provider-neutral path validation | [![version](https://img.shields.io/crates/v/structured-pkix)](https://crates.io/crates/structured-pkix) [![downloads](https://img.shields.io/crates/d/structured-pkix)](https://crates.io/crates/structured-pkix) | [![docs.rs](https://img.shields.io/docsrs/structured-pkix)](https://docs.rs/structured-pkix) |
-| [**structured-cms**](crates/structured-cms/README.md) | CMS SignedData, ESS certificate binding, countersignatures and RFC 3161 request/token checks | [![version](https://img.shields.io/crates/v/structured-cms)](https://crates.io/crates/structured-cms) [![downloads](https://img.shields.io/crates/d/structured-cms)](https://crates.io/crates/structured-cms) | [![docs.rs](https://img.shields.io/docsrs/structured-cms)](https://docs.rs/structured-cms) |
-| [**structured-ltv**](crates/structured-ltv/README.md) | Format-neutral long-term validation: participant census, revocation material, timestamp intervals, artifact index and archive coverage over a format's own source | [![version](https://img.shields.io/crates/v/structured-ltv)](https://crates.io/crates/structured-ltv) [![downloads](https://img.shields.io/crates/d/structured-ltv)](https://crates.io/crates/structured-ltv) | [![docs.rs](https://img.shields.io/docsrs/structured-ltv)](https://docs.rs/structured-ltv) |
-| [**structured-xades**](crates/structured-xades/README.md) | XAdES signed properties, timestamp/archive inputs and baseline evidence through caller-supplied XML and cryptographic adapters | [![version](https://img.shields.io/crates/v/structured-xades)](https://crates.io/crates/structured-xades) [![downloads](https://img.shields.io/crates/d/structured-xades)](https://crates.io/crates/structured-xades) | [![docs.rs](https://img.shields.io/docsrs/structured-xades)](https://docs.rs/structured-xades) |
+| [**structured-asn1**](crates/structured-asn1/README.md) | Fast BER/DER parsing that borrows the input instead of copying it | [![version](https://img.shields.io/crates/v/structured-asn1)](https://crates.io/crates/structured-asn1) | [![docs.rs](https://img.shields.io/docsrs/structured-asn1)](https://docs.rs/structured-asn1) |
+| [**structured-pkix**](crates/structured-pkix/README.md) | X.509 certificates, certification path validation, CRL and OCSP | [![version](https://img.shields.io/crates/v/structured-pkix)](https://crates.io/crates/structured-pkix) | [![docs.rs](https://img.shields.io/docsrs/structured-pkix)](https://docs.rs/structured-pkix) |
+| [**structured-cms**](crates/structured-cms/README.md) | CMS SignedData, countersignatures and RFC 3161 timestamp tokens | [![version](https://img.shields.io/crates/v/structured-cms)](https://crates.io/crates/structured-cms) | [![docs.rs](https://img.shields.io/docsrs/structured-cms)](https://docs.rs/structured-cms) |
+| [**structured-ltv**](crates/structured-ltv/README.md) | Long-term validation shared by every AdES format: who must be validated, which revocation data is needed, timestamp times and archive coverage | [![version](https://img.shields.io/crates/v/structured-ltv)](https://crates.io/crates/structured-ltv) | [![docs.rs](https://img.shields.io/docsrs/structured-ltv)](https://docs.rs/structured-ltv) |
+| [**structured-xades**](crates/structured-xades/README.md) | XAdES signatures, including baseline levels B-B, B-T, B-LT and B-LTA | [![version](https://img.shields.io/crates/v/structured-xades)](https://crates.io/crates/structured-xades) | [![docs.rs](https://img.shields.io/docsrs/structured-xades)](https://docs.rs/structured-xades) |
 
-Downloads are cumulative per crate. The five crates share a coordinated release
-version and can be used separately. CMS preserves original signed bytes and
-source mappings, while applications supply cryptographic providers and enforce
-certificate-path, status and trust policy. It contains no cryptographic engine.
-LTV contains no XML or PDF type: a format implements its source and receipt
-contracts and keeps its own placement rules and level assessment; see the
-[LTV guide](crates/structured-ltv/README.md).
-XAdES is published as a separate mechanism crate. Its generic core contains no
-XML parser or canonicalizer; native XML adapter and interoperability qualification
-remain separate from the common mechanisms. See the
-[XAdES adapter boundary](crates/structured-xades/README.md#adapter-boundary).
+Each crate builds on the ones above it:
+
+```text
+structured-asn1 → structured-pkix → structured-cms → structured-ltv → structured-xades
+                                                                    ↘ your CAdES / PAdES layer
+```
+
+Use only as much of the stack as you need: certificate parsing alone needs just
+`structured-asn1` and `structured-pkix`.
 
 ## Install
 
-The snippets below use the published, coordinated **0.8 API family**. Keep the
-crates on the same family so their parser, resource and evidence types agree.
-
-For ASN.1 parsing:
+All five crates are released together; keep them on the same version.
 
 ```toml
 [dependencies]
 structured-asn1 = "0.8"
+structured-pkix = "0.8"   # certificates, paths, CRL, OCSP
+structured-cms = "0.8"    # CMS signatures, RFC 3161 timestamps
+structured-ltv = "0.8"    # long-term validation
+structured-xades = "0.8"  # XAdES
 ```
 
-For certificate processing, add PKIX as well:
+Rust 1.92 or newer. Everything works with `no_std + alloc`; enable the `std`
+feature in ordinary applications.
 
-```toml
-[dependencies]
-structured-asn1 = "0.8"
-structured-pkix = "0.8"
-```
+## Quick start
 
-For CMS and timestamp processing:
-
-```toml
-[dependencies]
-structured-asn1 = "0.8"
-structured-pkix = "0.8"
-structured-cms = "0.8"
-```
-
-For long-term validation of a signature format of your own, implement its
-source and receipt contracts and add LTV:
-
-```toml
-[dependencies]
-structured-asn1 = "0.8"
-structured-pkix = "0.8"
-structured-cms = "0.8"
-structured-ltv = "0.8"
-```
-
-For XAdES, provide an XML adapter and add the XAdES mechanisms. Its long-term
-validation facts are `structured-ltv` types:
-
-```toml
-[dependencies]
-structured-asn1 = "0.8"
-structured-pkix = "0.8"
-structured-cms = "0.8"
-structured-ltv = "0.8"
-structured-xades = "0.8"
-```
-
-Rust **1.92 or newer** is required. Default features use `no_std + alloc`;
-enable `std` when integrating into a standard-library application. The `alloc`
-feature is also available explicitly. These libraries perform no network or
-filesystem I/O.
-
-## Quick start: read DER without copying the value
+Read a DER value without copying it:
 
 ```rust
 use std::sync::Arc;
@@ -109,104 +63,55 @@ use structured_asn1::{Parser, Tag, universal};
 use structured_asn1::memory::{Memory, MemoryAccount};
 
 fn main() -> Result<(), structured_asn1::Error> {
-    // SEQUENCE { INTEGER 1 }; limits are bytes of storage and work units.
+    // SEQUENCE { INTEGER 1 }
     let bytes = [0x30, 0x03, 0x02, 0x01, 0x01];
+    // Upper bounds for memory and parsing work, so hostile input cannot run away.
     let memory = Memory::new(Arc::new(MemoryAccount::new(1024, 1024)));
     let parser = Parser::der(memory);
+
     let mut reader = parser.read(&bytes, 0)?;
     let sequence = reader.expect(Tag::constructed(universal::SEQUENCE))?;
     let mut inside = reader.enter(&sequence)?;
     let integer = inside.expect(Tag::primitive(universal::INTEGER))?;
 
     assert_eq!(integer.contents(), &[1]);
-    assert_eq!(integer.span().start, 2);
-    assert_eq!(integer.span().length, 3);
     Ok(())
 }
 ```
 
-Continue with the [ASN.1 guide](crates/structured-asn1/README.md) or the
-[certificate parsing example](crates/structured-pkix/README.md#quick-start).
+Next steps: [parse a certificate](crates/structured-pkix/README.md#quick-start),
+[validate a certificate chain](crates/structured-pkix/README.md#check-an-already-supplied-chain),
+[check CRL and OCSP evidence](crates/structured-pkix/README.md#crl-delta-crl-and-ocsp-evidence),
+[add long-term validation to a signature format](crates/structured-ltv/README.md).
 
-## Why use these libraries?
+## Why these libraries
 
-- **Keep the signed bytes.** Values borrow the input; certificate signature
-  verification receives the original encoded TBS bytes rather than a re-encoding.
-- **Bound shared processing.** An explicit `Memory` account admits allocation
-  capacity and input-dependent work. Owned results retain their storage charge
-  until deallocation; nested parsing keeps cumulative session limits.
-- **Distinguish failure from a verdict.** Resource exhaustion remains separate
-  from malformed input, missing fields and semantic mismatches.
-- **Choose your provider and trust model.** Applications supply cryptographic
-  verification, trust anchors, validation time and externally acquired data.
+- **The signed bytes stay exact.** Values borrow the original input, so a
+  signature is always checked over the bytes that were actually signed, never
+  over a re-encoding.
+- **You choose the cryptography.** No crypto engine is bundled. You plug in the
+  provider you already trust (RustCrypto, a hardware module, a platform API).
+- **You own trust and time.** Trust anchors, validation time and fetched
+  revocation data come from your application; the libraries never reach the
+  network, the file system or the clock.
+- **Safe on hostile input.** Every parse runs under explicit memory and work
+  limits, and running out of budget is reported separately from a malformed or
+  invalid signature.
+- **Facts, not verdicts.** The crates report what holds and what does not;
+  whether a signature is acceptable stays your policy decision.
+- **Runs anywhere.** `no_std + alloc`, including WebAssembly and bare-metal
+  targets.
 
-Parsing a certificate does not establish trust. Applications remain responsible
-for their acceptance policy and for accounting work inside injected callbacks.
-Raw slices and ordinary Rust formatting/equality traits also leave caller-owned
-traversal and output storage to the application. See the package guides for the
-resource and time contracts.
+## Standards
 
-## Releases
+ITU-T X.690 (BER/DER), RFC 5280 (X.509 certificates and CRLs), RFC 6960 (OCSP),
+RFC 9618 (certificate policies), RFC 5652 (CMS), RFC 3161 (timestamps),
+ETSI EN 319 102-1 (AdES validation) and ETSI EN 319 132-1 (XAdES baseline).
 
-`structured-asn1`, `structured-pkix`, `structured-cms`, `structured-ltv` and
-`structured-xades` use one release-plz version group.
-Release-plz prepares a version/changelog PR using the organization release bot;
-merging that PR publishes the packages after CI succeeds on its exact main commit.
-Dependencies are published before their dependants. Git tags and release notes
-retain each package's name, even though all five packages share their version.
+## Contributing
 
-Registry publishing uses OIDC, bound to this repository, `release-plz.yml` and
-the `release` environment. Normal publication stores no long-lived crates.io
-token in GitHub.
-Manual runs enforce the same exact-SHA CI and release-PR gates; they do not
-force an upload or prove token exchange when nothing requires publication.
-First-time publication requires a limited API token because crates.io cannot
-register an unpublished crate's trusted publisher. For the first LTV version,
-the temporary repository Actions secret `LTV_BOOTSTRAP_TOKEN` selects three
-steps: ASN.1, PKIX and CMS publish through OIDC, `structured-ltv` publishes with
-that token, then `structured-xades`, which depends on it, publishes through
-OIDC once Cargo resolves the new LTV version. Limit the token to `publish-new` for `structured-ltv`. After the first
-publication, register the crate's Trusted Publisher with repository owner
-`structured-world`, repository `signature-primitives`, workflow
-`release-plz.yml` and environment `release`. Then delete the
-`LTV_BOOTSTRAP_TOKEN` repository secret and revoke the temporary crates.io
-token. Removing the secret selects normal OIDC for all five packages; leaving
-it installed keeps the bootstrap path selected.
-
-## Dependency updates
-
-All seven CI checks and CLA are required for `main`. Trusted default-branch
-automation qualifies repository-local Dependabot PRs by CI alone: a PR whose
-required checks pass on a branch that is current with `main` is merged, and a
-PR that is only behind `main` is updated so that CI runs again on the new head.
-No review is required. Both operations bind the inspected head SHA, so a head
-changed since inspection is refused and left for the next event.
-
-`hashbrown` and `allocator-api2` changes require manual contract review, including
-grouped updates and manifest/lockfile changes. Their audited capacity/layout
-contracts cannot be qualified by CI alone. Other updates are checked when a
-Dependabot PR is opened or updated and when CI completes, with an hourly
-backstop for an event GitHub did not deliver.
-The merge App token is scoped to this repository and created only when an
-update or merge is due; the automation never executes PR code with it.
-
-## Development
-
-Run `cargo nextest run --workspace`, `cargo test --workspace --doc`, and
-`cargo clippy --workspace --all-targets -- -D warnings`.
-Check alloc-only builds using `cargo check --workspace --no-default-features`
-and the `wasm32-unknown-unknown` and `thumbv7em-none-eabihf` targets.
-Verify distributable archives with `bash scripts/check-packages.sh`; it uses
-fresh temporary package state so earlier same-version workspace archives cannot
-substitute stale source during verification.
-Release-trigger regressions use GitHub's expression evaluator: run
-`npm ci --prefix .github/tests --ignore-scripts` followed by
-`npm run check --prefix .github/tests`. CI runs the same checks before a main
-commit can approve publication, including manual/fork refusals and preservation
-of separate main-push validation runs.
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Apache-2.0. Contributions are accepted under the
-[Structured World Contributor License Agreement](https://sw.foundation/cla);
-see [CONTRIBUTING.md](CONTRIBUTING.md).
+[Apache-2.0](LICENSE).

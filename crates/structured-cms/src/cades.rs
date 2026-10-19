@@ -15,13 +15,16 @@ use crate::{Error, ErrorCode, Result, oid};
 use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Oid, Reader, Tag, universal};
 
-/// The `SignerInfo` being checked, since rules differ inside a countersignature.
+/// The `SignerInfo` being checked, since rules differ by where it sits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     /// A signer of the root `SignedData`.
     Signature,
     /// A `SignerInfo` carried in a countersignature attribute (§5.2.7).
     Countersignature,
+    /// The signer of the time-stamp token in an `archive-time-stamp-v3`
+    /// (§5.5.3), the only one that carries an `ats-hash-index-v3` (§5.5.2).
+    ArchiveTimestamp,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -32,12 +35,30 @@ enum Set {
     Neither,
 }
 
+// Which signers may carry the attribute at all.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Signers {
+    Any,
+    NotCountersignature,
+    ArchiveTimestampOnly,
+}
+
+impl Signers {
+    fn admit(self, role: Role) -> bool {
+        match self {
+            Self::Any => true,
+            Self::NotCountersignature => role != Role::Countersignature,
+            Self::ArchiveTimestampOnly => role == Role::ArchiveTimestamp,
+        }
+    }
+}
+
 struct Rule {
     kind: Oid<'static>,
     set: Set,
     single: bool,
     unique: bool,
-    no_countersignature: bool,
+    signers: Signers,
     field: &'static str,
 }
 
@@ -47,7 +68,7 @@ const fn rule(kind: Oid<'static>, set: Set, single: bool, field: &'static str) -
         set,
         single,
         unique: false,
-        no_countersignature: false,
+        signers: Signers::Any,
         field,
     }
 }
@@ -77,12 +98,12 @@ const RULES: [Rule; 14] = [
     ),
     // §5.2.4.1: ESS, signed, and not within a countersignature.
     Rule {
-        no_countersignature: true,
+        signers: Signers::NotCountersignature,
         ..ess(oid::CONTENT_HINTS, "contentHints")
     },
     // §5.2.4.2: signed, one value, and not within a countersignature.
     Rule {
-        no_countersignature: true,
+        signers: Signers::NotCountersignature,
         ..rule(oid::MIME_TYPE, Set::Signed, true, "mimeType")
     },
     // §5.2.5
@@ -138,6 +159,7 @@ const RULES: [Rule; 14] = [
     // §5.5.3: the token carries "a single ats-hash-index-v3 attribute".
     Rule {
         unique: true,
+        signers: Signers::ArchiveTimestampOnly,
         ..rule(
             oid::ATS_HASH_INDEX_V3,
             Set::Unsigned,
@@ -237,7 +259,7 @@ pub fn profile_faults<'a>(
             continue;
         };
         report(set, rule, parent, &mut faults, |attribute, instance| {
-            if role == Role::Countersignature && rule.no_countersignature {
+            if !rule.signers.admit(role) {
                 Some(ErrorCode::AttributePlacement)
             } else if rule.unique && instance > 0 {
                 Some(ErrorCode::DuplicateAttribute)
@@ -254,6 +276,10 @@ pub fn profile_faults<'a>(
     if let Some(signed) = signer.signed_attributes() {
         for result in signed.all_in(oid::SIGNATURE_POLICY_IDENTIFIER, parent) {
             for value in result?.values() {
+                // Each value inspected is paid before its tag is read.
+                execution.charge_work(1).map_err(|reason| {
+                    Error::resource(reason, "signaturePolicyIdentifier", value.span().start)
+                })?;
                 if value.tag() == Tag::primitive(universal::NULL) {
                     push(
                         &mut faults,

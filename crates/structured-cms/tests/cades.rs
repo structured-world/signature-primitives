@@ -16,8 +16,11 @@ fn tlv(tag: u8, contents: &[u8]) -> Vec<u8> {
     let length = contents.len();
     if length < 0x80 {
         encoded.push(u8::try_from(length).unwrap());
-    } else {
+    } else if length < 0x100 {
         encoded.extend([0x81, u8::try_from(length).unwrap()]);
+    } else {
+        encoded.push(0x82);
+        encoded.extend(u16::try_from(length).unwrap().to_be_bytes());
     }
     encoded.extend_from_slice(contents);
     encoded
@@ -318,8 +321,57 @@ fn a_repeated_ats_hash_index_is_refused() {
     // ats-hash-index-v3 attribute"; the second instance is reported.
     let index = attribute(oid::ATS_HASH_INDEX_V3.as_bytes(), &[tlv(0x30, &[])]);
     assert_eq!(
-        codes(&[], &[index.clone(), index], Role::Signature),
+        codes(&[], &[index.clone(), index], Role::ArchiveTimestamp),
         [(ErrorCode::DuplicateAttribute, "atsHashIndexV3")]
+    );
+}
+
+#[test]
+fn the_hash_index_belongs_only_to_an_archive_timestamp_signer() {
+    // §5.5.2: ats-hash-index-v3 is an unsigned attribute of the CMS signature
+    // of the time-stamp token in an archive-time-stamp-v3, of no other signer.
+    let index = attribute(oid::ATS_HASH_INDEX_V3.as_bytes(), &[tlv(0x30, &[])]);
+    let unsigned = std::slice::from_ref(&index);
+    assert_eq!(codes(&[], unsigned, Role::ArchiveTimestamp), NONE);
+    for role in [Role::Signature, Role::Countersignature] {
+        assert_eq!(
+            codes(&[], unsigned, role),
+            [(ErrorCode::AttributePlacement, "atsHashIndexV3")]
+        );
+    }
+}
+
+#[test]
+fn every_policy_value_inspected_is_paid_for() {
+    // Each signature-policy-identifier value is inspected for the implied
+    // choice. The same bytes split into twice as many values must cost at
+    // least one unit more per extra value; byte-proportional work is equal.
+    let used = |values: usize, arcs: usize| {
+        let protected = [attribute(
+            oid::SIGNATURE_POLICY_IDENTIFIER.as_bytes(),
+            &(0..values)
+                .map(|ordinal| {
+                    let mut identifier = vec![0x2a, u8::try_from(ordinal).unwrap()];
+                    identifier.resize(2 + arcs, 1);
+                    tlv(0x30, &tlv(6, &identifier))
+                })
+                .collect::<Vec<_>>(),
+        )];
+        let encoded = message(&protected, &[]);
+        let account = memory(1_000_000);
+        let parser = Parser::ber(account.clone());
+        let value = SignedData::read(&parser, &encoded, 0).unwrap();
+        let query = parser.read(&[], 0).unwrap();
+        let before = account.work_used();
+        profile_faults(&value.signers()[0], Role::Signature, &query).unwrap();
+        account.work_used() - before
+    };
+    // 30 values of 12 bytes and 60 values of 6 bytes: 360 bytes either way.
+    let fewer = used(30, 6);
+    let more = used(60, 0);
+    assert!(
+        more >= fewer + 30,
+        "{more} work for 60 values, {fewer} for 30 of the same bytes"
     );
 }
 

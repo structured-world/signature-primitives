@@ -405,27 +405,7 @@ pub fn check_index<'a, P: AsnDigest<'a>>(
     let attributes = signer
         .unsigned_attributes()
         .map_or(&[][..], |set| set.items());
-    let mut value_hashes = execution.vector();
-    let mut values = execution.vector();
-    for (attribute_ordinal, attribute) in attributes.iter().enumerate() {
-        // Each attribute inspected is paid, including one with no values.
-        execution.charge_work(1).map_err(refusal)?;
-        for (value_ordinal, value) in attribute.values().iter().enumerate() {
-            value_hashes.try_reserve(1).map_err(refusal)?;
-            values.try_reserve(1).map_err(refusal)?;
-            let hash = hasher.hash(&[attribute.kind_encoding(), value.as_bytes()], &execution)?;
-            value_hashes.try_push(hash).map_err(refusal)?;
-            values
-                .try_push((
-                    AttributeValue {
-                        attribute: attribute_ordinal,
-                        value: value_ordinal,
-                    },
-                    false,
-                ))
-                .map_err(refusal)?;
-        }
-    }
+    let (value_hashes, mut values) = hasher.hash_values(attributes, &execution)?;
 
     let mut unmatched = execution.vector();
     let certificates = mark(
@@ -455,6 +435,10 @@ pub fn check_index<'a, P: AsnDigest<'a>>(
         &execution,
         refusal,
     )?;
+    // The final projection is a pass over every value, paid before it runs.
+    execution
+        .charge_work(values.len() as u64)
+        .map_err(refusal)?;
     for (entry, flag) in values.iter_mut().zip(covered.iter()) {
         entry.1 = *flag;
     }
@@ -490,6 +474,9 @@ fn admit<P>(
     }
     Ok(())
 }
+
+// The value hashes and, in the same order, each value's position and flag.
+type ValueHashes<O, W> = (OwnedVec<O, W>, OwnedVec<(AttributeValue, bool), W>);
 
 struct Hasher<'p, 'a, P: Digest<'a>> {
     provider: &'a P,
@@ -555,6 +542,39 @@ impl<'a, P: Digest<'a>> Hasher<'_, 'a, P> {
         Ok(outputs)
     }
 
+    // One hash per unsigned attribute value, over its attrType encoding and the
+    // value's encoding (§5.5.2), with the value's position and an unset flag.
+    fn hash_values<W: Work>(
+        &self,
+        attributes: &[Attribute<'_>],
+        execution: &W,
+    ) -> core::result::Result<ValueHashes<P::Output, W>, DigestError<P::Error>> {
+        let refusal =
+            |reason| DigestError::Processing(Error::resource(reason, self.field, self.at));
+        let mut hashes = execution.vector();
+        let mut values = execution.vector();
+        for (attribute_ordinal, attribute) in attributes.iter().enumerate() {
+            // Each attribute inspected is paid, including one with no values.
+            execution.charge_work(1).map_err(refusal)?;
+            for (value_ordinal, value) in attribute.values().iter().enumerate() {
+                hashes.try_reserve(1).map_err(refusal)?;
+                values.try_reserve(1).map_err(refusal)?;
+                let hash = self.hash(&[attribute.kind_encoding(), value.as_bytes()], execution)?;
+                hashes.try_push(hash).map_err(refusal)?;
+                values
+                    .try_push((
+                        AttributeValue {
+                            attribute: attribute_ordinal,
+                            value: value_ordinal,
+                        },
+                        false,
+                    ))
+                    .map_err(refusal)?;
+            }
+        }
+        Ok((hashes, values))
+    }
+
     fn matches<W: Work>(
         &self,
         output: &P::Output,
@@ -585,6 +605,11 @@ fn mark<'a, P: Digest<'a>>(
     execution: &impl Work,
     refusal: impl Fn(structured_asn1::memory::MemoryError) -> DigestError<P::Error> + Copy,
 ) -> core::result::Result<OwnedVec<bool>, DigestError<P::Error>> {
+    // The two linear passes below (sort order and coverage flags) are paid up
+    // front; the sort and the lookups pay their comparisons as they go.
+    execution
+        .charge_work(2 * hashes.len() as u64)
+        .map_err(refusal)?;
     let mut order = execution.vector();
     order.try_reserve_exact(hashes.len()).map_err(refusal)?;
     for ordinal in 0..hashes.len() {

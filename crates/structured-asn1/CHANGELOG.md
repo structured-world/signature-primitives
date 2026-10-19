@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.7.0...structured-asn1-v0.8.0) - 2026-10-19
+
+### Added
+
+- *(ltv)* [**breaking**] move format-neutral long-term validation into structured-ltv ([#136](https://github.com/structured-world/signature-primitives/pull/136))
+
+### Other
+
+- *(pkix)* measure SAN lookup work independently of the seed ([#138](https://github.com/structured-world/signature-primitives/pull/138))
+
 ## [0.7.0](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.6.3...structured-asn1-v0.7.0) - 2026-10-18
 
 ### Added

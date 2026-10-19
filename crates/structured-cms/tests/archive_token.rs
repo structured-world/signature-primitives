@@ -2,8 +2,8 @@
 //! its token: one value each (EN 319 122-1 §§5.5.2-5.5.3).
 
 use std::sync::Arc;
-use structured_asn1::Parser;
 use structured_asn1::memory::{Memory, MemoryAccount};
+use structured_asn1::{Encoding, Limits, Parser, Reader};
 use structured_cms::archive::{HashIndex, token_reader};
 use structured_cms::timestamp::Token;
 use structured_cms::{ErrorCode, SignedData, oid};
@@ -116,6 +116,80 @@ fn a_repeated_index_attribute_or_value_is_refused() {
         index_of(&[two]).unwrap_err().code(),
         ErrorCode::AttributeCardinality
     );
+}
+
+#[test]
+fn a_foreign_token_is_refused_before_its_attributes_are_searched() {
+    // Without an index, a search under another parser's reader would answer
+    // MissingField; the session refusal must come first.
+    let encoded = token(&[]);
+    let parser = Parser::ber(memory());
+    let token = Token::read(&parser, &encoded, 0).unwrap();
+    let foreign = Parser::ber(memory());
+    let other = foreign.read(&[], 0).unwrap();
+    assert_eq!(
+        HashIndex::of_token(&token, &other).unwrap_err().code(),
+        ErrorCode::Pkix(structured_pkix::ErrorCode::ForeignReader)
+    );
+}
+
+// Enters every constructed element, so it fails exactly when some element
+// lies deeper than the reader's depth ceiling allows.
+fn walk(reader: &mut Reader<'_>) -> bool {
+    loop {
+        match reader.next_element() {
+            Ok(None) => return true,
+            Ok(Some(element)) if element.tag().is_constructed() => {
+                let Ok(mut inside) = reader.enter(&element) else {
+                    return false;
+                };
+                if !walk(&mut inside) {
+                    return false;
+                }
+            }
+            Ok(Some(_)) => {}
+            Err(_) => return false,
+        }
+    }
+}
+
+#[test]
+fn the_index_is_read_at_its_original_depth() {
+    // An index whose algorithm parameters nest deeply exceeds the depth
+    // ceiling where it is written; rereading it from a shallow query must not
+    // reset that budget.
+    let mut parameters = tlv(5, &[]);
+    for _ in 0..8 {
+        parameters = tlv(0x30, &parameters);
+    }
+    let fields = [
+        tlv(0x30, &[tlv(6, SHA256_OID), parameters].concat()),
+        tlv(0x30, &[]),
+        tlv(0x30, &[]),
+        tlv(0x30, &[]),
+    ];
+    let value = tlv(0x30, &fields.concat());
+    let encoded = token(&[attribute(oid::ATS_HASH_INDEX_V3.as_bytes(), &[value])]);
+    let mut exercised = false;
+    for max_depth in 1..40 {
+        let limits = Limits {
+            max_depth,
+            ..Limits::default()
+        };
+        let whole = Parser::new(Encoding::Ber, limits, memory());
+        let in_place = walk(&mut whole.read(&encoded, 0).unwrap());
+        let parser = Parser::new(Encoding::Ber, limits, memory());
+        let Ok(token) = Token::read(&parser, &encoded, 0) else {
+            continue;
+        };
+        let query = parser.read(&[], 0).unwrap();
+        let read = HashIndex::of_token(&token, &query);
+        if !in_place {
+            exercised = true;
+            assert!(read.is_err(), "depth {max_depth} reset for the index");
+        }
+    }
+    assert!(exercised, "no ceiling admitted the token but not the index");
 }
 
 #[test]

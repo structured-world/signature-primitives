@@ -188,7 +188,7 @@ fn check(name: &str, file: &str, tokens: usize, superseded: bool) {
         };
         let attached = content.copy_in(&query, "eContent", 0).unwrap();
         let content_hash = hash(algorithm, &attached);
-        let mut input = imprint_input(&signed, signer, &index, &content_hash);
+        let mut input = imprint_input(&signed, signer, &index, &content_hash).unwrap();
         assert_eq!(
             input.concat(),
             oracle_input.unwrap(),

@@ -45,10 +45,15 @@ fn sha256(parts: &[&[u8]]) -> Vec<u8> {
     state.finalize().to_vec()
 }
 
-/// SHA-256 only, charging its work like a provider must, and counting hashes.
+/// SHA-256 only, charging its work like a provider must, and counting hashes
+/// and comparisons. `refuse` fails every comparison; `deny` answers each one
+/// as differing, as a backend's own comparison strategy may.
 #[derive(Default)]
 struct Provider {
     starts: Cell<usize>,
+    comparisons: Cell<usize>,
+    refuse: bool,
+    deny: bool,
 }
 
 impl Digest<'_> for Provider {
@@ -91,7 +96,11 @@ impl Digest<'_> for Provider {
         work: &W,
     ) -> Result<bool, MemoryError> {
         work.charge_work(32)?;
-        Ok(output.as_slice() == expected)
+        self.comparisons.set(self.comparisons.get() + 1);
+        if self.refuse {
+            return Err(MemoryError::WorkExceeded);
+        }
+        Ok(!self.deny && output.as_slice() == expected)
     }
 }
 
@@ -425,6 +434,88 @@ fn a_foreign_reader_is_refused_before_hashing() {
 }
 
 #[test]
+fn the_signer_must_belong_to_the_checked_message() {
+    // Coverage and imprint input name one SignerInfo of one root SignedData
+    // (§5.5.1); a message from another parser, or another document of the
+    // same parser, would yield a result about neither.
+    let fixture = Fixture::new();
+    let parser = Parser::ber(memory(1_000_000));
+    let message = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
+    let copy = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
+    let encoded = index(SHA256_OID, [&fixture.certificate_hashes(), &[], &[]]);
+    let index = read_index(&parser, &encoded).unwrap();
+    let query = parser.read(&[], 0).unwrap();
+    let foreign = Parser::ber(memory(1_000_000));
+    let elsewhere = SignedData::read(&foreign, &fixture.encoded, 0).unwrap();
+    let signer = &message.signers()[0];
+    for (other, code) in [
+        (
+            &elsewhere,
+            ErrorCode::Pkix(structured_pkix::ErrorCode::ForeignReader),
+        ),
+        (&copy, ErrorCode::InvalidLocation),
+    ] {
+        let provider = Provider::default();
+        match check_index(&index, other, signer, &provider, &query) {
+            Err(DigestError::Processing(error)) => assert_eq!(error.code(), code),
+            result => panic!("a mismatched message was not refused: {result:?}"),
+        }
+        assert_eq!(provider.starts.get(), 0);
+        // Without a reader, both mismatches are a signer outside the message.
+        assert_eq!(
+            imprint_input(other, signer, &index, &[])
+                .unwrap_err()
+                .code(),
+            ErrorCode::InvalidLocation
+        );
+    }
+    assert!(imprint_input(&message, signer, &index, &[]).is_ok());
+}
+
+#[test]
+fn every_entry_is_judged_by_the_provider_comparison() {
+    // Digest::matches applies the backend's comparison strategy and may fail;
+    // each entry gets exactly one comparison, and its answer and failure stand.
+    let fixture = Fixture::new();
+    let encoded = index(
+        SHA256_OID,
+        [
+            &fixture.certificate_hashes(),
+            &fixture.revocation_hashes(),
+            &fixture.value_hashes(),
+        ],
+    );
+    let parser = Parser::ber(memory(1_000_000));
+    let message = SignedData::read(&parser, &fixture.encoded, 0).unwrap();
+    let index = read_index(&parser, &encoded).unwrap();
+    let query = parser.read(&[], 0).unwrap();
+    let signer = &message.signers()[0];
+
+    let provider = Provider::default();
+    assert!(
+        supported(check_index(&index, &message, signer, &provider, &query).unwrap()).is_valid()
+    );
+    assert_eq!(provider.comparisons.get(), 7);
+
+    let denying = Provider {
+        deny: true,
+        ..Provider::default()
+    };
+    let coverage = supported(check_index(&index, &message, signer, &denying, &query).unwrap());
+    assert_eq!(coverage.unmatched().len(), 7);
+    assert_eq!(coverage.certificates(), &[false, false]);
+
+    let refusing = Provider {
+        refuse: true,
+        ..Provider::default()
+    };
+    assert!(matches!(
+        check_index(&index, &message, signer, &refusing, &query),
+        Err(DigestError::Callback(MemoryError::WorkExceeded))
+    ));
+}
+
+#[test]
 fn a_zero_sized_provider_is_refused_before_hashing() {
     // Distinct zero-sized providers may share an address, so like every other
     // provider-driven check this one refuses them before any work.
@@ -562,7 +653,7 @@ fn the_imprint_input_is_the_four_original_ranges_in_order() {
     let index_parser = Parser::der(account.clone());
     let index = read_index(&index_parser, &encoded).unwrap();
     let content = sha256(&[b"content"]);
-    let input = imprint_input(&message, signer, &index, &content);
+    let input = imprint_input(&message, signer, &index, &content).unwrap();
     assert_eq!(input[0], tlv(6, oid::DATA.as_bytes()).as_slice());
     assert_eq!(input[1], content.as_slice());
     assert_eq!(input[2], fixture.signer_fields.as_slice());

@@ -320,6 +320,37 @@ impl<'a> SignedData<'a> {
     pub fn signers(&self) -> &[SignerInfo<'a>] {
         &self.signers
     }
+    /// Refuses a reader of another parser session.
+    pub(crate) fn require_session(&self, parent: &Reader<'_>, field: &'static str) -> Result<()> {
+        if !core::ptr::eq(self.parser, parent.parser()) {
+            return Err(Error::pkix(structured_pkix::Error::new(
+                structured_pkix::ErrorCode::ForeignReader,
+                field,
+                self.element.span().start,
+            )));
+        }
+        Ok(())
+    }
+    /// Refuses a `SignerInfo` that is not one of these signers, by identity.
+    pub(crate) fn require_signer(
+        &self,
+        signer: &SignerInfo<'_>,
+        field: &'static str,
+    ) -> Result<()> {
+        if !self.signers.iter().any(|own| {
+            core::ptr::eq(
+                core::ptr::from_ref(own).cast::<u8>(),
+                core::ptr::from_ref(signer).cast::<u8>(),
+            )
+        }) {
+            return Err(Error::schema(
+                ErrorCode::InvalidLocation,
+                field,
+                signer.span().start,
+            ));
+        }
+        Ok(())
+    }
     /// Readable document faults, retaining their allocation lifetime.
     #[must_use]
     pub fn faults(&self) -> &[Error] {

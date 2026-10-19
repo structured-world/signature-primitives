@@ -52,6 +52,8 @@ impl<'a> HashIndex<'a> {
     pub fn of_token(token: &Token<'a>, parent: &Reader<'a>) -> Result<Self> {
         const FIELD: &str = "archiveTimeStampV3.atsHashIndexV3";
         let signer = token.signer();
+        // The token's parser funds the search below, not another session's.
+        signer.require_session(parent, FIELD)?;
         let Some(unsigned) = signer.unsigned_attributes() else {
             return Err(Error::schema(
                 ErrorCode::MissingField,
@@ -69,11 +71,15 @@ impl<'a> HashIndex<'a> {
                 )
             })?;
         attribute.single(FIELD)?;
-        // Session check before rereading the attribute's own range.
-        attribute.value_reader_in(0, parent, FIELD)?;
+        // The value keeps its original nesting depth here, so its contents are
+        // read under the depth ceiling that applies where they are written.
+        let mut reader = attribute
+            .value_reader_in(0, parent, FIELD)?
+            .ok_or_else(|| Error::schema(ErrorCode::MissingField, FIELD, attribute.span().start))?;
+        let value = required(&mut reader, FIELD)?;
         // §5.5.2 "The ats-hash-index-v3 attribute shall be DER encoded": the
-        // Attribute SEQUENCE, its attrType and its attrValues SET, not only
-        // the value the index is read from.
+        // Attribute SEQUENCE, attrType and attrValues SET headers are checked
+        // here without descending into the value; `read` checks the value.
         let mut strict = parent
             .reread(attribute.element(), Encoding::Der)
             .map_err(|error| Error::encoding(error, FIELD))?;
@@ -92,8 +98,8 @@ impl<'a> HashIndex<'a> {
         let mut values = fields
             .enter(&set)
             .map_err(|error| Error::encoding(error, FIELD))?;
-        let value = required(&mut values, FIELD)?;
-        Self::read(&values, &value)
+        required(&mut values, FIELD)?;
+        Self::read(&reader, &value)
     }
 }
 
@@ -345,9 +351,10 @@ pub type CoverageResult<E> = core::result::Result<Resolution<IndexCoverage>, Dig
 ///
 /// # Errors
 ///
-/// A zero-sized provider, a signer or index from another parser than
-/// `parent`'s, a spent work ceiling, a provider failure, or a provider output
-/// whose width contradicts its identity.
+/// A zero-sized provider, a message or index from another parser than
+/// `parent`'s, a `signer` that is not one of `message`'s, a spent work ceiling,
+/// a provider failure, or a provider output whose width contradicts its
+/// identity.
 pub fn check_index<'a, P: AsnDigest<'a>>(
     index: &HashIndex<'_>,
     message: &SignedData<'_>,
@@ -359,7 +366,7 @@ pub fn check_index<'a, P: AsnDigest<'a>>(
     let at = index.span().start;
     let field = "atsHashIndexV3";
     let refusal = |reason| DigestError::Processing(Error::resource(reason, field, at));
-    admit(index, signer, provider, parent).map_err(DigestError::Processing)?;
+    admit(index, message, signer, provider, parent).map_err(DigestError::Processing)?;
     let identity = match asn_digest::resolve(provider, index.algorithm(), &execution)
         .map_err(|error| DigestError::Processing(Error::pkix(error)))?
     {
@@ -374,32 +381,26 @@ pub fn check_index<'a, P: AsnDigest<'a>>(
         at,
     };
 
-    let mut certificate_hashes = execution.vector();
-    certificate_hashes
-        .try_reserve_exact(message.certificate_choices().len())
-        .map_err(refusal)?;
-    for choice in message.certificate_choices() {
-        let encoding = match choice {
-            CertificateChoice::X509(ordinal) => message.certificates()[*ordinal].as_bytes(),
-            CertificateChoice::Extended(element)
-            | CertificateChoice::AttributeV1(element)
-            | CertificateChoice::AttributeV2(element)
-            | CertificateChoice::Other(element) => element.as_bytes(),
-        };
-        certificate_hashes
-            .try_push(hasher.hash(&[encoding], &execution)?)
-            .map_err(refusal)?;
-    }
-
-    let mut revocation_hashes = execution.vector();
-    revocation_hashes
-        .try_reserve_exact(message.revocations().len())
-        .map_err(refusal)?;
-    for revocation in message.revocations() {
-        revocation_hashes
-            .try_push(hasher.hash(&[revocation.as_bytes()], &execution)?)
-            .map_err(refusal)?;
-    }
+    let certificate_hashes = hasher.hash_each(
+        message
+            .certificate_choices()
+            .iter()
+            .map(|choice| match choice {
+                CertificateChoice::X509(ordinal) => message.certificates()[*ordinal].as_bytes(),
+                CertificateChoice::Extended(element)
+                | CertificateChoice::AttributeV1(element)
+                | CertificateChoice::AttributeV2(element)
+                | CertificateChoice::Other(element) => element.as_bytes(),
+            }),
+        &execution,
+    )?;
+    let revocation_hashes = hasher.hash_each(
+        message
+            .revocations()
+            .iter()
+            .map(|revocation| revocation.as_bytes()),
+        &execution,
+    )?;
 
     let attributes = signer
         .unsigned_attributes()
@@ -426,6 +427,7 @@ pub fn check_index<'a, P: AsnDigest<'a>>(
 
     let mut unmatched = execution.vector();
     let certificates = mark(
+        &hasher,
         &certificate_hashes,
         index.certificates(),
         IndexList::Certificates,
@@ -434,6 +436,7 @@ pub fn check_index<'a, P: AsnDigest<'a>>(
         refusal,
     )?;
     let revocations = mark(
+        &hasher,
         &revocation_hashes,
         index.revocations(),
         IndexList::Revocations,
@@ -442,6 +445,7 @@ pub fn check_index<'a, P: AsnDigest<'a>>(
         refusal,
     )?;
     let covered = mark(
+        &hasher,
         &value_hashes,
         index.attribute_values(),
         IndexList::AttributeValues,
@@ -460,10 +464,12 @@ pub fn check_index<'a, P: AsnDigest<'a>>(
     }))
 }
 
-// Refuses before any work: a zero-sized provider has no instance identity, and
-// only the producing parser's ceilings may fund the hashes and comparisons.
+// Refuses before any work: a zero-sized provider has no instance identity,
+// only the producing parser's ceilings may fund the hashes and comparisons,
+// and the archived signer is one of the root message's own (§5.5.1).
 fn admit<P>(
     index: &HashIndex<'_>,
+    message: &SignedData<'_>,
     signer: &SignerInfo<'_>,
     provider: &P,
     parent: &Reader<'_>,
@@ -471,7 +477,8 @@ fn admit<P>(
     const FIELD: &str = "atsHashIndexV3";
     let at = index.span().start;
     crate::provider::require_instance(provider, FIELD, at)?;
-    signer.require_session(parent, FIELD)?;
+    message.require_session(parent, FIELD)?;
+    message.require_signer(signer, FIELD)?;
     if !index.algorithm().same_session(parent) {
         return Err(Error::pkix(structured_pkix::Error::new(
             structured_pkix::ErrorCode::ForeignReader,
@@ -525,19 +532,52 @@ impl<'a, P: Digest<'a>> Hasher<'_, 'a, P> {
         }
         Ok(output)
     }
+
+    // One hash per whole encoding, in order, with exact storage up front.
+    fn hash_each<'e, W: Work>(
+        &self,
+        encodings: impl ExactSizeIterator<Item = &'e [u8]>,
+        execution: &W,
+    ) -> core::result::Result<OwnedVec<P::Output, W>, DigestError<P::Error>> {
+        let refusal =
+            |reason| DigestError::Processing(Error::resource(reason, self.field, self.at));
+        let mut outputs = execution.vector();
+        outputs
+            .try_reserve_exact(encodings.len())
+            .map_err(refusal)?;
+        for encoding in encodings {
+            outputs
+                .try_push(self.hash(&[encoding], execution)?)
+                .map_err(refusal)?;
+        }
+        Ok(outputs)
+    }
+
+    fn matches<W: Work>(
+        &self,
+        output: &P::Output,
+        entry: &[u8],
+        execution: &W,
+    ) -> core::result::Result<bool, DigestError<P::Error>> {
+        self.provider
+            .matches(self.identity, output, entry, execution)
+            .map_err(DigestError::Callback)
+    }
 }
 
-// Sorts the element hashes once and looks every entry up by binary search, so
-// a long index against many elements costs n log n comparisons, each paid by
-// its length; equal hashes name equal encodings and are all marked.
-fn mark<O: AsRef<[u8]>, E>(
-    hashes: &[O],
+// Sorts the element hashes once and finds, by binary search, the one hash each
+// entry could equal; the provider's own comparison then judges that pair, so
+// each entry costs one provider comparison and log n byte comparisons. Equal
+// hashes name equal encodings and are all marked.
+fn mark<'a, P: Digest<'a>>(
+    digest: &Hasher<'_, 'a, P>,
+    hashes: &[P::Output],
     entries: &[&[u8]],
     list: IndexList,
     unmatched: &mut OwnedVec<Unmatched, structured_asn1::memory::Execution<'_>>,
     execution: &impl Work,
-    refusal: impl Fn(structured_asn1::memory::MemoryError) -> DigestError<E> + Copy,
-) -> core::result::Result<OwnedVec<bool>, DigestError<E>> {
+    refusal: impl Fn(structured_asn1::memory::MemoryError) -> DigestError<P::Error> + Copy,
+) -> core::result::Result<OwnedVec<bool>, DigestError<P::Error>> {
     let mut order = execution.vector();
     order.try_reserve_exact(hashes.len()).map_err(refusal)?;
     for ordinal in 0..hashes.len() {
@@ -557,16 +597,22 @@ fn mark<O: AsRef<[u8]>, E>(
     }
     for (ordinal, entry) in entries.iter().enumerate() {
         let first = lower_bound(&order, hashes, entry, execution).map_err(refusal)?;
-        let mut position = first;
-        while position < order.len() {
-            let candidate = hashes[order[position]].as_ref();
-            if compare(candidate, entry, execution).map_err(refusal)? != Ordering::Equal {
-                break;
+        let matched = match order.get(first) {
+            Some(&candidate) => digest.matches(&hashes[candidate], entry, execution)?,
+            None => false,
+        };
+        if matched {
+            let candidate = hashes[order[first]].as_ref();
+            let mut position = first;
+            while position < order.len()
+                && compare(hashes[order[position]].as_ref(), candidate, execution)
+                    .map_err(refusal)?
+                    == Ordering::Equal
+            {
+                covered[order[position]] = true;
+                position += 1;
             }
-            covered[order[position]] = true;
-            position += 1;
-        }
-        if position == first {
+        } else {
             unmatched.try_reserve(1).map_err(refusal)?;
             unmatched
                 .try_push(Unmatched { list, ordinal })
@@ -614,19 +660,23 @@ fn compare(
 /// detached content the caller supplies it. The returned ranges are a
 /// [`crate::stream::Source`] for the token's
 /// [`crate::timestamp::MessageImprint::check_content`].
-#[must_use]
+///
+/// # Errors
+///
+/// A `signer` that is not one of `message`'s own signers.
 pub fn imprint_input<'s>(
     message: &SignedData<'s>,
     signer: &SignerInfo<'s>,
     index: &HashIndex<'s>,
     content_hash: &'s [u8],
-) -> [&'s [u8]; 4] {
-    [
+) -> Result<[&'s [u8]; 4]> {
+    message.require_signer(signer, "archiveTimeStampV3")?;
+    Ok([
         message.content().kind_encoding(),
         content_hash,
         signer.signed_fields(),
         index.as_bytes(),
-    ]
+    ])
 }
 
 /// Whether the index algorithm is the time-stamp's imprint algorithm, as

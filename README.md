@@ -86,17 +86,19 @@ Next steps: [parse a certificate](crates/structured-pkix/README.md#quick-start),
 
 ## Why these libraries
 
-- **The signed bytes stay exact.** Values borrow the original input, so a
-  signature is always checked over the bytes that were actually signed, never
-  over a re-encoding.
+- **The signed bytes stay exact.** ASN.1 values (certificates, CRLs, OCSP, CMS,
+  timestamps) borrow the original input, so their signatures are checked over
+  the bytes that were actually signed, never over a re-encoding. For XAdES, the
+  XML is canonicalized by the XML adapter you supply.
 - **You choose the cryptography.** No crypto engine is bundled. You plug in the
   provider you already trust (RustCrypto, a hardware module, a platform API).
 - **You own trust and time.** Trust anchors, validation time and fetched
   revocation data come from your application; the libraries never reach the
   network, the file system or the clock.
-- **Safe on hostile input.** Every parse runs under explicit memory and work
-  limits, and running out of budget is reported separately from a malformed or
-  invalid signature.
+- **Safe on hostile input.** Parsing inside these crates runs under explicit
+  memory and work limits, and running out of budget is reported separately from
+  a malformed or invalid signature. Your own adapters and callbacks (an XML
+  parser, a crypto provider) bound their own work.
 - **Facts, not verdicts.** The crates report what holds and what does not;
   whether a signature is acceptable stays your policy decision.
 - **Runs anywhere.** `no_std + alloc`, including WebAssembly and bare-metal

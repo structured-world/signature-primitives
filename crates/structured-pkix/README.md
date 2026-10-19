@@ -15,14 +15,13 @@ is supplied through `path::Verify`, so applications choose their crypto provider
 
 ## Install
 
-These snippets target the coordinated 0.2 API family. They require that version
-to be published on crates.io; check the version badge above before installing.
-For the older 0.1 release, use its [versioned API guide](https://docs.rs/structured-pkix/0.1.6).
+These snippets target the coordinated 0.8 API family. Earlier releases keep
+their versioned guides on [docs.rs](https://docs.rs/crate/structured-pkix/latest).
 
 ```toml
 [dependencies]
-structured-asn1 = "0.2"
-structured-pkix = "0.2"
+structured-asn1 = "0.8"
+structured-pkix = "0.8"
 ```
 
 `structured-asn1` supplies the parser and shared resource account used below.

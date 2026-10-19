@@ -15,13 +15,12 @@ and work limits; resource exhaustion is distinct from malformed input.
 
 ## Install
 
-These snippets target the coordinated 0.2 API family. They require that version
-to be published on crates.io; check the version badge above before installing.
-For the older 0.1 release, use its [versioned API guide](https://docs.rs/structured-asn1/0.1.6).
+These snippets target the coordinated 0.8 API family. Earlier releases keep
+their versioned guides on [docs.rs](https://docs.rs/crate/structured-asn1/latest).
 
 ```toml
 [dependencies]
-structured-asn1 = "0.2"
+structured-asn1 = "0.8"
 ```
 
 Enable the optional `std` feature for a standard-library integration, or name
@@ -66,10 +65,15 @@ aggregate work limits before execution. The borrowed scratch cannot outlive the
 reader/account. Reader paths and diagnostic copies also reserve their local work
 before allocation, while their containers charge aggregate work once.
 
+`Work::work_remaining()` (since 0.8.1) reports how much work `charge_work` would
+still admit across every applicable limit, without reserving it. Use it to cap
+an external engine that cannot be charged step by step, then charge the work
+before running it.
+
 `Memory::vector()` remains the independently owned result boundary. Its capacity
 charge survives the parser; moving it does not reserve again. The default
 `OwnedVec<T>` still uses this owner, while parser-bound scratch uses the additional
-execution type parameter. These additions are not in crates.io 0.1.4.
+execution type parameter.
 
 `OwnedVec::try_drain_all` prepays the larger of initialized byte size and element
 count through the original execution, then moves non-Clone values in source

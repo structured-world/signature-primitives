@@ -94,9 +94,13 @@ impl BasicResponse<'_> {
         }
     }
 
-    /// The assertion's status under this response's extended revoked definition:
-    /// [`super::Status::NotIssued`] for the exact RFC6960 §2.2 non-issued answer,
-    /// otherwise the same reading as [`SingleResponse::status`].
+    /// Status of `responses()[index]` under this response's extended revoked
+    /// definition: [`super::Status::NotIssued`] for the exact RFC6960 §2.2
+    /// non-issued answer, otherwise the same reading as
+    /// [`SingleResponse::status`]. `None` when there is no such assertion.
+    ///
+    /// The assertion is named by position so that it always belongs to this
+    /// response: §4.4.8 scopes the definition to the response that carries it.
     ///
     /// # Examples
     ///
@@ -131,22 +135,21 @@ impl BasicResponse<'_> {
     ///     unreachable!()
     /// };
     /// let response = payload.into_basic(&execution).unwrap().unwrap();
-    /// let assertion = &response.responses()[0];
-    /// assert!(matches!(assertion.status(), Status::Revoked { .. }));
-    /// assert_eq!(response.status_of(assertion, &execution).unwrap(), Status::NotIssued);
+    /// assert!(matches!(response.responses()[0].status(), Status::Revoked { .. }));
+    /// assert_eq!(response.status_of(0, &execution).unwrap(), Some(Status::NotIssued));
+    /// assert_eq!(response.status_of(1, &execution).unwrap(), None);
     /// ```
     ///
     /// # Errors
     ///
     /// A malformed extended revoked definition or CRL entry extension, or a
     /// spent work ceiling.
-    pub fn status_of<W: Work>(
-        &self,
-        assertion: &SingleResponse<'_>,
-        execution: &W,
-    ) -> Result<super::Status> {
+    pub fn status_of<W: Work>(&self, index: usize, execution: &W) -> Result<Option<super::Status>> {
+        let Some(assertion) = self.responses.get(index) else {
+            return Ok(None);
+        };
         let extended = self.extended_revoke(execution)?;
-        status(assertion, extended, execution)
+        status(assertion, extended, execution).map(Some)
     }
 }
 

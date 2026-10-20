@@ -317,9 +317,10 @@ whether a `good` answer or a CRL's silence still covers an expired certificate;
 revoked definition (`BasicResponse::extended_revoke`, §4.4.8), the exact §2.2
 answer for a certificate that was never issued (`certificateHold` dated
 1970-01-01T00:00:00Z) reads as `Status::NotIssued` through
-`BasicResponse::status_of` and `Evidence::status`; any other hold stays a hold.
-A malformed value, a critical extended revoke or one inside an assertion is a
-located fault.
+`BasicResponse::status_of` (which names the assertion by its position in that
+response) and `Evidence::status`; any other hold stays a hold. A malformed
+value, a critical extended revoke or `expiredCertsOnCRL`, or an extended revoke
+inside an assertion is a located fault.
 
 Both CRL entry and OCSP revocation dates expose UTC-qualified `time::Relation`
 facts (`Before`, `At`, `After`, `Uncertain`) against a lossless `Reading`.

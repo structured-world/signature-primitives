@@ -255,8 +255,8 @@ fn only_the_exact_tuple_under_extended_revoke_reads_as_not_issued() {
     let basic = decode(&parser, &not_issued);
     let single = &basic.responses()[0];
     assert_eq!(
-        basic.status_of(single, parser.memory()).unwrap(),
-        Status::NotIssued
+        basic.status_of(0, parser.memory()).unwrap(),
+        Some(Status::NotIssued)
     );
     assert!(matches!(
         single.status(),
@@ -284,7 +284,7 @@ fn only_the_exact_tuple_under_extended_revoke_reads_as_not_issued() {
         let bytes = response(&assertion(&status, &extensions), &carried);
         let basic = decode(&parser, &bytes);
         let single = &basic.responses()[0];
-        let reading = basic.status_of(single, parser.memory()).unwrap();
+        let reading = basic.status_of(0, parser.memory()).unwrap().unwrap();
         assert!(matches!(reading, Status::Revoked { .. }), "{reading:?}");
         assert_eq!(reading, single.status());
     }
@@ -293,10 +293,39 @@ fn only_the_exact_tuple_under_extended_revoke_reads_as_not_issued() {
         let basic = decode(&parser, &bytes);
         let single = &basic.responses()[0];
         assert_eq!(
-            basic.status_of(single, parser.memory()).unwrap(),
-            single.status()
+            basic.status_of(0, parser.memory()).unwrap(),
+            Some(single.status())
         );
     }
+}
+
+#[test]
+fn status_of_reads_only_this_responses_assertions_under_its_own_marker() {
+    // RFC6960 §4.4.8 scopes the extended definition to the response carrying
+    // it. Assertions are named by position in that response, so a hold from a
+    // response without the marker cannot be read under another one's marker,
+    // and a position past the last assertion names nothing.
+    let parser = Parser::der(memory());
+    let hold = revoked(&epoch(), Some(6));
+    let marked = response(
+        &assertion(&hold, &[]),
+        &[extension(&EXTENDED, false, &[5, 0])],
+    );
+    let plain = response(&assertion(&hold, &[]), &[]);
+    let marked = decode(&parser, &marked);
+    let plain = decode(&parser, &plain);
+    assert_eq!(
+        marked.status_of(0, parser.memory()).unwrap(),
+        Some(Status::NotIssued)
+    );
+    assert!(matches!(
+        plain.status_of(0, parser.memory()).unwrap(),
+        Some(Status::Revoked {
+            reason: Some(Reason::CertificateHold),
+            ..
+        })
+    ));
+    assert_eq!(marked.status_of(1, parser.memory()).unwrap(), None);
 }
 
 #[test]
@@ -320,6 +349,6 @@ fn readings_charge_the_current_execution() {
     let none = spent.memory();
     assert!(single.archive_cutoff(none).unwrap_err().is_resource());
     assert!(basic.extended_revoke(none).unwrap_err().is_resource());
-    assert!(basic.status_of(single, none).unwrap_err().is_resource());
+    assert!(basic.status_of(0, none).unwrap_err().is_resource());
     assert!(single.check_extensions(none).unwrap_err().is_resource());
 }

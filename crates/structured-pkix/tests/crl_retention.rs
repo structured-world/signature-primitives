@@ -93,25 +93,22 @@ fn lookup(
 }
 
 #[test]
-fn expired_certs_on_crl_is_read_with_either_marking_and_understood_by_lookup() {
-    // X.509 defines the value as GeneralizedTime and RFC 5280 profiles no
-    // criticality for it, so a critical one is understood, not an unknown
-    // demand that would make the list unusable for every certificate.
+fn expired_certs_on_crl_is_read_and_understood_by_lookup() {
+    // X.509 defines the value as GeneralizedTime; the lookup understands it
+    // rather than ignoring it, and its absence stays absent.
     let execution = memory(1_000_000);
     let parser = Parser::der(execution.clone());
     let issuer_bytes = issuer_certificate();
     let issuer = structured_pkix::Certificate::read(&parser, &issuer_bytes, 100).unwrap();
-    for critical in [false, true] {
-        let bytes = list(&[extension(&EXPIRED, critical, &tlv(24, b"20190101000000Z"))]);
-        let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
-        let time = parsed
-            .tbs()
-            .expired_certs_on_crl(&execution)
-            .unwrap()
-            .unwrap();
-        assert_eq!(time.seconds(), 1_546_300_800);
-        assert!(lookup(&parsed, &issuer, &execution).unwrap());
-    }
+    let bytes = list(&[extension(&EXPIRED, false, &tlv(24, b"20190101000000Z"))]);
+    let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
+    let time = parsed
+        .tbs()
+        .expired_certs_on_crl(&execution)
+        .unwrap()
+        .unwrap();
+    assert_eq!(time.seconds(), 1_546_300_800);
+    assert!(lookup(&parsed, &issuer, &execution).unwrap());
     let bytes = list(&[]);
     let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
     assert!(
@@ -153,6 +150,33 @@ fn malformed_expired_certs_on_crl_is_a_located_fault_in_both_readings() {
         let again = lookup(&parsed, &issuer, &execution).unwrap_err();
         assert_eq!(again.code(), error.code());
     }
+}
+
+#[test]
+fn critical_expired_certs_on_crl_is_a_located_fault_in_both_readings() {
+    // X.509 makes the extension always non-critical: a critical one is a
+    // malformed list, never retention coverage for an expired certificate.
+    let execution = memory(1_000_000);
+    let parser = Parser::der(execution.clone());
+    let issuer_bytes = issuer_certificate();
+    let issuer = structured_pkix::Certificate::read(&parser, &issuer_bytes, 100).unwrap();
+    let flagged = extension(&EXPIRED, true, &tlv(24, b"20190101000000Z"));
+    let bytes = list(std::slice::from_ref(&flagged));
+    let at = 600
+        + u64::try_from(
+            bytes
+                .windows(flagged.len())
+                .position(|window| window == flagged)
+                .unwrap(),
+        )
+        .unwrap();
+    let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
+    let error = parsed.tbs().expired_certs_on_crl(&execution).unwrap_err();
+    assert_eq!(error.code(), structured_pkix::ErrorCode::MalformedValue);
+    assert_eq!(error.offset(), at);
+    let again = lookup(&parsed, &issuer, &execution).unwrap_err();
+    assert_eq!(again.code(), structured_pkix::ErrorCode::MalformedValue);
+    assert_eq!(again.offset(), at);
 }
 
 #[test]

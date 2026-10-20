@@ -396,11 +396,17 @@ impl super::TbsCertList<'_> {
     }
 }
 
-// X.509 `ExpiredCertsOnCRL ::= GeneralizedTime`. The extension is not part of
-// the RFC 5280 profile, which sets no criticality for it, so either marking
-// is accepted.
+// X.509 §8.5.2.12: `ExpiredCertsOnCRL ::= GeneralizedTime`, and "this
+// extension is always non-critical", so a critical one is a malformed list.
 fn read_expired_certs<W: Work>(extension: &Extension<'_>, execution: &W) -> Result<Time> {
     const FIELD: &str = "extensions.expiredCertsOnCRL";
+    if extension.is_critical() {
+        return Err(Error::new(
+            ErrorCode::MalformedValue,
+            FIELD,
+            extension.span().start,
+        ));
+    }
     let mut reader = extension.reader_scoped(execution).field(FIELD)?;
     let element = reader
         .expect(Tag::primitive(universal::GENERALIZED_TIME))

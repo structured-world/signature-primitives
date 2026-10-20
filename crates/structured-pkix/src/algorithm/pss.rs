@@ -4,6 +4,8 @@
 //! parameters. [`read_in`] preserves absence; its caller applies that role rule.
 //! Hash/MGF support, key sanity, salt bounds and signature verification remain
 //! with the selected provider. No replacement parser or encoded default is made.
+//! Retained identifiers use [`read`] or [`inspect`] under current execution;
+//! [`read_in`] and [`inspect_in`] additionally check a producing reader session.
 
 use super::AlgorithmIdentifier;
 use crate::error::{Error, ErrorCode, Located, Result};
@@ -163,11 +165,8 @@ pub fn read_in<'a>(
     identifier: AlgorithmIdentifier<'a>,
     parent: &Reader<'a, '_>,
 ) -> Result<Option<Parameters<'a>>> {
-    let execution = parent.execution();
-    let Some((reader, element)) = open(identifier, parent, &execution)? else {
-        return Ok(None);
-    };
-    decode(&reader, element, Err).map(Some)
+    require_session(identifier, parent)?;
+    read(identifier, &parent.execution())
 }
 
 /// Inspection counterpart of [`read_in`], sharing its schema kernel.
@@ -181,11 +180,91 @@ pub fn inspect_in<'a>(
     identifier: AlgorithmIdentifier<'a>,
     parent: &Reader<'a, '_>,
 ) -> Result<Option<Reading<'a>>> {
-    let execution = parent.execution();
-    let Some((reader, element)) = open(identifier, parent, &execution)? else {
+    require_session(identifier, parent)?;
+    inspect(identifier, &parent.execution())
+}
+
+/// Reads a retained identifier's original PSS parameters under current work.
+///
+/// For verification callbacks that retain an [`AlgorithmIdentifier`] without
+/// its former reader. Source parser, encoding, parameter depth and cumulative
+/// ceiling come from that identifier; `execution` supplies current funding and
+/// its root-operation ceiling. No reader is fabricated and no parser, resource
+/// account, parameter copy or default encoding is created.
+///
+/// Like [`read_in`], returns `None` for absent parameters. RFC4055 §3.1 and
+/// RFC5756 §2 require signature parameters, while absent PSS key parameters
+/// mean unrestricted PSS usage; that role is the caller's decision. Use the
+/// key's original algorithm identifier: absent PSS restrictions do not inherit
+/// from another certificate (RFC4055 §3.3). No backend acceptance is implied.
+/// <https://www.rfc-editor.org/rfc/rfc5756#section-2>
+///
+/// # Errors
+/// Reports located schema/encoding errors, including written DER defaults,
+/// separately from terminal source/current work, depth or storage refusal.
+/// Returned scalar views borrow the original source, not current execution.
+///
+/// # Examples
+/// ```
+/// use std::sync::Arc;
+/// use structured_asn1::{Parser, memory::{Memory, MemoryAccount}};
+/// use structured_pkix::algorithm::{self, pss};
+/// let source = Parser::der(Memory::new(Arc::new(MemoryAccount::new(4096, 4096))));
+/// let bytes = b"\x30\x0d\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x0a\x30\x00";
+/// let identifier = {
+///     let mut reader = source.read(bytes, 400).unwrap();
+///     let element = reader.next_element().unwrap().unwrap();
+///     algorithm::read(&reader, &element, "signatureAlgorithm")?
+/// };
+/// let current = Memory::new(Arc::new(MemoryAccount::new(4096, 4096)));
+/// let parameters = pss::read(identifier, &current)?.unwrap();
+/// assert_eq!(parameters.element().span().start, 413);
+/// assert_eq!(parameters.salt().as_u64(), Some(20));
+/// # Ok::<(), structured_pkix::Error>(())
+/// ```
+pub fn read<'a, W: Work>(
+    identifier: AlgorithmIdentifier<'a>,
+    execution: &W,
+) -> Result<Option<Parameters<'a>>> {
+    let Some((reader, element)) = open(identifier, execution)? else {
         return Ok(None);
     };
-    let mut faults = execution.vector();
+    decode(&reader, element, Err).map(Some)
+}
+
+/// Inspects retained PSS parameters through the same kernel as [`read`].
+///
+/// Readable DER DEFAULT spelling faults are retained on the current storage
+/// account. All diagnostic admission also obeys the original and current work
+/// ceilings. The result can outlive the temporary operation; its fields still
+/// borrow the original source and its diagnostic capacity stays charged until
+/// dropped. Resource failures never become missing faults or successful absence.
+///
+/// # Examples
+/// ```
+/// use std::sync::Arc;
+/// use structured_asn1::{Parser, memory::{Memory, MemoryAccount}};
+/// use structured_pkix::{ErrorCode, algorithm::{self, pss}};
+/// let source = Parser::der(Memory::new(Arc::new(MemoryAccount::new(4096, 4096))));
+/// let bytes = b"\x30\x12\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x0a\x30\x05\xa2\x03\x02\x01\x14";
+/// let mut reader = source.read(bytes, 400).unwrap();
+/// let element = reader.next_element().unwrap().unwrap();
+/// let identifier = algorithm::read(&reader, &element, "signatureAlgorithm")?;
+/// let current = Memory::new(Arc::new(MemoryAccount::new(4096, 4096)));
+/// let reading = pss::inspect(identifier, &current)?.unwrap();
+/// assert_eq!(reading.parameters().salt().as_u64(), Some(20));
+/// assert_eq!(reading.faults()[0].code(), ErrorCode::DefaultWritten);
+/// # Ok::<(), structured_pkix::Error>(())
+/// ```
+pub fn inspect<'a, W: Work>(
+    identifier: AlgorithmIdentifier<'a>,
+    execution: &W,
+) -> Result<Option<Reading<'a>>> {
+    let Some((reader, element)) = open(identifier, execution)? else {
+        return Ok(None);
+    };
+    let query = identifier.query_in(execution);
+    let mut faults = query.vector();
     let parameters = decode(&reader, element, |fault| {
         let at = fault.offset();
         let field = fault.field();
@@ -201,20 +280,14 @@ pub fn inspect_in<'a>(
 
 fn open<'a: 'operation, 'operation, W: Work>(
     identifier: AlgorithmIdentifier<'a>,
-    parent: &Reader<'a, '_>,
     execution: &'operation W,
 ) -> Result<Option<(Reader<'a, 'operation>, Element<'a>)>> {
-    if !identifier.same_session(parent) {
-        return Err(Error::new(
-            ErrorCode::ForeignReader,
-            FIELD,
-            identifier.offset(),
-        ));
-    }
-    if !oid_is(
-        parent,
+    let query = identifier.query_in(execution);
+    if !crate::key::same_oid(
         identifier.algorithm(),
         crate::oid::RSASSA_PSS,
+        &query,
+        FIELD,
         identifier.offset(),
     )? {
         return Err(Error::new(
@@ -223,7 +296,13 @@ fn open<'a: 'operation, 'operation, W: Work>(
             identifier.offset(),
         ));
     }
-    let value = open_parameter(identifier, parent, execution, FIELD)?;
+    query
+        .charge_work(1)
+        .map_err(|reason| Error::resource(reason, FIELD, identifier.offset()))?;
+    let value = identifier
+        .parameters_nested()
+        .map(|parameters| parameters.open(execution, FIELD))
+        .transpose()?;
     if let Some((_, element)) = &value
         && element.tag() != Tag::constructed(universal::SEQUENCE)
     {
@@ -234,6 +313,17 @@ fn open<'a: 'operation, 'operation, W: Work>(
         ));
     }
     Ok(value)
+}
+
+fn require_session(identifier: AlgorithmIdentifier<'_>, parent: &Reader<'_, '_>) -> Result<()> {
+    if !identifier.same_session(parent) {
+        return Err(Error::new(
+            ErrorCode::ForeignReader,
+            FIELD,
+            identifier.offset(),
+        ));
+    }
+    Ok(())
 }
 
 fn open_parameter<'a: 'operation, 'operation, W: Work>(

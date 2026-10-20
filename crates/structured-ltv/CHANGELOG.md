@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/structured-world/signature-primitives/compare/structured-ltv-v0.9.0...structured-ltv-v0.9.1) - 2026-10-20
+
+### Added
+
+- *(pkix)* resolve SHA3 digest identifiers ([#149](https://github.com/structured-world/signature-primitives/pull/149))
+
 ## [0.9.0](https://github.com/structured-world/signature-primitives/compare/structured-ltv-v0.8.1...structured-ltv-v0.9.0) - 2026-10-20
 
 ### Added

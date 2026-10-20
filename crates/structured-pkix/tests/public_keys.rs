@@ -1,9 +1,9 @@
 //! Public qualification of the structural RSA and EC key readers.
 
 use std::sync::Arc;
-use structured_asn1::memory::{Memory, MemoryAccount};
-use structured_asn1::{ErrorCode as Asn1, Parser};
-use structured_pkix::key::{ec, rsa};
+use structured_asn1::memory::{Memory, MemoryAccount, Work};
+use structured_asn1::{Encoding, ErrorCode as Asn1, Limits, Parser};
+use structured_pkix::key::{dsa, ec, rsa};
 use structured_pkix::path::WorkingKey;
 use structured_pkix::{Certificate, ErrorCode, PublicKeyInfo, oid};
 
@@ -412,4 +412,267 @@ fn ec_inherits_the_authority_curve_from_its_own_certificate() {
     // Without the transition the leaf alone has no curve in force.
     let error = ec::read(WorkingKey::standing(leaf.tbs().public_key()), &current).unwrap_err();
     assert_eq!(error.code(), ErrorCode::MissingField);
+}
+
+fn bounded_source() -> Parser {
+    Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 10_000,
+            ..Limits::default()
+        },
+        memory(1_000_000),
+    )
+}
+
+fn exhaust_source(source: &Parser) {
+    let original = source.execution_in(source.memory());
+    original
+        .charge_work(original.work_remaining() as u64)
+        .unwrap();
+}
+
+#[test]
+fn unknown_key_identity_requires_original_source_work_before_refusal() {
+    // An independently funded current query cannot reset the parsed key's
+    // exhausted local budget, even on an unknown-algorithm fast path.
+    let source = bounded_source();
+    let bytes = spki(&[42, 3], None, bits(0, &[1]));
+    let key = info(&source, &bytes);
+    exhaust_source(&source);
+    let current = memory(100_000);
+    for error in [
+        rsa::read(key, &current).map(|_| ()).unwrap_err(),
+        dsa::read(WorkingKey::standing(key), &current)
+            .map(|_| ())
+            .unwrap_err(),
+        ec::read(WorkingKey::standing(key), &current)
+            .map(|_| ())
+            .unwrap_err(),
+    ] {
+        assert!(error.is_resource(), "source exhaustion became {error:?}");
+        assert_eq!(error.offset(), key.algorithm().offset());
+    }
+}
+
+#[test]
+fn inherited_ec_cannot_read_a_key_after_its_own_source_work_is_exhausted() {
+    // Curve parameters and current funding belong to separate live sources.
+    // They must not erase the exhausted leaf's own OID/point source budget.
+    let root_der = certificate("Root", &ec_spki(Some(&named()), &[4, 1, 2]));
+    let leaf_der = certificate("Leaf", &ec_spki(None, &[3, 7]));
+    let root_source = bounded_source();
+    let leaf_source = bounded_source();
+    let root = Certificate::read(&root_source, &root_der, 400).unwrap();
+    let leaf = Certificate::read(&leaf_source, &leaf_der, 9000).unwrap();
+    let current = memory(100_000);
+    let key = WorkingKey::standing(root.tbs().public_key())
+        .subject(&leaf, &current)
+        .unwrap();
+    exhaust_source(&leaf_source);
+    let error = ec::read(key, &current).unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!(error.offset(), leaf.tbs().public_key().algorithm().offset());
+}
+
+#[test]
+fn inherited_ec_point_decision_requires_its_last_source_unit() {
+    // The leaf pays exactly eight units for its seven-byte OID and one for
+    // point framing. Foreign curve work cannot stand in for the ninth unit.
+    for point in [&[3, 7][..], &[0][..]] {
+        for allowance in [8, 9] {
+            let root_der = certificate("Root", &ec_spki(Some(&named()), &[4, 1, 2]));
+            let leaf_der = certificate("Leaf", &ec_spki(None, point));
+            let root_source = bounded_source();
+            let leaf_source = bounded_source();
+            let root = Certificate::read(&root_source, &root_der, 400).unwrap();
+            let leaf = Certificate::read(&leaf_source, &leaf_der, 9000).unwrap();
+            let current = memory(100_000);
+            let key = WorkingKey::standing(root.tbs().public_key())
+                .subject(&leaf, &current)
+                .unwrap();
+            let original = leaf_source.execution_in(leaf_source.memory());
+            original
+                .charge_work((original.work_remaining() - allowance) as u64)
+                .unwrap();
+            let result = ec::read(key, &current);
+            assert_eq!(original.work_remaining(), 0);
+            if allowance == 8 {
+                let error = result.unwrap_err();
+                assert!(error.is_resource());
+                assert_eq!(error.offset(), leaf.tbs().public_key().key_offset());
+            } else if point == [0] {
+                let error = result.unwrap_err();
+                assert_eq!(error.code(), ErrorCode::MalformedValue);
+                assert_eq!(error.offset(), leaf.tbs().public_key().key_offset());
+            } else {
+                let read = result.unwrap();
+                assert!(read.is_inherited());
+                assert_eq!(
+                    read.as_bytes().as_ptr(),
+                    leaf.tbs().public_key().key_octets().unwrap().as_ptr()
+                );
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum KeyReader {
+    Rsa,
+    Dsa,
+    Ec,
+}
+
+impl KeyReader {
+    fn read<W: Work>(self, key: PublicKeyInfo<'_>, work: &W) -> structured_pkix::Result<()> {
+        match self {
+            Self::Rsa => rsa::read(key, work).map(|_| ()),
+            Self::Dsa => dsa::read(WorkingKey::standing(key), work).map(|_| ()),
+            Self::Ec => ec::read(WorkingKey::standing(key), work).map(|_| ()),
+        }
+    }
+    fn mismatch_cost(self) -> usize {
+        match self {
+            Self::Rsa => 2,
+            Self::Dsa | Self::Ec => 1,
+        }
+    }
+}
+
+#[test]
+fn identity_negatives_obey_exact_source_current_and_aggregate_bounds() {
+    // Unknown two-byte OIDs take one length decision per candidate, no OID
+    // scan or allocation. All applicable ceilings must fund those decisions.
+    for reader in [KeyReader::Rsa, KeyReader::Dsa, KeyReader::Ec] {
+        let cost = reader.mismatch_cost();
+        for (source_left, operation_left, aggregate, complete) in [
+            (cost, cost, cost, true),
+            (cost - 1, cost, cost, false),
+            (cost, cost - 1, cost, false),
+            (cost, cost, cost - 1, false),
+        ] {
+            let source = bounded_source();
+            let bytes = spki(&[42, 3], None, bits(0, &[1]));
+            let key = info(&source, &bytes);
+            let original = source.execution_in(source.memory());
+            original
+                .charge_work((original.work_remaining() - source_left) as u64)
+                .unwrap();
+            let current = Memory::new(Arc::new(MemoryAccount::new(0, aggregate)));
+            let operation = Parser::new(
+                Encoding::Der,
+                Limits {
+                    max_work: u64::try_from(operation_left).unwrap(),
+                    ..Limits::default()
+                },
+                current.clone(),
+            );
+            let query = operation.read(&[], 9000).unwrap();
+            let error = reader.read(key, &query.execution()).unwrap_err();
+            assert_eq!(error.offset(), key.algorithm().offset());
+            if complete {
+                assert_eq!(error.code(), ErrorCode::UnexpectedField);
+                assert_eq!(current.work_used(), cost);
+                assert_eq!(original.work_remaining(), 0);
+            } else {
+                assert!(error.is_resource(), "{reader:?}: {error:?}");
+            }
+            assert_eq!(current.used(), 0);
+        }
+    }
+}
+
+#[test]
+fn same_source_metadata_is_charged_once_on_the_last_available_units() {
+    // A producing operation must not double-charge its own source ceiling
+    // when the deferred reader binds the existing source/current query.
+    for reader in [KeyReader::Rsa, KeyReader::Dsa, KeyReader::Ec] {
+        let source = bounded_source();
+        let bytes = spki(&[42, 3], None, bits(0, &[1]));
+        let key = info(&source, &bytes);
+        let query = source.read(&[], 9000).unwrap();
+        let execution = query.execution();
+        let cost = reader.mismatch_cost();
+        execution
+            .charge_work((execution.work_remaining() - cost) as u64)
+            .unwrap();
+        let before = source.memory().work_used();
+        let error = reader.read(key, &execution).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::UnexpectedField);
+        assert_eq!(execution.work_remaining(), 0);
+        assert_eq!(source.memory().work_used(), before + cost);
+    }
+}
+
+#[test]
+fn known_key_metadata_also_refuses_at_its_source_before_structure_decoding() {
+    // A valid OID must be paid before its parameters or key bits are opened;
+    // nested-reader refusal at a later byte is not pre-admission of that OID.
+    for (reader, bytes) in [
+        (KeyReader::Rsa, rsa_spki(&rsa_key(&[127], &[3]))),
+        (
+            KeyReader::Dsa,
+            spki(&[42, 134, 72, 206, 56, 4, 1], None, bits(0, &[2, 1, 7])),
+        ),
+        (KeyReader::Ec, ec_spki(Some(&named()), &[3, 7])),
+    ] {
+        let source = bounded_source();
+        let key = info(&source, &bytes);
+        exhaust_source(&source);
+        let error = reader.read(key, &memory(100_000)).unwrap_err();
+        assert!(error.is_resource());
+        assert_eq!(error.offset(), key.algorithm().offset());
+    }
+}
+
+#[test]
+fn inherited_curve_retains_its_own_source_refusal_and_location() {
+    // Correctly admitting the leaf must not remove the separate inherited
+    // curve source's cumulative ceiling or substitute the leaf's coordinates.
+    let root_der = certificate("Root", &ec_spki(Some(&named()), &[4, 1, 2]));
+    let leaf_der = certificate("Leaf", &ec_spki(None, &[3, 7]));
+    let root_source = bounded_source();
+    let leaf_source = bounded_source();
+    let root = Certificate::read(&root_source, &root_der, 400).unwrap();
+    let leaf = Certificate::read(&leaf_source, &leaf_der, 9000).unwrap();
+    let current = memory(100_000);
+    let key = WorkingKey::standing(root.tbs().public_key())
+        .subject(&leaf, &current)
+        .unwrap();
+    exhaust_source(&root_source);
+    let error = ec::read(key, &current).unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!(error.offset(), 400 + position(&root_der, &named()));
+}
+
+#[test]
+fn padded_ec_point_framing_is_admitted_before_returning_malformed() {
+    // Even a padded BIT STRING must fund point framing before a completed
+    // malformed-key answer. Foreign curve funding cannot hide leaf exhaustion.
+    for allowance in [8, 9] {
+        let root_der = certificate("Root", &ec_spki(Some(&named()), &[4, 1, 2]));
+        let leaf_spki = spki(oid::EC_PUBLIC_KEY.as_bytes(), None, bits(1, &[4, 16, 32]));
+        let leaf_der = certificate("Leaf", &leaf_spki);
+        let root_source = bounded_source();
+        let leaf_source = bounded_source();
+        let root = Certificate::read(&root_source, &root_der, 400).unwrap();
+        let leaf = Certificate::read(&leaf_source, &leaf_der, 9000).unwrap();
+        let current = memory(100_000);
+        let key = WorkingKey::standing(root.tbs().public_key())
+            .subject(&leaf, &current)
+            .unwrap();
+        let original = leaf_source.execution_in(leaf_source.memory());
+        original
+            .charge_work((original.work_remaining() - allowance) as u64)
+            .unwrap();
+        let error = ec::read(key, &current).unwrap_err();
+        assert_eq!(error.offset(), leaf.tbs().public_key().key_offset());
+        if allowance == 8 {
+            assert!(error.is_resource(), "{error:?}");
+        } else {
+            assert_eq!(error.code(), ErrorCode::MalformedValue);
+        }
+        assert_eq!(original.work_remaining(), 0);
+    }
 }

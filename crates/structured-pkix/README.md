@@ -132,9 +132,17 @@ authority wrote them, and the SEC1 point split into its coordinates.
 infinity and the hybrid form are refused.
 
 Both readers decode the original bytes in their parser session under the
-current execution, copy nothing and allocate nothing. They establish structure
+current execution. Key bytes and returned components remain borrowed; generic
+nested-reader metadata uses existing accounted scratch. They establish structure
 only: key-size and exponent policy, curve support and width, and whether a
 point lies on its curve remain with the provider that verifies.
+
+Deferred RSA/DSA/EC identity checks preserve the key source's cumulative work
+ceiling as well as current funding, including unknown-algorithm fast paths.
+EC point framing also belongs to the key source when its curve is inherited
+from another certificate. The inherited parameter source retains its separate
+ceiling and coordinates. A source refusal remains a located resource error,
+never a completed mismatch, malformed point, or successfully decoded key.
 
 ### DSA public-key structure
 

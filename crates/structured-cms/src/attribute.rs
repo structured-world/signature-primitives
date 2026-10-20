@@ -42,6 +42,7 @@ impl Placement {
 #[derive(Debug)]
 pub struct Attribute<'a> {
     kind: Oid<'a>,
+    kind_element: Element<'a>,
     values: OwnedVec<Element<'a>>,
     element: Element<'a>,
     parser: &'a Parser,
@@ -61,8 +62,11 @@ impl<'a> Attribute<'a> {
         let mut inside = parent
             .enter(element)
             .map_err(|error| Error::encoding(error, field))?;
+        let kind_element = inside
+            .expect(Tag::primitive(universal::OID))
+            .map_err(|error| Error::encoding(error, field))?;
         let kind = inside
-            .read_oid()
+            .oid(&kind_element)
             .map_err(|error| Error::encoding(error, field))?;
         let set = inside
             .expect(Tag::constructed(universal::SET))
@@ -110,6 +114,7 @@ impl<'a> Attribute<'a> {
         }
         Ok(Self {
             kind,
+            kind_element,
             values: values.into_owned(),
             element: *element,
             parser: members.parser(),
@@ -122,6 +127,12 @@ impl<'a> Attribute<'a> {
     #[must_use]
     pub fn kind(&self) -> Oid<'a> {
         self.kind
+    }
+
+    /// The original `attrType` encoding, including its tag and length octets.
+    #[must_use]
+    pub fn kind_encoding(&self) -> &'a [u8] {
+        self.kind_element.as_bytes()
     }
 
     /// Every original value, including unknown or generically empty value sets.
@@ -140,6 +151,10 @@ impl<'a> Attribute<'a> {
     #[must_use]
     pub fn as_bytes(&self) -> &'a [u8] {
         self.element.as_bytes()
+    }
+
+    pub(crate) fn element(&self) -> &Element<'a> {
+        &self.element
     }
 
     /// Opens one original value in the current account and inherited parser depth.
@@ -675,58 +690,4 @@ impl<'a> Attributes<'a> {
 impl<W: Work> core::iter::FusedIterator for Matching<'_, '_, W> {}
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::{sync::Arc, vec};
-
-    #[test]
-    fn placement_kernel_preserves_collecting_strict_and_callback_refusal() {
-        // Both consumers must see the same placement facts; a sink's own
-        // resource refusal stops immediately and retains its original cause.
-        let mut attribute = vec![0x30, 15, 6, 9];
-        attribute.extend(crate::oid::COUNTERSIGNATURE.as_bytes());
-        attribute.extend([0x31, 2, 5, 0]);
-        let mut bytes = vec![0xa0, 34];
-        bytes.extend(attribute.repeat(2));
-        let memory = Memory::new(Arc::new(structured_asn1::memory::MemoryAccount::new(
-            65536, 65536,
-        )));
-        let parser = Parser::ber(memory);
-        let mut parent = parser.read(&bytes, 700).unwrap();
-        let element = parent.next_element().unwrap().unwrap();
-        let attributes = Attributes::read(&parent, &element, Placement::Signed).unwrap();
-        let first = attributes.items()[0].span().start;
-        let mut count = 0;
-        attributes
-            .placement_faults_in(&parent, |fault| {
-                assert_eq!(fault.code(), ErrorCode::AttributePlacement);
-                assert_eq!(fault.offset(), attributes.items()[count].span().start);
-                count += 1;
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(count, 2);
-        let mut calls = 0;
-        let error = attributes
-            .placement_faults_in(&parent, |fault| {
-                calls += 1;
-                Err(fault)
-            })
-            .unwrap_err();
-        assert_eq!(calls, 1);
-        assert_eq!(error.code(), ErrorCode::AttributePlacement);
-        assert_eq!(error.offset(), first);
-        let error = attributes
-            .placement_faults_in(&parent, |_| {
-                Err(Error::resource(
-                    structured_asn1::memory::MemoryError::WorkExceeded,
-                    "report",
-                    first,
-                ))
-            })
-            .unwrap_err();
-        assert!(error.is_resource());
-        assert_eq!(error.field(), "report");
-        assert_eq!(error.offset(), first);
-    }
-}
+mod tests;

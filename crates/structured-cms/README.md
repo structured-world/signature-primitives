@@ -48,6 +48,21 @@ structured-cms = "0.8"
 - `timestamp::Request` reads original TimeStampReq. `timestamp::Token` separates
   readable inspection from complete signature, ESS, TSA, imprint, request and
   time checking. The caller supplies UTC information and request windows.
+- `archive` reads the CAdES `ats-hash-index-v3` of an `archive-time-stamp-v3`
+  (ETSI EN 319 122-1 §5.5). `check_index` matches every index entry against the
+  root SignedData certificate and revocation choices and the signer's unsigned
+  attribute values, hashed over their original encodings; an entry without its
+  element invalidates the index, an element without an entry is reported as
+  unprotected. `imprint_input` yields the §5.5.3 ranges the token's imprint is
+  checked over, and `same_algorithm` the required index/imprint agreement.
+- `cades::profile_faults` reports where a SignerInfo uses the freedom of the
+  generic CMS and ESS schemas against the CAdES profile (EN 319 122-1
+  §§5.2-5.5): an attribute in the wrong set, a single-valued attribute with
+  another value count, a repeated ESS content attribute (RFC 2634 §1.3.4),
+  content-hints or mime-type inside a countersignature, an `ats-hash-index-v3`
+  outside an archive time-stamp token's signer,
+  ESS `policies` and an implied signature policy. Level requirements and
+  verdicts stay with the application.
 
 Borrowed views keep original document ranges. Independently retained results use
 accounted storage that remains charged until its capacity is freed. Fallible
@@ -68,6 +83,13 @@ Applications must validate the TSA certification path and status, enforce signed
 ESS path restrictions and apply their algorithm/security policy. Malformed
 inspection faults do not produce evidence. Content discovery, replay history,
 networking, clocks and product timelines remain outside this crate.
+
+The repository's `scripts/qualify-cades-corpus.py` checks SHA256-pinned public
+DSS CAdES fixtures with an independent DER walker: a conforming archive
+time-stamp whose imprint is recomputed, indexes naming a certificate or
+revocation the signature does not hold, and a TS 101 733 index that is not read
+as v3. The `archive` results must agree with it entry by entry. Upstream
+payloads and their licence notice remain outside packages in `target/`.
 
 The runtime supports `no_std + alloc`; `std` is optional. Cryptographic test
 adapters are development-only oracles, not qualified production providers or

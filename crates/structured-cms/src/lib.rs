@@ -7,8 +7,10 @@
 
 extern crate alloc;
 
+pub mod archive;
 pub mod attribute;
 pub mod binding;
+pub mod cades;
 pub mod content;
 pub mod content_source;
 pub mod counter;

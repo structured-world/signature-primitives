@@ -73,6 +73,7 @@ pub struct SignerInfo<'a> {
     signed_attributes: Option<Attributes<'a>>,
     signature_algorithm: AlgorithmReading<'a>,
     signature: Octets<'a>,
+    signed_fields: &'a [u8],
     unsigned_attributes: Option<Attributes<'a>>,
     encoding: Encoding,
     element: Element<'a>,
@@ -156,6 +157,7 @@ impl<'a> SignerInfo<'a> {
             read_algorithm(&inside, &next, "signerInfo.signatureAlgorithm", &mut faults)?;
         let signature_element = required(&mut inside, "signerInfo.signature")?;
         let signature = Octets::read(&inside, &signature_element, "signerInfo.signature")?;
+        let signed_fields = field_range(element, &version_element, &signature_element);
         let unsigned_attributes = match inside
             .next_element()
             .map_err(|error| Error::encoding(error, "signerInfo.unsignedAttrs"))?
@@ -182,6 +184,7 @@ impl<'a> SignerInfo<'a> {
             signed_attributes,
             signature_algorithm,
             signature,
+            signed_fields,
             unsigned_attributes,
             encoding: inside.encoding(),
             element: *element,
@@ -225,6 +228,13 @@ impl<'a> SignerInfo<'a> {
     #[must_use]
     pub fn unsigned_attributes(&self) -> Option<&Attributes<'a>> {
         self.unsigned_attributes.as_ref()
+    }
+
+    /// The original encodings of `version` through `signature`, in their order
+    /// of appearance and without the unsigned attributes that follow them.
+    #[must_use]
+    pub fn signed_fields(&self) -> &'a [u8] {
+        self.signed_fields
     }
 
     /// Reads direct unsigned countersignatures lazily through original provenance.
@@ -423,6 +433,19 @@ fn duplicate_comparison_error(source: structured_pkix::Error, at: u64) -> Error 
     } else {
         Error::pkix(source)
     }
+}
+
+// The fields are consecutive members of the signer, so they are one range of
+// its own encoding: no element starts before the first or ends after the last.
+fn field_range<'a>(signer: &Element<'a>, first: &Element<'a>, last: &Element<'a>) -> &'a [u8] {
+    let origin = signer.span().start;
+    let start = first.span().start - origin;
+    let end = last.span().start + last.span().length - origin;
+    let bytes = signer.as_bytes();
+    // Both members lie inside the signer, whose encoding holds every offset.
+    let start = usize::try_from(start).expect("member offset fits the signer encoding");
+    let end = usize::try_from(end).expect("member end fits the signer encoding");
+    &bytes[start..end]
 }
 
 pub(crate) fn required<'a>(reader: &mut Reader<'a>, field: &'static str) -> Result<Element<'a>> {

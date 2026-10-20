@@ -123,6 +123,7 @@ impl<'a> ContentInfo<'a> {
 #[derive(Debug)]
 pub struct Encapsulated<'a> {
     kind: Oid<'a>,
+    kind_encoding: &'a [u8],
     content: Option<Octets<'a>>,
     span: Span,
 }
@@ -134,6 +135,7 @@ impl<'a> Encapsulated<'a> {
     /// value, and no caller-supplied payload silently replaces attached bytes.
     pub fn read(parent: &Reader<'a>, element: &Element<'a>) -> Result<Self> {
         const FIELD: &str = "signedData.encapContentInfo";
+        const KIND: &str = "signedData.encapContentInfo.eContentType";
         if element.tag() != Tag::constructed(universal::SEQUENCE) {
             return Err(Error::schema(
                 ErrorCode::UnexpectedTag,
@@ -144,9 +146,12 @@ impl<'a> Encapsulated<'a> {
         let mut inside = parent
             .enter(element)
             .map_err(|error| Error::encoding(error, FIELD))?;
+        let kind_element = inside
+            .expect(Tag::primitive(universal::OID))
+            .map_err(|error| Error::encoding(error, KIND))?;
         let kind = inside
-            .read_oid()
-            .map_err(|error| Error::encoding(error, "signedData.encapContentInfo.eContentType"))?;
+            .oid(&kind_element)
+            .map_err(|error| Error::encoding(error, KIND))?;
         let content = if let Some(wrapper) = inside
             .next_element()
             .map_err(|error| Error::encoding(error, FIELD))?
@@ -189,6 +194,7 @@ impl<'a> Encapsulated<'a> {
         }
         Ok(Self {
             kind,
+            kind_encoding: kind_element.as_bytes(),
             content,
             span: element.span(),
         })
@@ -198,6 +204,12 @@ impl<'a> Encapsulated<'a> {
     #[must_use]
     pub fn kind(&self) -> Oid<'a> {
         self.kind
+    }
+
+    /// The original `eContentType` encoding, including its tag and length octets.
+    #[must_use]
+    pub fn kind_encoding(&self) -> &'a [u8] {
+        self.kind_encoding
     }
 
     /// Attached logical octets, or `None` for detached content.

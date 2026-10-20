@@ -358,7 +358,11 @@ parameter of a known identifier is `Malformed`; an identifier the table does not
 know is `Unsupported`; a spent ceiling is an error. `resolve` then asks the
 provider's `AsnDigest::identity` for its own identity, and execution runs through
 the shared `structured_asn1::digest::Digest` contract. OCSP and CMS use this one
-resolver.
+resolver. Retained identifiers keep their original parser's cumulative work
+ceiling alongside the current operation ceiling and account. A new funded
+account cannot reset the source limit, and a resource refusal occurs before
+the provider's identity callback. Same-session resolution charges work once;
+the source bridge creates no parser, cursor, allocation or parameter copy.
 
 Bind a signed response to its issuer using `bind_issuer`, or to completed direct
 delegation facts using `check_delegate` and `bind_delegate`. Direct delegation

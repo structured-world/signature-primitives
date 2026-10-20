@@ -740,3 +740,49 @@ fn the_index_algorithm_must_be_the_imprint_algorithm() {
         );
     }
 }
+
+#[test]
+fn archive_algorithm_comparison_keeps_both_original_source_limits() {
+    // Each retained operand owns a different parser. A fresh current account
+    // must not repair either spent source or turn refusal into a mismatch.
+    for (exhaust_index, exhaust_imprint) in [(false, false), (true, false), (false, true)] {
+        let limits = structured_asn1::Limits {
+            max_work: 100_000,
+            ..structured_asn1::Limits::default()
+        };
+        let source = Parser::new(structured_asn1::Encoding::Der, limits, memory(1_000_000));
+        let imprint_source = Parser::new(structured_asn1::Encoding::Der, limits, memory(1_000_000));
+        let encoded = index(SHA256_OID, [&[], &[], &[]]);
+        let index = read_index(&source, &encoded).unwrap();
+        let encoded_imprint = tlv(0x30, &tlv(6, SHA256_OID));
+        let mut reader = imprint_source.read(&encoded_imprint, 1700).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let algorithm = structured_pkix::algorithm::read(&reader, &element, "imprint").unwrap();
+        for (parser, exhaust) in [(&source, exhaust_index), (&imprint_source, exhaust_imprint)] {
+            if exhaust {
+                let work = parser.execution_in(parser.memory());
+                work.charge_work(work.work_remaining() as u64).unwrap();
+            }
+        }
+        let current = memory(100);
+        let result = archive::same_algorithm(&index, &algorithm, &current);
+        if !exhaust_index && !exhaust_imprint {
+            assert_eq!(result.unwrap(), Resolution::Supported(true));
+            assert_eq!(current.work_used(), 20);
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.is_resource());
+            if exhaust_index {
+                assert_eq!(
+                    (error.field(), error.offset()),
+                    ("atsHashIndexV3.hashIndAlgorithm", 902)
+                );
+                assert_eq!(current.work_used(), 0);
+            } else {
+                assert_eq!((error.field(), error.offset()), ("imprint", 1700));
+                assert_eq!(current.work_used(), 10);
+            }
+        }
+        assert_eq!(current.used(), 0);
+    }
+}

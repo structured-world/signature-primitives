@@ -2,8 +2,8 @@
 //! document's encoding, known identifiers kept apart from unknown ones, and a
 //! spent ceiling kept apart from both.
 
-use std::cmp::Ordering;
 use std::sync::Arc;
+use std::{cell::Cell, cmp::Ordering};
 use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, Work};
 use structured_asn1::{Encoding, Limits, Parser, Tag, universal};
@@ -206,7 +206,10 @@ fn a_spent_ceiling_is_an_error_never_a_resolution() {
 }
 
 /// Implements only SHA-256, to show the provider's own refusal.
-struct OnlySha256;
+#[derive(Default)]
+struct OnlySha256 {
+    identities: Cell<usize>,
+}
 
 impl Digest<'_> for OnlySha256 {
     type Identity = Algorithm;
@@ -246,6 +249,7 @@ impl Digest<'_> for OnlySha256 {
 
 impl AsnDigest<'_> for OnlySha256 {
     fn identity(&self, algorithm: Algorithm) -> Option<Algorithm> {
+        self.identities.set(self.identities.get() + 1);
         (algorithm == Algorithm::Sha256).then_some(algorithm)
     }
 }
@@ -256,18 +260,19 @@ fn the_provider_decides_which_known_algorithms_it_implements() {
     // stays malformed before the provider is asked.
     let der = Parser::der(memory(1 << 20));
     let execution = memory(64);
+    let provider = OnlySha256::default();
     let sha256 = identifier(&[]);
     let malformed = identifier(&[2, 1, 0]);
     assert_eq!(
-        digest::resolve(&OnlySha256, &read(&der, &sha256), &execution).unwrap(),
+        digest::resolve(&provider, &read(&der, &sha256), &execution).unwrap(),
         Resolution::Supported(Algorithm::Sha256)
     );
     assert_eq!(
-        digest::resolve(&OnlySha256, &read(&der, &malformed), &execution).unwrap(),
+        digest::resolve(&provider, &read(&der, &malformed), &execution).unwrap(),
         Resolution::Malformed
     );
     assert_eq!(
-        digest::supported(&OnlySha256, Algorithm::Sha1),
+        digest::supported(&provider, Algorithm::Sha1),
         Resolution::Unsupported
     );
 }
@@ -312,4 +317,168 @@ fn fresh_account_cannot_reset_a_retained_identifiers_source_ceiling() {
     assert_eq!((error.field(), error.offset()), ("retained.digest", 700));
     assert_eq!(current.work_used(), 0);
     assert_eq!(current.used(), 0);
+}
+
+fn leave_work(work: &impl Work, remaining: usize) {
+    let available = work.work_remaining();
+    assert!(available >= remaining);
+    work.charge_work((available - remaining) as u64).unwrap();
+}
+
+#[test]
+fn retained_resolution_admits_source_current_and_aggregate_before_callbacks() {
+    // Exact cost is unchanged: source and operation ceilings constrain one
+    // ten-unit bill. Refusal cannot spend it partially or ask the provider.
+    for (source_left, current_left, aggregate, success) in [
+        (10, 10, 10, true),
+        (9, 10, 10, false),
+        (10, 9, 10, false),
+        (10, 10, 9, false),
+    ] {
+        let source = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: 1000,
+                ..Limits::default()
+            },
+            memory(1 << 20),
+        );
+        let bytes = identifier(&[]);
+        let reading = read(&source, &bytes);
+        let old = source.execution_in(source.memory());
+        leave_work(&old, source_left);
+        let source_aggregate = source.memory().work_used();
+        let current = Memory::new(Arc::new(MemoryAccount::new(0, aggregate)));
+        let operation = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: current_left,
+                ..Limits::default()
+            },
+            current.clone(),
+        );
+        let query = operation.read(&[], 900).unwrap();
+        let provider = OnlySha256::default();
+        let result = digest::resolve(&provider, &reading, &query.execution());
+        if success {
+            assert_eq!(result.unwrap(), Resolution::Supported(Algorithm::Sha256));
+            assert_eq!(provider.identities.get(), 1);
+            assert_eq!(current.work_used(), 10);
+            assert_eq!(old.work_remaining(), source_left - 10);
+            assert_eq!(query.execution().work_remaining(), 0);
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.is_resource());
+            assert_eq!((error.field(), error.offset()), ("digestAlgorithm", 0));
+            assert_eq!(provider.identities.get(), 0);
+            assert_eq!(current.work_used(), 0);
+            assert_eq!(old.work_remaining(), source_left);
+        }
+        assert_eq!(source.memory().work_used(), source_aggregate);
+        assert_eq!(current.used(), 0);
+    }
+}
+
+#[test]
+fn retained_resolution_preserves_root_operation_across_another_source() {
+    // Switching from a root operation through an unrelated source must keep
+    // that root's tight limit, without inheriting the intermediate ceiling.
+    for (remaining, success) in [(9, false), (10, true)] {
+        let source = Parser::der(memory(1 << 20));
+        let bytes = identifier(&[]);
+        let reading = read(&source, &bytes);
+        let current = memory(1000);
+        let root = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: remaining,
+                ..Limits::default()
+            },
+            current.clone(),
+        );
+        let intermediate = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: 0,
+                ..Limits::default()
+            },
+            memory(1000),
+        );
+        let root_work = root.execution_in(&current);
+        let intermediate_work = root_work.execution_for(&intermediate);
+        let result = digest::algorithm(&reading, &intermediate_work);
+        if success {
+            assert_eq!(result.unwrap(), Resolution::Supported(Algorithm::Sha256));
+            assert_eq!(root_work.work_remaining(), 0);
+            assert_eq!(current.work_used(), 10);
+        } else {
+            assert!(result.unwrap_err().is_resource());
+            assert_eq!(
+                root_work.work_remaining(),
+                usize::try_from(remaining).unwrap()
+            );
+            assert_eq!(current.work_used(), 0);
+        }
+        assert_eq!(intermediate.memory().work_used(), 0);
+        assert_eq!(current.used(), 0);
+    }
+}
+
+#[test]
+fn same_session_resolution_has_one_bill_and_no_retained_storage() {
+    // The common origin/operation session must be deduplicated. Both the
+    // local and aggregate remainder fall by ten, not twenty, with no clone.
+    let account = Arc::new(MemoryAccount::new(4096, 1 << 20));
+    let source = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 1000,
+            ..Limits::default()
+        },
+        Memory::new(account.clone()),
+    );
+    let bytes = identifier(&[5, 0]);
+    let reading = read(&source, &bytes);
+    let work = source.execution_in(source.memory());
+    leave_work(&work, 10);
+    let local = work.work_remaining();
+    let aggregate = source.memory().work_used();
+    let owners = Arc::strong_count(&account);
+    assert_eq!(
+        digest::algorithm(&reading, &work).unwrap(),
+        Resolution::Supported(Algorithm::Sha256)
+    );
+    assert_eq!(work.work_remaining(), local - 10);
+    assert_eq!(source.memory().work_used(), aggregate + 10);
+    assert_eq!(source.memory().used(), 0);
+    assert_eq!(Arc::strong_count(&account), owners);
+}
+
+#[test]
+fn source_refusal_precedes_supported_malformed_and_unknown_answers() {
+    // Even a negative classification examines untrusted metadata. It cannot
+    // bypass a spent source, nor invoke an identity callback on the way out.
+    for bytes in [
+        identifier(&[]),
+        identifier(&[2, 1, 0]),
+        vec![48, 3, 6, 1, 42],
+    ] {
+        let source = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: 1000,
+                ..Limits::default()
+            },
+            memory(1 << 20),
+        );
+        let reading = read(&source, &bytes);
+        leave_work(&source.execution_in(source.memory()), 0);
+        let current = memory(1000);
+        let provider = OnlySha256::default();
+        let error = digest::resolve(&provider, &reading, &current).unwrap_err();
+        assert!(error.is_resource());
+        assert_eq!(provider.identities.get(), 0);
+        assert_eq!(current.work_used(), 0);
+        assert_eq!(current.used(), 0);
+    }
 }

@@ -7,10 +7,7 @@ use p256::ecdsa::{
 };
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use structured_asn1::{
-    BitString,
-    memory::{Memory, MemoryAccount, MemoryError, Work},
-};
+use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, Work};
 use structured_pkix::{
     AlgorithmIdentifier, oid,
     path::{Verified, Verify, WorkingKey},
@@ -98,7 +95,7 @@ impl<E: Work> Verify<E> for Oracle {
         algorithm: &AlgorithmIdentifier<'_>,
         key: WorkingKey<'_>,
         signed: &[u8],
-        signature: BitString<'_>,
+        signature: structured_pkix::signature::SignatureValue<'_>,
         work: &E,
     ) -> Result<Verified, Self::Error> {
         // DEV-only fixed-curve oracle: no claim that this qualifies an opaque

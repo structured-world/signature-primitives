@@ -39,8 +39,9 @@ use crate::error::Result;
 use crate::extension::Recognizer;
 use crate::key::PublicKeyInfo;
 use crate::name::Name;
+use crate::signature::SignatureValue;
+use structured_asn1::Oid;
 use structured_asn1::memory::{Memory, OwnedMap, OwnedVec, Work};
-use structured_asn1::{BitString, Oid};
 
 /// What the caller trusts, as the trust context named it.
 ///
@@ -324,12 +325,18 @@ pub trait Verify<E: Work = Memory> {
     /// `No`. The two are not interchangeable here: `No` prunes the branch,
     /// and a key that merely could not be judged yet is asked about again
     /// from the anchor down.
+    ///
+    /// `signature` preserves its original source for selected DER decoders:
+    /// use `signature.reader_in(execution)` with `signature::DssValue::read`.
+    /// Raw algorithms use `signature.octets()` without opening a reader.
+    /// Algorithm permission/capability gates must precede decoding or backend
+    /// work; processing/resource failures must not become `No` or `Unsupported`.
     fn verify(
         &self,
         algorithm: &AlgorithmIdentifier<'_>,
         key: WorkingKey<'_>,
         signed: &[u8],
-        signature: BitString<'_>,
+        signature: SignatureValue<'_>,
         execution: &E,
     ) -> core::result::Result<Verified, Self::Error>;
 }
@@ -342,7 +349,7 @@ impl<E: Work> Verify<E> for () {
         _algorithm: &AlgorithmIdentifier<'_>,
         _key: WorkingKey<'_>,
         _signed: &[u8],
-        _signature: BitString<'_>,
+        _signature: SignatureValue<'_>,
         _execution: &E,
     ) -> core::result::Result<Verified, Self::Error> {
         Ok(Verified::Unsupported)
@@ -1006,7 +1013,7 @@ impl<V: Verify, W: Watch, R: Recognizer> Search<'_, '_, V, W, R> {
                 &certificate.signature_algorithm(),
                 key,
                 certificate.signed_bytes(),
-                certificate.signature(),
+                certificate.signature_value(),
                 self.execution,
             )
             .map_err(BuildError::Verification)?;

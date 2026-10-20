@@ -1,11 +1,12 @@
 use super::*;
 use crate::algorithm::digest::Algorithm;
 use crate::fixtures::{CertificateParts, bits, context, extension, octets, seq, tlv};
+use crate::signature::SignatureValue;
 use core::cell::Cell;
 use core::cmp::Ordering;
+use structured_asn1::Parser;
 use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::Memory;
-use structured_asn1::{BitString, Parser};
 
 struct Provider<'a> {
     key: &'a [u8],
@@ -67,12 +68,23 @@ impl Verify for Provider<'_> {
         _: &crate::AlgorithmIdentifier<'_>,
         _: WorkingKey<'_>,
         signed: &[u8],
-        _: BitString<'_>,
-        _: &Memory,
+        signature: SignatureValue<'_>,
+        execution: &Memory,
     ) -> Result<Verified, Self::Error> {
         self.signatures.set(self.signatures.get() + 1);
         assert_eq!(signed.as_ptr(), self.signed.as_ptr());
         assert_eq!(signed, self.signed);
+        let mut payload = signature
+            .reader_in(execution)
+            .expect("original signature source");
+        let pair = crate::signature::DssValue::read(&mut payload, "ocsp.signature").unwrap();
+        assert_eq!(pair.r().as_u64(), Some(1));
+        assert_eq!(pair.s().as_u64(), Some(2));
+        assert_eq!(
+            pair.element().as_bytes().as_ptr(),
+            signature.octets().unwrap().as_ptr()
+        );
+        assert_eq!(pair.element().span(), signature.payload_span());
         Ok(self.signature_answer)
     }
 }
@@ -163,7 +175,7 @@ fn issuer_binding_enforces_object_signing_key_usage() {
             timestamp,
             seq(&[single]),
         ]);
-        let bytes = seq(&[data, algorithm.to_vec(), bits(&[0xab])]);
+        let bytes = seq(&[data, algorithm.to_vec(), bits(&[48, 6, 2, 1, 1, 2, 1, 2])]);
         let mut reader = parser.read(&bytes, 700).unwrap();
         let root = reader.next_element().unwrap().unwrap();
         let response = super::super::read_basic(&reader, &root).unwrap();
@@ -221,7 +233,7 @@ fn actual_signer_precedes_hash_and_original_response_data_verification() {
         timestamp,
         seq(&[single]),
     ]);
-    let bytes = seq(&[data, algorithm.to_vec(), bits(&[0xab])]);
+    let bytes = seq(&[data, algorithm.to_vec(), bits(&[48, 6, 2, 1, 1, 2, 1, 2])]);
     let mut reader = parser.read(&bytes, 700).unwrap();
     let element = reader.next_element().unwrap().unwrap();
     let response = super::super::read_basic(&reader, &element).unwrap();

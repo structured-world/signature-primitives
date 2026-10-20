@@ -355,7 +355,7 @@ pub struct BasicResponse<'a> {
     responses: OwnedVec<SingleResponse<'a>>,
     extensions: Extensions<'a>,
     algorithm: AlgorithmIdentifier<'a>,
-    signature: BitString<'a>,
+    signature: crate::signature::SignatureValue<'a>,
     certificates: OwnedVec<Certificate<'a>>,
     signed: &'a [u8],
     bytes: &'a [u8],
@@ -391,6 +391,11 @@ impl<'a> BasicResponse<'a> {
     /// Original signature BIT STRING.
     #[must_use]
     pub fn signature(&self) -> BitString<'a> {
+        self.signature.bit_string()
+    }
+    /// Signature bytes with original source context for deferred decoding.
+    #[must_use]
+    pub fn signature_value(&self) -> crate::signature::SignatureValue<'a> {
         self.signature
     }
     /// Untrusted included certificates, not a discovered trust path.
@@ -537,7 +542,7 @@ fn read_basic<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<BasicRes
     end(&data, DATA)?;
     let algorithm = required(&mut reader, BASIC)?;
     let algorithm = algorithm::read(&reader, &algorithm, BASIC)?;
-    let signature = reader.read_bit_string().field(BASIC)?;
+    let signature = crate::signature::SignatureValue::read(&mut reader, BASIC)?;
     let mut certificates = work.vector();
     if let Some(wrapper) = reader.next_element().field(BASIC)? {
         if wrapper.tag() != Tag::context(true, 0) {

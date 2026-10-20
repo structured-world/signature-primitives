@@ -1,4 +1,4 @@
-//! Borrowed DSA/ECDSA signature-value structure, separate from verification.
+//! Original signature source context and DSA/ECDSA structure, separate from verification.
 //!
 //! RFC 3279 §§2.2.2–2.2.3 define both values as `SEQUENCE { r INTEGER,
 //! s INTEGER }`. RFC 5753 §2.1.1 requires DER even inside a BER CMS envelope.
@@ -14,7 +14,129 @@
 //! to physical locations; no contiguous physical range is invented here.
 
 use crate::error::{Error, ErrorCode, Located, Result};
-use structured_asn1::{Element, Encoding, Integer, ScopedReader, Span, Tag, universal};
+use structured_asn1::memory::Work;
+use structured_asn1::{
+    BitString, Element, Encoding, Integer, Parser, ScopedReader, Span, Tag, universal,
+};
+
+/// An original signature BIT STRING and the context needed to decode its payload.
+///
+/// Raw algorithms use [`Self::octets`] without opening a reader. A selected
+/// DSA/ECDSA adapter opens [`Self::reader_in`] and calls [`DssValue::read`].
+/// This is encoding provenance, not algorithm, scalar, signature or trust
+/// acceptance. No payload or resource-account ownership is acquired.
+#[derive(Debug, Clone, Copy)]
+pub struct SignatureValue<'a> {
+    value: BitString<'a>,
+    span: Span,
+    at: u64,
+    parser: &'a Parser,
+    outer: u32,
+    encoding: Encoding,
+    field: &'static str,
+}
+
+impl<'a> SignatureValue<'a> {
+    /// Reads the next primitive BIT STRING once, retaining its original context.
+    /// Surrounding siblings belong to the enclosing schema. Padding remains
+    /// inspectable; [`Self::reader_in`] requires a whole-octet payload.
+    ///
+    /// # Errors
+    /// Returns the producing reader's located syntax or resource failure.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::sync::Arc;
+    /// use structured_asn1::{Parser, memory::{Memory, MemoryAccount}};
+    /// use structured_pkix::signature::{SignatureValue, DssValue};
+    /// let work = Memory::new(Arc::new(MemoryAccount::new(1024, 1024)));
+    /// let parser = Parser::der(work.clone());
+    /// let mut original = parser.read(b"\x03\x09\x00\x30\x06\x02\x01\x01\x02\x01\x02", 400).unwrap();
+    /// let signature = SignatureValue::read(&mut original, "signature")?;
+    /// let mut payload = signature.reader_in(&work)?;
+    /// let pair = DssValue::read(&mut payload, "signature")?;
+    /// assert_eq!(pair.r_span().start, 405);
+    /// # Ok::<(), structured_pkix::Error>(())
+    /// ```
+    pub fn read(parent: &mut ScopedReader<'a, '_>, field: &'static str) -> Result<Self> {
+        let element = parent
+            .expect(Tag::primitive(universal::BIT_STRING))
+            .field(field)?;
+        let value = parent.bit_string(&element).field(field)?;
+        Ok(Self {
+            value,
+            span: element.span(),
+            at: element.contents_span().start + 1,
+            parser: parent.parser(),
+            outer: parent.depth(),
+            encoding: parent.encoding(),
+            field,
+        })
+    }
+
+    /// Original decoded bits, including the number of unused trailing bits.
+    #[must_use]
+    pub fn bit_string(&self) -> BitString<'a> {
+        self.value
+    }
+
+    /// Original payload bytes when no trailing bits are unused; no scan or copy.
+    #[must_use]
+    pub fn octets(&self) -> Option<&'a [u8]> {
+        self.value.octets()
+    }
+
+    /// Original bytes holding the bits, including any last-byte padding.
+    #[must_use]
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.value.as_bytes()
+    }
+
+    /// Whole original BIT STRING range, including its header and padding count.
+    #[must_use]
+    pub fn span(&self) -> Span {
+        self.span
+    }
+
+    /// Original payload range, excluding the BIT STRING header and padding count.
+    /// Coordinates remain those of the original source; a joined carrier's
+    /// source map remains necessary to obtain physical ranges.
+    #[must_use]
+    pub fn payload_span(&self) -> Span {
+        Span {
+            start: self.at,
+            length: self.value.as_bytes().len() as u64,
+        }
+    }
+
+    /// Opens only the original payload, under current work and original limits.
+    ///
+    /// The BIT STRING carrier contributes one nesting level (RFC 3279
+    /// §§2.2.2–2.2.3). This uses the existing source bridge, retaining source
+    /// encoding, depth, offsets and cumulative ceiling plus the current root
+    /// operation. It neither creates a parser/account nor copies payload bytes.
+    /// The returned reader borrows `execution`; decoded scalar views borrow
+    /// only the original input. Raw algorithms need not call this method.
+    ///
+    /// # Errors
+    /// Padded bits return a located `MalformedValue` before opening a cursor.
+    /// Source/current resource refusal remains a terminal processing error.
+    /// See [`Self::read`] for a complete example with [`DssValue`].
+    pub fn reader_in<'operation, W: Work>(
+        &self,
+        execution: &'operation W,
+    ) -> Result<ScopedReader<'a, 'operation>>
+    where
+        'a: 'operation,
+    {
+        let bytes = self
+            .octets()
+            .ok_or_else(|| Error::new(ErrorCode::MalformedValue, self.field, self.span.start))?;
+        execution
+            .read_scoped_nested(self.parser, bytes, self.at, self.encoding, self.outer)
+            .field(self.field)
+    }
+}
 
 /// The exact DER INTEGER pair used by DSA and ECDSA signatures.
 ///

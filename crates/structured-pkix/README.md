@@ -114,6 +114,21 @@ fund all deferred decoding and temporary reader metadata. Zero is inspectable;
 group validity, component ranges, strength and signature acceptance remain
 with the selected backend. The views retain no allocated storage.
 
+### Ed25519, Ed448, X25519 and X448 key structure
+
+`key::rfc8410::read(key_info, &execution)` returns the exact algorithm, borrowed
+raw public-key octets and their source offset. It enforces absent parameters
+(NULL is forbidden), whole-octet BIT STRING framing and widths of 32/57/32/56
+octets respectively. Raw keys are not nested ASN.1 and are neither re-parsed nor
+rewritten. Deferred checks preserve original and current execution ceilings;
+the query and returned view allocate no storage.
+
+The result establishes framing only. Edwards point validation, Montgomery
+decoding and contributory checks, signature modes, provider choice and the
+certificate role/keyUsage rules of RFC 9295 remain separate. Equal key widths
+do not make X25519 and Ed25519 interchangeable. No inherited parameter is used
+to repair a key that writes parameters.
+
 ### DSA and ECDSA signature-value structure
 
 `signature::DssValue::read(&mut reader, "signatureValue")` reads a complete

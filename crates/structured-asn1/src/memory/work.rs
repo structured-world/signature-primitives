@@ -62,6 +62,28 @@ pub trait Work: Clone + private::Sealed {
     /// ```
     fn work_remaining(&self) -> usize;
 
+    /// Borrows a source's cumulative ceiling with this operation's account.
+    ///
+    /// For metadata queries that enter no ASN.1 value: no cursor, allocation,
+    /// account clone or synthetic depth is needed. A current root-operation
+    /// ceiling is preserved across foreign sources; construction itself scans
+    /// nothing. The caller admits its actual work through the returned view.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::sync::Arc;
+    /// use structured_asn1::{Parser, memory::{Memory, MemoryAccount, Work}};
+    /// let source = Parser::der(Memory::new(Arc::new(MemoryAccount::new(0, 10))));
+    /// let current = Memory::new(Arc::new(MemoryAccount::new(0, 10)));
+    /// current.execution_for(&source).charge_work(1)?;
+    /// assert_eq!(current.work_used(), 1);
+    /// # Ok::<(), structured_asn1::memory::MemoryError>(())
+    /// ```
+    fn execution_for<'operation>(
+        &'operation self,
+        parser: &'operation Parser,
+    ) -> Execution<'operation>;
+
     /// Opens original input while borrowing this operation only for decoding.
     /// Parsed elements and scalar views retain the longer original input
     /// lifetime; no result needs to keep a completed operation alive merely
@@ -239,6 +261,13 @@ impl Work for Memory {
         Memory::work_remaining(self)
     }
 
+    fn execution_for<'operation>(
+        &'operation self,
+        parser: &'operation Parser,
+    ) -> Execution<'operation> {
+        parser.execution_in(self)
+    }
+
     fn read_scoped_source<'source: 'operation, 'operation>(
         &'operation self,
         parser: &'source Parser,
@@ -315,6 +344,13 @@ impl private::Sealed for Execution<'_> {}
 
 impl Work for Execution<'_> {
     type Retained = Memory;
+
+    fn execution_for<'operation>(
+        &'operation self,
+        parser: &'operation Parser,
+    ) -> Execution<'operation> {
+        parser.execution_query_in(self.memory, self.budget.operation())
+    }
 
     fn retain_storage(&self) -> Memory {
         self.memory.clone()

@@ -46,6 +46,7 @@ pub mod oid;
 pub mod path;
 pub mod policy;
 pub mod qualified;
+pub mod signature;
 pub mod temporal;
 pub mod time;
 pub mod usage;

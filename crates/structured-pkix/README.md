@@ -99,6 +99,23 @@ current execution, copy nothing and allocate nothing. They establish structure
 only: key-size and exponent policy, curve support and width, and whether a
 point lies on its curve remain with the provider that verifies.
 
+### DSA and ECDSA signature-value structure
+
+`signature::DssValue::read(&mut reader, "signatureValue")` reads a complete
+`SEQUENCE { r INTEGER, s INTEGER }` window; `read_element` reads one embedded
+value while leaving surrounding siblings to their schema. Both require DER
+even under a BER parent and reuse the existing reader/INTEGER kernel, original
+depth, current execution and resource ceilings. The returned integer views,
+component spans and whole encoded value borrow the received bytes unchanged.
+Only temporary reader/path metadata uses storage; no payload copy is made.
+
+This is structure inspection, not signature acceptance. Zero, negative and
+arbitrary-width integers stay readable; the selected provider checks the full
+scalar range against its group order and performs the signature arithmetic.
+XMLDSig fixed-width framing and low-S policy remain with the caller. Carried CMS
+signatures can use the existing `Octets::with_nested_reader`/`SourceMap` boundary
+to interpret segmented bytes without losing physical provenance.
+
 ### Scoped execution for retained inputs
 
 Supplied-path validation accepts `ValidationContext<..., E>` with

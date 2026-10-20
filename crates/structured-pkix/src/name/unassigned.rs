@@ -4,7 +4,7 @@
 //! "The character repertoire of this process is Unicode 3.2" (RFC 4518 2),
 //! and its Prohibit step refuses everything outside it: "All Unassigned code
 //! points are prohibited. Unassigned code points are listed in Table A.1 of
-//! [RFC3454]" (2.4).
+//! [RFC3454](https://www.rfc-editor.org/rfc/rfc3454.html#appendix-A.1)" (2.4).
 //!
 //! The rule is not a formality. Every later step is a table, and the tables
 //! this crate reaches are current rather than frozen: a character assigned

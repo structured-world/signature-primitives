@@ -115,12 +115,79 @@ fn archive_cutoff_is_read_from_the_assertion_with_either_marking() {
         let basic = decode(&parser, &bytes);
         let single = &basic.responses()[0];
         let time = single.archive_cutoff(parser.memory()).unwrap().unwrap();
-        assert_eq!(time.seconds(), 1_546_300_800);
+        assert_eq!(time.start().seconds(), 1_546_300_800);
         assert!(matches!(
             single.check_extensions(parser.memory()).unwrap(),
             ExtensionProcessing::Understood
         ));
     }
+}
+
+#[test]
+fn archive_cutoff_accepts_der_fractional_seconds() {
+    // ArchiveCutoff is bare GeneralizedTime (RFC6960 §4.4.4), not the
+    // certificate validity profile. DER fractions must retain their value.
+    let parser = Parser::der(memory());
+    for (label, nanos, remainder) in [
+        (&b"20190101000000.5Z"[..], 500_000_000, false),
+        (&b"20190101000000.123456789Z"[..], 123_456_789, false),
+        (&b"20190101000000.0000000001Z"[..], 0, true),
+        (&b"20190101000000.9999999999Z"[..], 999_999_999, true),
+    ] {
+        let cutoff = extension(&CUTOFF, false, &tlv(24, label));
+        let bytes = response(&assertion(&[0x80, 0], &[cutoff]), &[]);
+        let basic = decode(&parser, &bytes);
+        let single = &basic.responses()[0];
+        let time = single.archive_cutoff(parser.memory()).unwrap().unwrap();
+        assert_eq!(time.start().seconds(), 1_546_300_800);
+        assert_eq!(time.start().nanos(), nanos);
+        assert_eq!(time.has_subnanosecond_remainder(), remainder);
+        assert!(matches!(
+            single.check_extensions(parser.memory()).unwrap(),
+            ExtensionProcessing::Understood
+        ));
+    }
+}
+
+#[test]
+fn fractional_cutoff_admits_the_whole_scan_under_current_work() {
+    // A late nonzero digit must not be discarded or scanned on credit from
+    // the producing parse. Exact current work succeeds; one unit less refuses
+    // at the original time, with no current-account storage allocation.
+    let parser = Parser::der(memory());
+    let label = b"20190101000000.000000000000000000000000000000000000000000000000001Z";
+    let value = tlv(24, label);
+    let cutoff = extension(&CUTOFF, false, &value);
+    let bytes = response(&assertion(&[0x80, 0], &[cutoff]), &[]);
+    let basic = decode(&parser, &bytes);
+    let single = &basic.responses()[0];
+    let probe = memory();
+    let expected = single.archive_cutoff(&probe).unwrap().unwrap();
+    assert!(expected.has_subnanosecond_remainder());
+    let cost = probe.work_used();
+    for available in [cost - 1, cost] {
+        let current = Memory::new(std::sync::Arc::new(MemoryAccount::new(0, available)));
+        let result = single.archive_cutoff(&current);
+        if available == cost {
+            assert_eq!(result.unwrap(), Some(expected));
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.is_resource(), "{error:?}");
+            assert_eq!(error.offset(), offset_of(&bytes, &value));
+        }
+        assert_eq!(current.used(), 0);
+    }
+    let query = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 0,
+            ..Limits::default()
+        },
+        memory(),
+    );
+    let reader = query.read(&[], 0).unwrap();
+    let error = single.archive_cutoff(&reader.execution()).unwrap_err();
+    assert!(error.is_resource(), "{error:?}");
 }
 
 #[test]
@@ -148,6 +215,10 @@ fn malformed_cutoff_is_a_located_fault_in_both_readings() {
         tlv(23, b"190101000000Z"),
         [tlv(24, b"20190101000000Z"), vec![5, 0]].concat(),
         tlv(24, b"2019010100Z"),
+        tlv(24, b"20190101000000.0Z"),
+        tlv(24, b"20190101000000.50Z"),
+        tlv(24, b"20190101000000,5Z"),
+        tlv(24, b"20190101000000.5+0000"),
     ] {
         let cutoff = extension(&CUTOFF, false, &value);
         let bytes = response(&assertion(&[0x80, 0], std::slice::from_ref(&cutoff)), &[]);
@@ -240,6 +311,29 @@ fn extended_revoke_inside_an_assertion_is_a_fault() {
         .unwrap_err();
     assert_eq!(error.code(), ErrorCode::MalformedValue);
     assert_eq!(error.offset(), offset_of(&bytes, &misplaced));
+}
+
+#[test]
+fn status_of_rejects_a_single_extension_marker_before_deriving_status() {
+    // RFC6960 §4.4.8 forbids the marker in singleExtensions even when a
+    // response-wide marker and the exact not-issued tuple are also present.
+    // An unrelated critical demand must not hide this placement error.
+    let parser = Parser::der(memory());
+    let misplaced = extension(&EXTENDED, false, &[5, 0]);
+    for extensions in [
+        vec![misplaced.clone()],
+        vec![extension(&UNKNOWN, true, &[5, 0]), misplaced.clone()],
+    ] {
+        let bytes = response(
+            &assertion(&revoked(&epoch(), Some(6)), &extensions),
+            &[extension(&EXTENDED, false, &[5, 0])],
+        );
+        let basic = decode(&parser, &bytes);
+        let error = basic.status_of(0, parser.memory()).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::MalformedValue);
+        assert_eq!(error.field(), "ocspResponse.singleResponse.extendedRevoke");
+        assert_eq!(error.offset(), offset_of(&bytes, &misplaced));
+    }
 }
 
 #[test]

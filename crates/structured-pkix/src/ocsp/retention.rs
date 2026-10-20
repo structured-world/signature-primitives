@@ -4,8 +4,8 @@ use super::{BasicResponse, RecordedStatus, SingleResponse, end};
 use crate::crl::Reason;
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::Extension;
-use crate::temporal::Instant;
-use crate::{Time, oid};
+use crate::oid;
+use crate::temporal::{Instant, Reading};
 use structured_asn1::memory::Work;
 use structured_asn1::{Tag, universal};
 
@@ -15,13 +15,13 @@ const EXTENDED: &str = "ocspResponse.extendedRevoke";
 // RFC6960 §4.4.4: `ArchiveCutoff ::= GeneralizedTime`, with no criticality
 // requirement, so either marking is accepted.
 // https://www.rfc-editor.org/rfc/rfc6960#section-4.4.4
-pub(super) fn archive_cutoff<W: Work>(extension: &Extension<'_>, execution: &W) -> Result<Time> {
+pub(super) fn archive_cutoff<W: Work>(extension: &Extension<'_>, execution: &W) -> Result<Reading> {
     let mut reader = extension.reader_scoped(execution).field(CUTOFF)?;
     let value = reader
         .expect(Tag::primitive(universal::GENERALIZED_TIME))
         .field(CUTOFF)?;
     end(&reader, CUTOFF)?;
-    crate::time::read_in(&reader, &value, CUTOFF)
+    crate::time::read_generalized_in(&reader, &value, CUTOFF)
 }
 
 // RFC6960 §4.4.8: "The value of the extension SHALL be NULL. This extension
@@ -142,12 +142,23 @@ impl BasicResponse<'_> {
     ///
     /// # Errors
     ///
-    /// A malformed extended revoked definition or CRL entry extension, or a
-    /// spent work ceiling.
+    /// A malformed response-wide extended revoked definition, a misplaced
+    /// marker on the selected assertion, or a spent work ceiling. Other
+    /// extension syntax and critical demands still require `check_extensions`.
     pub fn status_of<W: Work>(&self, index: usize, execution: &W) -> Result<Option<super::Status>> {
         let Some(assertion) = self.responses.get(index) else {
             return Ok(None);
         };
+        // RFC6960 §4.4.8 forbids this marker in singleExtensions. Check its
+        // placement even when another critical demand is unsupported; this
+        // status-only reading must not bless a malformed not-issued answer.
+        // https://www.rfc-editor.org/rfc/rfc6960#section-4.4.8
+        if let Some(extension) = assertion
+            .extensions
+            .get(oid::OCSP_EXTENDED_REVOKE, execution)?
+        {
+            return Err(misplaced(extension));
+        }
         let extended = self.extended_revoke(execution)?;
         status(assertion, extended, execution).map(Some)
     }
@@ -168,7 +179,9 @@ impl SingleResponse<'_> {
     /// The responder's archive cutoff for this assertion: status is retained for
     /// certificates whose validity ended at or after it, so a certificate with
     /// `notAfter >= cutoff` stays covered after its expiry.
-    pub fn archive_cutoff<W: Work>(&self, execution: &W) -> Result<Option<Time>> {
+    /// Decimal fractions retain their subnanosecond remainder; comparing an
+    /// expiry to `cutoff.start()` alone must not discard that remainder.
+    pub fn archive_cutoff<W: Work>(&self, execution: &W) -> Result<Option<Reading>> {
         match self.extensions.get(oid::OCSP_ARCHIVE_CUTOFF, execution)? {
             Some(extension) => archive_cutoff(extension, execution).map(Some),
             None => Ok(None),

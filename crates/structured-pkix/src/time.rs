@@ -68,6 +68,30 @@ pub(crate) fn read_in(
     element: &Element<'_>,
     field: &'static str,
 ) -> Result<Time> {
+    admit_in(parent, element, field)?;
+    read(element, field)
+}
+
+/// Bare DER `GeneralizedTime` retains fractional precision, unlike a
+/// certificate-validity [`Time`]. X.690 §11.7 permits canonical decimal fractions.
+/// <https://www.itu.int/rec/T-REC-X.690-202102-I/en>
+pub(crate) fn read_generalized_in(
+    parent: &Reader<'_>,
+    element: &Element<'_>,
+    field: &'static str,
+) -> Result<crate::temporal::Reading> {
+    if element.tag() != Tag::primitive(universal::GENERALIZED_TIME) {
+        return Err(Error::new(
+            ErrorCode::Encoding(structured_asn1::ErrorCode::UnexpectedTag),
+            field,
+            element.span().start,
+        ));
+    }
+    admit_in(parent, element, field)?;
+    read_label_as(element, field, Fraction::Written).map(|(reading, _)| reading)
+}
+
+fn admit_in(parent: &Reader<'_>, element: &Element<'_>, field: &'static str) -> Result<()> {
     // Fixed calendar conversion plus four byte passes includes validation,
     // digit conversion and the shared GeneralizedTime semantic core.
     let work = u64::try_from(element.contents().len())
@@ -87,8 +111,7 @@ pub(crate) fn read_in(
             field,
             element.span().start,
         )
-    })?;
-    read(element, field)
+    })
 }
 
 /// Which form a time was written in.
@@ -287,6 +310,18 @@ pub(crate) fn read_as(
     field: &'static str,
     fraction: Fraction,
 ) -> Result<Time> {
+    let (reading, form) = read_label_as(element, field, fraction)?;
+    Ok(Time {
+        instant: reading.start(),
+        form,
+    })
+}
+
+fn read_label_as(
+    element: &Element<'_>,
+    field: &'static str,
+    fraction: Fraction,
+) -> Result<(crate::temporal::Reading, Form)> {
     let fail = |code| Error::new(code, field, element.span().start);
 
     let form = if element.tag() == Tag::primitive(universal::UTC_TIME) {
@@ -355,8 +390,8 @@ pub(crate) fn read_as(
         // can establish occurrence. UTCTime has its own 00..59 grammar below.
         // https://www.itu.int/rec/T-REC-X.680-202102-I/en
         // https://www.itu.int/rec/T-REC-X.690-202102-I/en
-        let instant = crate::temporal::generalized(element, field)?.start();
-        return Ok(Time { instant, form });
+        let reading = crate::temporal::generalized(element, field)?;
+        return Ok((reading, form));
     }
 
     if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
@@ -376,7 +411,7 @@ pub(crate) fn read_as(
         days * 86_400 + i64::from(hour) * 3_600 + i64::from(minute) * 60 + i64::from(second);
 
     let instant = Instant::new(seconds, 0).ok_or_else(|| fail(ErrorCode::TimeOutOfRange))?;
-    Ok(Time { instant, form })
+    Ok((instant.into(), form))
 }
 
 /// Useful time syntax under BER, independently of a PKIX validity field.

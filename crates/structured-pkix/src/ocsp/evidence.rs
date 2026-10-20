@@ -53,7 +53,7 @@ pub struct Evidence<'r, 'a> {
     recipient: RecipientBinding,
     revocation_time: Option<crate::time::Relation>,
     status: super::Status,
-    archive_cutoff: Option<crate::Time>,
+    archive_cutoff: Option<Reading>,
 }
 
 impl<'r, 'a> Evidence<'r, 'a> {
@@ -96,9 +96,9 @@ impl<'r, 'a> Evidence<'r, 'a> {
         self.status
     }
 
-    /// The assertion's archive cutoff, when the responder states one.
+    /// The assertion's archive cutoff, retaining decimal subnanosecond precision.
     #[must_use]
-    pub fn archive_cutoff(self) -> Option<crate::Time> {
+    pub fn archive_cutoff(self) -> Option<Reading> {
         self.archive_cutoff
     }
 }

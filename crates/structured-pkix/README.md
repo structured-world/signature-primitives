@@ -322,6 +322,12 @@ response) and `Evidence::status`; any other hold stays a hold. A malformed
 value, a critical extended revoke or `expiredCertsOnCRL`, or an extended revoke
 inside an assertion is a located fault.
 
+Both retention accessors return `temporal::Reading`, including canonical DER
+fractional seconds and any subnanosecond remainder. `start()` is a floor, not
+the exact cutoff when `has_subnanosecond_remainder()` is true: an expiry equal
+to that floor is then before the cutoff and is not covered. Certificate validity
+dates keep their separate RFC 5280 profile without fractional seconds.
+
 Both CRL entry and OCSP revocation dates expose UTC-qualified `time::Relation`
 facts (`Before`, `At`, `After`, `Uncertain`) against a lossless `Reading`.
 Applications decide historical-status policy, source age when no expiry exists,

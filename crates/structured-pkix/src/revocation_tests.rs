@@ -564,7 +564,7 @@ fn evaluated_evidence_carries_not_issued_status_and_the_archive_cutoff() {
     let cutoff = extension(
         oid::OCSP_ARCHIVE_CUTOFF,
         false,
-        &generalized_time("20190101000000Z"),
+        &generalized_time("20190101000000.0000000001Z"),
     );
     let extended = extension(oid::OCSP_EXTENDED_REVOKE, false, &null());
     for (response_extensions, not_issued) in [(alloc::vec![extended], true), (alloc::vec![], false)]
@@ -613,20 +613,25 @@ fn evaluated_evidence_carries_not_issued_status_and_the_archive_cutoff() {
         else {
             panic!("real target evidence failed");
         };
-        if not_issued {
-            assert_eq!(evidence.status(), ocsp::Status::NotIssued);
-        } else {
-            assert!(matches!(
-                evidence.status(),
-                ocsp::Status::Revoked {
-                    time,
-                    reason: Some(crl::Reason::CertificateHold),
-                } if time.seconds() == 0
-            ));
-        }
-        assert_eq!(
-            evidence.archive_cutoff().map(crate::Time::seconds),
-            Some(1_546_300_800)
-        );
+        assert_retention_evidence(&evidence, not_issued);
     }
+}
+
+fn assert_retention_evidence(evidence: &ocsp::Evidence<'_, '_>, not_issued: bool) {
+    // Common evaluation must retain both the extended status and the cutoff's
+    // finer-than-nanosecond precision after authentication/issuer binding.
+    if not_issued {
+        assert_eq!(evidence.status(), ocsp::Status::NotIssued);
+    } else {
+        assert!(matches!(
+            evidence.status(),
+            ocsp::Status::Revoked {
+                time,
+                reason: Some(crl::Reason::CertificateHold),
+            } if time.seconds() == 0
+        ));
+    }
+    let cutoff = evidence.archive_cutoff().unwrap();
+    assert_eq!(cutoff.start().seconds(), 1_546_300_800);
+    assert!(cutoff.has_subnanosecond_remainder());
 }

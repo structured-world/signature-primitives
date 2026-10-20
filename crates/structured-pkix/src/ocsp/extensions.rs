@@ -1,7 +1,8 @@
 //! Critical demands have response-wide or selected-assertion scope.
 
 use super::{BasicResponse, SingleResponse, retention};
-use crate::{Error, Result, Time, oid};
+use crate::temporal::Reading;
+use crate::{Error, Result, oid};
 use structured_asn1::memory::Work;
 use structured_asn1::{Oid, Span};
 
@@ -28,7 +29,7 @@ pub(super) struct Processed<'a> {
 
 pub(super) struct ProcessedSingle<'a> {
     pub(super) processing: ExtensionProcessing<'a>,
-    pub(super) archive_cutoff: Option<Time>,
+    pub(super) archive_cutoff: Option<Reading>,
 }
 
 impl<'a> BasicResponse<'a> {

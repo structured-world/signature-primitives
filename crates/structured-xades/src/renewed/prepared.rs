@@ -54,7 +54,7 @@ pub type PreparedResult<'prepared, X, PE> = CheckResult<
     PE,
 >;
 
-/// Process EVERY original root `RenewedDigestsV2` through [`check`], preserving
+/// Process EVERY original root `RenewedDigestsV2` through [`check()`], preserving
 /// original order and all negative results. The source determines the census;
 /// callers cannot provide only successful properties. No property is reparsed
 /// and no completed digest computation is replayed during composition.

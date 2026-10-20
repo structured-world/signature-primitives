@@ -107,7 +107,7 @@ fn expired_certs_on_crl_is_read_and_understood_by_lookup() {
         .expired_certs_on_crl(&execution)
         .unwrap()
         .unwrap();
-    assert_eq!(time.seconds(), 1_546_300_800);
+    assert_eq!(time.start().seconds(), 1_546_300_800);
     assert!(lookup(&parsed, &issuer, &execution).unwrap());
     let bytes = list(&[]);
     let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
@@ -118,6 +118,34 @@ fn expired_certs_on_crl_is_read_and_understood_by_lookup() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn expired_certs_on_crl_accepts_der_fractional_seconds() {
+    // X.509 ExpiredCertsOnCRL is bare GeneralizedTime. Both the accessor
+    // and authenticated entry lookup must accept a canonical DER fraction.
+    let execution = memory(1_000_000);
+    let parser = Parser::der(execution.clone());
+    let issuer_bytes = issuer_certificate();
+    let issuer = structured_pkix::Certificate::read(&parser, &issuer_bytes, 100).unwrap();
+    for (label, nanos, remainder) in [
+        (&b"20190101000000.5Z"[..], 500_000_000, false),
+        (&b"20190101000000.123456789Z"[..], 123_456_789, false),
+        (&b"20190101000000.0000000001Z"[..], 0, true),
+        (&b"20190101000000.9999999999Z"[..], 999_999_999, true),
+    ] {
+        let bytes = list(&[extension(&EXPIRED, false, &tlv(24, label))]);
+        let parsed = CertificateList::read(&parser, &bytes, 600).unwrap();
+        let time = parsed
+            .tbs()
+            .expired_certs_on_crl(&execution)
+            .unwrap()
+            .unwrap();
+        assert_eq!(time.start().seconds(), 1_546_300_800);
+        assert_eq!(time.start().nanos(), nanos);
+        assert_eq!(time.has_subnanosecond_remainder(), remainder);
+        assert!(lookup(&parsed, &issuer, &execution).unwrap());
+    }
 }
 
 #[test]
@@ -132,6 +160,10 @@ fn malformed_expired_certs_on_crl_is_a_located_fault_in_both_readings() {
         tlv(23, b"190101000000Z"),
         [tlv(24, b"20190101000000Z"), vec![5, 0]].concat(),
         tlv(24, b"20191301000000Z"),
+        tlv(24, b"20190101000000.0Z"),
+        tlv(24, b"20190101000000.50Z"),
+        tlv(24, b"20190101000000,5Z"),
+        tlv(24, b"20190101000000.5+0000"),
     ] {
         let flagged = extension(&EXPIRED, false, &value);
         let bytes = list(std::slice::from_ref(&flagged));

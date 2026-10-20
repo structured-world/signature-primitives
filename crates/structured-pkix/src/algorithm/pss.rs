@@ -226,7 +226,17 @@ pub fn read<'a, W: Work>(
     identifier: AlgorithmIdentifier<'a>,
     execution: &W,
 ) -> Result<Option<Parameters<'a>>> {
-    let Some((reader, element)) = open(identifier, execution)? else {
+    require_algorithm(identifier, execution)?;
+    read_known(identifier, execution)
+}
+
+// Only the shared signature classifier may skip the already-paid OID check.
+// Parameter traversal still uses the same source/current schema kernel.
+pub(super) fn read_known<'a, W: Work>(
+    identifier: AlgorithmIdentifier<'a>,
+    execution: &W,
+) -> Result<Option<Parameters<'a>>> {
+    let Some((reader, element)) = open_parameters(identifier, execution)? else {
         return Ok(None);
     };
     decode(&reader, element, Err).map(Some)
@@ -260,7 +270,8 @@ pub fn inspect<'a, W: Work>(
     identifier: AlgorithmIdentifier<'a>,
     execution: &W,
 ) -> Result<Option<Reading<'a>>> {
-    let Some((reader, element)) = open(identifier, execution)? else {
+    require_algorithm(identifier, execution)?;
+    let Some((reader, element)) = open_parameters(identifier, execution)? else {
         return Ok(None);
     };
     let query = identifier.query_in(execution);
@@ -278,10 +289,7 @@ pub fn inspect<'a, W: Work>(
     }))
 }
 
-fn open<'a: 'operation, 'operation, W: Work>(
-    identifier: AlgorithmIdentifier<'a>,
-    execution: &'operation W,
-) -> Result<Option<(Reader<'a, 'operation>, Element<'a>)>> {
+fn require_algorithm<W: Work>(identifier: AlgorithmIdentifier<'_>, execution: &W) -> Result<()> {
     let query = identifier.query_in(execution);
     if !crate::key::same_oid(
         identifier.algorithm(),
@@ -296,6 +304,14 @@ fn open<'a: 'operation, 'operation, W: Work>(
             identifier.offset(),
         ));
     }
+    Ok(())
+}
+
+fn open_parameters<'a: 'operation, 'operation, W: Work>(
+    identifier: AlgorithmIdentifier<'a>,
+    execution: &'operation W,
+) -> Result<Option<(Reader<'a, 'operation>, Element<'a>)>> {
+    let query = identifier.query_in(execution);
     query
         .charge_work(1)
         .map_err(|reason| Error::resource(reason, FIELD, identifier.offset()))?;

@@ -72,6 +72,22 @@ Applications own trust decisions, external data acquisition and the accounting
 of work inside their injected verification and recognizer callbacks. Merely
 passing an execution account does not bound arbitrary external callback code.
 
+### Signature algorithm structure
+
+`algorithm::signature::with_algorithm(identifier, &work, visitor)` recognizes SHA-family RSA
+PKCS#1 v1.5, DSA SHA-1/224/256, ECDSA, pure Ed25519/Ed448 and RSASSA-PSS from
+an original identifier. It visits a typed family and implied digest or borrowed
+PSS fields; it does not authorize an algorithm or select a cryptographic backend.
+The visitor receives `None` for unknown OIDs, including legacy OIW aliases, additional DSA profiles,
+MD2/MD5 and PQ. Wrong parameters are located errors; resource refusal is terminal.
+RSA SHA-224/256/384/512 accepts NULL or absence on reception. Other recognized
+RSA PKCS#1 identifiers require NULL; DSA/ECDSA/EdDSA require absence. PSS signature
+parameters are required and reuse the same strict kernel described below.
+Original source/current ceilings apply without parameter copying or reparsing.
+PSS descriptors are borrowed only during the visit, avoiding a large fixed-case
+result or heap wrapper. The visitor may return original-source views or its own
+owned result/error, but cannot retain a reference to the temporary descriptor.
+
 ### RSA-PSS parameters
 
 RSA-PSS parameter decoding is available through `algorithm::pss::read` and

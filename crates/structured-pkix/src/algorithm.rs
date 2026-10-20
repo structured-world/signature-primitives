@@ -12,6 +12,7 @@ use structured_asn1::{Element, Encoding, Oid, Parser, Reader, ScopedReader, Span
 
 pub mod digest;
 pub mod pss;
+pub mod signature;
 
 /// An algorithm and its parameters, as the certificate wrote them.
 #[derive(Debug, Clone, Copy)]

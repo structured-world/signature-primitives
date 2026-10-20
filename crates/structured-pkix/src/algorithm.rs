@@ -43,6 +43,11 @@ pub(crate) struct Nested<'a> {
 }
 
 impl<'a> Nested<'a> {
+    /// Original start, without opening or scanning the nested value.
+    pub(crate) fn offset(self) -> u64 {
+        self.at
+    }
+
     pub(crate) fn as_bytes(self) -> &'a [u8] {
         self.bytes
     }
@@ -491,6 +496,17 @@ impl<'a> AlgorithmIdentifier<'a> {
             .read_nested_query_in(parent, parameter, at, self.encoding, self.outer)
             .field(field)
             .map(Some)
+    }
+
+    /// Rebind original metadata queries without parsing or owning an account.
+    pub(crate) fn query_in<'operation, W: Work>(
+        &self,
+        execution: &'operation W,
+    ) -> structured_asn1::memory::Execution<'operation>
+    where
+        'a: 'operation,
+    {
+        execution.execution_for(self.parser)
     }
 
     /// The written parameters, readable in place.

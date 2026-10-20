@@ -70,6 +70,14 @@ still admit across every applicable limit, without reserving it. Use it to cap
 an external engine that cannot be charged step by step, then charge the work
 before running it.
 
+`current_work.execution_for(&source_parser)` borrows the original source's
+work ceiling and the current root-operation ceiling for metadata-only queries.
+It creates no Reader, allocation or account clone and adds no ASN.1 nesting
+level. Call `charge_work` on that view before inspecting data. Switching
+foreign sources replaces the source ceiling while retaining the same current
+operation; an identical source/operation budget is charged once. Use the
+existing source/nested-reader methods when actually entering encoded values.
+
 `Memory::vector()` remains the independently owned result boundary. Its capacity
 charge survives the parser; moving it does not reserve again. The default
 `OwnedVec<T>` still uses this owner, while parser-bound scratch uses the additional

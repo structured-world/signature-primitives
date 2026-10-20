@@ -73,6 +73,14 @@ impl Parser {
         crate::memory::Execution::new(memory, BudgetView::root(&self.budget))
     }
 
+    pub(crate) fn execution_query_in<'work>(
+        &'work self,
+        memory: &'work Memory,
+        operation: &'work Budget,
+    ) -> crate::memory::Execution<'work> {
+        crate::memory::Execution::new(memory, BudgetView::query(&self.budget, operation))
+    }
+
     /// A reader over `data`, whose first byte sits at `base` in the document.
     ///
     /// `base` is what makes an error's offset and an element's span mean

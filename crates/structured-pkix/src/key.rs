@@ -1,8 +1,9 @@
 //! The public key a certificate carries.
 //!
 //! The key stays as it was encoded: re-encoding it here would change what a
-//! key identifier is computed over. [`rsa`], [`ec`] and [`dsa`] read its structure in
-//! place; whether a key is usable remains the algorithm registry's decision.
+//! key identifier is computed over. [`rsa`], [`ec`], [`dsa`] and [`rfc8410`]
+//! read its structure in place; whether a key is usable remains the algorithm
+//! registry's decision.
 
 use crate::algorithm::{self, AlgorithmIdentifier};
 use crate::error::{Error, ErrorCode, Located, Result};
@@ -11,6 +12,7 @@ use structured_asn1::{BitString, Element, Oid, Reader, Tag, universal};
 
 pub mod dsa;
 pub mod ec;
+pub mod rfc8410;
 pub mod rsa;
 
 /// A public key and the algorithm it belongs to.

@@ -116,7 +116,8 @@ impl<'a> PublicKey<'a> {
 /// inherited along the path, and a lone NULL is `implicitCurve`. Parameters
 /// are decoded with their original parser session, offsets, encoding and
 /// depth, which may belong to the authority's certificate; `execution` pays
-/// for every step. Nothing is copied or allocated.
+/// for every step. Point and parameter bytes remain borrowed; nested-reader
+/// metadata uses the existing accounted scratch path.
 ///
 /// # Errors
 ///
@@ -150,10 +151,13 @@ impl<'a> PublicKey<'a> {
 pub fn read<'a, W: Work>(key: WorkingKey<'a>, execution: &W) -> Result<PublicKey<'a>> {
     let info = key.key();
     let own = info.algorithm();
+    // The key's OID and point belong to its own source even when the curve
+    // comes from another certificate. Current funding cannot reset either.
+    let query = own.query_in(execution);
     if !same_oid(
         own.algorithm(),
         crate::oid::EC_PUBLIC_KEY,
-        execution,
+        &query,
         FIELD,
         own.offset(),
     )? {
@@ -189,11 +193,12 @@ pub fn read<'a, W: Work>(key: WorkingKey<'a>, execution: &W) -> Result<PublicKey
         ));
     };
 
-    let octets = info.whole_octets(FIELD)?;
     let offset = info.key_offset();
-    execution
+    // Admit framing before both padded-bit refusal and prefix inspection.
+    query
         .charge_work(1)
         .map_err(|reason| Error::resource(reason, FIELD, offset))?;
+    let octets = info.whole_octets(FIELD)?;
     // SEC1 v2 §2.3.3: one prefix octet, then x, then y for the uncompressed
     // form. The single zero octet is the point at infinity, which is not a
     // public key (SEC1 v2 §3.2.2), and RFC 5480 §2.2 forbids the hybrid

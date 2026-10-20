@@ -76,7 +76,8 @@ impl<'a> PublicKey<'a> {
 /// The key's algorithm must be `rsaEncryption` or `id-RSASSA-PSS`. The key
 /// bits are decoded with their original parser session, offsets, encoding and
 /// depth; `execution` pays for every step and the source ceilings still apply.
-/// Nothing is copied or allocated.
+/// Key bytes and components remain borrowed; nested-reader metadata uses
+/// the existing accounted scratch path.
 ///
 /// # Errors
 ///
@@ -110,8 +111,11 @@ pub fn read<'a, W: Work>(key: PublicKeyInfo<'a>, execution: &W) -> Result<Public
     let identifier = key.algorithm();
     let at = identifier.offset();
     let algorithm = identifier.algorithm();
-    if !same_oid(algorithm, crate::oid::RSA_ENCRYPTION, execution, FIELD, at)?
-        && !same_oid(algorithm, crate::oid::RSASSA_PSS, execution, FIELD, at)?
+    // Deferred OID decisions share the source ceiling with the nested key
+    // decoder; a separately funded operation must not reset that ceiling.
+    let query = identifier.query_in(execution);
+    if !same_oid(algorithm, crate::oid::RSA_ENCRYPTION, &query, FIELD, at)?
+        && !same_oid(algorithm, crate::oid::RSASSA_PSS, &query, FIELD, at)?
     {
         return Err(Error::new(ErrorCode::UnexpectedField, FIELD, at));
     }

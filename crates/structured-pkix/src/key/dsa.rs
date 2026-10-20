@@ -148,7 +148,10 @@ impl<'a> PublicKey<'a> {
 pub fn read<'a, W: Work>(key: WorkingKey<'a>, execution: &W) -> Result<PublicKey<'a>> {
     let info = key.key();
     let own = info.algorithm();
-    if !same_oid(own.algorithm(), OID, execution, FIELD, own.offset())? {
+    // Even an identity mismatch belongs to the original key source, before
+    // any independently sourced inherited parameters are decoded.
+    let query = own.query_in(execution);
+    if !same_oid(own.algorithm(), OID, &query, FIELD, own.offset())? {
         return Err(Error::new(ErrorCode::UnexpectedField, FIELD, own.offset()));
     }
     // RFC 3279 §2.3.2: omission means no parameter element at all. Generic

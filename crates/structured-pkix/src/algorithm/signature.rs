@@ -1,11 +1,11 @@
 //! Original signature algorithm structure, without provider or policy selection.
 //!
 //! Recognizes SHA-family RSA PKCS#1 v1.5, RFC3279/5758 DSA, ECDSA,
-//! RSASSA-PSS and pure Ed25519/Ed448. It does not infer a scheme from a key,
+//! RSASSA-PSS, pure Ed25519/Ed448 and RFC9881 ML-DSA. It does not infer a scheme from a key,
 //! signature size or separately written CMS digest. Unknown OIDs, including
-//! legacy OIW aliases, MD2/MD5, additional DSA profiles and PQ, remain unknown.
+//! legacy OIW aliases, MD2/MD5, additional DSA profiles and other PQ, remain unknown.
 
-use super::{AlgorithmIdentifier, digest, pss};
+use super::{AlgorithmIdentifier, digest, ml_dsa, pss};
 use crate::{Error, ErrorCode, Result};
 use structured_asn1::memory::Work;
 
@@ -29,6 +29,9 @@ pub enum Algorithm<'a, 'parameters> {
     Ed25519,
     /// Pure Ed448: not Ed448ph.
     Ed448,
+    /// Pure ML-DSA; certificate/CRL verification requires an empty context.
+    /// This does not authorize HashML-DSA or imply a finalized-message digest.
+    MlDsa(ml_dsa::ParameterSet),
 }
 
 #[derive(Clone, Copy)]
@@ -46,6 +49,8 @@ enum Parameters {
 /// ECDSA SHA-1/SHA-2/SHA3 and pure Ed25519/Ed448 require absent parameters
 /// (RFC3279 §2.2, RFC5758 §3, RFC9688 §3.2, RFC8410 §6). BER NULL spellings are
 /// validated by the original reader; bytes are never compared to fabricated DER.
+/// ML-DSA-44/65/87 also require absent parameters (RFC9881 §2); the PKIX
+/// provider must use pure mode and an empty context (RFC9881 §3).
 ///
 /// PSS signature parameters must be present (RFC4055 §3.1), unlike optional
 /// key restrictions. The existing strict PSS kernel preserves independent
@@ -166,7 +171,15 @@ pub fn with_algorithm<'a, W: Work, R>(
                         (Algorithm::RsaPkcs1v15(hash), Parameters::Null)
                     }
                 }
-                _ => return Ok(visitor(None)),
+                _ => {
+                    // The prefix was already paid and matched. Share the final
+                    // arc and parameter kernel without another OID scan.
+                    if let Some(set) = ml_dsa::from_arc(*last) {
+                        ml_dsa::require_absent(identifier)?;
+                        return Ok(visitor(Some(Algorithm::MlDsa(set))));
+                    }
+                    return Ok(visitor(None));
+                }
             }
         }
         [0x2b, 0x65, 112] => (Algorithm::Ed25519, Parameters::Absent),

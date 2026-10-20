@@ -37,6 +37,51 @@ pub struct SignatureValue<'a> {
 }
 
 impl<'a> SignatureValue<'a> {
+    /// Checks raw ML-DSA signature framing for an explicitly resolved set.
+    ///
+    /// FIPS204 §3.6.2/table2 requires exact widths. Original and current work
+    /// fund metadata admission before padding or length decisions; raw octets
+    /// are neither scanned nor copied. Packed coefficients and signature math
+    /// remain with the provider. This does not bind a key/algorithm or select
+    /// a context; PKIX uses pure mode with empty context (RFC9881 §3).
+    /// <https://doi.org/10.6028/NIST.FIPS.204>
+    ///
+    /// # Errors
+    /// Original located resource refusal, or `MalformedValue` for padded bits
+    /// or wrong width. Resource refusal is never a signature mismatch.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::sync::Arc;
+    /// use structured_asn1::{Parser, memory::{Memory, MemoryAccount}};
+    /// use structured_pkix::{signature::SignatureValue, algorithm::ml_dsa::ParameterSet};
+    /// let work = Memory::new(Arc::new(MemoryAccount::new(0, 10000)));
+    /// let parser = Parser::der(work.clone());
+    /// let mut bytes = vec![3, 0x82, 9, 0x75, 0];
+    /// bytes.extend([0; 2420]); // framing only, not a valid signature
+    /// let mut reader = parser.read(&bytes, 400).unwrap();
+    /// let signature = SignatureValue::read(&mut reader, "signature")?;
+    /// assert_eq!(signature.ml_dsa_in(ParameterSet::MlDsa44, &work)?.len(), 2420);
+    /// # Ok::<(), structured_pkix::Error>(())
+    /// ```
+    pub fn ml_dsa_in<W: Work>(
+        &self,
+        parameter_set: crate::algorithm::ml_dsa::ParameterSet,
+        execution: &W,
+    ) -> Result<&'a [u8]> {
+        execution
+            .execution_for(self.parser)
+            .charge_work(1)
+            .map_err(|reason| Error::resource(reason, self.field, self.span.start))?;
+        let bytes = self
+            .octets()
+            .ok_or_else(|| Error::new(ErrorCode::MalformedValue, self.field, self.span.start))?;
+        if bytes.len() != parameter_set.signature_len() {
+            return Err(Error::new(ErrorCode::MalformedValue, self.field, self.at));
+        }
+        Ok(bytes)
+    }
+
     /// Reads the next primitive BIT STRING once, retaining its original context.
     /// Surrounding siblings belong to the enclosing schema. Padding remains
     /// inspectable; [`Self::reader_in`] requires a whole-octet payload.

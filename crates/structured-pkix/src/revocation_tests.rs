@@ -250,6 +250,17 @@ fn response_data(
     responder_key: &p256::ecdsa::SigningKey,
     target: &CertificateParts,
 ) -> alloc::vec::Vec<u8> {
+    response_data_with(issuer_key, responder_key, target, &tlv(0x80, &[]), &[], &[])
+}
+
+fn response_data_with(
+    issuer_key: &p256::ecdsa::SigningKey,
+    responder_key: &p256::ecdsa::SigningKey,
+    target: &CertificateParts,
+    status: &[u8],
+    single_extensions: &[alloc::vec::Vec<u8>],
+    response_extensions: &[alloc::vec::Vec<u8>],
+) -> alloc::vec::Vec<u8> {
     let point = issuer_key.verifying_key().to_sec1_point(false);
     let id = seq(&[
         seq(&[encoded_oid(SHA1), null()]),
@@ -258,13 +269,16 @@ fn response_data(
         target.serial.clone(),
     ]);
     let timestamp = generalized_time("20250101000000Z");
-    let assertion = seq(&[
+    let mut assertion = alloc::vec![
         id,
-        tlv(0x80, &[]),
+        status.to_vec(),
         timestamp.clone(),
         context(0, &[generalized_time("20250102000000Z")]),
-    ]);
-    seq(&[
+    ];
+    if !single_extensions.is_empty() {
+        assertion.push(context(1, &[seq(single_extensions)]));
+    }
+    let mut data = alloc::vec![
         context(
             2,
             &[octets(&sha1::Sha1::digest(
@@ -272,8 +286,12 @@ fn response_data(
             ))],
         ),
         timestamp,
-        seq(&[assertion]),
-    ])
+        seq(&[seq(&assertion)]),
+    ];
+    if !response_extensions.is_empty() {
+        data.push(context(1, &[seq(response_extensions)]));
+    }
+    seq(&data)
 }
 
 fn envelope(basic: &[u8]) -> alloc::vec::Vec<u8> {
@@ -506,4 +524,109 @@ fn real_delegate_authority_cannot_be_substituted_or_inferred_from_signature() {
             .is_resource()
     );
     assert_eq!(provider.signatures.get(), 3);
+}
+
+#[test]
+fn evaluated_evidence_carries_not_issued_status_and_the_archive_cutoff() {
+    // The authenticated evaluation is where a consumer reads status: it must
+    // report the RFC6960 §2.2 non-issued answer and the §4.4.4 cutoff it
+    // already decoded, not the assertion's bare hold or nothing.
+    let key = signing(3);
+    let target_parts = CertificateParts {
+        serial: int(7),
+        extensions: None,
+        ..CertificateParts::default()
+    };
+    let issuer_bytes = certificate(
+        CertificateParts {
+            subject: target_parts.issuer.clone(),
+            ..CertificateParts::default()
+        },
+        &key,
+        &key,
+    );
+    let target_bytes = certificate(
+        CertificateParts {
+            serial: target_parts.serial.clone(),
+            extensions: None,
+            ..CertificateParts::default()
+        },
+        &signing(4),
+        &key,
+    );
+    let hold = context(
+        1,
+        &[
+            generalized_time("19700101000000Z"),
+            context(0, &[tlv(10, &[6])]),
+        ],
+    );
+    let cutoff = extension(
+        oid::OCSP_ARCHIVE_CUTOFF,
+        false,
+        &generalized_time("20190101000000Z"),
+    );
+    let extended = extension(oid::OCSP_EXTENDED_REVOKE, false, &null());
+    for (response_extensions, not_issued) in [(alloc::vec![extended], true), (alloc::vec![], false)]
+    {
+        let data = response_data_with(
+            &key,
+            &key,
+            &target_parts,
+            &hold,
+            core::slice::from_ref(&cutoff),
+            &response_extensions,
+        );
+        let bytes = envelope(&signed(data, &key));
+        let execution = crate::fixtures::memory();
+        let parser = Parser::der(execution.clone());
+        let issuer = Certificate::read(&parser, &issuer_bytes, 100).unwrap();
+        let target = Certificate::read(&parser, &target_bytes, 300).unwrap();
+        let parsed = response(&parser, &bytes);
+        let provider = Provider::new();
+        let working = path::WorkingKey::standing(issuer.tbs().public_key());
+        let ocsp::SignatureAuthentication::Signed(proof) = parsed
+            .authenticate_signature(&issuer, working, &provider, &provider, &execution)
+            .unwrap()
+        else {
+            panic!("real response signature failed");
+        };
+        let ocsp::AuthorityBinding::Bound(scoped) =
+            proof.bind_issuer(&issuer, working, &execution).unwrap()
+        else {
+            panic!("actual issuer scope failed");
+        };
+        let instant = parsed.responses()[0].this_update().instant();
+        let utc = crate::temporal::LeapTable::new(-10, instant.seconds() + 100_000, &[]).unwrap();
+        let request = ocsp::Request {
+            target: &target,
+            nonce: None,
+            intended_signer: Some(&issuer),
+        };
+        let time = ocsp::Evaluation {
+            now: instant.into(),
+            utc: &utc,
+            execution: &execution,
+        };
+        let ocsp::TargetEvidence::Evidence(evidence) =
+            scoped.evaluate(&request, &time, &provider).unwrap()
+        else {
+            panic!("real target evidence failed");
+        };
+        if not_issued {
+            assert_eq!(evidence.status(), ocsp::Status::NotIssued);
+        } else {
+            assert!(matches!(
+                evidence.status(),
+                ocsp::Status::Revoked {
+                    time,
+                    reason: Some(crl::Reason::CertificateHold),
+                } if time.seconds() == 0
+            ));
+        }
+        assert_eq!(
+            evidence.archive_cutoff().map(crate::Time::seconds),
+            Some(1_546_300_800)
+        );
+    }
 }

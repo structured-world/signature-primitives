@@ -133,6 +133,10 @@ pub const FRESHEST_CRL: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x2e]);
 /// `2.5.29.54`, how far down the path the any-policy identifier stops being accepted.
 pub const INHIBIT_ANY_POLICY: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x36]);
 
+/// `2.5.29.60`, the CRL keeps entries of certificates that expired at or
+/// after a stated time (X.509 `expiredCertsOnCRL`).
+pub const EXPIRED_CERTS_ON_CRL: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x3c]);
+
 /// `1.3.6.1.5.5.7.1.1`, where the issuer's certificate and status service are published.
 pub const AUTHORITY_INFO_ACCESS: Oid<'static> =
     Oid::from_bytes(&[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x01]);
@@ -156,8 +160,17 @@ pub const OCSP_BASIC: Oid<'static> = Oid::from_bytes(&[0x2b, 6, 1, 5, 5, 7, 0x30
 /// Request/response nonce (RFC9654 §2.1).
 pub const OCSP_NONCE: Oid<'static> = Oid::from_bytes(&[0x2b, 6, 1, 5, 5, 7, 0x30, 1, 2]);
 
+/// Assertion CRL references (RFC6960 §4.4.2).
+pub const OCSP_CRL: Oid<'static> = Oid::from_bytes(&[0x2b, 6, 1, 5, 5, 7, 0x30, 1, 3]);
+
 /// Responder certificate revocation exemption (RFC6960 §4.2.2.2.1).
 pub const OCSP_NO_CHECK: Oid<'static> = Oid::from_bytes(&[0x2b, 6, 1, 5, 5, 7, 0x30, 1, 5]);
+
+/// Status retention boundary of one assertion (RFC6960 §4.4.4).
+pub const OCSP_ARCHIVE_CUTOFF: Oid<'static> = Oid::from_bytes(&[0x2b, 6, 1, 5, 5, 7, 0x30, 1, 6]);
+
+/// Revoked status also covers non-issued certificates (RFC6960 §4.4.8).
+pub const OCSP_EXTENDED_REVOKE: Oid<'static> = Oid::from_bytes(&[0x2b, 6, 1, 5, 5, 7, 0x30, 1, 9]);
 
 /// `1.3.6.1.5.5.7.48.2`, the issuer's own certificate.
 pub const CA_ISSUERS: Oid<'static> =

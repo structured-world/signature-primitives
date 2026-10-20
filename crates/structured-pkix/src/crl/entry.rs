@@ -256,6 +256,8 @@ fn check_source_metadata<'r, 'a, W: Work>(
                     return Err(malformed());
                 }
             }
+        } else if kind == oid::EXPIRED_CERTS_ON_CRL {
+            read_expired_certs(extension, execution)?;
         } else if extension.is_critical() {
             return Ok(Some(extension));
         }
@@ -380,6 +382,31 @@ impl<'a> RevokedCertificate<'a> {
         let mut reader = extension::sequence(extension, FIELD, execution)?;
         general_name::read_list(&mut reader, FIELD, extension.span().start).map(Some)
     }
+}
+
+impl super::TbsCertList<'_> {
+    /// The time from which this list keeps entries of expired certificates:
+    /// its silence still covers a certificate whose `notAfter` is at or after
+    /// it, where RFC 5280 §3.3 would otherwise let such an entry be dropped.
+    pub fn expired_certs_on_crl<W: Work>(&self, execution: &W) -> Result<Option<Time>> {
+        self.extensions
+            .get(oid::EXPIRED_CERTS_ON_CRL, execution)?
+            .map(|extension| read_expired_certs(extension, execution))
+            .transpose()
+    }
+}
+
+// X.509 `ExpiredCertsOnCRL ::= GeneralizedTime`. The extension is not part of
+// the RFC 5280 profile, which sets no criticality for it, so either marking
+// is accepted.
+fn read_expired_certs<W: Work>(extension: &Extension<'_>, execution: &W) -> Result<Time> {
+    const FIELD: &str = "extensions.expiredCertsOnCRL";
+    let mut reader = extension.reader_scoped(execution).field(FIELD)?;
+    let element = reader
+        .expect(Tag::primitive(universal::GENERALIZED_TIME))
+        .field(FIELD)?;
+    super::end(&reader, FIELD, extension.span().start)?;
+    crate::time::read_in(&reader, &element, FIELD)
 }
 
 fn read_reason<W: Work>(extension: &Extension<'_>, execution: &W) -> Result<Reason> {

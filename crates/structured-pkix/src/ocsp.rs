@@ -47,6 +47,8 @@ pub use authority::{AuthorityBinding, AuthorityFailure, AuthoritySource, ScopedR
 mod extensions;
 pub use extensions::ExtensionProcessing;
 
+mod retention;
+
 mod evidence;
 pub use evidence::{
     BoundEvidence, Evaluation, Evidence, RecipientBinding, Request, TargetEvidence, TargetReading,
@@ -255,6 +257,11 @@ pub enum Status {
     },
     /// This responder does not know the requested certificate's status.
     Unknown,
+    /// The certificate was never issued (RFC6960 §2.2): a "revoked" hold
+    /// dated 1970-01-01T00:00:00Z under the extended revoked definition. Read
+    /// through [`BasicResponse::status_of`] or [`Evidence::status`], never from
+    /// the assertion alone.
+    NotIssued,
 }
 
 #[derive(Debug)]
@@ -285,7 +292,9 @@ impl<'a> SingleResponse<'a> {
     pub fn id(&self) -> CertId<'a> {
         self.id
     }
-    /// Unauthenticated status assertion.
+    /// Unauthenticated status assertion read on its own: a non-issued answer
+    /// stays [`Status::Revoked`] here, since telling it apart needs the
+    /// response-wide extended revoked definition.
     #[must_use]
     pub fn status(&self) -> Status {
         match self.status {

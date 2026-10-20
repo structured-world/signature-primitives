@@ -10,6 +10,25 @@ use structured_pkix::{Certificate, ErrorCode};
 fn memory(storage: usize, work: usize) -> Memory {
     Memory::new(Arc::new(MemoryAccount::new(storage, work)))
 }
+
+#[test]
+fn pure_ml_dsa_identifiers_are_recognized_before_provider_dispatch() {
+    // RFC9881's three pure sets must not fall through to a private resolver.
+    // Recognition is structural only; NULL must never reach the visitor.
+    for last in [17, 18, 19] {
+        let oid = [96, 134, 72, 1, 101, 3, 4, 3, last];
+        let source = Parser::der(memory(4096, 100_000));
+        let bytes = encoded(&oid, None);
+        let id = identifier(&source, &bytes);
+        assert!(signature::with_algorithm(id, &memory(0, 1000), |value| value.is_some()).unwrap());
+        let bytes = encoded(&oid, Some(&[5, 0]));
+        let id = identifier(&source, &bytes);
+        let visited = std::cell::Cell::new(false);
+        let result = signature::with_algorithm(id, &memory(0, 1000), |_| visited.set(true));
+        assert_eq!(result.unwrap_err().code(), ErrorCode::MalformedValue);
+        assert!(!visited.get());
+    }
+}
 fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut bytes = vec![tag];
     if body.len() < 128 {
@@ -200,7 +219,7 @@ fn unknown_oids_never_become_a_digest_key_agreement_or_nearby_signature() {
         &[96, 134, 72, 1, 101, 3, 4, 2, 1],
         &[96, 134, 72, 1, 101, 3, 4, 3, 3],
         &[96, 134, 72, 1, 101, 3, 4, 3, 8],
-        &[96, 134, 72, 1, 101, 3, 4, 3, 17],
+        &[96, 134, 72, 1, 101, 3, 4, 3, 32],
         &[42, 134, 72, 134, 247, 13, 1, 1, 1],
         &[42, 134, 72, 134, 247, 13, 1, 1, 4],
         &[42, 134, 72, 206, 61, 4, 3, 2, 1],

@@ -75,11 +75,11 @@ passing an execution account does not bound arbitrary external callback code.
 ### Signature algorithm structure
 
 `algorithm::signature::with_algorithm(identifier, &work, visitor)` recognizes SHA-family RSA
-PKCS#1 v1.5, DSA SHA-1/224/256, ECDSA, pure Ed25519/Ed448 and RSASSA-PSS from
+PKCS#1 v1.5, DSA SHA-1/224/256, ECDSA, pure Ed25519/Ed448, ML-DSA and RSASSA-PSS from
 an original identifier. It visits a typed family and implied digest or borrowed
 PSS fields; it does not authorize an algorithm or select a cryptographic backend.
 The visitor receives `None` for unknown OIDs, including legacy OIW aliases, additional DSA profiles,
-MD2/MD5 and PQ. Wrong parameters are located errors; resource refusal is terminal.
+MD2/MD5 and other PQ profiles. Wrong parameters are located errors; resource refusal is terminal.
 RSA SHA-224/256/384/512 accepts NULL or absence on reception. Other recognized
 RSA PKCS#1 identifiers require NULL; DSA/ECDSA/EdDSA require absence. PSS signature
 parameters are required and reuse the same strict kernel described below.
@@ -87,6 +87,22 @@ Original source/current ceilings apply without parameter copying or reparsing.
 PSS descriptors are borrowed only during the visit, avoiding a large fixed-case
 result or heap wrapper. The visitor may return original-source views or its own
 owned result/error, but cannot retain a reference to the temporary descriptor.
+
+### ML-DSA public structure
+
+`algorithm::ml_dsa::resolve(identifier, &work)` recognizes the three pure
+RFC 9881 parameter sets. `key::ml_dsa::read(spki, &work)` requires absent
+parameters and exact raw public-key widths, returning original borrowed octets
+and their source offset. `SignatureValue::ml_dsa_in(set, &work)` checks whole-octet
+signature framing for an explicitly selected set. Both source and current
+operation limits apply, including negative outcomes; none of these queries
+allocates, copies payloads, creates a parser or decodes packed coefficients.
+
+The signature visitor reports `Algorithm::MlDsa(set)`. This identifies pure
+ML-DSA, with empty context for PKIX certificates/CRLs; HashML-DSA and Dilithium
+are different schemes and remain unrecognized here. Framing does not establish
+key/signature binding, mathematical validity, key usage, provider support or
+policy permission. Those checks remain with the selected verifier.
 
 ### RSA-PSS parameters
 

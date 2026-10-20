@@ -12,6 +12,7 @@ use structured_asn1::{BitString, Element, Oid, Reader, Tag, universal};
 
 pub mod dsa;
 pub mod ec;
+pub mod ml_dsa;
 pub mod rfc8410;
 pub mod rsa;
 

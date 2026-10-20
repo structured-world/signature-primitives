@@ -92,8 +92,11 @@ pub trait AsnDigest<'a>: Digest<'a> {
 ///
 /// # Errors
 ///
-/// A located resource refusal when `execution` cannot pay for the comparison;
-/// never `Malformed` or `Unsupported`.
+/// A located resource refusal when either the original parser's cumulative
+/// ceiling or the current execution cannot pay for the comparison; never
+/// `Malformed` or `Unsupported`. A retained identifier preserves its source
+/// ceiling even when `execution` uses a different account. Same-session work
+/// is admitted once, without opening a cursor or allocating storage.
 ///
 /// # Examples
 ///
@@ -125,7 +128,8 @@ pub fn algorithm<W: Work>(
     // exactly what this charge pays for; the OID is a slice of the parsed
     // input, so its length plus one fits. The patterns are the bytes of the
     // `oid` constants that `Algorithm::identifier` names.
-    execution
+    identifier
+        .query_in(execution)
         .charge_work(written.len() as u64 + 1)
         .map_err(|reason| Error::resource(reason, identifier.field, identifier.offset))?;
     let algorithm = match written {

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.8.1...structured-asn1-v0.9.0) - 2026-10-20
+
+### Added
+
+- *(cms)* add CAdES archive-time-stamp-v3 coverage ([#146](https://github.com/structured-world/signature-primitives/pull/146))
+- *(pkix)* [**breaking**] read revocation retention and not-issued status ([#147](https://github.com/structured-world/signature-primitives/pull/147))
+
+### Other
+
+- describe structured-ltv and the 0.8 API family ([#143](https://github.com/structured-world/signature-primitives/pull/143))
+
 ## [0.8.1](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.8.0...structured-asn1-v0.8.1) - 2026-10-19
 
 ### Added

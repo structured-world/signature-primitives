@@ -284,3 +284,32 @@ fn identifier_equality_treats_a_ber_null_as_absent_parameters() {
     assert!(long_null.has_no_parameters());
     assert!(long_null.matches(&absent, &memory(64)).unwrap());
 }
+
+#[test]
+fn fresh_account_cannot_reset_a_retained_identifiers_source_ceiling() {
+    // A retained query must pay the original parser too, even when the new
+    // caller supplies an independently funded account and no former Reader.
+    let source = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 1000,
+            ..Limits::default()
+        },
+        memory(1 << 20),
+    );
+    let bytes = identifier(&[]);
+    let mut reader = source.read(&bytes, 700).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let reading = algorithm::read(&reader, &element, "retained.digest").unwrap();
+    let source_work = reader.execution();
+    source_work
+        .charge_work(source_work.work_remaining() as u64)
+        .unwrap();
+    drop(reader);
+    let current = memory(64);
+    let error = digest::algorithm(&reading, &current).unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!((error.field(), error.offset()), ("retained.digest", 700));
+    assert_eq!(current.work_used(), 0);
+    assert_eq!(current.used(), 0);
+}

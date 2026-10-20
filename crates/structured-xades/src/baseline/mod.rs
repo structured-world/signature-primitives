@@ -3,7 +3,7 @@
 //! Start with [`crate::prepare::check_fields`], the complete original counter
 //! paths and actual-use hash census, then bind the selected original signing
 //! certificate and all signed certificate digests to the checked path.
-//! [`basic`] joins those receipts, exact original header inclusion and every
+//! [`basic()`] joins those receipts, exact original header inclusion and every
 //! optional issuer hint without repeating root scalar or cryptographic work.
 //! [`Basic`], [`crate::material::Checks`], [`crate::material::credentials::Report`]
 //! and [`crate::prepare::Preparation`] are the `XAdES` stage reports that the

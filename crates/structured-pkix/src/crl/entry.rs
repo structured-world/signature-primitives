@@ -256,6 +256,8 @@ fn check_source_metadata<'r, 'a, W: Work>(
                     return Err(malformed());
                 }
             }
+        } else if kind == oid::EXPIRED_CERTS_ON_CRL {
+            read_expired_certs(extension, execution)?;
         } else if extension.is_critical() {
             return Ok(Some(extension));
         }
@@ -380,6 +382,45 @@ impl<'a> RevokedCertificate<'a> {
         let mut reader = extension::sequence(extension, FIELD, execution)?;
         general_name::read_list(&mut reader, FIELD, extension.span().start).map(Some)
     }
+}
+
+impl super::TbsCertList<'_> {
+    /// The time from which this list keeps entries of expired certificates:
+    /// its silence still covers a certificate whose `notAfter` is at or after
+    /// it, where RFC 5280 §3.3 would otherwise let such an entry be dropped.
+    /// Decimal fractions retain their subnanosecond remainder; comparing an
+    /// expiry to `cutoff.start()` alone must not discard that remainder.
+    pub fn expired_certs_on_crl<W: Work>(
+        &self,
+        execution: &W,
+    ) -> Result<Option<crate::temporal::Reading>> {
+        self.extensions
+            .get(oid::EXPIRED_CERTS_ON_CRL, execution)?
+            .map(|extension| read_expired_certs(extension, execution))
+            .transpose()
+    }
+}
+
+// X.509 §8.5.2.12: `ExpiredCertsOnCRL ::= GeneralizedTime`, and "this
+// extension is always non-critical", so a critical one is a malformed list.
+fn read_expired_certs<W: Work>(
+    extension: &Extension<'_>,
+    execution: &W,
+) -> Result<crate::temporal::Reading> {
+    const FIELD: &str = "extensions.expiredCertsOnCRL";
+    if extension.is_critical() {
+        return Err(Error::new(
+            ErrorCode::MalformedValue,
+            FIELD,
+            extension.span().start,
+        ));
+    }
+    let mut reader = extension.reader_scoped(execution).field(FIELD)?;
+    let element = reader
+        .expect(Tag::primitive(universal::GENERALIZED_TIME))
+        .field(FIELD)?;
+    super::end(&reader, FIELD, extension.span().start)?;
+    crate::time::read_generalized_in(&reader, &element, FIELD)
 }
 
 fn read_reason<W: Work>(extension: &Extension<'_>, execution: &W) -> Result<Reason> {

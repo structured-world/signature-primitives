@@ -1444,8 +1444,8 @@ impl<'a> AttributeValue<'a> {
         Some(count)
     }
 
-    /// The decoded characters of a value [`preparable`] has already
-    /// validated: total and allocation free, for folding without a copy.
+    /// The decoded characters of a value [`inside_syntax`]
+    /// has already validated: total and allocation free, for folding without a copy.
     fn decoded_chars(self) -> DecodedChars<'a> {
         match self.encoding() {
             Encoding::Bmp => DecodedChars::Wide {

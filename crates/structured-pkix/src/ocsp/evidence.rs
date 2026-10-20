@@ -52,6 +52,8 @@ pub struct Evidence<'r, 'a> {
     nonce: NonceBinding,
     recipient: RecipientBinding,
     revocation_time: Option<crate::time::Relation>,
+    status: super::Status,
+    archive_cutoff: Option<Reading>,
 }
 
 impl<'r, 'a> Evidence<'r, 'a> {
@@ -85,6 +87,19 @@ impl<'r, 'a> Evidence<'r, 'a> {
     #[must_use]
     pub fn revocation_time(self) -> Option<crate::time::Relation> {
         self.revocation_time
+    }
+
+    /// Assertion status under the response's extended revoked definition,
+    /// including [`super::Status::NotIssued`].
+    #[must_use]
+    pub fn status(self) -> super::Status {
+        self.status
+    }
+
+    /// The assertion's archive cutoff, retaining decimal subnanosecond precision.
+    #[must_use]
+    pub fn archive_cutoff(self) -> Option<Reading> {
+        self.archive_cutoff
     }
 }
 
@@ -256,11 +271,11 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
             Lookup::Found(assertion) => assertion,
             outcome => return Ok(TargetEvidence::Lookup(outcome)),
         };
-        if let ExtensionProcessing::Unsupported { kind, span } =
-            assertion.check_extensions(execution)?
-        {
+        let single = assertion.process_extensions(execution)?;
+        if let ExtensionProcessing::Unsupported { kind, span } = single.processing {
             return Ok(TargetEvidence::UnsupportedCritical { kind, span });
         }
+        let status = super::retention::status(assertion, processed.extended_revoke, execution)?;
         let nonce = super::nonce::bind(
             request.nonce,
             processed.nonce,
@@ -276,6 +291,8 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
             window,
             recipient,
             revocation_time,
+            status,
+            archive_cutoff: single.archive_cutoff,
         }))
     }
 }

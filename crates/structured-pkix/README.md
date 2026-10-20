@@ -1,4 +1,4 @@
-# structured-pkix — X.509, PKIX paths and revocation evidence in Rust
+# structured-pkix: X.509, PKIX paths and revocation evidence in Rust
 
 [![crates.io](https://img.shields.io/crates/v/structured-pkix)](https://crates.io/crates/structured-pkix)
 [![downloads](https://img.shields.io/crates/d/structured-pkix)](https://crates.io/crates/structured-pkix)
@@ -308,6 +308,25 @@ critical extensions, provider errors and resource refusals remain distinct.
 Unimplemented optional noncritical extensions remain opaque.
 New requester nonces require 32–128 bytes; `RequestNonce::from_sent` also represents
 actual legacy 1–128 byte wire requests without treating an invalid size as absent.
+
+Retention after expiry is read, not assumed. `SingleResponse::archive_cutoff`
+(RFC 6960 §4.4.4) and `TbsCertList::expired_certs_on_crl` (X.509
+`expiredCertsOnCRL`) return the stated time, so `notAfter >= cutoff` decides
+whether a `good` answer or a CRL's silence still covers an expired certificate;
+`Evidence::archive_cutoff` carries the assertion's value. Under the extended
+revoked definition (`BasicResponse::extended_revoke`, §4.4.8), the exact §2.2
+answer for a certificate that was never issued (`certificateHold` dated
+1970-01-01T00:00:00Z) reads as `Status::NotIssued` through
+`BasicResponse::status_of` (which names the assertion by its position in that
+response) and `Evidence::status`; any other hold stays a hold. A malformed
+value, a critical extended revoke or `expiredCertsOnCRL`, or an extended revoke
+inside an assertion is a located fault.
+
+Both retention accessors return `temporal::Reading`, including canonical DER
+fractional seconds and any subnanosecond remainder. `start()` is a floor, not
+the exact cutoff when `has_subnanosecond_remainder()` is true: an expiry equal
+to that floor is then before the cutoff and is not covered. Certificate validity
+dates keep their separate RFC 5280 profile without fractional seconds.
 
 Both CRL entry and OCSP revocation dates expose UTC-qualified `time::Relation`
 facts (`Before`, `At`, `After`, `Uncertain`) against a lossless `Reading`.

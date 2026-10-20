@@ -74,13 +74,22 @@ passing an execution account does not bound arbitrary external callback code.
 
 ### RSA-PSS parameters
 
-RSA-PSS parameter decoding is available through `algorithm::pss::read_in` and
-`inspect_in`. These reuse an original `AlgorithmIdentifier` and producing reader,
+RSA-PSS parameter decoding is available through `algorithm::pss::read` and
+`inspect` for a retained `AlgorithmIdentifier` and current `Work`. Verification
+callbacks need no former reader, replacement parser, parameter copy or encoded
+default. The `read_in` and `inspect_in` variants additionally check a supplied
+producing reader's session. All entry points share one PSS schema kernel,
 preserving source ranges, explicit/default fields, independent message/MGF hashes,
 and arbitrary-width salt/trailer INTEGERs. Inspection retains DER spelling faults;
 it does not establish algorithm support or signature validity. Applications apply
 the distinct signature-parameter and public-key-restriction rules and select the
 cryptographic provider.
+
+Retained reads preserve the original parser's cumulative ceiling and actual
+parameter depth plus the current root-operation ceiling. Inspection diagnostics
+retain their current storage account after the temporary operation ends.
+Absent PSS key parameters remain unrestricted PSS usage and do not inherit
+restrictions; absent signature parameters must be rejected by the caller.
 
 ### RSA and EC public-key structure
 

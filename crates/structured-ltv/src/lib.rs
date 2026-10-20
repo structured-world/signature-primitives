@@ -101,6 +101,7 @@
 extern crate alloc;
 
 pub mod baseline;
+pub mod credential;
 pub mod material;
 pub mod pki;
 pub mod source;

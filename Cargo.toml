@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/structured-asn1", "crates/structured-pkix", "crates/structured-cms", "crates/structured-ltv", "crates/structured-xades"]
+members = ["crates/structured-asn1", "crates/structured-pkix", "crates/structured-cms", "crates/structured-ltv", "crates/structured-xades", "crates/structured-cades"]
 
 [workspace.package]
 version = "0.9.2"

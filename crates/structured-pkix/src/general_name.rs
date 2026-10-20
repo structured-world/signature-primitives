@@ -10,7 +10,7 @@ use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
 use crate::name::{self, Name};
 use core::net::{Ipv4Addr, Ipv6Addr};
-use structured_asn1::memory::{Memory, OwnedVec};
+use structured_asn1::memory::{Memory, MemoryError, OwnedVec, Work};
 use structured_asn1::{Class, Element, Oid, ScopedReader as Reader, Tag, universal};
 
 mod equality;
@@ -1659,6 +1659,20 @@ pub(crate) fn is_uri(text: &str) -> bool {
 /// <https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.4>
 pub(crate) fn is_cps_uri(text: &str) -> bool {
     uri::<false>(text)
+}
+
+/// Checks RFC3986 §3 URI syntax through the SAME grammar as CPS pointers,
+/// without certificate-name host constraints, normalization or acquisition.
+/// The current execution admits every possible scan before reading text.
+/// Callers retain their original field/source context for returned refusals.
+/// <https://www.rfc-editor.org/rfc/rfc3986#section-3>
+pub fn uri_syntax<W: Work>(text: &str, execution: &W) -> core::result::Result<bool, MemoryError> {
+    let units = (text.len() as u64)
+        .checked_mul(12)
+        .and_then(|n| n.checked_add(1))
+        .ok_or(MemoryError::WorkExceeded)?;
+    execution.charge_work(units)?;
+    Ok(is_cps_uri(text))
 }
 
 fn location_uri(

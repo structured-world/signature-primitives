@@ -237,6 +237,41 @@ pub fn profile_faults<'a>(
     role: Role,
     parent: &Reader<'a>,
 ) -> Result<OwnedVec<Error>> {
+    Ok(profile(signer, role, parent)?.faults)
+}
+
+/// One original ESS reading and its CAdES-specific profile findings. Keeping
+/// the reading lets a baseline layer bind the certificate without parsing the
+/// same signed attribute a second time in that operation.
+#[derive(Debug)]
+pub struct Profile<'a> {
+    signing: SigningAttributes<'a>,
+    faults: OwnedVec<Error>,
+}
+
+impl<'a> Profile<'a> {
+    /// Original ESS signer/path restrictions, independently of hash agreement.
+    #[must_use]
+    pub fn signing(&self) -> &SigningAttributes<'a> {
+        &self.signing
+    }
+
+    /// `CAdES` placement/cardinality/profile violations from the same pass.
+    /// ESS reading diagnostics remain on [`Self::signing`].
+    #[must_use]
+    pub fn faults(&self) -> &[Error] {
+        &self.faults
+    }
+}
+
+/// Runs the same profile kernel as [`profile_faults`], retaining the already
+/// parsed ESS reading for subsequent baseline certificate binding. No result
+/// here supplies a baseline level, mathematical agreement or trust.
+pub fn profile<'a>(
+    signer: &SignerInfo<'a>,
+    role: Role,
+    parent: &Reader<'a>,
+) -> Result<Profile<'a>> {
     // The producing parser's ceilings fund every scan below.
     signer.require_session(parent, "signerInfo")?;
     let signing = SigningAttributes::read(signer, parent)?;
@@ -308,7 +343,10 @@ pub fn profile_faults<'a>(
             )?;
         }
     }
-    Ok(faults.into_owned())
+    Ok(Profile {
+        signing,
+        faults: faults.into_owned(),
+    })
 }
 
 fn report<W: Work>(

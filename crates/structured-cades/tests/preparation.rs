@@ -1,0 +1,491 @@
+//! Original `CAdES` preparation: source identity, full census and level rules.
+
+use std::sync::Arc;
+use structured_asn1::Parser;
+use structured_asn1::memory::{Memory, MemoryAccount};
+use structured_cades::{
+    Level,
+    prepare::{Preparation, Rule, Severity},
+    source::Document,
+};
+use structured_cms::{SignedData, oid};
+
+fn memory() -> Memory {
+    Memory::new(Arc::new(MemoryAccount::new(1 << 20, 16 << 20)))
+}
+
+fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
+    let mut out = vec![tag];
+    if content.len() < 128 {
+        out.push(u8::try_from(content.len()).unwrap());
+    } else {
+        out.extend([0x82]);
+        out.extend(u16::try_from(content.len()).unwrap().to_be_bytes());
+    }
+    out.extend(content);
+    out
+}
+
+fn attribute(kind: &[u8], values: &[Vec<u8>]) -> Vec<u8> {
+    tlv(0x30, &[tlv(6, kind), tlv(0x31, &values.concat())].concat())
+}
+
+fn signer(unsigned: &[Vec<u8>]) -> Vec<u8> {
+    signer_with(&[], unsigned)
+}
+
+fn signer_with(signed: &[Vec<u8>], unsigned: &[Vec<u8>]) -> Vec<u8> {
+    signer_value(signed, unsigned, 8)
+}
+
+fn signer_value(signed: &[Vec<u8>], unsigned: &[Vec<u8>], signature: u8) -> Vec<u8> {
+    let mut fields = vec![2, 1, 3, 0x80, 1, 7];
+    fields.extend(tlv(0x30, &tlv(6, oid::SHA256.as_bytes())));
+    if !signed.is_empty() {
+        let mut attributes = signed.to_vec();
+        attributes.sort();
+        fields.extend(tlv(0xa0, &attributes.concat()));
+    }
+    fields.extend(tlv(0x30, &tlv(6, &[0x2b, 0x65, 0x70])));
+    fields.extend(tlv(4, &[signature]));
+    if !unsigned.is_empty() {
+        fields.extend(tlv(0xa1, &unsigned.concat()));
+    }
+    tlv(0x30, &fields)
+}
+
+fn token() -> Vec<u8> {
+    // Structural RFC3161 envelope only. Arithmetic/ESS/EKU are deliberately
+    // not supplied here and this fixture never asserts successful evidence.
+    let mut info = vec![2, 1, 1];
+    info.extend(tlv(6, &[43]));
+    info.extend(tlv(
+        0x30,
+        &[tlv(0x30, &tlv(6, oid::SHA256.as_bytes())), tlv(4, &[0; 32])].concat(),
+    ));
+    info.extend([2, 1, 7]);
+    info.extend(tlv(24, b"20260101000000Z"));
+    let mut body = vec![2, 1, 3, 0x31, 0];
+    body.extend(tlv(
+        0x30,
+        &[
+            tlv(6, oid::TST_INFO.as_bytes()),
+            tlv(0xa0, &tlv(4, &tlv(0x30, &info))),
+        ]
+        .concat(),
+    ));
+    body.extend(tlv(0x31, &signer(&[])));
+    tlv(
+        0x30,
+        &[
+            tlv(6, oid::SIGNED_DATA.as_bytes()),
+            tlv(0xa0, &tlv(0x30, &body)),
+        ]
+        .concat(),
+    )
+}
+
+fn message(unsigned: &[Vec<u8>]) -> Vec<u8> {
+    message_with(&[], unsigned)
+}
+
+fn message_with(signed: &[Vec<u8>], unsigned: &[Vec<u8>]) -> Vec<u8> {
+    let mut body = vec![2, 1, 3, 0x31, 0];
+    body.extend(tlv(0x30, &tlv(6, oid::DATA.as_bytes())));
+    body.extend(tlv(0x31, &signer_with(signed, unsigned)));
+    tlv(
+        0x30,
+        &[
+            tlv(6, oid::SIGNED_DATA.as_bytes()),
+            tlv(0xa0, &tlv(0x30, &body)),
+        ]
+        .concat(),
+    )
+}
+
+#[test]
+fn parallel_root_preservation_stays_original_and_cannot_disappear() {
+    // EN319122-1 §5.5.3 applies the preservation rule when ANY parallel
+    // root carries the historical proof, not merely the selected signer.
+    let legacy = attribute(&[4, 0, 0x8d, 0x45, 2, 2], &[tlv(0x30, &[])]);
+    let mut body = vec![2, 1, 3, 0x31, 0];
+    body.extend(tlv(0x30, &tlv(6, oid::DATA.as_bytes())));
+    body.extend(tlv(
+        0x31,
+        &[signer(&[]), signer_value(&[], &[legacy], 9)].concat(),
+    ));
+    let bytes = tlv(
+        0x30,
+        &[
+            tlv(6, oid::SIGNED_DATA.as_bytes()),
+            tlv(0xa0, &tlv(0x30, &body)),
+        ]
+        .concat(),
+    );
+    let account = memory();
+    let parser = Parser::ber(account.clone());
+    let data = SignedData::read(&parser, &bytes, 500).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let document = Document::new(&data, &parent).unwrap();
+    let prepared =
+        Preparation::read(&document, &data.signers()[0], Level::Archival, &parent).unwrap();
+    assert_eq!(prepared.preservation().len(), 1);
+    let required = prepared.preservation()[0];
+    assert_eq!(
+        required.kind,
+        structured_cades::preservation::Kind::LongTermValidation
+    );
+    assert_eq!(required.signature.span(), data.signers()[1].span());
+    let attribute = &data.signers()[1].unsigned_attributes().unwrap().items()[0];
+    assert_eq!(required.property.span(), attribute.span());
+    let context = required.value.unwrap();
+    let reader = context.reader_in(&parent).unwrap();
+    assert!(std::ptr::eq(reader.parser(), std::ptr::from_ref(&parser)));
+    assert_eq!(
+        context.element().as_bytes(),
+        attribute.values()[0].as_bytes()
+    );
+    assert_eq!(context.element().span(), attribute.values()[0].span());
+}
+
+#[test]
+fn mandatory_attribute_presence_does_not_replace_its_common_value_binding() {
+    // CMS11.1 and EN6.3(f) require the written content-type to agree with
+    // id-data. Merely observing its OID cannot discharge that obligation.
+    let signed = [
+        attribute(
+            oid::CONTENT_TYPE.as_bytes(),
+            &[tlv(6, oid::SIGNED_DATA.as_bytes())],
+        ),
+        attribute(oid::MESSAGE_DIGEST.as_bytes(), &[tlv(4, &[0; 32])]),
+        attribute(oid::SIGNING_TIME.as_bytes(), &[tlv(23, b"260101000000Z")]),
+    ];
+    let bytes = message_with(&signed, &[]);
+    let parser = Parser::ber(memory());
+    let data = SignedData::read(&parser, &bytes, 50).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let document = Document::new(&data, &parent).unwrap();
+    let prepared = Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+    assert!(prepared.findings().iter().any(|finding| matches!(
+        finding.rule,
+        Rule::Schema {
+            code: structured_cms::ErrorCode::ContentTypeMismatch,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn an_archive_never_promotes_a_requested_basic_profile() {
+    // Table1 '*' means SHOULD NOT, not automatic higher-level selection.
+    let bytes = message(&[attribute(
+        oid::ARCHIVE_TIMESTAMP_V3.as_bytes(),
+        &[tlv(0x30, &[])],
+    )]);
+    let parser = Parser::ber(memory());
+    let data = SignedData::read(&parser, &bytes, 800).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let document = Document::new(&data, &parent).unwrap();
+    let basic = Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+    assert_eq!(basic.requested(), Level::Basic);
+    assert_eq!(basic.timestamps().len(), 1);
+    assert!(!basic.all_format_requirements_met());
+    assert!(
+        basic.findings().iter().any(
+            |finding| matches!(finding.rule, Rule::Missing(kind) if kind == oid::SIGNING_TIME)
+        )
+    );
+    assert!(
+        basic
+            .findings()
+            .iter()
+            .any(|finding| finding.severity == Severity::Advisory)
+    );
+    let archival =
+        Preparation::read(&document, &data.signers()[0], Level::Archival, &parent).unwrap();
+    assert!(
+        archival
+            .findings()
+            .iter()
+            .any(|finding| matches!(finding.rule, Rule::SignatureTimestamp))
+    );
+}
+
+#[test]
+fn nested_timestamp_census_keeps_owning_parent_and_malformed_siblings() {
+    // All-counter material needs nested TSA actors, even when another direct
+    // value is unreadable. The common iterative walker defines the ordering.
+    let timestamp = attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &[tlv(0x30, &[])]);
+    let grandchild = signer(std::slice::from_ref(&timestamp));
+    let child = signer(&[
+        timestamp,
+        attribute(oid::COUNTERSIGNATURE.as_bytes(), &[grandchild]),
+    ]);
+    let bytes = message(&[attribute(
+        oid::COUNTERSIGNATURE.as_bytes(),
+        &[child, tlv(2, &[1])],
+    )]);
+    let parser = Parser::ber(memory());
+    let data = SignedData::read(&parser, &bytes, 900).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let document = Document::new(&data, &parent).unwrap();
+    let prepared = Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+    assert_eq!(prepared.counters().len(), 3);
+    assert_eq!(prepared.timestamps().len(), 2);
+    assert_eq!(
+        prepared.timestamps()[0].owner(),
+        prepared.counters()[0].node()
+    );
+    assert_eq!(
+        prepared.timestamps()[1].owner(),
+        prepared.counters()[1].node()
+    );
+    assert_eq!(
+        prepared.counters()[1].parent(),
+        prepared.counters()[0].node()
+    );
+    assert!(prepared.counters()[2].malformed().is_some());
+    assert_eq!(prepared.timestamp_requirements().entries().len(), 2);
+}
+
+#[test]
+fn empty_timestamp_attribute_remains_an_unfulfilled_original_obligation() {
+    // An unreadable occurrence cannot vanish from the complete LTV TSA census.
+    let bytes = message(&[attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &[])]);
+    let parser = Parser::ber(memory());
+    let data = SignedData::read(&parser, &bytes, 700).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let document = Document::new(&data, &parent).unwrap();
+    let prepared =
+        Preparation::read(&document, &data.signers()[0], Level::Timestamped, &parent).unwrap();
+    assert_eq!(prepared.timestamps().len(), 1);
+    assert_eq!(prepared.timestamp_requirements().entries().len(), 1);
+    assert!(!prepared.all_format_requirements_met());
+}
+
+#[test]
+fn legacy_reference_attributes_are_forbidden_only_at_long_term_levels() {
+    // EN6.3 Table1 permits these with advisory '*' at B-B/B-T, forbids LT/LTA.
+    let certificate_refs = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 1, 9, 16, 2, 21];
+    let bytes = message(&[attribute(certificate_refs, &[tlv(0x30, &[])])]);
+    let parser = Parser::ber(memory());
+    let data = SignedData::read(&parser, &bytes, 100).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let document = Document::new(&data, &parent).unwrap();
+    for level in [
+        Level::Basic,
+        Level::Timestamped,
+        Level::LongTerm,
+        Level::Archival,
+    ] {
+        let prepared = Preparation::read(&document, &data.signers()[0], level, &parent).unwrap();
+        let forbidden = prepared.findings().iter().any(|finding| {
+            finding.severity == Severity::Required && matches!(finding.rule, Rule::Forbidden(_))
+        });
+        assert_eq!(forbidden, level >= Level::LongTerm);
+    }
+}
+
+#[test]
+fn equal_encoded_foreign_source_and_exhausted_query_are_terminal() {
+    // Equal bytes and equal account are not parser/model identity. Spent work
+    // cannot be returned as an empty findings list or successful partial census.
+    let bytes = message(&[]);
+    let account = memory();
+    let parser = Parser::ber(account.clone());
+    let foreign = Parser::ber(account.clone());
+    let data = SignedData::read(&parser, &bytes, 0).unwrap();
+    let other = SignedData::read(&foreign, &bytes, 0).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    assert!(Document::new(&other, &parent).is_err());
+    let document = Document::new(&data, &parent).unwrap();
+    assert!(document.signer(&other.signers()[0]).is_err());
+    account
+        .charge_work(account.work_remaining() as u64)
+        .unwrap();
+    assert!(Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).is_err());
+}
+
+#[test]
+fn present_optional_attributes_must_satisfy_their_value_schemas() {
+    // EN319122-1 §§5.2.3–5.2.5/5.2.11–12: an OID and singleton
+    // catalogue alone cannot establish the syntax of its claimed value.
+    for (kind, value) in [
+        (oid::MIME_TYPE, tlv(12, b"text")),
+        (oid::CONTENT_HINTS, tlv(0x30, &tlv(12, b"description"))),
+        (oid::CONTENT_IDENTIFIER, tlv(2, &[1])),
+        (oid::CONTENT_REFERENCE, tlv(0x30, &[])),
+        (oid::COMMITMENT_TYPE_INDICATION, tlv(0x30, &[])),
+        (oid::SIGNER_LOCATION, tlv(0x30, &[])),
+        (oid::SIGNER_ATTRIBUTES_V2, tlv(0x30, &[])),
+    ] {
+        let bytes = message_with(&[attribute(kind.as_bytes(), &[value])], &[]);
+        let parser = Parser::ber(memory());
+        let data = SignedData::read(&parser, &bytes, 300).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        assert!(
+            prepared.findings().iter().any(
+                |finding| matches!(finding.rule, Rule::Value { attribute, .. } if attribute == kind)
+            ),
+            "missing value finding for {kind:?}"
+        );
+    }
+}
+
+#[test]
+fn empty_counter_and_ber_signature_timestamp_are_not_conforming() {
+    // RFC5652 §11.4 needs at least one counter value; EN319122-1 §5.3
+    // requires the whole signature-time-stamp attribute to be DER encoded.
+    let mut ber_timestamp = attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &[tlv(0x30, &[])]);
+    ber_timestamp.insert(1, 0x81);
+    let bytes = message(&[
+        attribute(oid::COUNTERSIGNATURE.as_bytes(), &[]),
+        ber_timestamp,
+    ]);
+    let parser = Parser::ber(memory());
+    let data = SignedData::read(&parser, &bytes, 600).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let document = Document::new(&data, &parent).unwrap();
+    let prepared =
+        Preparation::read(&document, &data.signers()[0], Level::Timestamped, &parent).unwrap();
+    assert!(prepared.findings().iter().any(|finding| matches!(finding.rule, Rule::Value { attribute, .. } if attribute == oid::SIGNATURE_TIMESTAMP)));
+    assert!(prepared.findings().iter().any(|finding| matches!(finding.rule, Rule::Value { attribute, .. } if attribute == oid::COUNTERSIGNATURE)));
+}
+
+#[test]
+fn policy_store_requires_a_written_nonzero_protected_policy_digest() {
+    // EN6.3(k) forbids an unbound store, including the normative zero-hash
+    // UNKNOWN marker. It is not treated as a digest of the stored document.
+    let store = attribute(
+        oid::SIGNATURE_POLICY_STORE.as_bytes(),
+        &[tlv(0x30, &[tlv(6, &[42]), tlv(4, b"policy")].concat())],
+    );
+    for hash in [None, Some(vec![]), Some(vec![0; 7])] {
+        let signed: Vec<_> = hash
+            .into_iter()
+            .map(|hash| {
+                attribute(
+                    oid::SIGNATURE_POLICY_IDENTIFIER.as_bytes(),
+                    &[tlv(
+                        0x30,
+                        &[
+                            tlv(6, &[43]),
+                            tlv(
+                                0x30,
+                                &[tlv(0x30, &tlv(6, oid::SHA256.as_bytes())), tlv(4, &hash)]
+                                    .concat(),
+                            ),
+                        ]
+                        .concat(),
+                    )],
+                )
+            })
+            .collect();
+        let bytes = message_with(&signed, std::slice::from_ref(&store));
+        let parser = Parser::ber(memory());
+        let data = SignedData::read(&parser, &bytes, 100).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        assert!(
+            prepared
+                .findings()
+                .iter()
+                .any(|finding| matches!(finding.rule, Rule::PolicyStore))
+        );
+    }
+}
+
+#[test]
+fn nested_timestamp_inputs_and_cached_token_readers_keep_original_context() {
+    // A child's timestamp covers the child's signature, while the child itself
+    // covers its parent. Cached source models must not flip those two inputs
+    // or create a default-budget parser when opening their carried TSTInfo.
+    use structured_ltv::source::{Scope, Source};
+    let stamp = attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &[token()]);
+    let grandchild = signer_value(&[], std::slice::from_ref(&stamp), 3);
+    let child = signer_value(
+        &[],
+        &[
+            stamp.clone(),
+            attribute(oid::COUNTERSIGNATURE.as_bytes(), &[grandchild]),
+        ],
+        2,
+    );
+    let bytes = message(&[stamp, attribute(oid::COUNTERSIGNATURE.as_bytes(), &[child])]);
+    let account = memory();
+    let parser = Parser::ber(account.clone());
+    let data = SignedData::read(&parser, &bytes, 900).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let document = Document::new(&data, &parent).unwrap();
+    let prepared =
+        Preparation::read(&document, &data.signers()[0], Level::Timestamped, &parent).unwrap();
+    assert_eq!(prepared.timestamps().len(), 3);
+    for (ordinal, signature) in [8, 2, 3].into_iter().enumerate() {
+        let pieces = prepared.signature_input(ordinal, &parent).unwrap().unwrap();
+        assert_eq!(
+            pieces
+                .iter()
+                .flat_map(|piece| piece.as_bytes())
+                .copied()
+                .collect::<Vec<_>>(),
+            [signature]
+        );
+    }
+    assert!(
+        prepared
+            .counter_content_input(0, &parent)
+            .unwrap()
+            .is_none()
+    );
+    for (ordinal, input) in [(1, 8), (2, 2)] {
+        let pieces = prepared
+            .counter_content_input(ordinal, &parent)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            pieces
+                .iter()
+                .flat_map(|piece| piece.as_bytes())
+                .copied()
+                .collect::<Vec<_>>(),
+            [input]
+        );
+    }
+    let baseline = account.used();
+    let pool = structured_cades::material::Pool::read(&prepared, &parent).unwrap();
+    assert!(pool.token_faults().is_empty());
+    for ordinal in 0..3 {
+        pool.with_token(ordinal, &parent, |context| {
+            assert!(std::ptr::eq(
+                context.reader().parser(),
+                std::ptr::from_ref(&parser)
+            ));
+            context
+                .token()
+                .with_info(context.reader(), |info, reader, _| {
+                    assert!(std::ptr::eq(reader.parser(), std::ptr::from_ref(&parser)));
+                    assert_eq!(info.serial().value().as_u64(), Some(7));
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    }
+    let work = parent.execution();
+    let query = Scope::new(&document, document.snapshot(), &work);
+    let index = pool.index(&query).unwrap();
+    assert!(index.open().is_empty());
+    drop(index);
+    drop(pool);
+    assert_eq!(account.used(), baseline);
+    account
+        .charge_work(account.work_remaining() as u64)
+        .unwrap();
+    assert!(prepared.signature_input(0, &parent).is_err());
+}

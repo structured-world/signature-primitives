@@ -208,6 +208,13 @@ pub struct CheckedTimestamp<'a> {
     evidence: Option<Evidence>,
 }
 impl CheckedTimestamp<'_> {
+    /// Moves independently retained evidence out while keeping every original
+    /// negative/check fact available to a scoped format adapter. No copy or
+    /// second signature/content pass occurs, and mutable public facts still
+    /// cannot manufacture evidence.
+    pub fn take_evidence(&mut self) -> Option<Evidence> {
+        self.evidence.take()
+    }
     /// Moves retained evidence without deep copy or another storage charge.
     pub fn into_evidence(self) -> Option<Evidence> {
         self.evidence

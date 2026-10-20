@@ -51,7 +51,10 @@ pub struct Attribute<'a> {
 }
 
 impl<'a> Attribute<'a> {
-    fn read(parent: &Reader<'a>, element: &Element<'a>, field: &'static str) -> Result<Self> {
+    /// Reads one original Attribute using the same field kernel as a CMS
+    /// catalogue. A containing schema (for example `CAdES` `claimedAttributes`)
+    /// decides placement/cardinality; this does not invent a `SignerInfo`.
+    pub fn read(parent: &Reader<'a>, element: &Element<'a>, field: &'static str) -> Result<Self> {
         if element.tag() != Tag::constructed(universal::SEQUENCE) {
             return Err(Error::schema(
                 ErrorCode::UnexpectedTag,
@@ -153,7 +156,11 @@ impl<'a> Attribute<'a> {
         self.element.as_bytes()
     }
 
-    pub(crate) fn element(&self) -> &Element<'a> {
+    /// Whole original attribute element, preserving its producing coordinates.
+    /// This lets a format enforce a required DER attribute without retagging,
+    /// serializing or manufacturing a new parser/source.
+    #[must_use]
+    pub fn element(&self) -> &Element<'a> {
         &self.element
     }
 

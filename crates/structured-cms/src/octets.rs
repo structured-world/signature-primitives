@@ -48,6 +48,36 @@ pub struct Octets<'a> {
 }
 
 impl<'a> Octets<'a> {
+    /// Reads logical `IA5String` contents through the SAME iterative base-string
+    /// walker. BER constructed strings carry OCTET STRING fragments (X.690
+    /// §8.23.3); DER remains primitive. ASCII validation is admitted before every
+    /// content scan, and original fragment spans are preserved without joining.
+    /// <https://www.itu.int/rec/T-REC-X.690-202102-I/en>
+    pub fn read_ia5(
+        parent: &Reader<'a>,
+        element: &Element<'a>,
+        field: &'static str,
+    ) -> Result<Self> {
+        parent
+            .charge(1)
+            .map_err(|cause| Error::encoding(cause, field))?;
+        let value = Self::read_tagged(parent, element, universal::IA5_STRING, false, field)?;
+        let execution = parent.execution();
+        for piece in value.pieces() {
+            execution
+                .charge_work(1 + piece.as_bytes().len() as u64)
+                .map_err(|cause| Error::resource(cause, field, piece.span().start))?;
+            if !piece.as_bytes().is_ascii() {
+                return Err(Error::schema(
+                    ErrorCode::MalformedValue,
+                    field,
+                    piece.span().start,
+                ));
+            }
+        }
+        Ok(value)
+    }
+
     /// Reads an OCTET STRING using the original parser's encoding and ceilings.
     ///
     /// X.690 §8.7 permits constructed BER strings composed of OCTET STRING

@@ -6,6 +6,56 @@ use structured_asn1::{Encoding, Limits, Parser};
 use structured_cms::{ErrorCode, Octets};
 
 #[test]
+fn ia5_contents_preserve_borrowed_fragments_and_reject_non_ascii() {
+    // Primitive input stays borrowed; the shared constructed base-string walk
+    // keeps original OCTET fragment spans and frees its paid catalogue on drop.
+    let memory = Memory::new(Arc::new(MemoryAccount::new(65536, 65536)));
+    let parser = Parser::ber(memory.clone());
+    let primitive = [22, 2, b'a', b'b'];
+    let mut reader = parser.read(&primitive, 100).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let value = Octets::read_ia5(&reader, &element, "policy.uri").unwrap();
+    assert_eq!(
+        value.pieces()[0].as_bytes().as_ptr(),
+        primitive[2..].as_ptr()
+    );
+    assert_eq!(memory.used(), 0);
+    drop(value);
+    let constructed = [0x36, 0x80, 4, 1, b'a', 4, 1, b'b', 0, 0];
+    let mut reader = parser.read(&constructed, 500).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let value = Octets::read_ia5(&reader, &element, "policy.uri").unwrap();
+    assert_eq!(value.len(), 2);
+    assert_eq!(value.pieces()[0].span().start, 504);
+    assert_eq!(value.pieces()[1].span().start, 507);
+    assert!(memory.used() > 0);
+    drop(value);
+    assert_eq!(memory.used(), 0);
+    let bad = [22, 1, 0xff];
+    let mut reader = parser.read(&bad, 700).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let error = Octets::read_ia5(&reader, &element, "policy.uri").unwrap_err();
+    assert_eq!(error.code(), ErrorCode::MalformedValue);
+    assert_eq!(error.offset(), 702);
+}
+
+#[test]
+fn empty_ia5_still_requires_current_work() {
+    // Zero output is not free admission: no exhausted-operation fast path may
+    // return a successful empty reading or allocate a fragment catalogue.
+    let memory = Memory::new(Arc::new(MemoryAccount::new(65536, 65536)));
+    let parser = Parser::ber(memory.clone());
+    let bytes = [22, 0];
+    let mut reader = parser.read(&bytes, 900).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    memory.charge_work(memory.work_remaining() as u64).unwrap();
+    let error = Octets::read_ia5(&reader, &element, "policy.uri").unwrap_err();
+    assert!(error.is_terminal());
+    assert_eq!(memory.used(), 0);
+    assert_eq!(element.as_bytes(), bytes);
+}
+
+#[test]
 fn primitive_content_is_borrowed_without_storage() {
     // A primitive payload must not be copied or create a catalogue.
     let memory = Memory::new(Arc::new(MemoryAccount::new(0, 1024)));

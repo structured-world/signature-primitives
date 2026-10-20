@@ -209,6 +209,96 @@ impl<'a> SigningAttributes<'a> {
     }
 }
 
+impl<'a> super::SigningCertificate<'a> {
+    /// Checks every later signed validation-set identifier against one actual
+    /// certificate. The first signer identifier is deliberately excluded.
+    ///
+    /// RFC5035 §§3/5 limits certificates used during validation when later
+    /// identifiers exist. The format layer supplies actual path/credential
+    /// certificates; this operation neither builds a path nor selects trust.
+    /// All declarations are admitted before hashing. Resolved digest identities
+    /// share one complete certificate pass and one finalized output each.
+    /// <https://www.rfc-editor.org/rfc/rfc5035#section-3>
+    pub fn bind_validation_certificate<P: AsnDigest<'a>>(
+        &self,
+        provider: &'a P,
+        certificate: &Certificate<'_>,
+        parent: &Reader<'a>,
+    ) -> Result<OwnedVec<Binding>, BindingError<P::Error>> {
+        let execution = parent.execution();
+        let field = self.version.field();
+        let at = self.element.span().start;
+        let refusal = |reason| BindingError::Processing(Error::resource(reason, field, at));
+        let later = &self.identifiers()[1..];
+        let mut answers = execution.vector();
+        let mut queued = execution.vector();
+        let mut identities = execution.vector();
+        answers.try_reserve_exact(later.len()).map_err(refusal)?;
+        queued.try_reserve_exact(later.len()).map_err(refusal)?;
+        for identifier in later {
+            execution.charge_work(1).map_err(refusal)?;
+            match prepare_request(provider, identifier, parent)? {
+                Request::Answer(answer) => answers.try_push(answer).map_err(refusal)?,
+                Request::Compute { identity, expected } => {
+                    let ordinal = identities.len();
+                    identities.try_push(identity).map_err(refusal)?;
+                    queued
+                        .try_push((
+                            answers.len(),
+                            Queued {
+                                identifier,
+                                expected,
+                                ordinal,
+                            },
+                        ))
+                        .map_err(refusal)?;
+                    // Private pending slot: every queued request must finish
+                    // below or return Err. No pending catalogue is exposed.
+                    answers.try_push(Binding::Unsupported).map_err(refusal)?;
+                }
+            }
+        }
+        if !identities.is_empty() {
+            let batch =
+                DigestBatch::prepare(provider, identities.into_owned(), &execution, field, at)
+                    .map_err(|source| BindingError::Digest {
+                        span: certificate.span(),
+                        source,
+                    })?;
+            let mut ranges = [certificate.as_bytes()];
+            let memo = batch
+                .run(&mut ranges, &execution)
+                .map_err(|source| BindingError::Pass {
+                    span: certificate.span(),
+                    source,
+                })?;
+            let mut issuer = None;
+            for (slot, request) in queued {
+                execution.charge_work(1).map_err(refusal)?;
+                let Some(digest) =
+                    memo.for_request(request.ordinal, &execution)
+                        .map_err(|source| BindingError::Digest {
+                            span: certificate.span(),
+                            source,
+                        })?
+                else {
+                    return Err(BindingError::LostRequest(request.ordinal));
+                };
+                answers[slot] = compare_binding(
+                    provider,
+                    request.identifier,
+                    request.expected.as_bytes(),
+                    digest.finished(),
+                    certificate,
+                    parent,
+                    &mut issuer,
+                )?;
+            }
+        }
+        Ok(answers.into_owned())
+    }
+}
+
 fn prepare_request<'a, 'p, P: AsnDigest<'a>>(
     provider: &'a P,
     identifier: &CertificateId<'a>,

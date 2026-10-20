@@ -18,6 +18,7 @@ pub mod digest;
 pub mod directory;
 pub mod error;
 pub mod ess;
+pub mod mime;
 pub mod octets;
 pub mod oid;
 pub mod payload;

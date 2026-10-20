@@ -81,7 +81,9 @@ pub struct SignerInfo<'a> {
 }
 
 impl<'a> SignerInfo<'a> {
-    pub(crate) fn require_session(&self, parent: &Reader<'_>, field: &'static str) -> Result<()> {
+    /// Requires the original producing parser, before a protocol layer reads
+    /// retained fields. Equal accounts or equal encodings are not session identity.
+    pub fn require_session(&self, parent: &Reader<'_>, field: &'static str) -> Result<()> {
         if !self.digest_algorithm.same_session(parent) {
             return Err(Error::pkix(structured_pkix::Error::new(
                 structured_pkix::ErrorCode::ForeignReader,

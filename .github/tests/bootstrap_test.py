@@ -13,8 +13,12 @@ class BootstrapPackages(unittest.TestCase):
         # One workspace version also ships sibling-only changes. Each package
         # must explain the commit responsible for that coordinated release.
         normal = tomllib.loads((ROOT / "release-plz.toml").read_text())
-        names = {package["name"] for package in normal["package"]}
-        for package in normal["package"]:
+        # Source-only CAdES must not join the published version/changelog group
+        # before its separately authorized initial publication.
+        packages = [package for package in normal["package"]
+                    if package.get("release") is not False]
+        names = {package["name"] for package in packages}
+        for package in packages:
             with self.subTest(package=package["name"]):
                 self.assertEqual(set(package["changelog_include"]),
                                  names - {package["name"]})
@@ -54,12 +58,13 @@ class BootstrapPackages(unittest.TestCase):
         existing = {"structured-asn1", "structured-pkix", "structured-cms"}
         new = {"structured-ltv"}
         dependents = {"structured-xades"}
-        self.assertEqual(names, existing | new | dependents)
+        source_only = {"structured-cades"}
+        self.assertEqual(names, existing | new | dependents | source_only)
         for filename, expected in [
             ("release-core.toml", existing),
             ("release-ltv.toml", new),
             ("release-dependents.toml", dependents),
-            ("../release-plz.toml", names),
+            ("../release-plz.toml", names - source_only),
         ]:
             config = tomllib.loads((ROOT / ".github" / filename).read_text())
             # Only the explicitly credential-selected first LTV publication
@@ -68,6 +73,7 @@ class BootstrapPackages(unittest.TestCase):
             self.assertIs(config["workspace"]["git_release_enable"], True)
             disabled = {package["name"] for package in config["package"]
                         if package.get("release") is False}
+            self.assertTrue(source_only <= disabled)
             self.assertEqual(names - disabled, expected)
             self.assertEqual(disabled | expected, names)
 

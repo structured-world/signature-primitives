@@ -453,7 +453,7 @@ fn qualifier_schema(
             crate::name::is_ia5(value.contents())
                 && core::str::from_utf8(value.contents()).is_ok_and(crate::general_name::is_cps_uri)
         }
-        QualifierKind::Notice => user_notice_understood(reader, value)?,
+        QualifierKind::Notice => user_notice_understood::<true>(reader, value)?,
     })
 }
 
@@ -461,7 +461,7 @@ fn qualifier_schema(
 /// optional explicit text. Both members are optional (RFC 5280 4.2.1.4):
 /// the empty sequence says nothing, but it is inside the schema, and
 /// refusing it would block an otherwise valid critical policy.
-fn user_notice_understood(
+fn user_notice_understood<const IA5: bool>(
     parent: &structured_asn1::ScopedReader<'_, '_>,
     value: &structured_asn1::Element<'_>,
 ) -> Result<bool> {
@@ -477,7 +477,7 @@ fn user_notice_understood(
     if let Some(reference) = next
         && reference.tag() == Tag::constructed(universal::SEQUENCE)
     {
-        if !notice_reference_understood(&inside, &reference)? {
+        if !notice_reference_understood::<IA5>(&inside, &reference)? {
             return Ok(false);
         }
         let Some(following) = gate(inside.next_element().field(QUALIFIER_FIELD))? else {
@@ -486,7 +486,7 @@ fn user_notice_understood(
         next = following;
     }
     if let Some(text) = next
-        && !is_display_text(&inside, &text)?
+        && !is_display_text::<IA5>(&inside, &text)?
     {
         return Ok(false);
     }
@@ -495,7 +495,7 @@ fn user_notice_understood(
 
 /// The reference half of a user notice: the organization's display text,
 /// then a sequence of notice numbers (which may be empty).
-fn notice_reference_understood(
+fn notice_reference_understood<const IA5: bool>(
     parent: &structured_asn1::ScopedReader<'_, '_>,
     reference: &structured_asn1::Element<'_>,
 ) -> Result<bool> {
@@ -505,7 +505,7 @@ fn notice_reference_understood(
     let Some(Some(organization)) = gate(inside.next_element().field(QUALIFIER_FIELD))? else {
         return Ok(false);
     };
-    if !is_display_text(&inside, &organization)? {
+    if !is_display_text::<IA5>(&inside, &organization)? {
         return Ok(false);
     }
     let Some(Some(numbers)) = gate(inside.next_element().field(QUALIFIER_FIELD))? else {
@@ -542,7 +542,7 @@ fn notice_reference_understood(
 /// decoding under its declared type to between one and two hundred
 /// characters, the SIZE (1..200) the schema puts on every choice. Bytes that
 /// do not decode wear the tag without being the type.
-fn is_display_text(
+fn is_display_text<const IA5: bool>(
     reader: &structured_asn1::ScopedReader<'_, '_>,
     element: &structured_asn1::Element<'_>,
 ) -> Result<bool> {
@@ -561,7 +561,7 @@ fn is_display_text(
     // UTF8 validation and scalar counting are separate passes. The other
     // choices fit this same bound without constructing decoded text.
     qualifier_charge(reader, element, (contents.len() as u64) * 2 + 1)?;
-    let characters = if tag == Tag::primitive(universal::IA5_STRING) {
+    let characters = if IA5 && tag == Tag::primitive(universal::IA5_STRING) {
         // The 128-character IRV (X.680, 41.4).
         contents.iter().all(u8::is_ascii).then_some(contents.len())
     } else if tag == Tag::primitive(universal::UTF8_STRING) {
@@ -585,6 +585,20 @@ fn is_display_text(
         return Ok(false);
     };
     Ok(characters.is_some_and(|count| (1..=200).contains(&count)))
+}
+
+/// Checks the `AdES` `SPUserNotice` schema with the existing notice kernel.
+/// Its `DisplayText` omits PKIX's `IA5String` choice (EN319122-1 §5.2.9.2,
+/// Annex D); `VisibleString`/`BMPString`/`UTF8String` retain SIZE(1..200).
+/// Original coordinates and current local/aggregate execution are preserved.
+/// No signature policy is selected or accepted by understanding its notice.
+/// <https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf>
+pub fn signature_notice_understood<'a>(
+    parent: &structured_asn1::ScopedReader<'a, '_>,
+    value: &structured_asn1::Element<'a>,
+) -> Result<bool> {
+    qualifier_charge(parent, value, 1)?;
+    user_notice_understood::<false>(parent, value)
 }
 
 #[cfg(test)]

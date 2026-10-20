@@ -1,0 +1,673 @@
+//! Real timestamp arithmetic, original signature input, and source-bound stages.
+#[path = "support/crl.rs"]
+mod crl_fixture;
+mod support;
+
+use crl_fixture::crl;
+use p256::ecdsa::SigningKey;
+use sha2::{Digest, Sha256};
+use std::{cell::Cell, convert::Infallible};
+use structured_asn1::{Parser, memory::Work};
+use structured_cades::{
+    Level, baseline, basic, counters, credential, material, prepare::Preparation, source::Document,
+};
+use structured_cms::{
+    SignedData,
+    binding::Scope,
+    oid, prepare,
+    verify::{ContentMode, DocumentBatch},
+};
+use structured_ltv::{
+    credential::Authentication,
+    pki::{self, PathOutcome, TimestampBinding},
+    source::{Scope as QueryScope, Source},
+    timestamp::TimestampPathBinding,
+};
+use structured_pkix::{
+    path::{self, Anchor, Interval, ValidationBounds, ValidationContext},
+    temporal::LeapTable,
+};
+use support::{Oracle, attribute, certificate, memory, message, signature_octets, signer, tlv};
+
+struct EmptyCredentials(Cell<usize>);
+impl<'p, 'd> credential::Provider<'p, 'd> for EmptyCredentials {
+    type Evidence = ();
+    type Error = Infallible;
+    fn authenticate(
+        &self,
+        _: credential::Context<'_, '_, 'd>,
+    ) -> Result<Authentication<'p, 'd, ()>, Infallible> {
+        self.0.set(self.0.get() + 1);
+        Ok(Authentication::Unsupported)
+    }
+}
+impl material::credentials::Provider<()> for EmptyCredentials {
+    type Error = Infallible;
+    fn visit<'m, 'd, V>(
+        &self,
+        _: &credential::Checked<'m, 'd, '_, ()>,
+        _: &[material::Open<'d>],
+        _: &structured_asn1::Reader<'d>,
+        _: impl for<'value, 'source> FnMut(
+            material::credentials::Need<'value, 'source, 'm, 'd>,
+        ) -> Result<(), V>,
+    ) -> Result<material::credentials::Completeness, material::credentials::VisitError<Infallible, V>>
+    {
+        panic!("a source without credentials cannot invoke a format handler")
+    }
+}
+
+fn token(
+    input: &[u8],
+    cert: &[u8],
+    root: &[u8],
+    key: &SigningKey,
+    accuracy: bool,
+    index: Option<&[u8]>,
+) -> Vec<u8> {
+    token_digest(
+        input,
+        cert,
+        root,
+        key,
+        accuracy,
+        index,
+        oid::SHA256.as_bytes(),
+    )
+}
+fn token_digest(
+    input: &[u8],
+    cert: &[u8],
+    root: &[u8],
+    key: &SigningKey,
+    accuracy: bool,
+    index: Option<&[u8]>,
+    digest: &[u8],
+) -> Vec<u8> {
+    let imprint = tlv(
+        0x30,
+        &[
+            tlv(0x30, &tlv(6, oid::SHA256.as_bytes())),
+            tlv(4, &Sha256::digest(input)),
+        ]
+        .concat(),
+    );
+    let mut fields = [
+        vec![2, 1, 1],
+        tlv(6, &[42, 3]),
+        imprint,
+        vec![2, 1, 9],
+        tlv(24, b"20260101000100Z"),
+    ]
+    .concat();
+    if accuracy {
+        fields.extend(tlv(0x30, &[]));
+    }
+    let info = tlv(0x30, &fields);
+    let unsigned: Vec<_> = index
+        .into_iter()
+        .map(|index| attribute(oid::ATS_HASH_INDEX_V3.as_bytes(), index))
+        .collect();
+    let signature = support::signer_digest(
+        Some(oid::TST_INFO.as_bytes()),
+        &info,
+        cert,
+        key,
+        &[],
+        &unsigned,
+        digest,
+    );
+    message(
+        oid::TST_INFO.as_bytes(),
+        Some(&info),
+        &[root.to_vec(), cert.to_vec()],
+        &[],
+        &[signature],
+    )
+}
+
+fn archive_token(before: &[u8], cert: &[u8], root: &[u8], key: &SigningKey) -> Vec<u8> {
+    // Trusted DER fixture writer follows EN319122-1 §§5.5.2–5.5.3.
+    // The existing CMS index/range core is separately checked against the DSS
+    // compatibility corpus; here real token crypto tests the complete wiring.
+    let parser = Parser::ber(memory());
+    let message = SignedData::read(&parser, before, 0).unwrap();
+    let mut fields = tlv(0x30, &tlv(6, oid::SHA256.as_bytes()));
+    let cert_hashes: Vec<_> = message
+        .certificates()
+        .iter()
+        .map(|cert| tlv(4, &Sha256::digest(cert.as_bytes())))
+        .collect();
+    let rev_hashes: Vec<_> = message
+        .revocations()
+        .iter()
+        .map(|rev| tlv(4, &Sha256::digest(rev.as_bytes())))
+        .collect();
+    let mut attribute_hashes = Vec::new();
+    for attribute in message.signers()[0].unsigned_attributes().unwrap().items() {
+        for value in attribute.values() {
+            let mut digest = Sha256::new();
+            digest.update(tlv(6, attribute.kind().as_bytes()));
+            digest.update(value.as_bytes());
+            attribute_hashes.push(tlv(4, &digest.finalize()));
+        }
+    }
+    for hashes in [&cert_hashes, &rev_hashes, &attribute_hashes] {
+        fields.extend(tlv(0x30, &hashes.concat()));
+    }
+    let index = tlv(0x30, &fields);
+    let mut reader = parser.read(&index, 0).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let parsed = structured_cms::archive::HashIndex::read(&reader, &element).unwrap();
+    let hash = Sha256::digest(b"sample");
+    let ranges =
+        structured_cms::archive::imprint_input(&message, &message.signers()[0], &parsed, &hash)
+            .unwrap();
+    let mut input = Vec::new();
+    for range in ranges {
+        input.extend(range);
+    }
+    token(&input, cert, root, key, true, Some(&index))
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one source-bound real-crypto scenario keeps the live receipt graph and each successive level's negative assertions visible together"
+)]
+#[expect(
+    clippy::result_large_err,
+    reason = "the token visitor returns the real mapped refusal unchanged; the test must exercise the same nonallocating error path"
+)]
+fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_accuracy() {
+    // This is real ECDSA/SHA-256 on both CMS signatures and certificates.
+    // A valid TSA signature alone cannot establish input or full time bounds.
+    for mode in 0..7 {
+        let root_key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
+        let signer_key = SigningKey::from_bytes((&[2; 32]).into()).unwrap();
+        let tsa_key = SigningKey::from_bytes((&[3; 32]).into()).unwrap();
+        let root_bytes = certificate("Root", "Root", &root_key, &root_key, false);
+        let leaf_bytes = certificate("Signer", "Root", &signer_key, &root_key, false);
+        let tsa_bytes = certificate("TSA", "Root", &tsa_key, &root_key, true);
+        let signed = [
+            attribute(oid::SIGNING_TIME.as_bytes(), &tlv(23, b"260101000000Z")),
+            attribute(
+                oid::MIME_TYPE.as_bytes(),
+                &tlv(12, b"application/octet-stream"),
+            ),
+        ];
+        let provisional = signer(
+            Some(oid::DATA.as_bytes()),
+            b"sample",
+            &leaf_bytes,
+            &signer_key,
+            &signed,
+            &[],
+        );
+        let mut covered = signature_octets(&provisional);
+        if mode == 1 {
+            covered[0] ^= 1;
+        }
+        let timestamp = if mode == 5 {
+            token_digest(
+                &covered,
+                &tsa_bytes,
+                &root_bytes,
+                &tsa_key,
+                true,
+                None,
+                &[42, 134, 72, 134, 247, 13, 2, 5],
+            )
+        } else {
+            token(&covered, &tsa_bytes, &root_bytes, &tsa_key, mode != 2, None)
+        };
+        let mut unsigned = vec![attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &timestamp)];
+        if mode == 6 {
+            // EN319122-1 §5.5.3: a new valid ATSv3 cannot erase an older
+            // original preservation obligation or manufacture its actors.
+            unsigned.push(attribute(
+                &[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 48],
+                &timestamp,
+            ));
+        }
+        let certs = [root_bytes.clone(), leaf_bytes.clone(), tsa_bytes.clone()];
+        let crls = [crl(&root_key)];
+        if mode == 4 || mode == 6 {
+            let before_signer = signer(
+                Some(oid::DATA.as_bytes()),
+                b"sample",
+                &leaf_bytes,
+                &signer_key,
+                &signed,
+                &unsigned,
+            );
+            let before = message(
+                oid::DATA.as_bytes(),
+                Some(b"sample"),
+                &certs,
+                &crls,
+                &[before_signer],
+            );
+            let archive = archive_token(&before, &tsa_bytes, &root_bytes, &tsa_key);
+            unsigned.push(attribute(oid::ARCHIVE_TIMESTAMP_V3.as_bytes(), &archive));
+        }
+        let signature = signer(
+            Some(oid::DATA.as_bytes()),
+            b"sample",
+            &leaf_bytes,
+            &signer_key,
+            &signed,
+            &unsigned,
+        );
+        let bytes = message(
+            oid::DATA.as_bytes(),
+            Some(b"sample"),
+            &certs,
+            &crls,
+            &[signature],
+        );
+        let parser = Parser::ber(memory());
+        let message = SignedData::read(&parser, &bytes, 400).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let work = parent.execution();
+        let root = message
+            .certificates()
+            .iter()
+            .find(|value| value.as_bytes() == root_bytes)
+            .unwrap();
+        let leaf = message
+            .certificates()
+            .iter()
+            .find(|value| value.as_bytes() == leaf_bytes)
+            .unwrap();
+        let tsa = message
+            .certificates()
+            .iter()
+            .find(|value| value.as_bytes() == tsa_bytes)
+            .unwrap();
+        let oracle = Oracle::new();
+        let interval = Interval::between(
+            leaf.tbs().validity().not_before().seconds(),
+            leaf.tbs().validity().not_after().seconds(),
+        );
+        let utc = LeapTable::new(interval.from(), interval.to(), &[]).unwrap();
+        let context = ValidationContext {
+            execution: &work,
+            interval,
+            policy: path::Policy::default(),
+            bounds: ValidationBounds::default(),
+            verifier: &oracle,
+            watch: &(),
+            recognizer: &(),
+        };
+        let PathOutcome::Accepted(path) =
+            pki::check_path(&[leaf], Anchor::from_certificate(root), &context).unwrap()
+        else {
+            panic!("real signer path");
+        };
+        let PathOutcome::Accepted(tsa_path) =
+            pki::check_path(&[tsa], Anchor::from_certificate(root), &context).unwrap()
+        else {
+            panic!("real TSA path");
+        };
+        let selected = &message.signers()[0];
+        let prepare::Preparation::Ready(plan) = prepare::resolve(
+            &oracle,
+            selected,
+            path.members().last().unwrap().key(),
+            &parent,
+            Scope::Content(oid::DATA),
+        )
+        .unwrap() else {
+            panic!("real CMS plan");
+        };
+        let mut requests = work.vector();
+        requests.try_push(plan).unwrap();
+        let checks = DocumentBatch::prepare(
+            &oracle,
+            &message,
+            requests.into_owned(),
+            ContentMode::Carried,
+            &parent,
+        )
+        .unwrap()
+        .run_carried()
+        .unwrap();
+        let document = Document::new(&message, &parent).unwrap();
+        let level = match mode {
+            3 => Level::LongTerm,
+            4 | 6 => Level::Archival,
+            _ => Level::Timestamped,
+        };
+        let prepared = Preparation::read(&document, selected, level, &parent).unwrap();
+        assert!(
+            prepared.all_format_requirements_met(),
+            "{:?}",
+            prepared.findings()
+        );
+        let binding = basic::bind(
+            &prepared,
+            &checks,
+            &checks.checks()[0],
+            leaf,
+            Some(&path),
+            &oracle,
+            &parent,
+        )
+        .unwrap();
+        assert!(binding.is_bound());
+        let counter_checks = counters::bind(&prepared, &parent, |context| {
+            context.check(&oracle, leaf, &path)
+        })
+        .unwrap();
+        let counter_paths = counter_checks.paths().unwrap();
+        let handler = EmptyCredentials(Cell::new(0));
+        let credentials =
+            credential::check(&prepared, &binding, &counter_paths, &handler, &parent).unwrap();
+        let credentials = credentials.complete().unwrap();
+        let basic = basic::basic(&binding, counter_paths, &parent).unwrap();
+        let pool = material::Pool::read(&prepared, &parent).unwrap();
+        let time = structured_cades::timestamp::CheckTime {
+            utc: &utc,
+            reference: Some(interval.to_instant()),
+        };
+        let signature_ordinal = prepared
+            .timestamps()
+            .iter()
+            .position(|entry| entry.purpose() == structured_ltv::timestamp::Purpose::Signature)
+            .unwrap();
+        let starts = oracle.starts.get();
+        let answer = pool.with_token(signature_ordinal, &parent, |selected| {
+            selected.check_signature(&oracle, &tsa_path, &parent, &time, |_, _| {
+                Ok::<_, Infallible>(true)
+            })
+        });
+        if mode == 5 {
+            assert!(
+                matches!(
+                    answer,
+                    Err(structured_cades::timestamp::VisitError::Callback(
+                        structured_cades::timestamp::CheckError::ForbiddenDigest { .. }
+                    ))
+                ),
+                "MD5 is a format violation, not a provider's Unsupported mechanism"
+            );
+            assert_eq!(
+                oracle.starts.get(),
+                starts,
+                "format prohibition precedes provider side effects"
+            );
+            continue;
+        }
+        let answer = answer.unwrap();
+        let archive = if mode == 4 || mode == 6 {
+            let ordinal = prepared
+                .timestamps()
+                .iter()
+                .position(|entry| entry.purpose() == structured_ltv::timestamp::Purpose::Archive)
+                .unwrap();
+            Some(
+                pool.with_token(ordinal, &parent, |selected| {
+                    selected.check_archive_carried(&oracle, &tsa_path, &parent, &time, |_, _| {
+                        Ok::<_, Infallible>(true)
+                    })
+                })
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+        let query = QueryScope::new(&document, document.snapshot(), &work);
+        if mode == 0 || mode >= 3 {
+            assert!(
+                answer.actor().is_some(),
+                "signature={:?} identifier={:?} bindings={:?} authority={:?} imprint={:?} accuracy={:?} restrictions={:?}",
+                answer.signature,
+                answer.identifier,
+                answer.bindings,
+                answer.authority,
+                answer.imprint,
+                answer.accuracy,
+                answer.restrictions
+            );
+            let actor = answer.actor().unwrap();
+            let TimestampBinding::Bound(tsa_receipt) =
+                tsa_path.bind_timestamp(actor, &utc, &work).unwrap()
+            else {
+                panic!("full generation interval covered by actual TSA path");
+            };
+            let archive_path = archive.as_ref().map(|archive| {
+                let actor = archive
+                    .timestamp()
+                    .actor()
+                    .expect("actual original archive imprint and TSA signature must hold");
+                let TimestampBinding::Bound(path) =
+                    tsa_path.bind_timestamp(actor, &utc, &work).unwrap()
+                else {
+                    panic!("actual archive TSA path");
+                };
+                path
+            });
+            let mut paths = vec![&tsa_receipt];
+            if let Some(archive_path) = &archive_path {
+                paths.insert(usize::from(signature_ordinal == 0), archive_path);
+            }
+            let TimestampPathBinding::Bound(paths) = prepared
+                .timestamp_requirements()
+                .bind_paths(&paths, &query)
+                .unwrap()
+            else {
+                panic!("complete original token census");
+            };
+            let timed = baseline::timestamped(&basic, &paths, &query).unwrap();
+            assert!(timed.all_static_time_requirements_met());
+            let required = structured_cades::participants::participants(
+                basic.binding(),
+                basic.counter_paths(),
+                &credentials,
+                &paths,
+                &query,
+            );
+            if mode == 6 {
+                assert!(
+                    matches!(
+                        required,
+                        Err(structured_cades::participants::Error::Preservation {
+                            kind: structured_cades::preservation::Kind::ArchiveV2,
+                            ..
+                        })
+                    ),
+                    "a successful modern prefix cannot prove a complete historical actor census"
+                );
+                continue;
+            }
+            let required = required.unwrap();
+            assert_eq!(
+                required.entries().len(),
+                1 + prepared.timestamps().len(),
+                "actual signer and EVERY original TSA, not a supplied successful subset"
+            );
+            if mode == 0 {
+                let assessment =
+                    baseline::assess(baseline::Evidence::timestamped(&timed), &parent).unwrap();
+                assert!(assessment.all_requirements_met());
+            } else {
+                // Authenticate an ACTUAL complete CRL, evaluate each target,
+                // bind its real authority, and close every original actor.
+                let crl = pool.crl(0, &work).unwrap().unwrap();
+                let structured_pkix::crl::Authentication::Authenticated(authenticated) = crl
+                    .authenticate(
+                        root,
+                        structured_pkix::path::WorkingKey::standing(root.tbs().public_key()),
+                        &oracle,
+                        &work,
+                    )
+                    .unwrap()
+                else {
+                    panic!("actual ECDSA CRL authentication");
+                };
+                let at = crl.tbs().this_update().instant().into();
+                let evaluation = structured_pkix::crl::Evaluation {
+                    now: at,
+                    utc: &utc,
+                    execution: &work,
+                    origin: structured_pkix::crl::SourceOrigin::Cached,
+                };
+                let structured_pkix::crl::CompleteEvidence::Facts(signer_status) =
+                    authenticated.evaluate(leaf, &evaluation).unwrap()
+                else {
+                    panic!("actual applicable signer CRL");
+                };
+                let structured_pkix::crl::CompleteEvidence::Facts(tsa_status) =
+                    authenticated.evaluate(tsa, &evaluation).unwrap()
+                else {
+                    panic!("actual applicable TSA CRL");
+                };
+                assert!(signer_status.absence().is_some() && tsa_status.absence().is_some());
+                let authorities = pki::CrlAuthorities::Complete(pki::CrlAuthority::Anchor);
+                let pki::CrlReadingBinding::Bound(signer_status) = path
+                    .bind_crl_reading(
+                        0,
+                        pki::CrlReading::Complete(&signer_status),
+                        authorities,
+                        &utc,
+                        &work,
+                    )
+                    .unwrap()
+                else {
+                    panic!("actual signer status authority");
+                };
+                let pki::CrlReadingBinding::Bound(tsa_status) = tsa_path
+                    .bind_crl_reading(
+                        0,
+                        pki::CrlReading::Complete(&tsa_status),
+                        authorities,
+                        &utc,
+                        &work,
+                    )
+                    .unwrap()
+                else {
+                    panic!("actual TSA status authority");
+                };
+                let signer_entries = [pki::MemberStatus::CrlReading(&signer_status)];
+                let tsa_entries = [pki::MemberStatus::CrlReading(&tsa_status)];
+                let signer_statuses = path.status_census(at, &signer_entries, &work).unwrap();
+                let tsa_statuses = tsa_path.status_census(at, &tsa_entries, &work).unwrap();
+                let mut status_roots = vec![&signer_statuses, &tsa_statuses];
+                if mode == 4 {
+                    status_roots.push(&tsa_statuses);
+                }
+                let supplied = [
+                    pki::AuthorityNode {
+                        statuses: &signer_statuses,
+                        responders: &[],
+                    },
+                    pki::AuthorityNode {
+                        statuses: &tsa_statuses,
+                        responders: &[],
+                    },
+                ];
+                let inputs = required
+                    .close_statuses(&status_roots, &supplied, &query)
+                    .unwrap();
+                let index = pool.index(&query).unwrap();
+                let x509 = material::check_participants(&prepared, &pool, &inputs, &index, &query)
+                    .unwrap();
+                assert!(x509.all_x509_requirements_met(), "{:?}", x509.findings());
+                let whole_credentials = material::credentials::check(
+                    &credentials,
+                    basic.counter_paths(),
+                    prepared.timestamp_requirements(),
+                    &index,
+                    &material::credentials::Scope::whole(),
+                    &handler,
+                    &parent,
+                )
+                .unwrap();
+                assert!(whole_credentials.all_requirements_met());
+                let long = baseline::long_term(&timed, &x509, &whole_credentials, &query).unwrap();
+                assert!(long.all_material_requirements_met());
+                if let Some(archive) = &archive {
+                    let earlier = archive.requirements(&prepared, &parent).unwrap();
+                    assert_eq!(
+                        earlier.entries().len(),
+                        1,
+                        "own TSA cannot enter its preceding archive census"
+                    );
+                    let earlier_paths = [&tsa_receipt];
+                    let TimestampPathBinding::Bound(earlier_paths) =
+                        earlier.bind_paths(&earlier_paths, &query).unwrap()
+                    else {
+                        panic!("actual covered preceding token");
+                    };
+                    let earlier_actors = structured_cades::participants::participants(
+                        basic.binding(),
+                        basic.counter_paths(),
+                        &credentials,
+                        &earlier_paths,
+                        &query,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        earlier_actors.entries().len(),
+                        2,
+                        "root and preceding TSA only"
+                    );
+                    let earlier_roots = [&signer_statuses, &tsa_statuses];
+                    let earlier_inputs = earlier_actors
+                        .close_statuses(&earlier_roots, &supplied, &query)
+                        .unwrap();
+                    let x509 = structured_ltv::material::archived_participants(
+                        &earlier_inputs,
+                        &index,
+                        archive.coverage(),
+                        archive.timestamp().actor().unwrap().verified(),
+                        &query,
+                    )
+                    .unwrap();
+                    assert!(x509.all_x509_artifacts_covered());
+                    let archive_credentials = material::credentials::check(
+                        &credentials,
+                        basic.counter_paths(),
+                        &earlier,
+                        &index,
+                        &material::credentials::Scope::before_archive(archive),
+                        &handler,
+                        &parent,
+                    )
+                    .unwrap();
+                    let archive_material =
+                        baseline::archive_material(&x509, &archive_credentials, &query).unwrap();
+                    let reports = [&archive_material];
+                    let archives = baseline::archives(&prepared, &reports, &query).unwrap();
+                    let assessment = baseline::assess(
+                        baseline::Evidence::Archival {
+                            long_term: &long,
+                            archives: &archives,
+                        },
+                        &parent,
+                    )
+                    .unwrap();
+                    assert!(assessment.all_requirements_met());
+                } else {
+                    let assessment =
+                        baseline::assess(baseline::Evidence::LongTerm(&long), &parent).unwrap();
+                    assert!(assessment.all_requirements_met());
+                }
+            }
+        } else {
+            assert!(
+                answer.actor().is_none(),
+                "wrong original input or unknown accuracy cannot issue a complete actor"
+            );
+            let TimestampPathBinding::Unproven(_) = prepared
+                .timestamp_requirements()
+                .bind_paths(&[], &query)
+                .unwrap()
+            else {
+                panic!("dropping a failed original token cannot produce complete paths");
+            };
+        }
+        assert_eq!(handler.0.get(), 0);
+    }
+}

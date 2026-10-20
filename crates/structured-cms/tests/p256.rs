@@ -201,10 +201,180 @@ fn hex<const N: usize>(text: &str) -> [u8; N] {
 }
 
 fn tlv(tag: u8, contents: &[u8]) -> Vec<u8> {
-    assert!(contents.len() < 128);
-    let mut result = vec![tag, u8::try_from(contents.len()).unwrap()];
+    let mut result = vec![tag];
+    if contents.len() < 128 {
+        result.push(u8::try_from(contents.len()).unwrap());
+    } else {
+        result.push(0x82);
+        result.extend(u16::try_from(contents.len()).unwrap().to_be_bytes());
+    }
     result.extend_from_slice(contents);
     result
+}
+
+fn document_fixture(content: Option<&[u8]>, signers: usize) -> (Vec<u8>, Vec<u8>, Oracle) {
+    // Same published RFC6979 vector as the existing direct CMS test above.
+    let mut public = [0; 65];
+    public[0] = 4;
+    public[1..33].copy_from_slice(&hex::<32>(
+        "60FED4BA255A9D31C961EB74C6356D68C049B8923B61FA6CE669622E60F29FB6",
+    ));
+    public[33..].copy_from_slice(&hex::<32>(
+        "7903FE1008B8BC99A41AE9E95628BC64F2F1B20C2D7E9F5177A3C294D4462299",
+    ));
+    let signature = Signature::from_scalars(
+        hex::<32>("EFD48B2AACB6A8FD1140DD9CD45E81D69D2C877B56AAF991C34D0EA84EAF3716"),
+        hex::<32>("F7CB1C942D657C41D436C7A1B6E29F65F3E900DBB9AFF4064DC4AB2F843ACDA8"),
+    )
+    .unwrap()
+    .to_der();
+    let mut signer = vec![2, 1, 3, 0x80, 1, 7];
+    signer.extend(tlv(0x30, &tlv(6, SHA256)));
+    signer.extend(tlv(0x30, &tlv(6, ECDSA_SHA256)));
+    signer.extend(tlv(4, signature.as_bytes()));
+    let signer = tlv(0x30, &signer);
+    let mut content_info = tlv(6, oid::DATA.as_bytes());
+    if let Some(content) = content {
+        content_info.extend(tlv(0xa0, &tlv(4, content)));
+    }
+    let mut body = vec![2, 1, 3];
+    body.extend(tlv(0x31, &tlv(0x30, &tlv(6, SHA256))));
+    body.extend(tlv(0x30, &content_info));
+    body.extend(tlv(0x31, &signer.repeat(signers)));
+    let envelope = tlv(
+        0x30,
+        &[
+            tlv(6, oid::SIGNED_DATA.as_bytes()),
+            tlv(0xa0, &tlv(0x30, &body)),
+        ]
+        .concat(),
+    );
+    let algorithm = tlv(0x30, &[tlv(6, EC), tlv(6, CURVE)].concat());
+    let key = tlv(
+        0x30,
+        &[algorithm, tlv(3, &[&[0][..], &public].concat())].concat(),
+    );
+    let oracle = Oracle {
+        public,
+        key: VerifyingKey::from_sec1_bytes(&public).unwrap(),
+        starts: Cell::new(0),
+        finishes: Cell::new(0),
+        verifications: Cell::new(0),
+        received: Cell::new([0; 32]),
+    };
+    (envelope, key, oracle)
+}
+
+#[test]
+fn original_document_batch_keeps_one_payload_pass_and_actual_result_identity() {
+    // Two original roots share one SHA256 input/output, while each P256
+    // challenge executes once. Equal copies cannot borrow this receipt's source.
+    let (encoded, key, oracle) = document_fixture(Some(b"sample"), 2);
+    let memory = Memory::new(Arc::new(MemoryAccount::new(1 << 20, 16 << 20)));
+    let parser = Parser::ber(memory.clone());
+    let data = structured_cms::SignedData::read(&parser, &encoded, 400).unwrap();
+    let other = structured_cms::SignedData::read(&parser, &encoded, 400).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let mut key_reader = parser.read(&key, 900).unwrap();
+    let element = key_reader.next_element().unwrap().unwrap();
+    let key = PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap();
+    let held = memory.used();
+    let mut requests = parent.execution().vector();
+    for signer in data.signers() {
+        let prepare::Preparation::Ready(request) = prepare::resolve(
+            &oracle,
+            signer,
+            WorkingKey::standing(key),
+            &parent,
+            binding::Scope::Content(oid::DATA),
+        )
+        .unwrap() else {
+            panic!("vector must resolve")
+        };
+        requests.try_push(request).unwrap();
+    }
+    let batch = verify::DocumentBatch::prepare(
+        &oracle,
+        &data,
+        requests.into_owned(),
+        verify::ContentMode::Carried,
+        &parent,
+    )
+    .unwrap();
+    let checked = batch.run_carried().unwrap();
+    assert_eq!(checked.checks().len(), 2);
+    assert!(core::ptr::eq(checked.message(), core::ptr::from_ref(&data)));
+    for answer in checked.checks() {
+        assert_eq!(answer.signature(), Some(SignatureAnswer::Valid));
+        checked.require(&data, answer, &parent.execution()).unwrap();
+        assert!(
+            checked
+                .require(&other, answer, &parent.execution())
+                .is_err()
+        );
+    }
+    assert_eq!(oracle.starts.get(), 1);
+    assert_eq!(oracle.finishes.get(), 1);
+    assert_eq!(oracle.verifications.get(), 2);
+    drop(checked);
+    assert_eq!(memory.used(), held);
+}
+
+#[test]
+fn document_mode_is_checked_before_states_and_detached_input_is_explicit() {
+    // A caller cannot replace carried octets with a detached source, nor treat
+    // absent content as a real empty carried string. The same vector passes
+    // only after the explicit detached source is consumed completely.
+    let (encoded, key, oracle) = document_fixture(None, 1);
+    let memory = Memory::new(Arc::new(MemoryAccount::new(1 << 20, 16 << 20)));
+    let parser = Parser::ber(memory);
+    let data = structured_cms::SignedData::read(&parser, &encoded, 400).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let mut key_reader = parser.read(&key, 900).unwrap();
+    let element = key_reader.next_element().unwrap().unwrap();
+    let key = PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap();
+    let requests = || {
+        let prepare::Preparation::Ready(ready) = prepare::resolve(
+            &oracle,
+            &data.signers()[0],
+            WorkingKey::standing(key),
+            &parent,
+            binding::Scope::Content(oid::DATA),
+        )
+        .unwrap() else {
+            panic!("vector must resolve")
+        };
+        let mut requests = parent.execution().vector();
+        requests.try_push(ready).unwrap();
+        requests.into_owned()
+    };
+    assert!(
+        verify::DocumentBatch::prepare(
+            &oracle,
+            &data,
+            requests(),
+            verify::ContentMode::Carried,
+            &parent
+        )
+        .is_err()
+    );
+    assert_eq!(oracle.starts.get(), 0);
+    let batch = verify::DocumentBatch::prepare(
+        &oracle,
+        &data,
+        requests(),
+        verify::ContentMode::Detached,
+        &parent,
+    )
+    .unwrap();
+    let mut source = [&b"sam"[..], &b"ple"[..]];
+    let checked = batch.run_detached(&mut source).unwrap();
+    assert_eq!(
+        checked.checks()[0].signature(),
+        Some(SignatureAnswer::Valid)
+    );
+    assert_eq!(oracle.starts.get(), 1);
+    assert_eq!(oracle.verifications.get(), 1);
 }
 
 fn check(message: &[u8], null: bool) -> SignatureAnswer {

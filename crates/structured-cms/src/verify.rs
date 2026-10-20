@@ -11,6 +11,9 @@ use crate::{Error, ErrorCode};
 use structured_asn1::memory::{OwnedVec, Work};
 use structured_pkix::path::WorkingKey;
 
+mod document;
+pub use document::{ContentMode, DocumentBatch, DocumentChecks};
+
 /// Failure to execute, distinct from per-signer arithmetic/content answers.
 #[derive(Debug)]
 pub enum CheckError<E> {
@@ -54,6 +57,20 @@ pub struct Checked<'a> {
 }
 
 impl<'a> Checked<'a> {
+    /// Moves complete content/arithmetic facts out of a scoped signer check.
+    /// This avoids cloning a malformed-content diagnostic when an enclosing
+    /// format retains the facts beyond its temporary parsed signer model.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        &'a SignerInfo<'a>,
+        WorkingKey<'a>,
+        ContentAgreement,
+        Option<SignatureAnswer>,
+    ) {
+        (self.signer, self.key, self.content, self.signature)
+    }
     /// Original signer and retained conformance faults; nothing is repaired.
     #[must_use]
     pub fn signer(&self) -> &'a SignerInfo<'a> {

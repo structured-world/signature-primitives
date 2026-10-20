@@ -221,7 +221,7 @@ impl<'a> TbsCertList<'a> {
 pub struct CertificateList<'a> {
     tbs: TbsCertList<'a>,
     signature_algorithm: AlgorithmIdentifier<'a>,
-    signature: BitString<'a>,
+    signature: crate::signature::SignatureValue<'a>,
     bytes: &'a [u8],
     span: Span,
 }
@@ -325,7 +325,7 @@ impl<'a> CertificateList<'a> {
         let tbs = read_tbs(&inside, &tbs_element)?;
         let algorithm_element = required(&mut inside, ALGORITHM, root.span().start)?;
         let signature_algorithm = algorithm::read(&inside, &algorithm_element, ALGORITHM)?;
-        let signature = inside.read_bit_string().field(SIGNATURE)?;
+        let signature = crate::signature::SignatureValue::read(&mut inside, SIGNATURE)?;
         end(&inside, FIELD, root.span().start)?;
         // RFC 5280 §§5.1.1.2, 5.1.2.2: the unsigned algorithm must agree with
         // the signed identifier. Preserve both execution and parser ceilings.
@@ -358,6 +358,11 @@ impl<'a> CertificateList<'a> {
     /// Original signature BIT STRING.
     #[must_use]
     pub fn signature(&self) -> BitString<'a> {
+        self.signature.bit_string()
+    }
+    /// Signature bytes with original source context for deferred decoding.
+    #[must_use]
+    pub fn signature_value(&self) -> crate::signature::SignatureValue<'a> {
         self.signature
     }
     /// Exact `TBSCertList` range to supply to a signature verifier.

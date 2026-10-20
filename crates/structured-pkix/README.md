@@ -131,6 +131,17 @@ to repair a key that writes parameters.
 
 ### DSA and ECDSA signature-value structure
 
+Certificates, CRLs and basic OCSP responses expose `signature_value()` alongside
+their raw `signature()` BIT STRING. `path::Verify::verify` receives this borrowed
+`signature::SignatureValue`, preserving the original payload range, source
+parser, encoding and depth. Raw algorithms use `octets()` without opening a
+cursor. After permission and capability checks, a selected DSA/ECDSA provider
+uses `signature.reader_in(execution)` with `DssValue::read`; current operation
+and original cumulative work/depth limits apply without a new parser or payload
+copy. Processing/resource errors remain errors, separately from signature
+mismatch and unsupported capability. XMLDSig's fixed-width `r || s` encoding
+continues to belong to its XML adapter.
+
 `signature::DssValue::read(&mut reader, "signatureValue")` reads a complete
 `SEQUENCE { r INTEGER, s INTEGER }` window; `read_element` reads one embedded
 value while leaving surrounding siblings to their schema. Both require DER

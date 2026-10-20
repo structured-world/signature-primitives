@@ -536,7 +536,7 @@ impl<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work> Driver<'a, R, E>
                 &certificate.signature_algorithm(),
                 key,
                 certificate.signed_bytes(),
-                certificate.signature(),
+                certificate.signature_value(),
                 self.context.execution,
             )
             .map(Some)
@@ -681,8 +681,9 @@ pub fn validate_effective<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>
 mod tests {
     use super::*;
     use crate::fixtures::{CertificateParts, oid as encoded_oid, printable, seq, set};
+    use crate::signature::SignatureValue;
     use core::cell::Cell;
-    use structured_asn1::{BitString, Parser};
+    use structured_asn1::Parser;
 
     struct Answer {
         result: Verified,
@@ -695,7 +696,7 @@ mod tests {
             _algorithm: &crate::AlgorithmIdentifier<'_>,
             _key: WorkingKey<'_>,
             _signed: &[u8],
-            _signature: BitString<'_>,
+            _signature: SignatureValue<'_>,
             _execution: &Memory,
         ) -> core::result::Result<Verified, Self::Error> {
             self.calls.set(self.calls.get() + 1);

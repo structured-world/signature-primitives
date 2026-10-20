@@ -5,6 +5,7 @@ use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extensions};
 use crate::key::PublicKeyInfo;
 use crate::name::{self, Name};
+use crate::signature::SignatureValue;
 use crate::time::{self, Time};
 use structured_asn1::{BitString, Element, Integer, Parser, Reader, Span, Tag, universal};
 
@@ -75,7 +76,7 @@ impl Validity {
 pub struct Certificate<'a> {
     tbs: TbsCertificate<'a>,
     signature_algorithm: AlgorithmIdentifier<'a>,
-    signature: BitString<'a>,
+    signature: SignatureValue<'a>,
     der: &'a [u8],
     span: Span,
 }
@@ -161,7 +162,7 @@ impl<'a> Certificate<'a> {
             .ok_or_else(|| fail(ErrorCode::MissingField))?;
         let signature_algorithm =
             algorithm::read(&inside, &algorithm_element, SIGNATURE_ALGORITHM)?;
-        let signature = inside.read_bit_string().field(SIGNATURE)?;
+        let signature = SignatureValue::read(&mut inside, SIGNATURE)?;
 
         if !inside.is_empty() {
             return Err(fail(ErrorCode::TrailingData));
@@ -208,6 +209,12 @@ impl<'a> Certificate<'a> {
     /// The signature value.
     #[must_use]
     pub fn signature(&self) -> BitString<'a> {
+        self.signature.bit_string()
+    }
+
+    /// Signature bytes with original source context for deferred decoding.
+    #[must_use]
+    pub fn signature_value(&self) -> SignatureValue<'a> {
         self.signature
     }
 

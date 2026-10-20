@@ -4290,7 +4290,7 @@ impl<W: Work> structured_pkix::path::Verify<W> for MetadataSignature {
         _algorithm: &structured_pkix::AlgorithmIdentifier<'_>,
         _key: structured_pkix::path::WorkingKey<'_>,
         signed: &[u8],
-        signature: structured_asn1::BitString<'_>,
+        signature: structured_pkix::signature::SignatureValue<'_>,
         work: &W,
     ) -> Result<structured_pkix::path::Verified, MemoryError> {
         // This oracle isolates parameter propagation, NEVER DSA arithmetic.

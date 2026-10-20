@@ -5,13 +5,14 @@ use crate::fixtures::{
     CertificateParts, bits, boolean, context, extension, generalized_time, int, null, octets,
     oid as encoded_oid, seq, tlv,
 };
+use crate::signature::SignatureValue;
 use crate::{AlgorithmIdentifier, Certificate, crl, ocsp, oid, path};
 use core::cell::Cell;
 use p256::ecdsa::signature::{Signer, Verifier};
 use sha1::Digest as _;
 use structured_asn1::digest::Resolution;
 use structured_asn1::memory::{Memory, MemoryError, Work};
-use structured_asn1::{BitString, Oid, Parser};
+use structured_asn1::{Oid, Parser};
 
 const ECDSA_SHA256: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x48, 0xce, 0x3d, 4, 3, 2]);
 const PRIME256V1: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x48, 0xce, 0x3d, 3, 1, 7]);
@@ -67,7 +68,7 @@ impl path::Verify for Provider {
         algorithm: &AlgorithmIdentifier<'_>,
         key: path::WorkingKey<'_>,
         data: &[u8],
-        signature: BitString<'_>,
+        signature: SignatureValue<'_>,
         execution: &Memory,
     ) -> core::result::Result<path::Verified, Self::Error> {
         // Test admission is not a claim that all third-party provider internals

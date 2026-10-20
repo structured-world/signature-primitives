@@ -2,9 +2,10 @@ use super::*;
 use crate::fixtures::{
     CertificateParts, algorithm, bits, extension, int, null, oid as encoded_oid, seq, tlv,
 };
+use crate::signature::SignatureValue;
 use core::cell::Cell;
 use structured_asn1::memory::Memory;
-use structured_asn1::{BitString, Oid, Parser};
+use structured_asn1::{Oid, Parser};
 
 struct VerifiedBy<'a> {
     key: &'a [u8],
@@ -24,7 +25,7 @@ fn delegation_retains_the_actual_inherited_issuing_parameters() {
             _: &crate::AlgorithmIdentifier<'_>,
             key: WorkingKey<'_>,
             _: &[u8],
-            _: BitString<'_>,
+            _: SignatureValue<'_>,
             _: &Memory,
         ) -> core::result::Result<path::Verified, Self::Error> {
             assert_eq!(key.parameters(), Some(self.0));
@@ -94,7 +95,7 @@ impl Verify for VerifiedBy<'_> {
         _: &crate::AlgorithmIdentifier<'_>,
         key: WorkingKey<'_>,
         _: &[u8],
-        _: BitString<'_>,
+        _: SignatureValue<'_>,
         _: &Memory,
     ) -> core::result::Result<path::Verified, Self::Error> {
         self.calls.set(self.calls.get() + 1);

@@ -64,7 +64,7 @@ impl structured_pkix::path::Verify for SignatureYes {
         _: &structured_pkix::AlgorithmIdentifier<'_>,
         _: structured_pkix::path::WorkingKey<'_>,
         _: &[u8],
-        _: structured_asn1::BitString<'_>,
+        _: structured_pkix::signature::SignatureValue<'_>,
         _: &Memory,
     ) -> Result<structured_pkix::path::Verified, Self::Error> {
         Ok(structured_pkix::path::Verified::Yes)

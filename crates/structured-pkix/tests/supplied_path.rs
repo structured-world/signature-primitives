@@ -3,11 +3,12 @@
 use std::cell::Cell;
 use std::sync::Arc;
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, Work};
-use structured_asn1::{BitString, Oid, Parser};
+use structured_asn1::{Oid, Parser};
 use structured_pkix::path::{
     self, Anchor, BuildError, ConstraintSource, Interval, Policy, RejectionReason, Truncation,
     Validation, ValidationBounds, ValidationContext, Verified, Verify, WorkingKey,
 };
+use structured_pkix::signature::SignatureValue;
 use structured_pkix::{AlgorithmIdentifier, Certificate, ErrorCode, oid};
 
 fn memory(storage: usize, work: usize) -> Memory {
@@ -91,7 +92,7 @@ impl<E: Work> Verify<E> for ScopedProvider {
         _: &AlgorithmIdentifier<'_>,
         _: WorkingKey<'_>,
         _: &[u8],
-        _: BitString<'_>,
+        _: SignatureValue<'_>,
         execution: &E,
     ) -> Result<Verified, Self::Error> {
         self.calls.set(self.calls.get() + 1);
@@ -293,7 +294,7 @@ impl Verify for Provider<'_> {
         _algorithm: &AlgorithmIdentifier<'_>,
         _key: WorkingKey<'_>,
         signed: &[u8],
-        _signature: BitString<'_>,
+        _signature: SignatureValue<'_>,
         _execution: &Memory,
     ) -> Result<Verified, Self::Error> {
         assert_eq!(signed.as_ptr(), self.signed.as_ptr());

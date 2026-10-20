@@ -5,10 +5,11 @@ use crate::fixtures::{
 };
 use crate::ocsp::{AuthorityBinding, AuthoritySource, SignatureAuthentication};
 use crate::path::{Verified, Verify, WorkingKey};
+use crate::signature::SignatureValue;
 use core::cell::Cell;
 use core::cmp::Ordering;
+use structured_asn1::Parser;
 use structured_asn1::digest::{Digest, Resolution};
-use structured_asn1::{BitString, Parser};
 
 // Output markers: which original input a state hashed.
 const NAME: [u8; 1] = [1];
@@ -101,7 +102,7 @@ impl Verify for Provider<'_> {
         _: &crate::AlgorithmIdentifier<'_>,
         _: WorkingKey<'_>,
         signed: &[u8],
-        _: BitString<'_>,
+        _: SignatureValue<'_>,
         _: &Memory,
     ) -> core::result::Result<Verified, Self::Error> {
         assert_eq!(signed.as_ptr(), self.signed.as_ptr());

@@ -260,7 +260,7 @@ impl Verify for Ecdsa {
         algorithm: &crate::AlgorithmIdentifier<'_>,
         key: super::WorkingKey<'_>,
         signed: &[u8],
-        signature: structured_asn1::BitString<'_>,
+        signature: crate::signature::SignatureValue<'_>,
         _execution: &structured_asn1::memory::Memory,
     ) -> core::result::Result<Verified, Self::Error> {
         Ok({
@@ -302,7 +302,7 @@ impl Verify for Curved {
         algorithm: &crate::AlgorithmIdentifier<'_>,
         key: super::WorkingKey<'_>,
         signed: &[u8],
-        signature: structured_asn1::BitString<'_>,
+        signature: crate::signature::SignatureValue<'_>,
         _execution: &structured_asn1::memory::Memory,
     ) -> core::result::Result<Verified, Self::Error> {
         Ok({
@@ -844,7 +844,7 @@ fn inherited_algorithm_matching_is_admitted_at_the_current_certificate() {
             _algorithm: &crate::AlgorithmIdentifier<'_>,
             _key: super::WorkingKey<'_>,
             _signed: &[u8],
-            _signature: structured_asn1::BitString<'_>,
+            _signature: crate::signature::SignatureValue<'_>,
             execution: &structured_asn1::memory::Memory,
         ) -> Result<Verified, Self::Error> {
             execution
@@ -1208,7 +1208,7 @@ fn a_verifier_failure_preserves_the_provider_cause() {
             _: &crate::AlgorithmIdentifier<'_>,
             _: super::WorkingKey<'_>,
             _: &[u8],
-            _: structured_asn1::BitString<'_>,
+            _: crate::signature::SignatureValue<'_>,
             execution: &structured_asn1::memory::Memory,
         ) -> core::result::Result<Verified, Self::Error> {
             assert!(execution.same_account(self.0));
@@ -5433,7 +5433,7 @@ impl Verify for Recording<'_> {
         _algorithm: &crate::AlgorithmIdentifier<'_>,
         key: super::WorkingKey<'_>,
         _signed: &[u8],
-        _signature: structured_asn1::BitString<'_>,
+        _signature: crate::signature::SignatureValue<'_>,
         _execution: &structured_asn1::memory::Memory,
     ) -> core::result::Result<Verified, Self::Error> {
         Ok({
@@ -5805,7 +5805,7 @@ impl Verify for Registered {
         _algorithm: &crate::AlgorithmIdentifier<'_>,
         key: super::WorkingKey<'_>,
         signed: &[u8],
-        signature: structured_asn1::BitString<'_>,
+        signature: crate::signature::SignatureValue<'_>,
         _execution: &structured_asn1::memory::Memory,
     ) -> core::result::Result<Verified, Self::Error> {
         Ok({

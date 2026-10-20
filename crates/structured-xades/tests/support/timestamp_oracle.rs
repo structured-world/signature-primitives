@@ -722,7 +722,7 @@ impl<W: Work> structured_pkix::path::Verify<W> for PathOracle {
         algorithm: &AlgorithmIdentifier<'_>,
         key: WorkingKey<'_>,
         signed: &[u8],
-        signature: structured_asn1::BitString<'_>,
+        signature: structured_pkix::signature::SignatureValue<'_>,
         work: &W,
     ) -> Result<structured_pkix::path::Verified, Self::Error> {
         use structured_pkix::path::Verified;

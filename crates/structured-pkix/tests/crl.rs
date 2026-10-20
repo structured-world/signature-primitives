@@ -92,7 +92,7 @@ impl structured_pkix::path::Verify for SignatureYes {
         _: &structured_pkix::AlgorithmIdentifier<'_>,
         _: structured_pkix::path::WorkingKey<'_>,
         _: &[u8],
-        _: structured_asn1::BitString<'_>,
+        _: structured_pkix::signature::SignatureValue<'_>,
         _: &Memory,
     ) -> Result<structured_pkix::path::Verified, Self::Error> {
         Ok(structured_pkix::path::Verified::Yes)
@@ -1469,7 +1469,7 @@ fn authentication_binds_key_and_usage_before_signature_dispatch() {
             _: &structured_pkix::AlgorithmIdentifier<'_>,
             _: WorkingKey<'_>,
             signed: &[u8],
-            _: structured_asn1::BitString<'_>,
+            _: structured_pkix::signature::SignatureValue<'_>,
             _: &Memory,
         ) -> Result<Verified, u8> {
             assert_eq!(signed.as_ptr(), self.signed.as_ptr());
@@ -1549,7 +1549,7 @@ fn callback_refusal_unsupported_and_resource_errors_keep_their_origin() {
             _: &structured_pkix::AlgorithmIdentifier<'_>,
             _: WorkingKey<'_>,
             _: &[u8],
-            _: structured_asn1::BitString<'_>,
+            _: structured_pkix::signature::SignatureValue<'_>,
             _: &Memory,
         ) -> Result<Verified, u8> {
             self.0
@@ -2021,7 +2021,7 @@ fn authenticated_delta_binding_keeps_sources_and_checks_arbitrary_width_numbers(
             _: &structured_pkix::AlgorithmIdentifier<'_>,
             _: WorkingKey<'_>,
             _: &[u8],
-            _: structured_asn1::BitString<'_>,
+            _: structured_pkix::signature::SignatureValue<'_>,
             _: &Memory,
         ) -> Result<Verified, Self::Error> {
             Ok(Verified::Yes)

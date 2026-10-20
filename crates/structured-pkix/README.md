@@ -90,6 +90,18 @@ owned result/error, but cannot retain a reference to the temporary descriptor.
 
 ### RSA-PSS parameters
 
+Decoded `algorithm::pss::Parameters::profile(&work)` resolves independent message
+and MGF1 digests through the shared digest core, preserving original salt/trailer
+fields and source limits without a second PSS read. Unknown digests, mask functions
+and non-BC trailers are unsupported; invalid known digest parameters and negative
+trailers are located errors. A recognized profile does not promise provider support.
+`key_profile.allows(&signature_profile, &work)` compares present restrictions using
+the RFC4055 minimum-salt rule with arbitrary-width integers. `pss::profile::key_allows`
+also handles original RSA key identifiers and absent PSS restrictions. It requires
+the selected key's identifier, not an issuer's or a signature identifier. No inherited
+restriction, modulus bound, backend conversion, cryptographic operation or policy
+decision is introduced. Inspection faults remain faults after profile projection.
+
 RSA-PSS parameter decoding is available through `algorithm::pss::read` and
 `inspect` for a retained `AlgorithmIdentifier` and current `Work`. Verification
 callbacks need no former reader, replacement parser, parameter copy or encoded

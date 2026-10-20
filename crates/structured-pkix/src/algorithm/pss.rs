@@ -13,6 +13,7 @@ use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Element, Integer, Oid, ScopedReader as Reader, Tag, universal};
 
 use crate::oid::SHA1;
+pub mod profile;
 const MGF1: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 1, 1, 8]);
 const FIELD: &str = "algorithm.pss";
 
@@ -76,6 +77,7 @@ pub enum Mask<'a> {
 /// Original PSS schema values, not algorithm support or signature validity.
 #[derive(Debug, Clone, Copy)]
 pub struct Parameters<'a> {
+    parser: &'a structured_asn1::Parser,
     element: Element<'a>,
     hash: Option<Written<'a, AlgorithmIdentifier<'a>>>,
     mask: Mask<'a>,
@@ -230,7 +232,8 @@ pub fn read<'a, W: Work>(
     read_known(identifier, execution)
 }
 
-// Only the shared signature classifier may skip the already-paid OID check.
+// Only a caller that has already paid for and classified the PSS OID may skip
+// this check (signature classification or key-restriction interpretation).
 // Parameter traversal still uses the same source/current schema kernel.
 pub(super) fn read_known<'a, W: Work>(
     identifier: AlgorithmIdentifier<'a>,
@@ -362,6 +365,7 @@ fn decode<'a>(
 ) -> Result<Parameters<'a>> {
     let mut fields = parent.enter(&element).field(FIELD)?;
     let mut parameters = Parameters {
+        parser: parent.parser(),
         element,
         hash: None,
         mask: Mask::DefaultMgf1Sha1,

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.9.1...structured-pkix-v0.9.2) - 2026-10-20
+
+### Added
+
+- *(pkix)* decode DSA public key structure ([#155](https://github.com/structured-world/signature-primitives/pull/155))
+- *(pkix)* decode DSS signature values ([#152](https://github.com/structured-world/signature-primitives/pull/152))
+
 ## [0.9.1](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.9.0...structured-pkix-v0.9.1) - 2026-10-20
 
 ### Added

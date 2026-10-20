@@ -99,6 +99,21 @@ current execution, copy nothing and allocate nothing. They establish structure
 only: key-size and exponent policy, curve support and width, and whether a
 point lies on its curve remain with the provider that verifies.
 
+### DSA public-key structure
+
+`key::dsa::read(working_key, &execution)` reads the unsigned `p`, `q`, `g`
+and `y` components without bigint conversion or copying. Each component
+retains its original INTEGER element and sign octet; `as_bytes()` exposes
+its unsigned magnitude. Domain parameters retain their original source and
+record whether they were inherited. Missing parameters remain `None`; a
+written NULL is refused rather than repaired through generic inheritance.
+
+The carried `y` INTEGER must be DER even in a BER source. Parameter fields
+follow the original reader's encoding. Current execution and source budgets
+fund all deferred decoding and temporary reader metadata. Zero is inspectable;
+group validity, component ranges, strength and signature acceptance remain
+with the selected backend. The views retain no allocated storage.
+
 ### DSA and ECDSA signature-value structure
 
 `signature::DssValue::read(&mut reader, "signatureValue")` reads a complete

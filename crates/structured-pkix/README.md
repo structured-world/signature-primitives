@@ -282,9 +282,11 @@ reported apart from an unsupported one.
 ## Digest identifiers
 
 `algorithm::digest::algorithm(&identifier, &execution)` names the standard
-digest an `AlgorithmIdentifier` writes (SHA-1 and the SHA-2 family). Absent and
-NULL parameters both mean none, with NULL validated under the encoding of the
-document it came from, so a BER long-form NULL is still NULL. Any other
+digest an `AlgorithmIdentifier` writes (SHA-1, SHA-2 and SHA3-224/256/384/512).
+SHA-1 and SHA-2 accept absent or primitive NULL parameters, with NULL validated
+under the document's encoding, so a BER long-form NULL is still NULL.
+SHA3 requires absent parameters, including in BER, as specified by
+[RFC 9688 §2](https://www.rfc-editor.org/rfc/rfc9688.html#section-2). Any other
 parameter of a known identifier is `Malformed`; an identifier the table does not
 know is `Unsupported`; a spent ceiling is an error. `resolve` then asks the
 provider's `AsnDigest::identity` for its own identity, and execution runs through

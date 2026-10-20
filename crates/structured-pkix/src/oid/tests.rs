@@ -86,6 +86,10 @@ fn every_identifier_renders_as_the_dotted_form_it_is_documented_with() {
         (super::SHA224, "2.16.840.1.101.3.4.2.4"),
         (super::SHA512_224, "2.16.840.1.101.3.4.2.5"),
         (super::SHA512_256, "2.16.840.1.101.3.4.2.6"),
+        (super::SHA3_224, "2.16.840.1.101.3.4.2.7"),
+        (super::SHA3_256, "2.16.840.1.101.3.4.2.8"),
+        (super::SHA3_384, "2.16.840.1.101.3.4.2.9"),
+        (super::SHA3_512, "2.16.840.1.101.3.4.2.10"),
     ] {
         let execution = crate::fixtures::memory();
         let text = identifier.text(&execution).unwrap();
@@ -181,6 +185,10 @@ fn no_two_identifiers_are_the_same_bytes() {
         super::SHA224,
         super::SHA512_224,
         super::SHA512_256,
+        super::SHA3_224,
+        super::SHA3_256,
+        super::SHA3_384,
+        super::SHA3_512,
     ];
     for (position, identifier) in all.iter().enumerate() {
         assert!(

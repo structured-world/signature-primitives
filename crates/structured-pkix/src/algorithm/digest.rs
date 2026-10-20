@@ -2,9 +2,10 @@
 //! CMS and every other ASN.1 consumer.
 //!
 //! The identifier is matched exactly. Parameters are read under the encoding
-//! of the document they came from: absent and NULL both mean none, NULL is
-//! recognised under BER, and any other value of a known identifier is
-//! malformed. An identifier this table does not know is unsupported. Execution
+//! of the document they came from. SHA-1 and SHA-2 accept absent or primitive
+//! NULL parameters, including BER NULL lengths; SHA3 requires absence. Other
+//! parameters of a known identifier are malformed. An identifier this table
+//! does not know is unsupported. Execution
 //! then goes through the provider's [`Digest`] implementation.
 
 use super::AlgorithmIdentifier;
@@ -32,6 +33,14 @@ pub enum Algorithm {
     Sha512_224,
     /// SHA-512/256, FIPS 180-4.
     Sha512_256,
+    /// SHA3-224, FIPS 202.
+    Sha3_224,
+    /// SHA3-256, FIPS 202.
+    Sha3_256,
+    /// SHA3-384, FIPS 202.
+    Sha3_384,
+    /// SHA3-512, FIPS 202.
+    Sha3_512,
 }
 
 impl Algorithm {
@@ -40,10 +49,10 @@ impl Algorithm {
     pub const fn width(self) -> usize {
         match self {
             Self::Sha1 => 20,
-            Self::Sha224 | Self::Sha512_224 => 28,
-            Self::Sha256 | Self::Sha512_256 => 32,
-            Self::Sha384 => 48,
-            Self::Sha512 => 64,
+            Self::Sha224 | Self::Sha512_224 | Self::Sha3_224 => 28,
+            Self::Sha256 | Self::Sha512_256 | Self::Sha3_256 => 32,
+            Self::Sha384 | Self::Sha3_384 => 48,
+            Self::Sha512 | Self::Sha3_512 => 64,
         }
     }
 
@@ -58,6 +67,10 @@ impl Algorithm {
             Self::Sha512 => oid::SHA512,
             Self::Sha512_224 => oid::SHA512_224,
             Self::Sha512_256 => oid::SHA512_256,
+            Self::Sha3_224 => oid::SHA3_224,
+            Self::Sha3_256 => oid::SHA3_256,
+            Self::Sha3_384 => oid::SHA3_384,
+            Self::Sha3_512 => oid::SHA3_512,
         }
     }
 }
@@ -71,12 +84,11 @@ pub trait AsnDigest<'a>: Digest<'a> {
 
 /// Reads which standard digest `identifier` names.
 ///
-/// Every algorithm here takes no parameters: the field "should generally be
-/// omitted, but if present, it shall have a value of type NULL"
-/// (RFC 8017 Appendix B.1; RFC 5754 §2 and RFC 3370 §2.1 require receivers to
-/// accept both). NULL is the primitive NULL the producing reader validated
-/// under the document's own encoding, so a BER long-form length is NULL too
-/// (RFC 5652 §1: a signed message is BER).
+/// SHA-1 and SHA-2 accept absent or primitive NULL parameters (RFC 8017
+/// Appendix B.1, RFC 5754 §2 and RFC 3370 §2.1). The producing reader validates
+/// NULL under the document's encoding, including BER long-form lengths.
+/// SHA3-224/256/384/512 require absent parameters, even in BER
+/// ([RFC 9688 §2](https://www.rfc-editor.org/rfc/rfc9688.html#section-2)).
 ///
 /// # Errors
 ///
@@ -125,12 +137,24 @@ pub fn algorithm<W: Work>(
             0x04 => Algorithm::Sha224,
             0x05 => Algorithm::Sha512_224,
             0x06 => Algorithm::Sha512_256,
+            0x07 => Algorithm::Sha3_224,
+            0x08 => Algorithm::Sha3_256,
+            0x09 => Algorithm::Sha3_384,
+            0x0a => Algorithm::Sha3_512,
             _ => return Ok(Resolution::Unsupported),
         },
         _ => return Ok(Resolution::Unsupported),
     };
-    if identifier.parameters().is_some() && !identifier.has_null_parameter() {
-        return Ok(Resolution::Malformed);
+    if identifier.parameters().is_some() {
+        // RFC 9688 §2: SHA3 digest parameters MUST be absent, not NULL.
+        // https://www.rfc-editor.org/rfc/rfc9688.html#section-2
+        if matches!(
+            algorithm,
+            Algorithm::Sha3_224 | Algorithm::Sha3_256 | Algorithm::Sha3_384 | Algorithm::Sha3_512
+        ) || !identifier.has_null_parameter()
+        {
+            return Ok(Resolution::Malformed);
+        }
     }
     Ok(Resolution::Supported(algorithm))
 }

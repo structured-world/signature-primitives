@@ -84,6 +84,68 @@ fn an_unknown_identifier_is_unsupported_whatever_its_parameters() {
 }
 
 #[test]
+fn sha3_identifiers_require_absent_parameters_even_in_ber() {
+    // RFC 9688 §2 forbids NULL for these digest identifiers. This is an
+    // algorithm rule, so accepting BER does not relax it to the SHA-2 rule.
+    for encoding in [Encoding::Der, Encoding::Ber] {
+        let parser = Parser::new(encoding, Limits::default(), memory(1 << 20));
+        for tail in 7..=10 {
+            for parameters in [&[][..], &[5, 0][..], &[2, 1, 0][..]] {
+                let mut bytes = identifier(parameters);
+                bytes[12] = tail;
+                let reading = read(&parser, &bytes);
+                let work = Memory::new(Arc::new(MemoryAccount::new(0, 10)));
+                let outcome = digest::algorithm(&reading, &work).unwrap();
+                if parameters.is_empty() {
+                    assert!(matches!(outcome, Resolution::Supported(_)), "tail {tail}");
+                } else {
+                    assert_eq!(outcome, Resolution::Malformed);
+                }
+                assert_eq!(work.work_used(), 10);
+                assert_eq!(work.used(), 0);
+            }
+            if encoding == Encoding::Ber {
+                let mut bytes = identifier(&[5, 0x81, 0]);
+                bytes[12] = tail;
+                assert_eq!(resolved(&parser, &bytes), Resolution::Malformed);
+            }
+        }
+    }
+}
+
+#[test]
+fn sha3_resolution_honors_the_producing_local_ceiling_and_location() {
+    // Once parsing has finished, the same execution still owns query work.
+    // Exhausting its local ceiling must refuse before comparison even when
+    // aggregate work and storage remain available.
+    let parser = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 1000,
+            ..Limits::default()
+        },
+        memory(1 << 20),
+    );
+    let mut bytes = identifier(&[]);
+    bytes[12] = 8;
+    let mut reader = parser.read(&bytes, 700).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let reading = algorithm::read(&reader, &element, "sha3").unwrap();
+    let execution = reader.execution();
+    assert_eq!(
+        digest::algorithm(&reading, &execution).unwrap(),
+        Resolution::Supported(Algorithm::Sha3_256)
+    );
+    // Consume only the remaining local allowance; the final failed unit must
+    // not be charged, nor turned into a semantic resolution.
+    while execution.charge_work(1).is_ok() {}
+    let error = digest::algorithm(&reading, &execution).unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!((error.field(), error.offset()), ("sha3", 700));
+    assert!(parser.memory().work_remaining() > 0);
+}
+
+#[test]
 fn every_algorithm_resolves_from_its_own_identifier() {
     // The table is the identifiers' own bytes; each resolves to itself and
     // carries its FIPS 180-4 output width.
@@ -96,6 +158,10 @@ fn every_algorithm_resolves_from_its_own_identifier() {
         (Algorithm::Sha512, 64),
         (Algorithm::Sha512_224, 28),
         (Algorithm::Sha512_256, 32),
+        (Algorithm::Sha3_224, 28),
+        (Algorithm::Sha3_256, 32),
+        (Algorithm::Sha3_384, 48),
+        (Algorithm::Sha3_512, 64),
     ] {
         let oid = algorithm.identifier();
         let mut contents = vec![6, u8::try_from(oid.as_bytes().len()).unwrap()];
@@ -113,7 +179,7 @@ fn resolution_costs_one_pass_over_the_written_identifier() {
     // decided in one pass, paid as its length plus one, and one unit less is
     // refused before any comparison.
     let der = Parser::der(memory(1 << 20));
-    let bytes = [0x30, 11, 6, 9, 0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 7];
+    let bytes = [0x30, 11, 6, 9, 0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 0x7f];
     let unknown = read(&der, &bytes);
     let exact = memory(10);
     assert_eq!(

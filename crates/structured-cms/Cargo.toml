@@ -24,6 +24,7 @@ structured-pkix = { version = "0.9.0", path = "../structured-pkix", default-feat
 # Independent public-vector oracle/adapter only; no engine in the runtime API.
 ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["fast"] }
 sha2 = { version = "=0.11.1", default-features = false }
+sha3 = { version = "=0.12.0", default-features = false }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
 
 [lints]

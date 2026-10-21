@@ -201,20 +201,26 @@ fn archive_token(
 fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_accuracy() {
     // This is real ECDSA/SHA-256 on both CMS signatures and certificates.
     // A valid TSA signature alone cannot establish input or full time bounds.
-    for mode in 0..8 {
+    for mode in 0..9 {
         let root_key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
         let signer_key = SigningKey::from_bytes((&[2; 32]).into()).unwrap();
         let tsa_key = SigningKey::from_bytes((&[3; 32]).into()).unwrap();
         let root_bytes = certificate("Root", "Root", &root_key, &root_key, false);
         let leaf_bytes = certificate("Signer", "Root", &signer_key, &root_key, false);
         let tsa_bytes = certificate("TSA", "Root", &tsa_key, &root_key, true);
-        let signed = [
+        let mut signed = vec![
             attribute(oid::SIGNING_TIME.as_bytes(), &tlv(23, b"260101000000Z")),
             attribute(
                 oid::MIME_TYPE.as_bytes(),
                 &tlv(12, b"application/octet-stream"),
             ),
         ];
+        if mode == 8 {
+            // A root content timestamp is signed before the signature timestamp
+            // and ATSv3. The archive imprint includes these exact signedAttrs.
+            let content = token(b"sample", &tsa_bytes, &root_bytes, &tsa_key, true, None);
+            signed.push(attribute(oid::CONTENT_TIMESTAMP.as_bytes(), &content));
+        }
         let provisional = signer(
             Some(oid::DATA.as_bytes()),
             b"sample",
@@ -251,7 +257,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         }
         let certs = [root_bytes.clone(), leaf_bytes.clone(), tsa_bytes.clone()];
         let crls = [crl(&root_key)];
-        if matches!(mode, 4 | 6 | 7) {
+        if matches!(mode, 4 | 6..=8) {
             let before_signer = signer(
                 Some(oid::DATA.as_bytes()),
                 b"sample",
@@ -355,7 +361,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         let document = Document::new(&message, &parent).unwrap();
         let level = match mode {
             3 => Level::LongTerm,
-            4 | 6 | 7 => Level::Archival,
+            4 | 6..=8 => Level::Archival,
             _ => Level::Timestamped,
         };
         let started = std::time::Instant::now();
@@ -426,7 +432,24 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             continue;
         }
         let answer = answer.unwrap();
-        let archive = if matches!(mode, 4 | 6 | 7) {
+        let content_answer = if mode == 8 {
+            let ordinal = prepared
+                .timestamps()
+                .iter()
+                .position(|entry| entry.purpose() == structured_ltv::timestamp::Purpose::Content)
+                .unwrap();
+            Some(
+                pool.with_token(ordinal, &parent, |selected| {
+                    selected.check_content(&oracle, &tsa_path, &parent, &time, |_, _| {
+                        Ok::<_, Infallible>(true)
+                    })
+                })
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+        let archive = if matches!(mode, 4 | 6..=8) {
             let ordinal = prepared
                 .timestamps()
                 .iter()
@@ -497,10 +520,27 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 };
                 path
             });
-            let mut paths = vec![&tsa_receipt];
-            if let Some(archive_path) = &archive_path {
-                paths.insert(usize::from(signature_ordinal == 0), archive_path);
-            }
+            let content_path = content_answer.as_ref().map(|answer| {
+                let TimestampBinding::Bound(path) = tsa_path
+                    .bind_timestamp(answer.actor().unwrap(), &utc, &work)
+                    .unwrap()
+                else {
+                    panic!("actual content TSA path");
+                };
+                path
+            });
+            let paths: Vec<_> = prepared
+                .timestamps()
+                .iter()
+                .map(|entry| match entry.purpose() {
+                    structured_ltv::timestamp::Purpose::Signature => &tsa_receipt,
+                    structured_ltv::timestamp::Purpose::Content => content_path.as_ref().unwrap(),
+                    structured_ltv::timestamp::Purpose::Archive => archive_path.as_ref().unwrap(),
+                    structured_ltv::timestamp::Purpose::ValidationData => {
+                        panic!("unexpected fixture role")
+                    }
+                })
+                .collect();
             let TimestampPathBinding::Bound(paths) = prepared
                 .timestamp_requirements()
                 .bind_paths(&paths, &query)
@@ -602,10 +642,8 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 let tsa_entries = [pki::MemberStatus::CrlReading(&tsa_status)];
                 let signer_statuses = path.status_census(at, &signer_entries, &work).unwrap();
                 let tsa_statuses = tsa_path.status_census(at, &tsa_entries, &work).unwrap();
-                let mut status_roots = vec![&signer_statuses, &tsa_statuses];
-                if mode == 4 {
-                    status_roots.push(&tsa_statuses);
-                }
+                let mut status_roots = vec![&tsa_statuses; required.entries().len()];
+                status_roots[0] = &signer_statuses;
                 let supplied = [
                     pki::AuthorityNode {
                         statuses: &signer_statuses,
@@ -640,10 +678,28 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                     let earlier = archive.requirements(&prepared, &parent).unwrap();
                     assert_eq!(
                         earlier.entries().len(),
-                        1,
-                        "own TSA cannot enter its preceding archive census"
+                        if mode == 8 { 2 } else { 1 },
+                        "signed content timestamp must enter; own TSA must not"
                     );
-                    let earlier_paths = [&tsa_receipt];
+                    if mode == 8 {
+                        assert!(matches!(
+                            earlier.bind_paths(&[&tsa_receipt], &query).unwrap(),
+                            TimestampPathBinding::Unproven(
+                                structured_ltv::timestamp::TimestampPathFailure::Count
+                            )
+                        ));
+                    }
+                    let earlier_paths: Vec<_> = earlier
+                        .entries()
+                        .iter()
+                        .map(|entry| match entry.purpose {
+                            structured_ltv::timestamp::Purpose::Content => {
+                                content_path.as_ref().unwrap()
+                            }
+                            structured_ltv::timestamp::Purpose::Signature => &tsa_receipt,
+                            _ => panic!("unexpected preceding fixture role"),
+                        })
+                        .collect();
                     let TimestampPathBinding::Bound(earlier_paths) =
                         earlier.bind_paths(&earlier_paths, &query).unwrap()
                     else {
@@ -659,10 +715,11 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                     .unwrap();
                     assert_eq!(
                         earlier_actors.entries().len(),
-                        2,
-                        "root and preceding TSA only"
+                        if mode == 8 { 3 } else { 2 },
+                        "root and EVERY preceding TSA, including signed content"
                     );
-                    let earlier_roots = [&signer_statuses, &tsa_statuses];
+                    let mut earlier_roots = vec![&tsa_statuses; earlier_actors.entries().len()];
+                    earlier_roots[0] = &signer_statuses;
                     let earlier_inputs = earlier_actors
                         .close_statuses(&earlier_roots, &supplied, &query)
                         .unwrap();

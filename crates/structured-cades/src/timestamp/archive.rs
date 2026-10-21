@@ -596,6 +596,22 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
                 .map_err(resource)?;
         }
         let mut ranges = work.vector();
+        if let Some(attributes) = self.prepared.signer().signed_attributes() {
+            // EN319122-1 §5.5.3 input3 includes the original signedAttrs,
+            // independently of the index of UNSIGNED attribute values. Their
+            // root content timestamps therefore belong to the covered census.
+            // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+            ranges
+                .try_push(attributes.element().span())
+                .map_err(resource)?;
+            for attribute in attributes.items() {
+                work.charge_work(1).map_err(resource)?;
+                items
+                    .try_insert(Node::of(attribute.span()), true)
+                    .map_err(resource)?;
+            }
+        }
+
         if let Some(attributes) = self.prepared.signer().unsigned_attributes() {
             for attribute in attributes.items() {
                 work.charge_work(1).map_err(resource)?;

@@ -1,9 +1,9 @@
 //! Applicable assertions are selected without discarding duplicate evidence.
 
 use super::{CertMatch, SignedResponse, SingleResponse};
-use crate::Certificate;
 use crate::algorithm::digest::AsnDigest;
 use crate::error::{CallbackResult, Error};
+use crate::{Certificate, revocation::RevocationTarget};
 use structured_asn1::memory::Work;
 
 /// Identity lookup within an authenticated response, not a complete verdict.
@@ -36,13 +36,14 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
     /// certificate. The caller binds these inputs to its actual request and
     /// checks nonce/intended recipient separately; identity alone is insufficient.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-3.2>
-    pub fn find<'d, D: AsnDigest<'d> + ?Sized, E: Work>(
+    pub fn find<'t, 'd, T: RevocationTarget<'t>, D: AsnDigest<'d> + ?Sized, E: Work>(
         self,
-        target: &Certificate<'_>,
+        target: &T,
         issuer: &Certificate<'_>,
         digest: &'d D,
         execution: &E,
     ) -> CallbackResult<Lookup<'r, 'a>, D::Error> {
+        let execution = &self.response().signature_algorithm().query_in(execution);
         let mut first = None;
         for response in self.response().responses() {
             execution.charge_work(1).map_err(|reason| {

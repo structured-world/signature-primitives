@@ -379,7 +379,7 @@ formatted strings keep their capacity charge independently of the input/parser.
 ## CRL, delta CRL and OCSP evidence
 
 CRL scope, entry search, complete/delta evidence and reason coverage accept
-`crl::RevocationTarget` with original borrowed identity and source execution.
+`revocation::RevocationTarget` with original borrowed identity and source execution.
 `Certificate` implements it; CMS checked AC `Profile` implements the same
 contract. Attribute-only, public-key-only and unrestricted IDP categories remain
 distinct, and `NoRevAvail` never becomes CRL absence. Returned facts and coverage
@@ -387,11 +387,29 @@ retain the actual target type and original reference; PKC remains the default
 type parameter. Explicit method generic arguments now include the target type
 (use inference or `_` for it). Custom implementations are trusted, coherent,
 constant-time projections; they must preserve original source provenance.
+The `source_parser` projection supplies the actual producing parser; the
+default `execution_in` derives its source/current view from that same parser.
+Deferred BER name segments retain original depth and cumulative element/work
+limits instead of being reparsed with a fresh parser.
 
 The existing CRL core retains indirect issuers, full critical-demand checks,
 delta binding, exact distribution names, reason intersections and UTC update
 facts. Status components do not authenticate the target or settle trust,
 authorization, acquisition or historical retention policy.
+
+OCSP `CertId::matches`, `SignedResponse::find`, issuer-scoped lookup and
+`Request`/`evaluate_with_target` accept the same target. `TargetReading` and
+`BoundEvidence` retain its exact type/reference and evaluation label with
+independent response lifetimes; `Certificate` remains their default type.
+CertID hashes the original target issuer DER and the actual issuer PKC's key
+contents. Each operand retains its source ceiling under the current operation;
+no artificial AC public key, re-encoding or second hashing pass is introduced.
+`NoRevAvail` is a separate outcome. For ACs, ordinary PKC delegation yields
+`AttributeDelegation`: RFC5755 §4.5 forbids an AA from also issuing PKCs. Direct
+AA signing and explicitly configured responder trust remain available. Target
+and AA authentication/path/profile, nonce/freshness acceptance and application
+authorization remain separate obligations. Method turbofish arguments now
+include the target type; existing inferred PKC calls remain unchanged.
 
 The source version adds `crl` and `ocsp`; these modules are not in crates.io
 0.1.2. They process caller-supplied DER without fetching, a clock, implicit trust

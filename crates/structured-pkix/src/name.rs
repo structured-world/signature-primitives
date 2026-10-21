@@ -262,6 +262,53 @@ impl<'a> Name<'a> {
         self.offset
     }
 
+    // Source owners fund preparation, sorting scratch and comparison through
+    // the same current operation. Reuse the per-RDN semantic kernel and
+    // early exit rather than materializing two whole prepared names.
+    pub(crate) fn matches_between<
+        'b,
+        L: structured_asn1::memory::Work,
+        R: structured_asn1::memory::Work,
+    >(
+        &self,
+        other: &Name<'b>,
+        left_source: (&L, &'a structured_asn1::Parser),
+        right_source: (&R, &'b structured_asn1::Parser),
+    ) -> Result<bool> {
+        let (left_work, _) = left_source;
+        let (right_work, _) = right_source;
+        left_work.charge_work(1).map_err(|e| self.resource(e))?;
+        right_work.charge_work(1).map_err(|e| other.resource(e))?;
+        if self.parts.len() != other.parts.len() {
+            return Ok(false);
+        }
+        if self.der.len() == other.der.len() {
+            left_work
+                .charge_work(self.der.len() as u64)
+                .map_err(|e| self.resource(e))?;
+            right_work
+                .charge_work(other.der.len() as u64)
+                .map_err(|e| other.resource(e))?;
+            if self.der == other.der {
+                return Ok(true);
+            }
+        }
+        for index in 0..self.parts.len() {
+            left_work.charge_work(1).map_err(|e| self.resource(e))?;
+            right_work.charge_work(1).map_err(|e| other.resource(e))?;
+            if prepared::compare_parts_between(
+                &self.parts[index],
+                &other.parts[index],
+                left_source,
+                right_source,
+            )? != core::cmp::Ordering::Equal
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     pub(crate) fn field(&self) -> &'static str {
         self.field
     }

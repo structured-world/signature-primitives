@@ -69,6 +69,61 @@ impl AsnDigest<'_> for Observed<'_> {
 }
 
 #[test]
+fn retained_cert_id_query_cannot_escape_either_original_source_ceiling() {
+    // A fresh query must not erase either target or AA local parser exhaustion.
+    // Refuse before a digest callback, rather than reporting different identity.
+    for exhaust_target in [true, false] {
+        let parts = crate::fixtures::CertificateParts::default();
+        let issuer_bytes = crate::fixtures::CertificateParts {
+            subject: parts.issuer.clone(),
+            ..crate::fixtures::CertificateParts::default()
+        }
+        .build();
+        let target_bytes = parts.build();
+        let target_memory = crate::fixtures::memory();
+        let issuer_memory = crate::fixtures::memory();
+        let current = crate::fixtures::memory();
+        let target_parser = structured_asn1::Parser::der(target_memory.clone());
+        let issuer_parser = structured_asn1::Parser::der(issuer_memory.clone());
+        let parser = structured_asn1::Parser::der(current.clone());
+        let target = crate::Certificate::read(&target_parser, &target_bytes, 100).unwrap();
+        let issuer = crate::Certificate::read(&issuer_parser, &issuer_bytes, 300).unwrap();
+        let sha1 = crate::fixtures::algorithm(crate::oid::SHA1);
+        let mut reader = parser.read(&sha1, 900).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let algorithm = crate::algorithm::read(&reader, &element, "certID.hashAlgorithm").unwrap();
+        let id = super::CertId {
+            algorithm,
+            serial: target.tbs().serial(),
+            issuer_name_hash: &[0x11; 20],
+            issuer_key_hash: &[0x22; 20],
+            span: structured_asn1::Span {
+                start: 700,
+                length: 50,
+            },
+        };
+        let provider = Observed {
+            name: target.tbs().issuer().as_bytes(),
+            key: issuer.tbs().public_key().key().as_bytes(),
+            hashes: Cell::new(0),
+            supported: true,
+            failure: false,
+        };
+        let source_parser = if exhaust_target {
+            &target_parser
+        } else {
+            &issuer_parser
+        };
+        let source = source_parser.read(&[], 0).unwrap();
+        let source = source.execution();
+        source.charge_work(source.work_remaining() as u64).unwrap();
+        assert!(matches!(id.matches(&target, &issuer, &provider, &current),
+            Err(CallbackError::Processing(error)) if error.is_resource()));
+        assert_eq!(provider.hashes.get(), 0);
+    }
+}
+
+#[test]
 fn cert_id_prechecks_width_and_forwards_original_bytes_without_output_copy() {
     // A callback sees original target issuer DER, then raw public-key
     // contents, never rendered Name/SPKI. Bad expected width does not hash.

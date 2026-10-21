@@ -524,6 +524,10 @@ impl<'a> AlgorithmIdentifier<'a> {
         execution.execution_for(self.parser)
     }
 
+    pub(crate) fn source_parser(self) -> &'a Parser {
+        self.parser
+    }
+
     /// The written parameters, readable in place.
     pub(crate) fn parameters_nested(self) -> Option<Nested<'a>> {
         let start = self.parameter_start?.get();

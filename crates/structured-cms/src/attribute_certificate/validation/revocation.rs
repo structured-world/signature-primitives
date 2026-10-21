@@ -1,17 +1,13 @@
-//! AC profile projection into the existing PKIX CRL evidence processor.
+//! AC profile projection into the shared PKIX CRL and OCSP processors.
 use super::{Profile, Revocation};
-use structured_asn1::memory::{Execution, Work};
-use structured_asn1::{Integer, Span};
-use structured_pkix::crl::{RevocationScheme, RevocationTarget, TargetKind};
+use structured_asn1::{Integer, Parser, Span};
 use structured_pkix::general_name::GeneralName;
+use structured_pkix::revocation::{RevocationScheme, RevocationTarget, TargetKind};
 use structured_pkix::{Extensions, Name};
 
 impl<'a> RevocationTarget<'a> for Profile<'_, 'a> {
-    fn execution_in<'op, W: Work>(&'op self, work: &'op W) -> Execution<'op>
-    where
-        'a: 'op,
-    {
-        work.execution_for(self.certificate().parser)
+    fn source_parser(&self) -> &'a Parser {
+        self.certificate().parser
     }
     fn issuer(&self) -> &Name<'a> {
         // Profile construction established exactly one directoryName issuer.

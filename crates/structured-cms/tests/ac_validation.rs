@@ -1,6 +1,8 @@
 //! Original AC profile, explicit PKC bindings and complete AA-path restrictions.
 #[path = "ac_validation/authentication.rs"]
 mod authentication;
+#[path = "ac_validation/ocsp.rs"]
+mod ocsp;
 #[path = "ac_validation/revocation.rs"]
 mod revocation;
 use std::sync::Arc;

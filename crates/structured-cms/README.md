@@ -45,6 +45,13 @@ structured-cms = "0.8"
   remain distinct from invalid or unsupported signatures.
 - `ess` checks independent signing-certificate attributes; `counter` walks
   countersignatures using original parent signature content.
+- `attribute_certificate::AttributeCertificate` reads the complete v2 structure,
+  retaining Holder/Issuer alternatives, attributes, extensions and the exact
+  original `acinfo` signature input. `SignedData::certificate_choice_reader_in`
+  opens CMS's original `[2]` CHOICE under the current operation budget. This is
+  structural inspection, not RFC5755 profile validation or authorization: the
+  caller checks holder binding, algorithm agreement, signature, AA trust,
+  targeting, validity, critical extensions and revocation before using attributes.
 - `timestamp::Request` reads original TimeStampReq. `timestamp::Token` separates
   readable inspection from complete signature, ESS, TSA, imprint, request and
   time checking. The caller supplies UTC information and request windows.

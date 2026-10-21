@@ -269,6 +269,47 @@ impl<'a> SignedData<'a> {
     pub fn certificate_field(&self) -> Option<Span> {
         self.certificate_field
     }
+    /// Opens an original non-X.509 certificate CHOICE under the current query.
+    ///
+    /// Preserves the original parser, encoding, location and certificate-set
+    /// depth. The current operation funds new work while original ceilings
+    /// remain active. An absent ordinal or X.509 index returns `None` after
+    /// metadata admission; parsed X.509 certificates have their own accessors.
+    /// No certificate is implicitly trusted or decoded by opening this reader.
+    pub fn certificate_choice_reader_in<'query>(
+        &self,
+        query: &Reader<'query>,
+        ordinal: usize,
+    ) -> Result<Option<Reader<'query>>>
+    where
+        'a: 'query,
+    {
+        const FIELD: &str = "signedData.certificates";
+        let at = self.certificate_field.unwrap_or(self.element.span()).start;
+        query
+            .execution()
+            .charge_work(1)
+            .map_err(|reason| Error::resource(reason, FIELD, at))?;
+        let entry = match self.choices.get(ordinal) {
+            Some(
+                CertificateChoice::Extended(entry)
+                | CertificateChoice::AttributeV1(entry)
+                | CertificateChoice::AttributeV2(entry)
+                | CertificateChoice::Other(entry),
+            ) => entry,
+            Some(CertificateChoice::X509(_)) | None => return Ok(None),
+        };
+        self.parser
+            .read_nested_query_in(
+                query,
+                entry.as_bytes(),
+                entry.span().start,
+                self.encoding,
+                self.outer,
+            )
+            .map(Some)
+            .map_err(|error| Error::encoding(error, FIELD))
+    }
     /// Original presence of the revocation field, including an empty written set.
     #[must_use]
     pub fn revocation_field(&self) -> Option<Span> {

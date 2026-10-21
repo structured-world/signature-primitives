@@ -357,7 +357,15 @@ impl<'a> SigningAttributes<'a> {
         Self::read_with(signer, parent, false)
     }
 
-    pub(crate) fn inspect(signer: &SignerInfo<'a>, parent: &Reader<'a>) -> Result<Self> {
+    /// Reads the same ESS grammar while retaining nonterminal selection/schema
+    /// failures. A conflicting or unreadable version has no selected binding;
+    /// its original cause remains in [`Self::faults`]. This permits protocol
+    /// inspection without choosing a certificate or hiding later obligations.
+    ///
+    /// # Errors
+    /// Source/session, depth, memory or work refusal, including refusal to
+    /// retain a diagnostic. None becomes a recoverable document finding.
+    pub fn inspect(signer: &SignerInfo<'a>, parent: &Reader<'a>) -> Result<Self> {
         Self::read_with(signer, parent, true)
     }
 

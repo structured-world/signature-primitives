@@ -57,6 +57,10 @@ fn signer_value(signed: &[Vec<u8>], unsigned: &[Vec<u8>], signature: u8) -> Vec<
 }
 
 fn token() -> Vec<u8> {
+    token_with_attributes(&[], &[])
+}
+
+fn token_with_attributes(signed: &[Vec<u8>], unsigned: &[Vec<u8>]) -> Vec<u8> {
     // Structural RFC3161 envelope only. Arithmetic/ESS/EKU are deliberately
     // not supplied here and this fixture never asserts successful evidence.
     let mut info = vec![2, 1, 1];
@@ -67,7 +71,7 @@ fn token() -> Vec<u8> {
     ));
     info.extend([2, 1, 7]);
     info.extend(tlv(24, b"20260101000000Z"));
-    token_information(&tlv(0x30, &info))
+    token_carried_with(&tlv(4, &tlv(0x30, &info)), signed, unsigned)
 }
 
 fn token_information(info: &[u8]) -> Vec<u8> {
@@ -75,12 +79,16 @@ fn token_information(info: &[u8]) -> Vec<u8> {
 }
 
 fn token_carried(octets: &[u8]) -> Vec<u8> {
+    token_carried_with(octets, &[], &[])
+}
+
+fn token_carried_with(octets: &[u8], signed: &[Vec<u8>], unsigned: &[Vec<u8>]) -> Vec<u8> {
     let mut body = vec![2, 1, 3, 0x31, 0];
     body.extend(tlv(
         0x30,
         &[tlv(6, oid::TST_INFO.as_bytes()), tlv(0xa0, octets)].concat(),
     ));
-    body.extend(tlv(0x31, &signer(&[])));
+    body.extend(tlv(0x31, &signer_with(signed, unsigned)));
     tlv(
         0x30,
         &[
@@ -89,6 +97,16 @@ fn token_carried(octets: &[u8]) -> Vec<u8> {
         ]
         .concat(),
     )
+}
+
+fn timestamp_signed_attributes() -> Vec<Vec<u8>> {
+    vec![
+        attribute(
+            oid::CONTENT_TYPE.as_bytes(),
+            &[tlv(6, oid::TST_INFO.as_bytes())],
+        ),
+        attribute(oid::MESSAGE_DIGEST.as_bytes(), &[tlv(4, &[0; 32])]),
+    ]
 }
 
 fn message(unsigned: &[Vec<u8>]) -> Vec<u8> {
@@ -1716,4 +1734,262 @@ fn counter_owned_archive_retains_a_placement_finding_and_its_original_census() {
             assert!(!prepared.basic_format_requirements_met());
         }
     }
+}
+
+#[test]
+fn optional_timestamp_ess_presence_and_schema_are_checked_without_certificate_selection() {
+    // RFC5816 §2.2.1 requires a readable signed TSA certificate identifier.
+    // A lower requested level cannot waive present timestamp syntax; ESS
+    // policies permitted by RFC5035 must not inherit the CAdES root ban.
+    let v1 = tlv(0x30, &tlv(0x30, &tlv(0x30, &tlv(4, &[1; 20]))));
+    let v2 = tlv(0x30, &tlv(0x30, &tlv(0x30, &tlv(4, &[2; 32]))));
+    let v2_other = tlv(0x30, &tlv(0x30, &tlv(0x30, &tlv(4, &[3; 32]))));
+    let v2_policy = tlv(
+        0x30,
+        &[
+            tlv(0x30, &tlv(0x30, &tlv(4, &[2; 32]))),
+            tlv(0x30, &tlv(0x30, &tlv(6, &[43]))),
+        ]
+        .concat(),
+    );
+    for mode in 0..9 {
+        let mut signed = timestamp_signed_attributes();
+        let mut unsigned = vec![];
+        match mode {
+            0 => {}
+            1 => signed.push(attribute(
+                oid::SIGNING_CERTIFICATE_V2.as_bytes(),
+                &[tlv(0x30, &tlv(0x30, &[]))],
+            )),
+            2 => signed.push(attribute(
+                oid::SIGNING_CERTIFICATE_V2.as_bytes(),
+                &[v2.clone(), v2_other.clone()],
+            )),
+            3 => unsigned.push(attribute(
+                oid::SIGNING_CERTIFICATE_V2.as_bytes(),
+                std::slice::from_ref(&v2),
+            )),
+            4 => signed.extend([
+                attribute(
+                    oid::SIGNING_CERTIFICATE_V2.as_bytes(),
+                    std::slice::from_ref(&v2),
+                ),
+                attribute(
+                    oid::SIGNING_CERTIFICATE_V2.as_bytes(),
+                    std::slice::from_ref(&v2_other),
+                ),
+            ]),
+            5 => signed.push(attribute(
+                oid::SIGNING_CERTIFICATE.as_bytes(),
+                std::slice::from_ref(&v1),
+            )),
+            6 => signed.push(attribute(
+                oid::SIGNING_CERTIFICATE_V2.as_bytes(),
+                std::slice::from_ref(&v2),
+            )),
+            7 => signed.extend([
+                attribute(
+                    oid::SIGNING_CERTIFICATE.as_bytes(),
+                    std::slice::from_ref(&v1),
+                ),
+                attribute(
+                    oid::SIGNING_CERTIFICATE_V2.as_bytes(),
+                    std::slice::from_ref(&v2),
+                ),
+            ]),
+            _ => signed.push(attribute(
+                oid::SIGNING_CERTIFICATE_V2.as_bytes(),
+                std::slice::from_ref(&v2_policy),
+            )),
+        }
+        let token = token_with_attributes(&signed, &unsigned);
+        for kind in [oid::CONTENT_TIMESTAMP, oid::SIGNATURE_TIMESTAMP] {
+            for in_counter in [false, true] {
+                let stamp = attribute(kind.as_bytes(), std::slice::from_ref(&token));
+                let (signed, unsigned) = if kind == oid::CONTENT_TIMESTAMP {
+                    (vec![stamp], vec![])
+                } else {
+                    (vec![], vec![stamp])
+                };
+                let bytes = if in_counter {
+                    message(&[attribute(
+                        oid::COUNTERSIGNATURE.as_bytes(),
+                        &[signer_with(&signed, &unsigned)],
+                    )])
+                } else {
+                    message_with(&signed, &unsigned)
+                };
+                let parser = Parser::ber(memory());
+                let data = SignedData::read(&parser, &bytes, 500).unwrap();
+                let parent = parser.read(&[], 0).unwrap();
+                let document = Document::new(&data, &parent).unwrap();
+                let prepared =
+                    Preparation::read(&document, &data.signers()[0], Level::Basic, &parent)
+                        .unwrap();
+                assert_eq!(prepared.timestamps().len(), 1);
+                assert_eq!(prepared.timestamp_requirements().entries().len(), 1);
+                let span = prepared.timestamps()[0].property().span();
+                let faults:Vec<_>=prepared.findings().iter().filter(|f|f.severity==Severity::Required && f.location.node.span().start>=span.start && f.location.node.span().start<span.end() && matches!(f.rule,Rule::Schema {field,..} if field.contains("signingCertificate"))).collect();
+                assert_eq!(
+                    !faults.is_empty(),
+                    mode < 5,
+                    "mode={mode} counter={in_counter} kind={kind:?}"
+                );
+            }
+        }
+    }
+}
+
+fn timestamp_width_case(target: u8) {
+    // Fixed widths come from the declared standard identity, never inferred
+    // from supplied bytes. Syntax inspection needs no selected TSA or hash.
+    for invalid in [false, true] {
+        let width = |which| if invalid && target == which { 31 } else { 32 };
+        let ess = tlv(0x30, &tlv(0x30, &tlv(0x30, &tlv(4, &vec![0; width(0)]))));
+        let signed = vec![
+            attribute(oid::SIGNING_CERTIFICATE_V2.as_bytes(), &[ess]),
+            attribute(
+                oid::CONTENT_TYPE.as_bytes(),
+                &[tlv(6, oid::TST_INFO.as_bytes())],
+            ),
+            attribute(
+                oid::MESSAGE_DIGEST.as_bytes(),
+                &[tlv(4, &vec![0; width(1)])],
+            ),
+        ];
+        let info = tlv(
+            0x30,
+            &[
+                vec![2, 1, 1],
+                tlv(6, &[43]),
+                tlv(
+                    0x30,
+                    &[
+                        tlv(0x30, &tlv(6, oid::SHA256.as_bytes())),
+                        tlv(4, &vec![0; width(2)]),
+                    ]
+                    .concat(),
+                ),
+                vec![2, 1, 7],
+                tlv(24, b"20260101000000Z"),
+            ]
+            .concat(),
+        );
+        let token = token_carried_with(&tlv(4, &info), &signed, &[]);
+        let bytes = message(&[attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &[token])]);
+        let parser = Parser::ber(memory());
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        let span = prepared.timestamps()[0].property().span();
+        let found = prepared.findings().iter().any(|f| {
+            f.severity == Severity::Required
+                && f.location.node.span().start >= span.start
+                && f.location.node.span().start < span.end()
+                && matches!(
+                    f.rule,
+                    Rule::Schema {
+                        code: structured_cms::ErrorCode::DigestWidth,
+                        ..
+                    }
+                )
+        });
+        assert_eq!(found, invalid, "target={target}");
+    }
+}
+
+#[test]
+fn timestamp_static_ess_width_is_checked_during_inspection() {
+    timestamp_width_case(0);
+}
+#[test]
+fn timestamp_static_message_digest_width_is_checked_during_inspection() {
+    timestamp_width_case(1);
+}
+#[test]
+fn timestamp_static_imprint_width_is_checked_during_inspection() {
+    timestamp_width_case(2);
+}
+
+#[test]
+fn timestamp_inspection_refusal_retains_the_joined_information_source_map() {
+    // A failed query inside fragmented TSTInfo owns its logical-to-physical
+    // map after the temporary join/Parser drop. It cannot escape as an outer
+    // Processing error whose small logical offset looks document-relative.
+    use structured_cades::prepare::ReadError;
+    use structured_cms::content_source::Coordinates;
+    let info = tlv(
+        0x30,
+        &[
+            vec![2, 1, 1],
+            tlv(6, &[43]),
+            tlv(
+                0x30,
+                &[tlv(0x30, &tlv(6, oid::SHA256.as_bytes())), tlv(4, &[0; 32])].concat(),
+            ),
+            vec![2, 1, 7],
+            tlv(24, b"20260101000000Z"),
+        ]
+        .concat(),
+    );
+    let carried = tlv(0x24, &[tlv(4, &info[..17]), tlv(4, &info[17..])].concat());
+    let token = token_carried(&carried);
+    let bytes = message(&[attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &[token])]);
+    let mut retained = None;
+    for allowance in 1..20_000 {
+        let account = memory();
+        let parser = Parser::ber(account.clone());
+        let data = SignedData::read(&parser, &bytes, 900).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        account
+            .charge_work((account.work_remaining() - allowance) as u64)
+            .unwrap();
+        match Preparation::read(&document, &data.signers()[0], Level::Basic, &parent) {
+            Err(ReadError::Processing(structured_cades::Error::Encoding {
+                field: "tstInfo.messageImprint.hashedMessage",
+                ..
+            })) => panic!("inner reader refusal lost its source map"),
+            Err(
+                error @ ReadError::Inspection {
+                    coordinates: Coordinates::Logical,
+                    ..
+                },
+            ) => {
+                retained = Some((error, account.clone()));
+                break;
+            }
+            Ok(_) => panic!("complete inspection reached without exercising inner refusal"),
+            _ => {}
+        }
+    }
+    drop(bytes);
+    let (error, account) = retained.expect("one inner query refusal");
+    let ReadError::Inspection {
+        source,
+        context,
+        coordinates,
+    } = error
+    else {
+        unreachable!()
+    };
+    assert_eq!(coordinates, Coordinates::Logical);
+    assert!(source.is_terminal());
+    assert_eq!(context.coordinates(), Coordinates::Logical);
+    let physical = context.project_offset(source.offset(), &memory()).unwrap();
+    assert!(context.carrier().start >= 900);
+    assert!(physical >= context.carrier().start);
+    assert!(physical <= context.carrier().end());
+    assert!(
+        account.used() > 0,
+        "the independent map retains its actual storage charge"
+    );
+    drop(context);
+    assert_eq!(
+        account.used(),
+        0,
+        "refusal releases the map and every partial reading"
+    );
 }

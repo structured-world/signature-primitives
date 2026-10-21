@@ -11,9 +11,11 @@ use structured_asn1::{
     memory::{OwnedMap, OwnedVec, Work},
 };
 use structured_cms::{
-    content_source::ContentError,
+    content_source::{ContentError, Coordinates, SourceMap},
     timestamp::{InfoError, Token},
 };
+
+mod signing;
 
 /// An original timestamp syntax refusal with independently retained source maps.
 #[derive(Debug)]
@@ -23,6 +25,17 @@ pub enum ReadError {
     /// Original carried-information refusal. The retained map describes the
     /// cause's coordinate system; the physical carrier is an honest enclosure.
     Information(ContentError<InfoError<Infallible>>),
+    /// Inspection callback refusal with its independent carried source map.
+    /// The coordinate discriminator separates reader-derived locations from
+    /// failures retaining findings at an already physical carrier location.
+    Inspection {
+        /// Unchanged callback cause, including resource refusal.
+        source: Error,
+        /// Original physical fragments, never a retained temporary join.
+        context: SourceMap,
+        /// Coordinate system of the callback cause's own offset.
+        coordinates: Coordinates,
+    },
 }
 impl From<Error> for ReadError {
     fn from(cause: Error) -> Self {
@@ -41,6 +54,7 @@ impl ReadError {
         match self {
             Self::Processing(cause) => cause.is_terminal(),
             Self::Information(cause) => information_cause(cause).is_terminal(),
+            Self::Inspection { source, .. } => source.is_terminal(),
         }
     }
     /// Original physical failure position or carried-source enclosure start.
@@ -49,7 +63,8 @@ impl ReadError {
         match self {
             Self::Processing(cause) => cause.offset(),
             Self::Information(ContentError::Processing(cause)) => cause.offset(),
-            Self::Information(
+            Self::Inspection { context, .. }
+            | Self::Information(
                 ContentError::Decoding { context, .. } | ContentError::Callback { context, .. },
             ) => context.carrier().start,
         }
@@ -315,30 +330,7 @@ fn inspect<'m, 'd>(
     reader: &Reader<'d>,
     findings: &mut OwnedVec<Finding<'m, 'd>, impl Work>,
 ) -> Result<(), ReadError> {
-    let md5 = structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 2, 5]);
-    let digest = token.signer().digest_algorithm();
-    reader
-        .charge(
-            1 + digest
-                .algorithm()
-                .as_bytes()
-                .len()
-                .min(md5.as_bytes().len()) as u64,
-        )
-        .map_err(|cause| Error::encoding(cause, "cades.timestamp"))?;
-    // EN319122-1 §6.2.1 applies even when only B-B was requested and no
-    // timestamp math will run. Inspect actual use, before opening TSTInfo;
-    // a malformed information value cannot hide the envelope's digest.
-    // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
-    if digest.algorithm() == md5 {
-        finding(
-            document,
-            entry.property.span(),
-            Severity::Required,
-            Rule::Md5,
-            findings,
-        )?;
-    }
+    let _signing = signing::read(document, entry, token, reader, findings)?;
     // The envelope model is retained once. A subsequent cryptographic check
     // opens information under CURRENT work: temporary joined TSTInfo cannot
     // be pinned in this cache. Its faults use a physical attribute enclosure,
@@ -347,26 +339,15 @@ fn inspect<'m, 'd>(
         if let structured_cms::timestamp::HashAlgorithmReading::Identifier(algorithm) =
             info.imprint().algorithm()
         {
-            inside
-                .charge(
-                    1 + algorithm
-                        .algorithm()
-                        .as_bytes()
-                        .len()
-                        .min(md5.as_bytes().len()) as u64,
-                )
-                .map_err(|cause| Error::encoding(cause, "cades.timestamp"))?;
-            if algorithm.algorithm() == md5 {
-                // The original physical carrier is the location here, not an
-                // inner logical offset mislabeled as a document position.
-                finding(
-                    document,
-                    entry.property.span(),
-                    Severity::Required,
-                    Rule::Md5,
-                    findings,
-                )?;
-            }
+            signing::digest(
+                document,
+                entry.property.span(),
+                algorithm,
+                Some(info.imprint().hashed().len()),
+                "tstInfo.messageImprint.hashedMessage",
+                inside,
+                findings,
+            )?;
         }
         for cause in token
             .faults()
@@ -375,9 +356,9 @@ fn inspect<'m, 'd>(
             .chain(token.signer().faults())
             .chain(info.faults())
         {
-            reader
-                .charge(1)
-                .map_err(|cause| Error::encoding(cause, "cades.timestamp"))?;
+            reader.charge(1).map_err(|cause| {
+                signing::InspectionError::Physical(Error::encoding(cause, "cades.timestamp"))
+            })?;
             finding(
                 document,
                 entry.property.span(),
@@ -387,17 +368,26 @@ fn inspect<'m, 'd>(
                     field: cause.field(),
                 },
                 findings,
-            )?;
+            )
+            .map_err(signing::InspectionError::Physical)?;
         }
-        Ok::<_, Error>(())
+        Ok::<_, signing::InspectionError>(())
     });
     let source = match inspection {
         Ok(()) => return Ok(()),
         Err(ContentError::Callback {
             source: InfoError::Callback(cause),
-            ..
+            context,
         }) => {
-            return Err(cause.into());
+            let coordinates = match &cause {
+                signing::InspectionError::Reader(_) => context.coordinates(),
+                signing::InspectionError::Physical(_) => Coordinates::Original,
+            };
+            return Err(ReadError::Inspection {
+                source: cause.into_source(),
+                context,
+                coordinates,
+            });
         }
         Err(ContentError::Processing(cause)) => ContentError::Processing(cause),
         Err(ContentError::Decoding { source, context }) => {

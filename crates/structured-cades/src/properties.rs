@@ -343,7 +343,10 @@ fn read_sequence<'a, W: Work>(
         if document.tag().number() == Some(universal::OCTET_STRING) {
             Octets::read(&inside, &document, field)?;
         } else {
-            Octets::read_ia5(&inside, &document, field)?;
+            // EN319122-1 §5.2.10 selects a local-store URI, not arbitrary
+            // IA5 text. Syntax validation never fetches or resolves the URI.
+            // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+            uri_value(&inside, &document, field)?;
         }
         *store = Some(Store {
             specification,

@@ -600,6 +600,58 @@ fn empty_counter_and_ber_signature_timestamp_are_not_conforming() {
 }
 
 #[test]
+fn local_policy_store_requires_uri_syntax_without_fetching_it() {
+    // EN319122-1 §5.2.10 selects a URI, not arbitrary ASCII text. A proper
+    // protected policy hash cannot waive the local-store value's own grammar.
+    let policy = attribute(
+        oid::SIGNATURE_POLICY_IDENTIFIER.as_bytes(),
+        &[tlv(
+            0x30,
+            &[
+                tlv(6, &[43]),
+                tlv(
+                    0x30,
+                    &[tlv(0x30, &tlv(6, oid::SHA256.as_bytes())), tlv(4, &[1; 32])].concat(),
+                ),
+            ]
+            .concat(),
+        )],
+    );
+    for (uri, valid) in [
+        (tlv(22, b"not a URI"), false),
+        (tlv(22, b"file:///policy/%GG"), false),
+        (tlv(22, b"file:///policy/document"), true),
+        (
+            tlv(
+                0x36,
+                &[tlv(4, b"file:///policy/"), tlv(4, b"document")].concat(),
+            ),
+            true,
+        ),
+    ] {
+        let store = attribute(
+            oid::SIGNATURE_POLICY_STORE.as_bytes(),
+            &[tlv(0x30, &[tlv(6, &[42]), uri].concat())],
+        );
+        let bytes = message_with(std::slice::from_ref(&policy), &[store]);
+        let parser = Parser::ber(memory());
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        let invalid = prepared.findings().iter().any(|finding| matches!(finding.rule, Rule::Value { attribute, .. } if attribute == oid::SIGNATURE_POLICY_STORE));
+        assert_eq!(invalid, !valid);
+        assert!(
+            !prepared
+                .findings()
+                .iter()
+                .any(|finding| matches!(finding.rule, Rule::PolicyStore))
+        );
+    }
+}
+
+#[test]
 fn policy_store_requires_a_written_nonzero_protected_policy_digest() {
     // EN6.3(k) forbids an unbound store, including the normative zero-hash
     // UNKNOWN marker. It is not treated as a digest of the stored document.

@@ -999,6 +999,95 @@ fn provider_capacity_and_late_failure_release_profile_and_temporary_storage() {
 }
 
 #[test]
+fn issuer_uid_comparison_pays_both_sources_under_a_foreign_operation() {
+    // A third query source must not replace the left AC ceiling during UID scans.
+    let signing = SigningKey::from_bytes(&[23; 32]);
+    let key = spki(&ed(), signing.verifying_key().as_bytes());
+    let mut uid = vec![128; 4097];
+    uid[0] = 0;
+    let body = info(&ed(), &tlv(3, &uid), 5, &validity());
+    let bytes = signed(&body, &ed(), &signing);
+    let aa_bytes = authority(&key, b"Authority", &validity(), &[], &tlv(130, &uid));
+    let measure = |with_uid: bool| {
+        let source_memory = generous();
+        let source = Parser::der(source_memory.clone());
+        let plain = signed(&info(&ed(), &[], 5, &validity()), &ed(), &signing);
+        let ac = read_ac(&source, if with_uid { &bytes } else { &plain });
+        let before = source.execution_in(&source_memory).work_remaining();
+        let authority_source = Parser::der(generous());
+        let plain_aa = authority(&key, b"Authority", &validity(), &[], &[]);
+        let aa = read_pkc(
+            &authority_source,
+            if with_uid { &aa_bytes } else { &plain_aa },
+        );
+        let query_source = Parser::der(generous());
+        let query = query_source.read(&[], 0).unwrap();
+        assert!(matches!(
+            ac.authenticate(
+                &aa,
+                key_of(&aa),
+                interval(),
+                &Oracle::new(Fault::AlgorithmError),
+                &query.execution()
+            ),
+            Err(AuthenticationError::Callback {
+                stage: Stage::Algorithms,
+                source: Cause::Marker(Fault::AlgorithmError),
+                ..
+            })
+        ));
+        (
+            before - source.execution_in(&source_memory).work_remaining(),
+            usize::try_from(source.limits().max_work).unwrap() - before,
+        )
+    };
+    let (plain, _) = measure(false);
+    let (with_uid, parsed) = measure(true);
+    assert!(
+        with_uid >= plain + uid.len() - 1,
+        "left UID source paid {with_uid}, plain paid {plain}"
+    );
+    let source = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: (parsed + plain + 100) as u64,
+            ..Limits::default()
+        },
+        generous(),
+    );
+    let ac = read_ac(&source, &bytes);
+    let authority_source = Parser::der(generous());
+    let aa = read_pkc(&authority_source, &aa_bytes);
+    let query_source = Parser::der(generous());
+    let query = query_source.read(&[], 0).unwrap();
+    let verifier = Oracle::new(Fault::AlgorithmError);
+    assert!(
+        matches!(ac.authenticate(&aa,key_of(&aa),interval(),&verifier,&query.execution()),
+        Err(AuthenticationError::Processing(e)) if e.is_resource() && e.offset()==ac.signed_element().span().start && e.field()=="attributeCertificate.validation")
+    );
+    assert!(verifier.calls.borrow().is_empty());
+    assert_eq!(query.memory().used(), 0);
+
+    // Unequal lengths inspect only metadata, never prepay a nonexistent scan.
+    let source = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: (parsed + plain + 100) as u64,
+            ..Limits::default()
+        },
+        generous(),
+    );
+    let ac = read_ac(&source, &bytes);
+    let short = authority(&key, b"Authority", &validity(), &[], &[130, 2, 0, 128]);
+    let aa = read_pkc(&authority_source, &short);
+    assert!(
+        matches!(ac.authenticate(&aa,key_of(&aa),interval(),&verifier,&query.execution()).unwrap(),
+        Outcome::Rejected(r) if matches!(r.reason,Failure::Authority(c) if c.reason==Reason::AuthorityUniqueId))
+    );
+    assert!(verifier.calls.borrow().is_empty());
+}
+
+#[test]
 fn current_query_zero_and_exact_work_are_enforced_across_foreign_sources() {
     // The source switches must not replace the caller's narrowed operation ceiling.
     let signing = SigningKey::from_bytes(&[23; 32]);

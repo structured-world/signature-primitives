@@ -279,6 +279,23 @@ pub fn profile<'a>(
     Ok(Profile { signing, faults })
 }
 
+/// Inspects the same profile while retaining nonterminal ESS selection/schema
+/// failures as located findings. A conflicting version has no selected binding;
+/// it cannot silently become the first assertion or an empty successful set.
+/// Source/resource refusal still returns an error without a successful prefix.
+/// This permits a format layer to inventory later timestamps and counters even
+/// when the original signer's ESS fields are nonconforming.
+pub fn inspect_profile<'a>(
+    signer: &SignerInfo<'a>,
+    role: Role,
+    parent: &Reader<'a>,
+) -> Result<Profile<'a>> {
+    signer.require_session(parent, "signerInfo")?;
+    let signing = SigningAttributes::inspect(signer, parent)?;
+    let faults = findings_from_reading(signer, role, &signing, parent)?;
+    Ok(Profile { signing, faults })
+}
+
 /// Applies the same profile kernel to the SAME already parsed ESS reading.
 /// Source identity is checked before traversal; no ESS value is reparsed and
 /// no signature, certificate binding or application trust is established.

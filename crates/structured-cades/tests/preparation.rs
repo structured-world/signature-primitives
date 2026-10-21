@@ -1454,3 +1454,65 @@ fn legacy_reference_times_preserve_the_producing_ber_der_boundary() {
         }
     }
 }
+
+#[test]
+fn conflicting_ess_keeps_findings_and_the_complete_timestamp_counter_census() {
+    // Conflicting ESS instances/values are schema failures, not terminal
+    // processing refusals. Neither a root nor a child may hide later actors.
+    for kind in [oid::SIGNING_CERTIFICATE, oid::SIGNING_CERTIFICATE_V2] {
+        for multiple_values in [false, true] {
+            for in_counter in [false, true] {
+                let first = tlv(0x30, &tlv(0x30, &tlv(0x30, &tlv(4, &[1; 32]))));
+                let second = tlv(0x30, &tlv(0x30, &tlv(0x30, &tlv(4, &[2; 32]))));
+                let conflicting = if multiple_values {
+                    vec![attribute(kind.as_bytes(), &[first, second])]
+                } else {
+                    vec![
+                        attribute(kind.as_bytes(), &[first]),
+                        attribute(kind.as_bytes(), &[second]),
+                    ]
+                };
+                let stamp = attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &[token()]);
+                let child = signer_with(
+                    if in_counter { &conflicting } else { &[] },
+                    std::slice::from_ref(&stamp),
+                );
+                let bytes = message_with(
+                    if in_counter { &[] } else { &conflicting },
+                    &[stamp, attribute(oid::COUNTERSIGNATURE.as_bytes(), &[child])],
+                );
+                let parser = Parser::ber(memory());
+                let data = SignedData::read(&parser, &bytes, 500).unwrap();
+                let parent = parser.read(&[], 0).unwrap();
+                let document = Document::new(&data, &parent).unwrap();
+                let prepared =
+                    Preparation::read(&document, &data.signers()[0], Level::Basic, &parent)
+                        .unwrap();
+                let expected = if multiple_values {
+                    structured_cms::ErrorCode::AttributeCardinality
+                } else {
+                    structured_cms::ErrorCode::DuplicateAttribute
+                };
+                assert!(
+                    prepared
+                        .findings()
+                        .iter()
+                        .any(|finding| finding.severity == Severity::Required
+                            && matches!(finding.rule, Rule::Schema {code,..} if code==expected))
+                );
+                assert!(!prepared.all_format_requirements_met());
+                assert_eq!(prepared.counters().len(), 1);
+                assert_eq!(prepared.timestamps().len(), 2);
+                assert_eq!(prepared.timestamp_requirements().entries().len(), 2);
+                if !in_counter {
+                    assert!(prepared.profile().signing().v1().is_none());
+                    assert!(prepared.profile().signing().v2().is_none());
+                    let strict =
+                        structured_cms::ess::SigningAttributes::read(&data.signers()[0], &parent)
+                            .unwrap_err();
+                    assert_eq!(strict.code(), expected);
+                }
+            }
+        }
+    }
+}

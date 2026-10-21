@@ -194,6 +194,10 @@ impl<'r, 'm, 'd, 'p> SignerBinding<'r, 'm, 'd, 'p> {
         self.mathematical
             && self.key_matches
             && self.included.is_some()
+            // Inspection may retain a conflicting ESS version without choosing
+            // either assertion. Agreement with the other version cannot waive
+            // that failure or issue a signer/path receipt for it.
+            && self.prepared.profile().signing().faults().is_empty()
             && matches!(self.identifier, CertificateAgreement::Matches)
             && ess_matches(self.ess)
             && matches!(

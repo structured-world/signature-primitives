@@ -354,6 +354,14 @@ impl<'a> SigningAttributes<'a> {
     /// hash state, signature or caller payload is accessed during this step.
     /// <https://www.rfc-editor.org/rfc/rfc5035#section-3>
     pub fn read(signer: &SignerInfo<'a>, parent: &Reader<'a>) -> Result<Self> {
+        Self::read_with(signer, parent, false)
+    }
+
+    pub(crate) fn inspect(signer: &SignerInfo<'a>, parent: &Reader<'a>) -> Result<Self> {
+        Self::read_with(signer, parent, true)
+    }
+
+    fn read_with(signer: &SignerInfo<'a>, parent: &Reader<'a>, inspect: bool) -> Result<Self> {
         signer.require_session(parent, "signerInfo.signedAttrs")?;
         let execution = parent.execution();
         execution.charge_work(1).map_err(|reason| {
@@ -376,8 +384,8 @@ impl<'a> SigningAttributes<'a> {
                 }
             }
         }
-        let v1 = read_attribute(signer, parent, Version::V1, &mut faults)?;
-        let v2 = read_attribute(signer, parent, Version::V2, &mut faults)?;
+        let v1 = inspect_attribute(signer, parent, Version::V1, &mut faults, inspect)?;
+        let v2 = inspect_attribute(signer, parent, Version::V2, &mut faults, inspect)?;
         if v1.is_none()
             && let Some(v2) = &v2
         {
@@ -449,6 +457,26 @@ impl<'a> SigningAttributes<'a> {
     #[must_use]
     pub fn faults(&self) -> &[Error] {
         &self.faults
+    }
+}
+
+fn inspect_attribute<'a, W: Work>(
+    signer: &SignerInfo<'a>,
+    parent: &Reader<'a>,
+    version: Version,
+    faults: &mut OwnedVec<Error, W>,
+    inspect: bool,
+) -> Result<Option<SigningCertificate<'a>>> {
+    match read_attribute(signer, parent, version, faults) {
+        // RFC5035 cardinality does not select one of conflicting assertions.
+        // Inspection retains the cause and NO binding for that version, so a
+        // format layer can continue its complete actor census. Processing
+        // refusal remains terminal, including refusal to retain this fault.
+        Err(cause) if inspect && !cause.is_terminal() => {
+            record(cause, faults, version.field())?;
+            Ok(None)
+        }
+        reading => reading,
     }
 }
 

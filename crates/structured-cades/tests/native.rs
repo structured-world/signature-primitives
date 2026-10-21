@@ -48,7 +48,7 @@ fn real_root_receipts_and_credential_preflight_cannot_promote_invalid_fields() {
     // Real signature/path mathematics cannot substitute for CAdES format
     // conformance. Incomplete or unprotected credential grammar must refuse
     // BEFORE authentication and cannot issue a complete empty credential set.
-    for mode in 0..6 {
+    for mode in 0..7 {
         let issuer_key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
         let key = SigningKey::from_bytes((&[2; 32]).into()).unwrap();
         let root = certificate("Root", "Root", &issuer_key, &issuer_key, false);
@@ -61,6 +61,16 @@ fn real_root_receipts_and_credential_preflight_cannot_promote_invalid_fields() {
             ),
         ];
         let mut unsigned = vec![];
+        if mode == 6 {
+            // A valid V2 hash must not hide a conflicting V1 assertion or
+            // supply a signer path through an unproven ESS binding.
+            for byte in [1, 2] {
+                signed.push(attribute(
+                    oid::SIGNING_CERTIFICATE.as_bytes(),
+                    &tlv(0x30, &tlv(0x30, &tlv(0x30, &tlv(4, &[byte; 20])))),
+                ));
+            }
+        }
         if mode == 1 {
             let claimed = tlv(0xa0, &tlv(0x30, &attribute(&[42, 3], &tlv(12, b"role"))));
             let broken = tlv(0xa1, &tlv(2, &[1]));
@@ -194,6 +204,14 @@ fn real_root_receipts_and_credential_preflight_cannot_promote_invalid_fields() {
             &parent,
         )
         .unwrap();
+        if mode == 6 {
+            assert!(!prepared.basic_format_requirements_met());
+            assert!(
+                !binding.is_bound(),
+                "a valid companion ESS version cannot waive the conflicting version"
+            );
+            continue;
+        }
         assert!(binding.is_bound(), "mathematics and ESS must really pass");
         let counter_checks = counters::bind(&prepared, &parent, |context| {
             context.check(&oracle, leaf, &path)

@@ -196,7 +196,7 @@ impl<'m, 'd> Preparation<'m, 'd> {
         let selected = document.signer(signer)?;
         document.message().require_session(parent, FIELD)?;
         let execution = parent.execution();
-        let profile = structured_cms::cades::profile(signer, Role::Signature, parent)?;
+        let profile = structured_cms::cades::inspect_profile(signer, Role::Signature, parent)?;
         let mut findings = execution.vector();
         let properties =
             root_properties(document, signer, requested, &profile, parent, &mut findings)?;
@@ -1165,7 +1165,7 @@ fn read_counters<'m, 'd, W: Work>(
             } => {
                 crate::preservation::collect(child, reader, preservation)?;
                 let profile =
-                    structured_cms::cades::profile(child, Role::Countersignature, reader)?;
+                    structured_cms::cades::inspect_profile(child, Role::Countersignature, reader)?;
                 schema_findings(document, child, &profile, reader, findings)?;
                 let properties = crate::properties::Properties::read(child, reader)?;
                 property_findings(document, &properties, reader, findings)?;

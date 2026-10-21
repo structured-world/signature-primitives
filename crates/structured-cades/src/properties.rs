@@ -539,6 +539,20 @@ fn open_pair<'a, W: Work>(
         .next_element()
         .map_err(|cause| Error::encoding(cause, field))?;
     end(&pair, field)?;
+    if role == OpenRole::SignedAssertion {
+        let saml = Oid::from_bytes(&[4, 0, 0x81, 0x95, 0x32, 3, 0]);
+        parent
+            .charge(1 + kind.as_bytes().len().min(saml.as_bytes().len()) as u64)
+            .map_err(|cause| Error::encoding(cause, field))?;
+        // EN319122-1 §5.2.6.3 types this registered payload as OCTET STRING;
+        // other assertion types stay open. Reading cannot authenticate SAML.
+        // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+        if kind == saml
+            && let Some(part) = value
+        {
+            Octets::read(&pair, &part, field)?;
+        }
+    }
     if role == OpenRole::PolicyQualifier
         && let Some(part) = value
     {

@@ -1284,3 +1284,47 @@ fn md5_is_forbidden_in_every_legacy_reference_hash_position() {
         }
     }
 }
+
+#[test]
+fn registered_signed_saml_uses_octets_without_validating_unknown_assertions() {
+    // EN319122-1 §5.2.6.3 types the registered signed-SAML payload as
+    // OCTET STRING. Unknown assertions remain opaque and absent OPTIONAL
+    // payloads do not become fabricated signed assertion bytes.
+    for (kind, registered) in [
+        (vec![4, 0, 0x81, 0x95, 0x32, 3, 0], true),
+        (vec![42], false),
+    ] {
+        for mode in 0..3 {
+            let mut pair = tlv(6, &kind);
+            match mode {
+                0 => {}
+                1 => pair.extend(tlv(4, b"signed assertion")),
+                _ => pair.extend(tlv(2, &[1])),
+            }
+            let value = tlv(0x30, &tlv(0xa2, &tlv(0x30, &tlv(0x30, &pair))));
+            let bytes = message_with(
+                &[attribute(oid::SIGNER_ATTRIBUTES_V2.as_bytes(), &[value])],
+                &[],
+            );
+            let parser = Parser::ber(memory());
+            let data = SignedData::read(&parser, &bytes, 500).unwrap();
+            let parent = parser.read(&[], 0).unwrap();
+            let document = Document::new(&data, &parent).unwrap();
+            let prepared =
+                Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+            let invalid = prepared.findings().iter().any(|finding| matches!(finding.rule, Rule::Value {attribute, ..} if attribute == oid::SIGNER_ATTRIBUTES_V2));
+            assert_eq!(
+                invalid,
+                registered && mode == 2,
+                "kind={kind:?} mode={mode}"
+            );
+            if !invalid {
+                let [entry] = prepared.properties().open_values() else {
+                    panic!("original assertion lost")
+                };
+                assert_eq!(entry.value.is_some(), mode != 0);
+                assert_eq!(entry.kind.unwrap().as_bytes(), kind);
+            }
+        }
+    }
+}

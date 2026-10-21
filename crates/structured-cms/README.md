@@ -64,6 +64,11 @@ structured-cms = "0.8"
   cardinality; an empty inner sequence stays empty. Short current queries retain
   original source/depth and independently owned metadata accounting. Decoding
   does not establish membership, authority trust or charging permission.
+- `attribute_certificate::role::RoleSyntax` decodes the original role URI and
+  optional roleAuthority names. Registered `id-at-role` reads check every value
+  and preserve multiple assertions in source order, with DER and source/current
+  resource admission. Authority trust, role allocation and permissions remain
+  application decisions; decoding never dereferences the URI.
 - `timestamp::Request` reads original TimeStampReq. `timestamp::Token` separates
   readable inspection from complete signature, ESS, TSA, imprint, request and
   time checking. The caller supplies UTC information and request windows.

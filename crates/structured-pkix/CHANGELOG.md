@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.9.2...structured-pkix-v0.10.0) - 2026-10-21
+
+### Added
+
+- *(cms)* check attribute certificate inputs ([#188](https://github.com/structured-world/signature-primitives/pull/188))
+- *(cms)* check AC recipient targeting ([#178](https://github.com/structured-world/signature-primitives/pull/178))
+- *(cms)* read v2 attribute certificates ([#176](https://github.com/structured-world/signature-primitives/pull/176))
+- *(cades)* compose baseline levels ([#174](https://github.com/structured-world/signature-primitives/pull/174))
+- *(pkix)* share ml-dsa public structure ([#172](https://github.com/structured-world/signature-primitives/pull/172))
+- *(pkix)* interpret PSS key restrictions ([#168](https://github.com/structured-world/signature-primitives/pull/168))
+- *(pkix)* read signature algorithm structure ([#166](https://github.com/structured-world/signature-primitives/pull/166))
+- *(pkix)* read retained PSS parameters ([#162](https://github.com/structured-world/signature-primitives/pull/162))
+- *(pkix)* [**breaking**] retain signature source context ([#160](https://github.com/structured-world/signature-primitives/pull/160))
+- *(pkix)* read RFC 8410 public key structure ([#157](https://github.com/structured-world/signature-primitives/pull/157))
+- *(cms)* complete ac clearance and controls ([#186](https://github.com/structured-world/signature-primitives/pull/186))
+- *(cms)* read service and access identities ([#184](https://github.com/structured-world/signature-primitives/pull/184))
+- *(cms)* decode original AC role assertions ([#182](https://github.com/structured-world/signature-primitives/pull/182))
+- *(cms)* read IETF AC attribute values ([#180](https://github.com/structured-world/signature-primitives/pull/180))
+
+### Fixed
+
+- *(pkix)* preserve key source work limits ([#170](https://github.com/structured-world/signature-primitives/pull/170))
+- *(pkix)* preserve digest source work limits ([#164](https://github.com/structured-world/signature-primitives/pull/164))
+
 ## [0.9.2](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.9.1...structured-pkix-v0.9.2) - 2026-10-20
 
 ### Added

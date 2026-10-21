@@ -17,8 +17,8 @@ std = ["structured-asn1/std", "structured-pkix/std"]
 alloc = ["structured-asn1/alloc", "structured-pkix/alloc"]
 
 [dependencies]
-structured-asn1 = { version = "0.9.2", path = "../structured-asn1", default-features = false }
-structured-pkix = { version = "0.9.2", path = "../structured-pkix", default-features = false }
+structured-asn1 = { version = "0.10.0", path = "../structured-asn1", default-features = false }
+structured-pkix = { version = "0.10.0", path = "../structured-pkix", default-features = false }
 
 [dev-dependencies]
 # Independent public-vector oracle/adapter only; no engine in the runtime API.

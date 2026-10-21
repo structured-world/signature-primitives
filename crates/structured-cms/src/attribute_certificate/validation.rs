@@ -177,7 +177,7 @@ impl<'a> AttributeCertificate<'a> {
                 // encodings preserve arbitrary-width numeric identity.
                 if left != right
                     || !name
-                        .matches(certificate.tbs().issuer(), &execution)
+                        .matches(certificate.tbs().issuer(), &certificate_execution)
                         .map_err(Error::pkix)?
                 {
                     return Ok(refused(Reason::HolderCertificate, at));
@@ -186,7 +186,7 @@ impl<'a> AttributeCertificate<'a> {
                     let Some(other) = certificate.tbs().issuer_unique_id() else {
                         return Ok(refused(Reason::HolderUniqueId, at));
                     };
-                    if !same_bits(uid, other, &execution, at.start)? {
+                    if !same_bits(uid, other, &certificate_execution, at.start)? {
                         return Ok(refused(Reason::HolderUniqueId, at));
                     }
                 }
@@ -195,37 +195,42 @@ impl<'a> AttributeCertificate<'a> {
                 let Some(names) = &self.information.holder.entity_names else {
                     return Ok(refused(Reason::HolderAbsent, at));
                 };
-                // Decode a present SAN once, before any positive shortcut.
-                // An unreadable asserted identity is not an absent SAN.
-                let sans = certificate
-                    .tbs()
-                    .extensions()
-                    .subject_alt_name(&certificate_execution)
-                    .map_err(Error::pkix)?;
+                // §4.2.2 permits subject OR SAN identity. A matching subject
+                // needs no SAN parsing/storage; certificate profile/path
+                // validation is independent of this identity-only operation.
                 for name in names {
                     charge(&execution, 1, at.start)?;
                     if let GeneralName::Directory(name) = name
                         && !name.is_empty()
                         && name
-                            .matches(certificate.tbs().subject(), &execution)
+                            .matches(certificate.tbs().subject(), &certificate_execution)
                             .map_err(Error::pkix)?
                     {
                         return Ok(Check::Accepted(()));
                     }
-                    if let Some(sans) = &sans {
-                        for alternative in sans {
-                            charge(&execution, 1, at.start)?;
-                            if general_name::matches_at(
-                                name,
-                                alternative,
-                                &execution,
-                                at.start,
-                                FIELD,
-                            )
-                            .map_err(Error::pkix)?
-                            {
-                                return Ok(Check::Accepted(()));
-                            }
+                }
+                let Some(sans) = certificate
+                    .tbs()
+                    .extensions()
+                    .subject_alt_name(&certificate_execution)
+                    .map_err(Error::pkix)?
+                else {
+                    return Ok(refused(Reason::HolderName, at));
+                };
+                for name in names {
+                    charge(&execution, 1, at.start)?;
+                    for alternative in &sans {
+                        charge(&certificate_execution, 1, at.start)?;
+                        if general_name::matches_at(
+                            name,
+                            alternative,
+                            &certificate_execution,
+                            at.start,
+                            FIELD,
+                        )
+                        .map_err(Error::pkix)?
+                        {
+                            return Ok(Check::Accepted(()));
                         }
                     }
                 }
@@ -238,10 +243,12 @@ impl<'a> AttributeCertificate<'a> {
     /// Bind issuer DN/UID and check the authority PKC's AA-specific purpose.
     ///
     /// RFC5755 §§4.2.3/4.2.8/4.5 require a non-CA authority permitted to sign
-    /// data (digitalSignature or contentCommitment). The AC issuerUID identifies that authority itself, hence compares
-    /// with its subjectUniqueID, whereas Holder.baseCertificateID.issuerUID
+    /// data (digitalSignature or contentCommitment). The AC issuerUID identifies
+    /// that authority itself, hence compares with its subjectUniqueID, whereas
+    /// Holder.baseCertificateID.issuerUID
     /// identifies the holder PKC's issuer. The original authority's path,
     /// effective key, algorithm agreement and AC signature still need checking.
+    /// <https://www.rfc-editor.org/rfc/rfc5755#section-4.2.8>
     pub fn bind_authority<W: Work>(
         &self,
         authority: &Certificate<'_>,
@@ -263,7 +270,7 @@ impl<'a> AttributeCertificate<'a> {
             return Ok(refused(Reason::IssuerForm, at));
         };
         if !name
-            .matches(authority.tbs().subject(), &execution)
+            .matches(authority.tbs().subject(), &authority_execution)
             .map_err(Error::pkix)?
         {
             return Ok(refused(Reason::AuthorityName, at));
@@ -273,7 +280,8 @@ impl<'a> AttributeCertificate<'a> {
             authority.tbs().subject_unique_id(),
         ) {
             (None, None) => {}
-            (Some(left), Some(right)) if same_bits(left, right, &execution, at.start)? => {}
+            (Some(left), Some(right))
+                if same_bits(left, right, &authority_execution, at.start)? => {}
             _ => return Ok(refused(Reason::AuthorityUniqueId, at)),
         }
         let extensions = authority.tbs().extensions();

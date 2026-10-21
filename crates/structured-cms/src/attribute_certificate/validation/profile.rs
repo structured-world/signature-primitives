@@ -1,7 +1,7 @@
 use super::{Check, DigestedObject, IssuerForm, Reason, charge, directory, proxy, refused, target};
 use crate::attribute_certificate::AttributeCertificate;
 use crate::{Error, Result};
-use structured_asn1::memory::Work;
+use structured_asn1::memory::{MemoryError, Work};
 use structured_asn1::{Oid, Tag, universal};
 use structured_pkix::access::{DistributionPoints, InfoAccess};
 use structured_pkix::general_name::GeneralName;
@@ -251,11 +251,11 @@ pub(super) fn check<'r, 'a, W: Work>(
         let extension = extension.map_err(Error::pkix)?;
         let at = extension.span();
         // Bound the fixed dispatch's OID scans before any equality test.
-        charge(
-            &execution,
-            extension.kind().as_bytes().len() as u64 * 8 + 8,
-            at.start,
-        )?;
+        let dispatch_work = (extension.kind().as_bytes().len() as u64)
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(8))
+            .ok_or_else(|| Error::resource(MemoryError::WorkExceeded, super::FIELD, at.start))?;
+        charge(&execution, dispatch_work, at.start)?;
         match extension.kind() {
             kind if kind == AUDIT_IDENTITY => {
                 if let Some(failure) = critical(extension, true) {

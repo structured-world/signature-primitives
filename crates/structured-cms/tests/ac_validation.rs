@@ -841,8 +841,8 @@ fn targeting_and_proxying_preflight_forbidden_certificates_and_keep_effects_visi
 
 #[test]
 fn malformed_san_and_late_critical_refusal_never_become_positive_prefixes() {
-    // Decode a complete present SAN even when the directory subject already matches.
-    let bytes = ac_bytes(&seq(&[&tlv(161, &directory(b"Holder"))]), &[]);
+    // A required SAN cannot turn malformed syntax into an absent-name mismatch.
+    let bytes = ac_bytes(&entity(130, b"holder.test"), &[]);
     let cert_bytes = pkc(
         b"Root",
         b"Holder",
@@ -988,4 +988,65 @@ fn authority_uid_presence_and_opaque_audit_borrow_are_exact() {
         Some(b"identity".as_slice())
     );
     assert_eq!(query.used(), 0);
+}
+
+#[test]
+fn holder_subject_identity_does_not_materialize_unneeded_san() {
+    // RFC5755 §4.2.2 permits subject OR SAN identity. A subject match needs no SAN catalogue.
+    let bytes = ac_bytes(&seq(&[&tlv(161, &directory(b"Holder"))]), &[]);
+    let names = (0..64)
+        .map(|n| tlv(130, format!("name{n}.test").as_bytes()))
+        .collect::<Vec<_>>();
+    let cert_bytes = pkc(
+        b"Root",
+        b"Holder",
+        &[1],
+        &[],
+        &[ext(
+            oid::SUBJECT_ALT_NAME,
+            &seq(&names.iter().map(Vec::as_slice).collect::<Vec<_>>()),
+            false,
+        )],
+    );
+    let p = Parser::der(memory(1 << 20, 1 << 24));
+    let cp = Parser::der(memory(1 << 20, 1 << 24));
+    let ac = read_ac(&p, &bytes);
+    let cert = read_pkc(&cp, &cert_bytes);
+    let query = memory(0, 1 << 24);
+    accepted(
+        ac.bind_holder(&cert, HolderMethod::EntityName, &query)
+            .unwrap(),
+    );
+    assert_eq!(query.used(), 0);
+}
+
+#[test]
+fn foreign_certificate_name_comparison_preserves_its_remaining_source_work() {
+    // Funding metadata alone must not exempt the following foreign DN scan.
+    let bytes = ac_bytes(&seq(&[&tlv(161, &directory(b"Authority"))]), &[]);
+    let cert_bytes = pkc(b"Root", b"Authority", &[1], &[], &[]);
+    let baseline = memory(1 << 20, 1 << 24);
+    let bp = Parser::der(baseline.clone());
+    drop(read_pkc(&bp, &cert_bytes));
+    for authority in [false, true] {
+        let source = Parser::new(
+            structured_asn1::Encoding::Der,
+            Limits {
+                max_work: baseline.work_used() as u64 + 1,
+                ..Limits::default()
+            },
+            memory(1 << 20, 1 << 24),
+        );
+        let cert = read_pkc(&source, &cert_bytes);
+        let p = Parser::der(memory(1 << 20, 1 << 24));
+        let ac = read_ac(&p, &bytes);
+        let query = memory(1 << 20, 1 << 24);
+        let answer = if authority {
+            ac.bind_authority(&cert, &query)
+        } else {
+            ac.bind_holder(&cert, HolderMethod::EntityName, &query)
+        };
+        assert!(answer.unwrap_err().is_terminal());
+        assert_eq!(query.used(), 0);
+    }
 }

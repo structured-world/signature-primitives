@@ -58,6 +58,12 @@ structured-cms = "0.8"
   cannot produce a match. Original ranges and current/source work admission are
   preserved. Unknown membership or opaque name semantics remain unproven; this
   predicate does not authenticate the AC or authorize attribute use.
+- `attribute_certificate::ietf::IetfAttrSyntax` decodes group and chargingIdentity
+  assertions with their original policyAuthority and homogeneous borrowed octet,
+  OID or UTF-8 values. Registered-attribute reads enforce outer singleton
+  cardinality; an empty inner sequence stays empty. Short current queries retain
+  original source/depth and independently owned metadata accounting. Decoding
+  does not establish membership, authority trust or charging permission.
 - `timestamp::Request` reads original TimeStampReq. `timestamp::Token` separates
   readable inspection from complete signature, ESS, TSA, imprint, request and
   time checking. The caller supplies UTC information and request windows.

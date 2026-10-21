@@ -23,6 +23,7 @@ use structured_pkix::{AlgorithmIdentifier, Extensions, Time};
 const FIELD: &str = "attributeCertificate";
 const INFO: &str = "attributeCertificate.acinfo";
 
+pub mod ietf;
 pub mod target;
 fn sequence() -> Tag {
     Tag::constructed(universal::SEQUENCE)

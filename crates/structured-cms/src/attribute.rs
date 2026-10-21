@@ -2,7 +2,7 @@
 
 use crate::{Error, ErrorCode, Result};
 use structured_asn1::memory::{Execution, Memory, OwnedVec, Work};
-use structured_asn1::{Element, Encoding, Oid, Parser, Reader, Span, Tag, universal};
+use structured_asn1::{Element, Encoding, Oid, Parser, Reader, ScopedReader, Span, Tag, universal};
 
 const SIGNED_SINGLETONS: [Oid<'static>; 4] = [
     crate::oid::CONTENT_TYPE,
@@ -51,6 +51,13 @@ pub struct Attribute<'a> {
 }
 
 impl<'a> Attribute<'a> {
+    pub(crate) fn query_in<'operation, W: Work>(&self, work: &'operation W) -> Execution<'operation>
+    where
+        'a: 'operation,
+    {
+        work.execution_for(self.parser)
+    }
+
     /// Reads one original Attribute using the same field kernel as a CMS
     /// catalogue. A containing schema (for example `CAdES` `claimedAttributes`)
     /// decides placement/cardinality; this does not invent a `SignerInfo`.
@@ -189,6 +196,36 @@ impl<'a> Attribute<'a> {
             )
             .map(Some)
             .map_err(|error| Error::encoding(error, field))
+    }
+
+    /// Opens an original value under a shorter current operation. Returned
+    /// input views retain the document lifetime; only cursor/scratch borrows
+    /// `work`. Lookup, parsing and storage obey both the original session and
+    /// current operation. Encoding, offsets and inherited depth are preserved.
+    /// A missing index is absence; resource refusal is an error, never absence.
+    pub fn value_reader_scoped<'operation, W: Work>(
+        &self,
+        index: usize,
+        work: &'operation W,
+        field: &'static str,
+    ) -> Result<Option<ScopedReader<'a, 'operation>>>
+    where
+        'a: 'operation,
+    {
+        let execution = work.execution_for(self.parser);
+        let Some(value) = self.selected_value(index, &execution, field)? else {
+            return Ok(None);
+        };
+        debug_assert!(self.depth > 0);
+        work.read_scoped_nested(
+            self.parser,
+            value.as_bytes(),
+            value.span().start,
+            self.encoding,
+            self.depth - 1,
+        )
+        .map(Some)
+        .map_err(|error| Error::encoding(error, field))
     }
 
     /// Opens one original value with producing local and current aggregate work.

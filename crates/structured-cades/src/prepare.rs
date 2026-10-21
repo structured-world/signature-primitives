@@ -680,7 +680,7 @@ fn protected_rules<'m, 'd, W: Work>(
 ) -> Result<()> {
     let protected = signer.signed_attributes();
     for kind in [oid::CONTENT_TYPE, oid::MESSAGE_DIGEST, oid::SIGNING_TIME] {
-        if !present(protected, kind, parent)? {
+        if !present(document, protected, kind, parent, findings)? {
             finding(
                 document,
                 signer.span(),
@@ -708,9 +708,9 @@ fn protected_rules<'m, 'd, W: Work>(
             findings,
         )?;
     }
-    if !present(protected, oid::CONTENT_HINTS, parent)?
-        && !present(protected, oid::MIME_TYPE, parent)?
-    {
+    let hints = present(document, protected, oid::CONTENT_HINTS, parent, findings)?;
+    let mime = present(document, protected, oid::MIME_TYPE, parent, findings)?;
+    if !hints && !mime {
         finding(
             document,
             signer.span(),
@@ -722,7 +722,6 @@ fn protected_rules<'m, 'd, W: Work>(
     // Table 1 narrows the generic attribute rules to at most one instance.
     for kind in [
         oid::COMMITMENT_TYPE_INDICATION,
-        oid::MIME_TYPE,
         oid::SIGNER_LOCATION,
         oid::SIGNER_ATTRIBUTES_V2,
         oid::SIGNATURE_POLICY_IDENTIFIER,
@@ -735,7 +734,7 @@ fn protected_rules<'m, 'd, W: Work>(
         } else {
             protected
         };
-        present(set, kind, parent)?;
+        present(document, set, kind, parent, findings)?;
     }
     Ok(())
 }
@@ -805,14 +804,38 @@ fn unsigned_rules<'m, 'd, W: Work>(
     Ok(())
 }
 
-fn present(
+fn present<'m, 'd, W: Work>(
+    document: &Document<'m, 'd>,
     set: Option<&Attributes<'_>>,
     kind: structured_asn1::Oid<'static>,
     parent: &Reader<'_>,
+    findings: &mut OwnedVec<Finding<'m, 'd>, W>,
 ) -> Result<bool> {
-    match set {
-        Some(set) => Ok(set.unique_in(kind, parent)?.is_some()),
-        None => Ok(false),
+    let Some(set) = set else {
+        return Ok(false);
+    };
+    match set.unique_in(kind, parent) {
+        Ok(value) => Ok(value.is_some()),
+        Err(cause) if cause.is_terminal() => Err(Error::Cms(cause)),
+        Err(cause) => {
+            // unique_in's nonterminal refusal proves repeated presence, not
+            // absence. Retain the violation without truncating the original
+            // counter/timestamp census or accepting either duplicate value.
+            finding(
+                document,
+                Span {
+                    start: cause.offset(),
+                    length: 0,
+                },
+                Severity::Required,
+                Rule::Schema {
+                    code: cause.code(),
+                    field: cause.field(),
+                },
+                findings,
+            )?;
+            Ok(true)
+        }
     }
 }
 

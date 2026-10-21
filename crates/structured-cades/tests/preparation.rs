@@ -104,6 +104,35 @@ fn message_with(signed: &[Vec<u8>], unsigned: &[Vec<u8>]) -> Vec<u8> {
 }
 
 #[test]
+fn duplicate_singletons_keep_findings_and_the_complete_original_census() {
+    // A format violation must not truncate preparation before counters and
+    // timestamps are catalogued. Duplicate presence is still presence.
+    let mime = attribute(oid::MIME_TYPE.as_bytes(), &[tlv(12, b"text/plain")]);
+    let policy = attribute(oid::SIGNATURE_POLICY_IDENTIFIER.as_bytes(), &[tlv(5, &[])]);
+    for repeated in [mime, policy] {
+        let child = attribute(oid::COUNTERSIGNATURE.as_bytes(), &[signer(&[])]);
+        let time = attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &[token()]);
+        let bytes = message_with(&[repeated.clone(), repeated], &[child, time]);
+        let parser = Parser::ber(memory());
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        assert_eq!(prepared.counters().len(), 1);
+        assert_eq!(prepared.timestamps().len(), 1);
+        assert!(!prepared.all_format_requirements_met());
+        assert!(prepared.findings().iter().any(|finding| matches!(
+            finding.rule,
+            Rule::Schema {
+                code: structured_cms::ErrorCode::DuplicateAttribute,
+                ..
+            }
+        )));
+    }
+}
+
+#[test]
 fn parallel_root_preservation_stays_original_and_cannot_disappear() {
     // EN319122-1 §5.5.3 applies the preservation rule when ANY parallel
     // root carries the historical proof, not merely the selected signer.

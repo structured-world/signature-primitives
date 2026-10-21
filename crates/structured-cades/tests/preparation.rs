@@ -599,6 +599,86 @@ fn empty_counter_and_ber_signature_timestamp_are_not_conforming() {
     assert!(prepared.findings().iter().any(|finding| matches!(finding.rule, Rule::Value { attribute, .. } if attribute == oid::COUNTERSIGNATURE)));
 }
 
+fn credential_attributes(number: u8) -> Vec<u8> {
+    let entry = match number {
+        0 => attribute(&[42], &[tlv(4, b"claim")]),
+        1 => tlv(0xa0, &tlv(0x30, &[])),
+        2 => tlv(0x30, &[tlv(6, &[42]), tlv(4, b"assertion")].concat()),
+        _ => unreachable!(),
+    };
+    attribute(
+        oid::SIGNER_ATTRIBUTES_V2.as_bytes(),
+        &[tlv(0x30, &tlv(0xa0 + number, &tlv(0x30, &entry)))],
+    )
+}
+
+#[test]
+fn credential_references_need_protected_credentials_of_the_same_signer() {
+    // Table1 requirement n applies even below LT: claimed values, unsigned
+    // credentials and another signer's credentials do not satisfy this gate.
+    for suffix in [44, 45] {
+        let kind = [42, 134, 72, 134, 247, 13, 1, 9, 16, 2, suffix];
+        let reference = attribute(&kind, &[tlv(0x30, &[])]);
+        for counter in [false, true] {
+            for (mode, allowed) in [
+                (0, false),
+                (1, false),
+                (2, true),
+                (3, true),
+                (4, false),
+                (5, false),
+            ] {
+                let mut signed = vec![];
+                let mut unsigned = vec![reference.clone()];
+                match mode {
+                    1 => signed.push(credential_attributes(0)),
+                    2 => signed.push(credential_attributes(1)),
+                    3 => signed.push(credential_attributes(2)),
+                    4 => unsigned.push(credential_attributes(1)),
+                    _ => {}
+                }
+                let bytes = if counter {
+                    let roots = if mode == 5 {
+                        vec![credential_attributes(1)]
+                    } else {
+                        vec![]
+                    };
+                    message_with(
+                        &roots,
+                        &[attribute(
+                            oid::COUNTERSIGNATURE.as_bytes(),
+                            &[signer_with(&signed, &unsigned)],
+                        )],
+                    )
+                } else {
+                    message_with(&signed, &unsigned)
+                };
+                let reference_at = 500
+                    + bytes
+                        .windows(reference.len())
+                        .position(|bytes| bytes == reference)
+                        .unwrap() as u64;
+                let parser = Parser::ber(memory());
+                let data = SignedData::read(&parser, &bytes, 500).unwrap();
+                let parent = parser.read(&[], 0).unwrap();
+                let document = Document::new(&data, &parent).unwrap();
+                for level in [Level::Basic, Level::Timestamped] {
+                    let prepared =
+                        Preparation::read(&document, &data.signers()[0], level, &parent).unwrap();
+                    let missing = prepared.findings().iter().any(|finding| {
+                        finding.severity == Severity::Required
+                            && finding.location.node.span().start == reference_at
+                    });
+                    assert_eq!(
+                        missing, !allowed,
+                        "suffix={suffix} counter={counter} mode={mode} level={level:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn local_policy_store_requires_uri_syntax_without_fetching_it() {
     // EN319122-1 §5.2.10 selects a URI, not arbitrary ASCII text. A proper

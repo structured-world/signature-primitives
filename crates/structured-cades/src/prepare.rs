@@ -60,6 +60,9 @@ pub enum Rule {
     Forbidden(structured_asn1::Oid<'static>),
     /// No signing-certificate protection service exists.
     SigningCertificate,
+    /// Credential references lack this signer's protected certified attribute
+    /// or signed assertion (Table1 requirement n).
+    CredentialReferences(structured_asn1::Oid<'static>),
     /// The requested level needs a root signature timestamp.
     SignatureTimestamp,
     /// The requested archival level needs a root `ATSv3`.
@@ -622,7 +625,81 @@ fn mechanism_findings<'m, 'd, W: Work>(
             findings,
         )?;
     }
+    credential_references(document, signer, properties, parent, findings)
+}
+
+fn credential_references<'m, 'd, W: Work>(
+    document: &Document<'m, 'd>,
+    signer: &SignerInfo<'_>,
+    properties: &crate::properties::Properties<'_>,
+    parent: &Reader<'_>,
+    findings: &mut OwnedVec<Finding<'m, 'd>, W>,
+) -> Result<()> {
+    let mut credentials = None;
+    if let Some(unsigned) = signer.unsigned_attributes() {
+        for attribute in unsigned.items() {
+            parent
+                .charge(1 + 2 * attribute.kind().as_bytes().len().min(12) as u64)
+                .map_err(|cause| Error::encoding(cause, FIELD))?;
+            let kind = if attribute.kind() == LEGACY[6] {
+                LEGACY[6]
+            } else if attribute.kind() == LEGACY[7] {
+                LEGACY[7]
+            } else {
+                continue;
+            };
+            let present = match credentials {
+                Some(present) => present,
+                None => {
+                    let present = protected_credential(signer, properties, parent)?;
+                    credentials = Some(present);
+                    present
+                }
+            };
+            // EN319122-1 §6.3 Table1(n) is a SHALL NOT without this
+            // protected service, even where the separate '*' is advisory.
+            // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+            if !present {
+                finding(
+                    document,
+                    attribute.span(),
+                    Severity::Required,
+                    Rule::CredentialReferences(kind),
+                    findings,
+                )?;
+            }
+        }
+    }
     Ok(())
+}
+
+fn protected_credential(
+    signer: &SignerInfo<'_>,
+    properties: &crate::properties::Properties<'_>,
+    parent: &Reader<'_>,
+) -> Result<bool> {
+    let Some(signed) = signer.signed_attributes() else {
+        return Ok(false);
+    };
+    let protected = signed.element().span();
+    for value in properties.open_values() {
+        parent
+            .charge(1)
+            .map_err(|cause| Error::encoding(cause, FIELD))?;
+        let span = value.enclosure.span();
+        if span.start >= protected.start
+            && span.end() <= protected.end()
+            && matches!(
+                value.role,
+                crate::properties::OpenRole::AttributeCertificate
+                    | crate::properties::OpenRole::OtherAttributeCertificate
+                    | crate::properties::OpenRole::SignedAssertion
+            )
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn root_rules<'m, 'd, W: Work>(

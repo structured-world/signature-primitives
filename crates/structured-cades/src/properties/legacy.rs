@@ -121,7 +121,27 @@ fn other_hash(parent: &Reader<'_>, value: &Element<'_>) -> Result<()> {
     } else {
         let mut fields = sequence(parent, value, FIELD)?;
         let identifier = next(&mut fields, FIELD)?;
-        algorithm::read(&fields, &identifier, FIELD).map_err(Error::Pkix)?;
+        let algorithm = algorithm::read(&fields, &identifier, FIELD).map_err(Error::Pkix)?;
+        let md5 = Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 2, 5]);
+        fields
+            .charge(
+                1 + algorithm
+                    .algorithm()
+                    .as_bytes()
+                    .len()
+                    .min(md5.as_bytes().len()) as u64,
+            )
+            .map_err(|cause| Error::encoding(cause, FIELD))?;
+        // EN319122-1 §6.2.1 forbids MD5 in actual digest use, including
+        // advisory legacy references. OID recognition is not provider policy.
+        // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+        if algorithm.algorithm() == md5 {
+            return Err(Error::Syntax {
+                code: structured_cms::ErrorCode::AlgorithmSyntax,
+                field: "cades.legacy.digest",
+                at: identifier.span().start,
+            });
+        }
         let hash = next(&mut fields, FIELD)?;
         Octets::read(&fields, &hash, FIELD)?;
         end(&fields, FIELD)?;

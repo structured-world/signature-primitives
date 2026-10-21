@@ -1191,3 +1191,62 @@ fn parallel_legacy_reference_tokens_do_not_change_selected_root_syntax() {
     let pool = structured_cades::material::Pool::read(&second, &parent).unwrap();
     assert_eq!(pool.token_faults().len(), 1);
 }
+
+#[test]
+fn md5_is_forbidden_in_every_legacy_reference_hash_position() {
+    // EN319122-1 §6.2.1 forbids actual MD5 use, including advisory legacy
+    // references. An opaque OID-bearing reference is not a successful escape.
+    let md5 = [42, 134, 72, 134, 247, 13, 2, 5];
+    let hash = tlv(0x30, &[tlv(0x30, &tlv(6, &md5)), tlv(4, &[1; 16])].concat());
+    for suffix in [21, 22, 44, 45] {
+        let kind = [42, 134, 72, 134, 247, 13, 1, 9, 16, 2, suffix];
+        let mut values = vec![tlv(0x30, &tlv(0x30, &hash))];
+        if suffix == 22 || suffix == 45 {
+            let crl = tlv(0x30, &tlv(0x30, &tlv(0x30, &hash)));
+            let responder = tlv(
+                0x30,
+                &[tlv(0xa2, &tlv(4, &[1; 20])), tlv(24, b"20260101000000Z")].concat(),
+            );
+            let ocsp = tlv(
+                0x30,
+                &tlv(0x30, &tlv(0x30, &[responder, hash.clone()].concat())),
+            );
+            values = vec![
+                tlv(0x30, &tlv(0x30, &tlv(0xa0, &crl))),
+                tlv(0x30, &tlv(0x30, &tlv(0xa1, &ocsp))),
+            ];
+        }
+        for value in values {
+            let entry = attribute(&kind, &[value]);
+            for counter in [false, true] {
+                let bytes = if counter {
+                    message(&[attribute(
+                        oid::COUNTERSIGNATURE.as_bytes(),
+                        &[signer(std::slice::from_ref(&entry))],
+                    )])
+                } else {
+                    message(std::slice::from_ref(&entry))
+                };
+                let parser = Parser::ber(memory());
+                let data = SignedData::read(&parser, &bytes, 500).unwrap();
+                let parent = parser.read(&[], 0).unwrap();
+                let document = Document::new(&data, &parent).unwrap();
+                let prepared =
+                    Preparation::read(&document, &data.signers()[0], Level::Basic, &parent)
+                        .unwrap();
+                assert!(
+                    prepared.findings().iter().any(|finding| finding.severity
+                        == Severity::Required
+                        && matches!(
+                            finding.rule,
+                            Rule::Value {
+                                field: "cades.legacy",
+                                ..
+                            }
+                        )),
+                    "suffix={suffix} counter={counter}"
+                );
+            }
+        }
+    }
+}

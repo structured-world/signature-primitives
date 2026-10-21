@@ -62,6 +62,15 @@ structured-cms = "0.8"
   permissions without discarding original attributes. These checks retain
   original ranges and current/source limits. They do not authenticate paths,
   verify signatures, select trust or establish authorization.
+- `AttributeCertificate::authenticate` composes the static profile, supplied AA
+  identity/purpose, actual effective-key binding, inclusive AC/AA validity and
+  signature checks. The selected verifier implements `validation::authentication::AlgorithmAgreement`
+  and the existing PKIX `path::Verify` for scoped execution. Original `acinfo`
+  and `SignatureValue` reach that same verifier without re-encoding; algorithm
+  syntax/mismatch, unsupported capabilities and callback/resource failures stay
+  distinct. Returned facts retain profile storage, the authority, effective key
+  and evaluation interval. Holder/path/direct-AA trust, target/proxy effects,
+  revocation and authorization remain explicit caller obligations; AKI is a hint.
 - `AttributeCertificate::bind_holder_digest` checks an explicitly selected whole
   certificate or effective public key against Holder `objectDigestInfo`.
   `validation::digest::ObjectDigestProvider` uses the existing incremental digest

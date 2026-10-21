@@ -153,6 +153,11 @@ nested-reader metadata uses existing accounted scratch. They establish structure
 only: key-size and exponent policy, curve support and width, and whether a
 point lies on its curve remain with the provider that verifies.
 
+`PublicKeyInfo::execution_in(&work)` supplies a deferred key operation with its
+original source ceiling and the current operation's funding, without opening a
+reader or creating an account. Use it before direct raw-key scans; typed key
+readers already preserve their source contexts.
+
 Deferred RSA/DSA/EC identity checks preserve the key source's cumulative work
 ceiling as well as current funding, including unknown-algorithm fast paths.
 EC point framing also belongs to the key source when its curve is inherited

@@ -14,6 +14,7 @@ use structured_pkix::general_name::{self, GeneralName};
 use structured_pkix::{Certificate, Name};
 
 pub mod aa_path;
+pub mod authentication;
 pub mod digest;
 mod profile;
 pub use profile::{AUDIT_IDENTITY, NO_REV_AVAILABLE, Profile, Revocation};
@@ -313,8 +314,18 @@ impl<'a> AttributeCertificate<'a> {
             authority.tbs().subject_unique_id(),
         ) {
             (None, None) => {}
-            (Some(left), Some(right))
-                if same_bits(left, right, &authority_execution, at.start)? => {}
+            (Some(left), Some(right)) => {
+                // A foreign operation keeps its own ceiling when switching to
+                // the AA source. Admit the left UID under its AC source too,
+                // before the common comparison scans either original value.
+                charge(&execution, 1, at.start)?;
+                if left.len() == right.len() {
+                    charge(&execution, left.as_bytes().len() as u64, at.start)?;
+                }
+                if !same_bits(left, right, &authority_execution, at.start)? {
+                    return Ok(refused(Reason::AuthorityUniqueId, at));
+                }
+            }
             _ => return Ok(refused(Reason::AuthorityUniqueId, at)),
         }
         let extensions = authority.tbs().extensions();

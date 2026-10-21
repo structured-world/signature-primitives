@@ -69,6 +69,9 @@ credential material under that same coverage, then join with
 `baseline::archive_material` and `baseline::archives`. The latter requires every
 original archive once. The current archive's own TSA cannot substitute for an
 earlier actor or repair material absent from its input.
+Counter-owned `ATSv3` occurrences remain in the census with a placement finding:
+the archive input selects a root `SignedData.signerInfos` item; nested counters
+are protected through that root's indexed unsigned values.
 
 Finally `baseline::assess` accepts exactly the requested stage set and the same
 live preparation/credential receipts. Its predicate describes common format,

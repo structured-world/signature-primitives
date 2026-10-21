@@ -714,6 +714,10 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
     }
 
     fn require_archive(&self) -> crate::Result<()> {
+        // The common ATSv3 input selects a root SignedData.signerInfos item
+        // (EN319122-1 §5.5.3(3)). Preparation retains counter-owned occurrences
+        // with an AttributePlacement finding, never as conforming obligations
+        // whose mathematical actor this root-input operation could establish.
         if self.entry.purpose() != Purpose::Archive
             || self.entry.owner() != Node::of(self.prepared.signer().span())
         {

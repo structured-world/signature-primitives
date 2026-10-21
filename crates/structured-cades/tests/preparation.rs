@@ -1659,3 +1659,61 @@ fn signer_attributes_require_actual_entries_not_only_empty_wrappers() {
         }
     }
 }
+
+#[test]
+fn counter_owned_archive_retains_a_placement_finding_and_its_original_census() {
+    // EN319122-1 §5.5.3(3) selects a SignedData.signerInfos item for ATSv3;
+    // nested counters are protected by that root's indexed unsigned values.
+    // Do not admit a nested archive as conforming and then leave its required
+    // actor impossible to produce through the root-only archive processor.
+    let archive = attribute(oid::ARCHIVE_TIMESTAMP_V3.as_bytes(), &[token()]);
+    let stamp = attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &[token()]);
+    for nested in [false, true] {
+        let bytes = if nested {
+            message(&[
+                archive.clone(),
+                attribute(
+                    oid::COUNTERSIGNATURE.as_bytes(),
+                    &[signer(&[stamp.clone(), archive.clone()])],
+                ),
+            ])
+        } else {
+            message(&[archive.clone(), stamp.clone()])
+        };
+        let parser = Parser::ber(memory());
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Timestamped, &parent).unwrap();
+        let placements: Vec<_> = prepared
+            .findings()
+            .iter()
+            .filter(|f| {
+                f.severity == Severity::Required
+                    && matches!(
+                        f.rule,
+                        Rule::Schema {
+                            code: structured_cms::ErrorCode::AttributePlacement,
+                            field: "archiveTimeStampV3"
+                        }
+                    )
+            })
+            .collect();
+        assert_eq!(placements.len(), usize::from(nested));
+        assert_eq!(prepared.timestamps().len(), if nested { 3 } else { 2 });
+        assert_eq!(
+            prepared.timestamp_requirements().entries().len(),
+            prepared.timestamps().len()
+        );
+        if nested {
+            let entry = &prepared.timestamps()[2];
+            assert_eq!(entry.owner(), prepared.counters()[0].node());
+            assert_eq!(
+                placements[0].location.node.span().start,
+                entry.property().span().start
+            );
+            assert!(!prepared.basic_format_requirements_met());
+        }
+    }
+}

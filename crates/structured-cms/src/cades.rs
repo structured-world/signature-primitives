@@ -167,13 +167,19 @@ const RULES: [Rule; 14] = [
             "atsHashIndexV3",
         )
     },
-    // §5.5.3
-    rule(
-        oid::ARCHIVE_TIMESTAMP_V3,
-        Set::Unsigned,
-        true,
-        "archiveTimeStampV3",
-    ),
+    // §5.5.3(3) archives a SignedData.signerInfos item. Its nested counters
+    // are protected through the indexed unsigned values (§5.5.2 note6,
+    // §5.5.3 note4), not selected as another root of the archive input.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+    Rule {
+        signers: Signers::NotCountersignature,
+        ..rule(
+            oid::ARCHIVE_TIMESTAMP_V3,
+            Set::Unsigned,
+            true,
+            "archiveTimeStampV3",
+        )
+    },
 ];
 
 /// Reports every `CAdES` profile violation of one `SignerInfo`, in rule order,

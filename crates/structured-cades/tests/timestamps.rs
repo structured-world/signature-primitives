@@ -455,10 +455,20 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         let prepared = Preparation::read(&document, selected, level, &parent).unwrap();
         assert_eq!(
             prepared.all_format_requirements_met(),
-            !matches!(mode, 9 | 10),
+            !matches!(mode, 5 | 9 | 10),
             "{:?}",
             prepared.findings()
         );
+        if mode == 5 {
+            // The timestamp's actual MD5 imprint violates §6.2.1 at
+            // preparation, independently of its later mathematical refusal.
+            assert!(
+                prepared
+                    .findings()
+                    .iter()
+                    .any(|finding| matches!(finding.rule, structured_cades::prepare::Rule::Md5))
+            );
+        }
         let binding = basic::bind(
             &prepared,
             &checks,
@@ -511,6 +521,52 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             continue;
         }
 
+        if mode == 5 {
+            // The preparation-stage prohibition now prevents a credential
+            // receipt too; keep the independent timestamp preflight assertion.
+            let counter_checks = counters::bind(&prepared, &parent, |context| {
+                context.check(&oracle, leaf, &path)
+            })
+            .unwrap();
+            let handler = EmptyCredentials(Cell::new(0));
+            assert!(matches!(
+                credential::check(
+                    &prepared,
+                    &binding,
+                    &counter_checks.paths().unwrap(),
+                    &handler,
+                    &parent
+                ),
+                Err(credential::CheckError::Nonconforming { .. })
+            ));
+            let pool = material::Pool::read(&prepared, &parent).unwrap();
+            let time = structured_cades::timestamp::CheckTime {
+                utc: &utc,
+                reference: Some(interval.to_instant()),
+            };
+            let starts = oracle.starts.get();
+            let answer = pool.with_token(0, &parent, |selected| {
+                selected.check_signature(&oracle, &tsa_path, &parent, &time, |_, _| {
+                    Ok::<_, Infallible>(true)
+                })
+            });
+            assert!(
+                matches!(
+                    answer,
+                    Err(structured_cades::timestamp::VisitError::Callback(
+                        structured_cades::timestamp::CheckError::ForbiddenDigest { .. }
+                    ))
+                ),
+                "MD5 is a format violation, not a provider's Unsupported mechanism"
+            );
+            assert_eq!(
+                oracle.starts.get(),
+                starts,
+                "format prohibition precedes provider side effects"
+            );
+            continue;
+        }
+
         let counter_checks = counters::bind(&prepared, &parent, |context| {
             context.check(&oracle, leaf, &path)
         })
@@ -537,29 +593,11 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             .iter()
             .position(|entry| entry.purpose() == structured_ltv::timestamp::Purpose::Signature)
             .unwrap();
-        let starts = oracle.starts.get();
         let answer = pool.with_token(signature_ordinal, &parent, |selected| {
             selected.check_signature(&oracle, &tsa_path, &parent, &time, |_, _| {
                 Ok::<_, Infallible>(true)
             })
         });
-        if mode == 5 {
-            assert!(
-                matches!(
-                    answer,
-                    Err(structured_cades::timestamp::VisitError::Callback(
-                        structured_cades::timestamp::CheckError::ForbiddenDigest { .. }
-                    ))
-                ),
-                "MD5 is a format violation, not a provider's Unsupported mechanism"
-            );
-            assert_eq!(
-                oracle.starts.get(),
-                starts,
-                "format prohibition precedes provider side effects"
-            );
-            continue;
-        }
         let answer = answer.unwrap();
         let content_answer = if mode == 8 {
             let ordinal = prepared

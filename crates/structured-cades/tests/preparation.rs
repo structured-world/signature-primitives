@@ -825,48 +825,82 @@ fn credential_references_need_protected_credentials_of_the_same_signer() {
 }
 
 #[test]
-fn unknown_policy_qualifiers_still_require_the_declared_value() {
-    // AnnexD's qualifier ANY is mandatory, independently of OID recognition.
-    // SignedAssertion's differently declared OPTIONAL remains optional.
-    for value in [None, Some(tlv(5, &[]))] {
-        let mut pair = tlv(6, &[42]);
-        if let Some(value) = &value {
-            pair.extend(value);
+fn policy_qualifier_values_are_optional_but_present_registered_values_are_typed() {
+    // EN319122-1 §5.2.9.2/AnnexD declares qualifier OPTIONAL. Absence is
+    // distinct from a present value of the wrong registered type; unknown
+    // qualifiers and independently optional assertions remain opaque.
+    for (kind, valid, registered) in [
+        (vec![42], tlv(5, &[]), false),
+        (
+            vec![42, 134, 72, 134, 247, 13, 1, 9, 16, 5, 1],
+            tlv(22, b"https://example.test/policy"),
+            true,
+        ),
+        (
+            vec![42, 134, 72, 134, 247, 13, 1, 9, 16, 5, 2],
+            tlv(0x30, &[]),
+            true,
+        ),
+        (vec![4, 0, 0x81, 0x95, 0x32, 2, 1], tlv(6, &[42]), true),
+    ] {
+        for mode in 0..3 {
+            let mut pair = tlv(6, &kind);
+            match mode {
+                0 => {}
+                1 => pair.extend(&valid),
+                _ => pair.extend(tlv(2, &[1])),
+            }
+            let policy = attribute(
+                oid::SIGNATURE_POLICY_IDENTIFIER.as_bytes(),
+                &[tlv(
+                    0x30,
+                    &[
+                        tlv(6, &[43]),
+                        tlv(
+                            0x30,
+                            &[tlv(0x30, &tlv(6, oid::SHA256.as_bytes())), tlv(4, &[1; 32])]
+                                .concat(),
+                        ),
+                        tlv(0x30, &tlv(0x30, &pair)),
+                    ]
+                    .concat(),
+                )],
+            );
+            let assertion = attribute(
+                oid::SIGNER_ATTRIBUTES_V2.as_bytes(),
+                &[tlv(
+                    0x30,
+                    &tlv(0xa2, &tlv(0x30, &tlv(0x30, &tlv(6, &[42])))),
+                )],
+            );
+            let bytes = message_with(&[policy, assertion], &[]);
+            let parser = Parser::ber(memory());
+            let data = SignedData::read(&parser, &bytes, 500).unwrap();
+            let parent = parser.read(&[], 0).unwrap();
+            let document = Document::new(&data, &parent).unwrap();
+            let prepared =
+                Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+            let invalid = |kind| {
+                prepared.findings().iter().any(|finding| matches!(finding.rule, Rule::Value {attribute, ..} if attribute == kind))
+            };
+            assert_eq!(
+                invalid(oid::SIGNATURE_POLICY_IDENTIFIER),
+                mode == 2 && registered,
+                "kind={kind:?} mode={mode}"
+            );
+            assert!(!invalid(oid::SIGNER_ATTRIBUTES_V2));
+            if mode == 0 {
+                let qualifier = prepared
+                    .properties()
+                    .open_values()
+                    .iter()
+                    .find(|entry| {
+                        entry.role == structured_cades::properties::OpenRole::PolicyQualifier
+                    })
+                    .unwrap();
+                assert!(qualifier.value.is_none());
+            }
         }
-        let policy = attribute(
-            oid::SIGNATURE_POLICY_IDENTIFIER.as_bytes(),
-            &[tlv(
-                0x30,
-                &[
-                    tlv(6, &[43]),
-                    tlv(
-                        0x30,
-                        &[tlv(0x30, &tlv(6, oid::SHA256.as_bytes())), tlv(4, &[1; 32])].concat(),
-                    ),
-                    tlv(0x30, &tlv(0x30, &pair)),
-                ]
-                .concat(),
-            )],
-        );
-        let assertion = attribute(
-            oid::SIGNER_ATTRIBUTES_V2.as_bytes(),
-            &[tlv(
-                0x30,
-                &tlv(0xa2, &tlv(0x30, &tlv(0x30, &tlv(6, &[42])))),
-            )],
-        );
-        let bytes = message_with(&[policy, assertion], &[]);
-        let parser = Parser::ber(memory());
-        let data = SignedData::read(&parser, &bytes, 500).unwrap();
-        let parent = parser.read(&[], 0).unwrap();
-        let document = Document::new(&data, &parent).unwrap();
-        let prepared =
-            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
-        let invalid = |kind| {
-            prepared.findings().iter().any(|finding| matches!(finding.rule, Rule::Value { attribute, .. } if attribute == kind))
-        };
-        assert_eq!(invalid(oid::SIGNATURE_POLICY_IDENTIFIER), value.is_none());
-        assert!(!invalid(oid::SIGNER_ATTRIBUTES_V2));
     }
 }
 

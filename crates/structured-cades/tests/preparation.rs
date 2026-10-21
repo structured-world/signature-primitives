@@ -1993,3 +1993,128 @@ fn timestamp_inspection_refusal_retains_the_joined_information_source_map() {
         "refusal releases the map and every partial reading"
     );
 }
+
+fn archive_token_attributes(mode: u8) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let mut signed = timestamp_signed_attributes();
+    signed.push(attribute(
+        oid::SIGNING_CERTIFICATE_V2.as_bytes(),
+        &[tlv(0x30, &tlv(0x30, &tlv(0x30, &tlv(4, &[0; 32]))))],
+    ));
+    let kind = if mode == 5 {
+        &[42, 134, 72, 134, 247, 13, 2, 5][..]
+    } else if mode == 7 {
+        &[96, 134, 72, 1, 101, 3, 4, 2, 2][..]
+    } else {
+        oid::SHA256.as_bytes()
+    };
+    let mut algorithm = tlv(6, kind);
+    if mode == 6 {
+        algorithm.extend(tlv(2, &[1]));
+    }
+    if mode == 10 {
+        algorithm.extend(tlv(5, &[]));
+    }
+    let hashes = if mode == 8 {
+        tlv(0x30, &tlv(4, &[0; 31]))
+    } else {
+        tlv(0x30, &[])
+    };
+    let value = if mode == 2 {
+        tlv(0x30, &[])
+    } else {
+        tlv(
+            0x30,
+            &[
+                tlv(0x30, &algorithm),
+                hashes,
+                tlv(0x30, &[]),
+                tlv(0x30, &[]),
+            ]
+            .concat(),
+        )
+    };
+    let mut index = attribute(
+        oid::ATS_HASH_INDEX_V3.as_bytes(),
+        std::slice::from_ref(&value),
+    );
+    if mode == 9 {
+        index = vec![0x30, 0x80];
+        index.extend([tlv(6, oid::ATS_HASH_INDEX_V3.as_bytes()), tlv(0x31, &value)].concat());
+        index.extend([0, 0]);
+    }
+    if mode == 11 {
+        index = attribute(oid::ATS_HASH_INDEX_V3.as_bytes(), &[]);
+    }
+    if mode == 3 || mode == 12 {
+        signed.push(index.clone());
+    }
+    let unsigned = match mode {
+        0 | 3 => vec![],
+        4 => vec![index.clone(), index],
+        _ => vec![index],
+    };
+    (signed, unsigned)
+}
+
+#[test]
+fn optional_archive_index_is_inspected_before_basic_can_accept_its_format() {
+    // EN319122-1 §§5.5.2/5.5.3 apply even to an optional ATSv3 at B-B.
+    // This is original envelope/index syntax and declared identity, without
+    // executing hashes, signatures, paths or a caller payload source.
+    for mode in 0..13 {
+        let (signed, unsigned) = archive_token_attributes(mode);
+        let token = token_with_attributes(&signed, &unsigned);
+        for nested in [false, true] {
+            let archive = attribute(
+                oid::ARCHIVE_TIMESTAMP_V3.as_bytes(),
+                std::slice::from_ref(&token),
+            );
+            let bytes = if nested {
+                message(&[attribute(
+                    oid::COUNTERSIGNATURE.as_bytes(),
+                    &[signer(&[archive])],
+                )])
+            } else {
+                message(&[archive])
+            };
+            let parser = Parser::ber(memory());
+            let data = SignedData::read(&parser, &bytes, 500).unwrap();
+            let parent = parser.read(&[], 0).unwrap();
+            let document = Document::new(&data, &parent).unwrap();
+            let prepared =
+                Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+            assert_eq!(prepared.timestamps().len(), 1);
+            assert_eq!(prepared.timestamp_requirements().entries().len(), 1);
+            let faults: Vec<_> = prepared
+                .findings()
+                .iter()
+                .filter(|f| {
+                    f.severity == Severity::Required
+                        && match f.rule {
+                            Rule::Md5 | Rule::ArchiveAlgorithm => true,
+                            Rule::Schema { field, .. } => {
+                                field.contains("atsHashIndexV3")
+                                    || field.contains("hashIndAlgorithm")
+                            }
+                            _ => false,
+                        }
+                })
+                .collect();
+            assert_eq!(
+                !faults.is_empty(),
+                !matches!(mode, 1 | 10),
+                "mode={mode} nested={nested}"
+            );
+            if mode == 5 {
+                assert!(faults.iter().any(|f| matches!(f.rule, Rule::Md5)));
+            }
+            if mode == 7 {
+                assert!(
+                    faults
+                        .iter()
+                        .any(|f| matches!(f.rule, Rule::ArchiveAlgorithm))
+                );
+            }
+        }
+    }
+}

@@ -78,6 +78,9 @@ pub enum Rule {
     PolicyStore,
     /// Actual use of MD5 violates the format, independently of backend support.
     Md5,
+    /// Known archive-index and timestamp-imprint digest identities disagree
+    /// (EN319122-1 §5.5.2); no provider or mathematical comparison is implied.
+    ArchiveAlgorithm,
     /// A V2 certificate reference uses SHA-1 instead of a different hash.
     SigningCertificateVersion,
     /// Optional issuerSerial hint SHOULD be omitted (§6.3(g)).

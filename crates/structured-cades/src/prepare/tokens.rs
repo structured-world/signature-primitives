@@ -15,6 +15,7 @@ use structured_cms::{
     timestamp::{InfoError, Token},
 };
 
+mod index;
 mod signing;
 
 /// An original timestamp syntax refusal with independently retained source maps.
@@ -330,7 +331,8 @@ fn inspect<'m, 'd>(
     reader: &Reader<'d>,
     findings: &mut OwnedVec<Finding<'m, 'd>, impl Work>,
 ) -> Result<(), ReadError> {
-    let _signing = signing::read(document, entry, token, reader, findings)?;
+    let signing_fields = signing::read(document, entry, token, reader, findings)?;
+    let index_algorithm = index::read(document, entry, token, &signing_fields, reader, findings)?;
     // The envelope model is retained once. A subsequent cryptographic check
     // opens information under CURRENT work: temporary joined TSTInfo cannot
     // be pinned in this cache. Its faults use a physical attribute enclosure,
@@ -339,7 +341,7 @@ fn inspect<'m, 'd>(
         if let structured_cms::timestamp::HashAlgorithmReading::Identifier(algorithm) =
             info.imprint().algorithm()
         {
-            signing::digest(
+            let imprint = signing::digest(
                 document,
                 entry.property.span(),
                 algorithm,
@@ -348,6 +350,27 @@ fn inspect<'m, 'd>(
                 inside,
                 findings,
             )?;
+            if let Some((structured_asn1::digest::Resolution::Supported(index), span)) =
+                &index_algorithm
+                && let structured_asn1::digest::Resolution::Supported(imprint) = imprint
+            {
+                reader.charge(1).map_err(|cause| {
+                    signing::InspectionError::Physical(Error::encoding(
+                        cause,
+                        "cades.archive.index",
+                    ))
+                })?;
+                if *index != imprint {
+                    finding(
+                        document,
+                        *span,
+                        Severity::Required,
+                        Rule::ArchiveAlgorithm,
+                        findings,
+                    )
+                    .map_err(signing::InspectionError::Physical)?;
+                }
+            }
         }
         for cause in token
             .faults()

@@ -134,16 +134,18 @@ fn certificate_identifiers<'m, 'd>(
             let span = identifier.element().span();
             let field = "timeStampToken.signingCertificate.certHash";
             match identifier.digest_algorithm() {
-                DigestAlgorithm::Written(algorithm) => digest(
-                    document,
-                    span,
-                    &algorithm,
-                    Some(identifier.hashed().len()),
-                    field,
-                    parent,
-                    findings,
-                )
-                .map_err(InspectionError::into_source)?,
+                DigestAlgorithm::Written(algorithm) => {
+                    digest(
+                        document,
+                        span,
+                        &algorithm,
+                        Some(identifier.hashed().len()),
+                        field,
+                        parent,
+                        findings,
+                    )
+                    .map_err(InspectionError::into_source)?;
+                }
                 DigestAlgorithm::Implied { algorithm, .. } => {
                     let width = match algorithm {
                         ImpliedDigest::EssSha1 => 20,
@@ -194,7 +196,7 @@ pub(super) fn digest<'m, 'd>(
     field: &'static str,
     parent: &Reader<'_>,
     findings: &mut OwnedVec<Finding<'m, 'd>, impl Work>,
-) -> core::result::Result<(), InspectionError> {
+) -> core::result::Result<Resolution<algorithms::Algorithm>, InspectionError> {
     let md5 = structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 2, 5]);
     parent
         .charge(
@@ -210,9 +212,9 @@ pub(super) fn digest<'m, 'd>(
         finding(document, span, Severity::Required, Rule::Md5, findings)
             .map_err(InspectionError::Physical)?;
     }
-    match algorithms::algorithm(algorithm, &parent.execution())
-        .map_err(|cause| InspectionError::Reader(Error::Pkix(cause)))?
-    {
+    let identity = algorithms::algorithm(algorithm, &parent.execution())
+        .map_err(|cause| InspectionError::Reader(Error::Pkix(cause)))?;
+    match identity {
         Resolution::Supported(identity)
             if expected.is_some_and(|length| length != identity.width()) =>
         {
@@ -239,5 +241,5 @@ pub(super) fn digest<'m, 'd>(
         // provider. Width never manufactures a digest identity or default.
         _ => {}
     }
-    Ok(())
+    Ok(identity)
 }

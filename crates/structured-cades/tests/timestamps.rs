@@ -455,7 +455,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         let prepared = Preparation::read(&document, selected, level, &parent).unwrap();
         assert_eq!(
             prepared.all_format_requirements_met(),
-            !matches!(mode, 5 | 9 | 10),
+            !matches!(mode, 5 | 7 | 9 | 10),
             "{:?}",
             prepared.findings()
         );
@@ -518,6 +518,60 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 cause.offset(),
                 prepared.timestamps()[0].property().span().start + 1
             );
+            continue;
+        }
+
+        if mode == 7 {
+            let counter_checks = counters::bind(&prepared, &parent, |context| {
+                context.check(&oracle, leaf, &path)
+            })
+            .unwrap();
+            let handler = EmptyCredentials(Cell::new(0));
+            assert!(matches!(
+                credential::check(
+                    &prepared,
+                    &binding,
+                    &counter_checks.paths().unwrap(),
+                    &handler,
+                    &parent
+                ),
+                Err(credential::CheckError::Nonconforming { .. })
+            ));
+            let pool = material::Pool::read(&prepared, &parent).unwrap();
+            let time = structured_cades::timestamp::CheckTime {
+                utc: &utc,
+                reference: Some(interval.to_instant()),
+            };
+            let ordinal = prepared
+                .timestamps()
+                .iter()
+                .position(|entry| entry.purpose() == structured_ltv::timestamp::Purpose::Archive)
+                .unwrap();
+            let result = pool.with_token(ordinal, &parent, |selected| {
+                selected.check_archive_carried(&oracle, &tsa_path, &parent, &time, |_, _| {
+                    Ok::<_, Infallible>(true)
+                })
+            });
+            // A genuine token signature and a valid unsigned index cannot
+            // hide a second, prohibited signed hash-index occurrence.
+            let Err(structured_cades::timestamp::VisitError::Callback(
+                structured_cades::timestamp::ArchiveCheckError::Timestamp(
+                    structured_cades::timestamp::CheckError::Check(
+                        structured_cms::timestamp::ProfileCheckError::Profile { source, .. },
+                    ),
+                ),
+            )) = result
+            else {
+                panic!("signed hash-index must refuse the archive profile")
+            };
+            assert_eq!(
+                source.source,
+                structured_cms::timestamp::ProfileSource::Envelope
+            );
+            let structured_cades::timestamp::ProfileError::Cades(cause) = source.cause else {
+                panic!("original CAdES placement cause must survive")
+            };
+            assert_eq!(cause.code(), structured_cms::ErrorCode::AttributePlacement);
             continue;
         }
 
@@ -627,31 +681,6 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                     Ok::<_, Infallible>(true)
                 })
             });
-            if mode == 7 {
-                // A genuine token signature and a valid unsigned index cannot
-                // hide a second, prohibited signed hash-index occurrence.
-                let Err(structured_cades::timestamp::VisitError::Callback(
-                    structured_cades::timestamp::ArchiveCheckError::Timestamp(
-                        structured_cades::timestamp::CheckError::Check(
-                            structured_cms::timestamp::ProfileCheckError::Profile {
-                                source, ..
-                            },
-                        ),
-                    ),
-                )) = result
-                else {
-                    panic!("signed hash-index must refuse the archive profile")
-                };
-                assert_eq!(
-                    source.source,
-                    structured_cms::timestamp::ProfileSource::Envelope
-                );
-                let structured_cades::timestamp::ProfileError::Cades(cause) = source.cause else {
-                    panic!("original CAdES placement cause must survive")
-                };
-                assert_eq!(cause.code(), structured_cms::ErrorCode::AttributePlacement);
-                continue;
-            }
             Some(result.unwrap())
         } else {
             None

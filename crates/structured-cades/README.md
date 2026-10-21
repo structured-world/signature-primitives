@@ -23,7 +23,11 @@ do not establish registry availability or consumer adoption.
 syntax, independent ESS sets and the complete nested counter/timestamp census.
 It preserves required versus advisory findings and original malformed values.
 Present timestamp envelopes and carried information are syntax-checked even
-for a B-B request. Envelope models are retained once for later checks; unreadable
+for a B-B request, including TSA ESS and protected CMS fields. Each `ATSv3`
+also receives non-cryptographic profile/index inspection. Known digest widths
+and index/imprint identities are checked without resolving a provider or
+executing its hashes; unknown mechanisms remain capability questions.
+Envelope models are retained once for later checks; unreadable
 information keeps its original failure and independently retained source map.
 An attribute OID or a successful subset cannot promote the requested level.
 
@@ -106,5 +110,7 @@ streamed with only the finished content digest retained across token callbacks.
 Metadata, fragment fan-out, normalization, copies and retained capacity use the
 same scoped work/account mechanisms as CMS/PKIX/LTV. Resource and foreign-source
 refusals are terminal and never become mismatch, missing material or a
-successful partial report. Callback refusal is sticky even when a format owner
+successful partial report. Information-inspection refusals retain their source
+map and an explicit coordinate discriminator for the unchanged callback cause.
+Callback refusal is sticky even when a format owner
 attempts to return success afterward.

@@ -5,7 +5,7 @@
 use super::{Fault, end, next, sequence, syntax};
 use crate::{Error, Result};
 use structured_asn1::{
-    Element, Oid, Reader, Tag,
+    Element, Oid, Reader, Span, Tag,
     memory::{OwnedVec, Work},
     universal,
 };
@@ -34,6 +34,7 @@ pub(super) fn inspect<W: Work>(
     attribute: &Attribute<'_>,
     parent: &Reader<'_>,
     faults: &mut OwnedVec<Fault, W>,
+    hints: &mut OwnedVec<Span, W>,
 ) -> Result<()> {
     for (ordinal, kind) in LEGACY.into_iter().enumerate() {
         parent
@@ -48,7 +49,7 @@ pub(super) fn inspect<W: Work>(
         if attribute.values().len() != 1 || matches!(ordinal, 4 | 5) {
             return Ok(());
         }
-        let reading = read_attribute(attribute, ordinal, parent);
+        let reading = read_attribute(attribute, ordinal, parent, hints);
         if let Err(cause) = reading {
             if cause.is_terminal() {
                 return Err(cause);
@@ -67,7 +68,12 @@ pub(super) fn inspect<W: Work>(
     Ok(())
 }
 
-fn read_attribute(attribute: &Attribute<'_>, ordinal: usize, parent: &Reader<'_>) -> Result<()> {
+fn read_attribute<W: Work>(
+    attribute: &Attribute<'_>,
+    ordinal: usize,
+    parent: &Reader<'_>,
+    hints: &mut OwnedVec<Span, W>,
+) -> Result<()> {
     let mut reader = attribute
         .value_reader_in(0, parent, FIELD)?
         .ok_or_else(|| syntax(FIELD, attribute.span().start))?;
@@ -76,7 +82,8 @@ fn read_attribute(attribute: &Attribute<'_>, ordinal: usize, parent: &Reader<'_>
     // AnnexA.1.1–A.1.4 and normative AnnexD define all four shapes below.
     // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
     match ordinal {
-        0 | 6 => certificate_refs(&reader, &value),
+        0 => certificate_refs(&reader, &value, Some(hints)),
+        6 => certificate_refs::<W>(&reader, &value, None),
         1 | 7 => revocation_refs(&reader, &value),
         2 => certificate_values(&reader, &value),
         3 => revocation_values(&reader, &value),
@@ -86,7 +93,11 @@ fn read_attribute(attribute: &Attribute<'_>, ordinal: usize, parent: &Reader<'_>
     }
 }
 
-fn certificate_refs(parent: &Reader<'_>, value: &Element<'_>) -> Result<()> {
+fn certificate_refs<W: Work>(
+    parent: &Reader<'_>,
+    value: &Element<'_>,
+    mut hints: Option<&mut OwnedVec<Span, W>>,
+) -> Result<()> {
     let mut list = sequence(parent, value, FIELD)?;
     while let Some(value) = list
         .next_element()
@@ -99,6 +110,14 @@ fn certificate_refs(parent: &Reader<'_>, value: &Element<'_>) -> Result<()> {
             .next_element()
             .map_err(|cause| Error::encoding(cause, FIELD))?
         {
+            // Table1(g) names complete-certificate-references specifically.
+            // Retain the original hint before decoding it: malformed issuer
+            // fields still exist and also receive their independent fault.
+            if let Some(hints) = hints.as_mut() {
+                hints
+                    .try_push(issuer.span())
+                    .map_err(|cause| Error::resource(cause, FIELD, issuer.span().start))?;
+            }
             let reading = structured_cms::ess::IssuerSerialReading::read(&fields, &issuer, FIELD)?;
             let (_, faults) = reading.into_parts();
             fields

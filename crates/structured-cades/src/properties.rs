@@ -3,7 +3,7 @@
 
 use crate::{Error, Result};
 use structured_asn1::memory::{OwnedVec, Work};
-use structured_asn1::{Element, Oid, Reader, Tag, universal};
+use structured_asn1::{Element, Oid, Reader, Span, Tag, universal};
 use structured_cms::{ErrorCode, Octets, attribute::Attribute, oid, signer::SignerInfo};
 use structured_pkix::algorithm::{self, AlgorithmIdentifier};
 
@@ -80,6 +80,7 @@ pub struct Store<'a> {
 pub struct Properties<'a> {
     faults: OwnedVec<Fault>,
     open: OwnedVec<OpenValue<'a>>,
+    issuer_hints: OwnedVec<Span>,
     policy: Option<Policy<'a>>,
     store: Option<Store<'a>>,
 }
@@ -97,6 +98,7 @@ impl<'a> Properties<'a> {
         let mut store = None;
         let mut faults = work.vector();
         let mut open = work.vector();
+        let mut issuer_hints = work.vector();
         for set in [signer.signed_attributes(), signer.unsigned_attributes()]
             .into_iter()
             .flatten()
@@ -108,7 +110,7 @@ impl<'a> Properties<'a> {
                     .charge(11 * (1 + attribute.kind().as_bytes().len().min(12) as u64))
                     .map_err(|cause| Error::encoding(cause, "cades.properties"))?;
                 let Some((kind, field)) = known(attribute.kind()) else {
-                    legacy::inspect(attribute, parent, &mut faults)?;
+                    legacy::inspect(attribute, parent, &mut faults, &mut issuer_hints)?;
                     continue;
                 };
                 let reading = read_value(
@@ -138,6 +140,7 @@ impl<'a> Properties<'a> {
         Ok(Self {
             faults: faults.into_owned(),
             open: open.into_owned(),
+            issuer_hints: issuer_hints.into_owned(),
             policy,
             store,
         })
@@ -146,6 +149,9 @@ impl<'a> Properties<'a> {
     #[must_use]
     pub fn faults(&self) -> &[Fault] {
         &self.faults
+    }
+    pub(crate) fn issuer_hints(&self) -> &[Span] {
+        &self.issuer_hints
     }
     /// All original open semantic inputs, not only successfully bound ones.
     #[must_use]

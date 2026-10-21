@@ -1328,3 +1328,61 @@ fn registered_signed_saml_uses_octets_without_validating_unknown_assertions() {
         }
     }
 }
+
+#[test]
+fn legacy_other_cert_id_reports_its_original_issuer_hint_on_roots_and_counters() {
+    // Table1(g) recommends omitting issuerSerial from complete certificate
+    // references. Report the original field once as advisory, not bad syntax.
+    let kind = [42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 21];
+    let name = tlv(
+        0x30,
+        &tlv(
+            0x31,
+            &tlv(0x30, &[tlv(6, &[85, 4, 3]), tlv(12, b"Issuer")].concat()),
+        ),
+    );
+    let issuer = tlv(0x30, &[tlv(0x30, &tlv(0xa4, &name)), tlv(2, &[7])].concat());
+    for present in [false, true] {
+        let mut reference = tlv(4, &[1; 20]);
+        if present {
+            reference.extend(&issuer);
+        }
+        let entry = attribute(&kind, &[tlv(0x30, &tlv(0x30, &reference))]);
+        for counter in [false, true] {
+            let bytes = if counter {
+                message(&[attribute(
+                    oid::COUNTERSIGNATURE.as_bytes(),
+                    &[signer(std::slice::from_ref(&entry))],
+                )])
+            } else {
+                message(std::slice::from_ref(&entry))
+            };
+            let parser = Parser::ber(memory());
+            let data = SignedData::read(&parser, &bytes, 500).unwrap();
+            let parent = parser.read(&[], 0).unwrap();
+            let document = Document::new(&data, &parent).unwrap();
+            let prepared =
+                Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+            let hints: Vec<_> = prepared
+                .findings()
+                .iter()
+                .filter(|finding| matches!(finding.rule, Rule::IssuerHint))
+                .collect();
+            assert_eq!(
+                hints.len(),
+                usize::from(present),
+                "present={present} counter={counter}"
+            );
+            if present {
+                assert_eq!(hints[0].severity, Severity::Advisory);
+                assert_eq!(
+                    hints[0].location.node.span().start,
+                    500 + bytes
+                        .windows(issuer.len())
+                        .position(|value| value == issuer)
+                        .unwrap() as u64
+                );
+            }
+        }
+    }
+}

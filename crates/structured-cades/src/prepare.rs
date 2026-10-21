@@ -540,6 +540,18 @@ fn property_findings<'m, 'd, W: Work>(
     parent: &Reader<'_>,
     findings: &mut OwnedVec<Finding<'m, 'd>, W>,
 ) -> Result<()> {
+    for hint in properties.issuer_hints() {
+        parent
+            .charge(1)
+            .map_err(|cause| Error::encoding(cause, FIELD))?;
+        finding(
+            document,
+            *hint,
+            Severity::Advisory,
+            Rule::IssuerHint,
+            findings,
+        )?;
+    }
     for fault in properties.faults() {
         parent
             .charge(1)

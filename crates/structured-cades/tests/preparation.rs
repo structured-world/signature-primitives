@@ -364,6 +364,58 @@ fn empty_timestamp_attribute_remains_an_unfulfilled_original_obligation() {
 }
 
 #[test]
+fn lower_level_timestamp_presences_are_advisories_not_failed_requirements() {
+    // EN319122-1 Table1 '*' means SHOULD NOT. Keep every occurrence and
+    // higher-level count, without converting that recommendation into SHALL.
+    let bytes = message(&[
+        attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &[token()]),
+        attribute(oid::ARCHIVE_TIMESTAMP_V3.as_bytes(), &[token()]),
+    ]);
+    let parser = Parser::ber(memory());
+    let data = SignedData::read(&parser, &bytes, 500).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let document = Document::new(&data, &parent).unwrap();
+    for level in [
+        Level::Basic,
+        Level::Timestamped,
+        Level::LongTerm,
+        Level::Archival,
+    ] {
+        let prepared = Preparation::read(&document, &data.signers()[0], level, &parent).unwrap();
+        for (kind, discouraged) in [
+            (oid::SIGNATURE_TIMESTAMP, level == Level::Basic),
+            (oid::ARCHIVE_TIMESTAMP_V3, level < Level::Archival),
+        ] {
+            let findings: Vec<_> = prepared
+                .findings()
+                .iter()
+                .filter(|finding| matches!(finding.rule, Rule::Forbidden(oid) if oid == kind))
+                .collect();
+            assert_eq!(
+                findings.len(),
+                usize::from(discouraged),
+                "{level:?} {kind:?}"
+            );
+            for finding in findings {
+                assert_eq!(finding.severity, Severity::Advisory);
+                let attribute = data.signers()[0]
+                    .unsigned_attributes()
+                    .unwrap()
+                    .unique_in(kind, &parent)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(finding.location.node.span(), attribute.span());
+            }
+        }
+        assert_eq!(prepared.timestamps().len(), 2);
+        assert!(!prepared.findings().iter().any(|finding| matches!(
+            finding.rule,
+            Rule::SignatureTimestamp | Rule::ArchiveTimestamp
+        )));
+    }
+}
+
+#[test]
 fn legacy_reference_attributes_are_forbidden_only_at_long_term_levels() {
     // EN6.3 Table1 permits these with advisory '*' at B-B/B-T, forbids LT/LTA.
     let certificate_refs = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 1, 9, 16, 2, 21];

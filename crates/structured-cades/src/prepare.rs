@@ -55,7 +55,8 @@ pub enum Rule {
     },
     /// Mandatory original attribute is absent.
     Missing(structured_asn1::Oid<'static>),
-    /// Requested LT/LTA forbids this original legacy attribute.
+    /// This original attribute is forbidden or discouraged at the requested
+    /// level; the finding severity distinguishes SHALL NOT from SHOULD NOT.
     Forbidden(structured_asn1::Oid<'static>),
     /// No signing-certificate protection service exists.
     SigningCertificate,
@@ -773,6 +774,23 @@ fn unsigned_rules<'m, 'd, W: Work>(
             }
             if attribute.kind() == oid::ARCHIVE_TIMESTAMP_V3 {
                 archives += 1;
+            }
+            // Table1 '*' is SHOULD NOT, never a failed SHALL. Count these
+            // same original occurrences for mandatory higher levels too.
+            if (attribute.kind() == oid::SIGNATURE_TIMESTAMP && requested == Level::Basic)
+                || (attribute.kind() == oid::ARCHIVE_TIMESTAMP_V3 && requested < Level::Archival)
+            {
+                finding(
+                    document,
+                    attribute.span(),
+                    Severity::Advisory,
+                    Rule::Forbidden(if attribute.kind() == oid::SIGNATURE_TIMESTAMP {
+                        oid::SIGNATURE_TIMESTAMP
+                    } else {
+                        oid::ARCHIVE_TIMESTAMP_V3
+                    }),
+                    findings,
+                )?;
             }
             // §6.3 table1 explicitly forbids the AnnexA reference/value forms
             // at LT/LTA, but '*' at B-B/B-T is only an advisory.

@@ -402,6 +402,31 @@ fn location(reader: &mut Reader<'_>, field: &'static str) -> Result<()> {
     Ok(())
 }
 
+fn claimed_value(claimed: &Attribute<'_>, parent: &Reader<'_>, field: &'static str) -> Result<()> {
+    parent
+        .charge(
+            1 + claimed
+                .kind()
+                .as_bytes()
+                .len()
+                .min(oid::CLAIMED_SAML_ASSERTION.as_bytes().len()) as u64,
+        )
+        .map_err(|cause| Error::encoding(cause, field))?;
+    if claimed.kind() != oid::CLAIMED_SAML_ASSERTION {
+        return Ok(());
+    }
+    // EN319122-1 §5.2.6.2 requires exactly one OCTET STRING. Reading
+    // this envelope neither interprets nor authenticates the SAML claim.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+    claimed.single(field)?;
+    let mut reader = claimed
+        .value_reader_in(0, parent, field)?
+        .ok_or_else(|| syntax(field, claimed.span().start))?;
+    let value = next(&mut reader, field)?;
+    Octets::read(&reader, &value, field)?;
+    Ok(())
+}
+
 fn attributes<'a, W: Work>(
     reader: &mut Reader<'a>,
     field: &'static str,
@@ -438,6 +463,7 @@ fn attributes<'a, W: Work>(
         {
             if number == 0 {
                 let claimed = Attribute::read(&entries, &entry, field)?;
+                claimed_value(&claimed, &entries, field)?;
                 push(
                     open,
                     OpenValue {

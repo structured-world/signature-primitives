@@ -405,6 +405,39 @@ fn equal_encoded_foreign_source_and_exhausted_query_are_terminal() {
 }
 
 #[test]
+fn claimed_saml_requires_one_octet_string_without_interpreting_the_claim() {
+    // EN319122-1 §5.2.6.2 fixes the registered claim's envelope. Its XML and
+    // authorization semantics remain with the caller, even for opaque bytes.
+    for (values, valid) in [
+        (vec![], false),
+        (vec![tlv(4, b"one"), tlv(4, b"two")], false),
+        (vec![tlv(2, &[1])], false),
+        (vec![tlv(4, b"opaque claim")], true),
+    ] {
+        let claimed = attribute(oid::CLAIMED_SAML_ASSERTION.as_bytes(), &values);
+        let attributes = tlv(0x30, &tlv(0xa0, &tlv(0x30, &claimed)));
+        let bytes = message_with(
+            &[attribute(
+                oid::SIGNER_ATTRIBUTES_V2.as_bytes(),
+                &[attributes],
+            )],
+            &[],
+        );
+        let parser = Parser::ber(memory());
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        let invalid = prepared.findings().iter().any(|finding| {
+            finding.severity == Severity::Required
+                && matches!(finding.rule, Rule::Value { attribute, .. } if attribute == oid::SIGNER_ATTRIBUTES_V2)
+        });
+        assert_eq!(invalid, !valid, "claimed values: {values:?}");
+    }
+}
+
+#[test]
 fn present_optional_attributes_must_satisfy_their_value_schemas() {
     // EN319122-1 §§5.2.3–5.2.5/5.2.11–12: an OID and singleton
     // catalogue alone cannot establish the syntax of its claimed value.

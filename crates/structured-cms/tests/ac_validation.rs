@@ -1050,3 +1050,151 @@ fn foreign_certificate_name_comparison_preserves_its_remaining_source_work() {
         assert_eq!(query.used(), 0);
     }
 }
+
+fn forbidden_names() -> [Vec<u8>; 3] {
+    [
+        tlv(136, &[42]),
+        tlv(163, &[48, 0]),
+        tlv(165, &tlv(161, &tlv(12, b"Party"))),
+    ]
+}
+
+#[test]
+fn static_profile_rejects_all_forbidden_holder_name_forms_even_after_allowed_name() {
+    // RFC5755 §4.2 forbids these valid ASN.1 alternatives, not their inspection.
+    for forbidden in forbidden_names() {
+        for prefix in [vec![], directory(b"Holder")] {
+            let bytes = ac_bytes(
+                &seq(&[&tlv(161, &[prefix, forbidden.clone()].concat())]),
+                &[],
+            );
+            let p = Parser::der(memory(1 << 20, 1 << 24));
+            let ac = read_ac(&p, &bytes);
+            assert!(
+                !ac.information()
+                    .holder
+                    .entity_names
+                    .as_ref()
+                    .unwrap()
+                    .is_empty()
+            );
+            rejected(ac.profile(p.memory()).unwrap(), Reason::NameForm);
+        }
+    }
+}
+
+#[test]
+fn entity_binding_never_matches_a_forbidden_form_or_skips_a_late_forbidden_name() {
+    // Matching SAN bytes, or an earlier matching subject, cannot legalize an AC name.
+    for forbidden in forbidden_names() {
+        for prefix in [vec![], directory(b"Holder")] {
+            let bytes = ac_bytes(
+                &seq(&[&tlv(161, &[prefix, forbidden.clone()].concat())]),
+                &[],
+            );
+            let cert_bytes = pkc(
+                b"Root",
+                b"Holder",
+                &[1],
+                &[],
+                &[ext(oid::SUBJECT_ALT_NAME, &seq(&[&forbidden]), false)],
+            );
+            let p = Parser::der(memory(1 << 20, 1 << 24));
+            let cp = Parser::der(memory(1 << 20, 1 << 24));
+            let ac = read_ac(&p, &bytes);
+            let cert = read_pkc(&cp, &cert_bytes);
+            rejected(
+                ac.bind_holder(&cert, HolderMethod::EntityName, p.memory())
+                    .unwrap(),
+                Reason::NameForm,
+            );
+        }
+    }
+}
+
+#[test]
+fn profile_name_prohibition_reaches_all_decoded_extension_names() {
+    // The same rule applies to extension names, not only Holder.entityName.
+    for forbidden in forbidden_names() {
+        let targets = seq(&[&seq(&[
+            &tlv(160, &tlv(130, b"good.test")),
+            &tlv(160, &forbidden),
+        ])]);
+        for extension in [
+            ext(
+                structured_cms::attribute_certificate::target::IDENTIFIER,
+                &targets,
+                true,
+            ),
+            ext(
+                structured_cms::attribute_certificate::proxy::IDENTIFIER,
+                &targets,
+                true,
+            ),
+            ext(
+                oid::AUTHORITY_KEY_IDENTIFIER,
+                &seq(&[
+                    &tlv(128, &[9]),
+                    &tlv(161, &[directory(b"Authority"), forbidden.clone()].concat()),
+                    &tlv(130, &[1]),
+                ]),
+                false,
+            ),
+            ext(
+                oid::AUTHORITY_INFO_ACCESS,
+                &seq(&[&seq(&[&tlv(6, &[42]), &forbidden])]),
+                false,
+            ),
+        ] {
+            let bytes = ac_bytes(&entity(130, b"holder.test"), &[extension]);
+            let p = Parser::der(memory(1 << 20, 1 << 24));
+            rejected(
+                read_ac(&p, &bytes).profile(p.memory()).unwrap(),
+                Reason::NameForm,
+            );
+        }
+    }
+}
+
+#[test]
+fn required_name_forms_and_standard_other_name_remain_profile_inputs() {
+    // The profile excludes exactly its forbidden choices, not the four MUST or SRV SHOULD forms.
+    let names = [
+        tlv(130, b"holder.test"),
+        directory(b"Holder"),
+        tlv(134, b"http://holder.test"),
+        tlv(135, &[192, 0, 2, 1]),
+        tlv(
+            160,
+            &[
+                tlv(6, &[43, 6, 1, 5, 5, 7, 8, 7]),
+                tlv(160, &tlv(22, b"_ldap.example.com")),
+            ]
+            .concat(),
+        ),
+    ];
+    let bytes = ac_bytes(&seq(&[&tlv(161, &names.concat())]), &[]);
+    let p = Parser::der(memory(1 << 20, 1 << 24));
+    let ac = read_ac(&p, &bytes);
+    let query = memory(0, 1 << 24);
+    assert_eq!(
+        accepted(ac.profile(&query).unwrap()).holder_alternatives(),
+        1
+    );
+    assert_eq!(query.used(), 0);
+}
+
+#[test]
+fn complete_name_type_scan_is_funded_before_a_late_forbidden_alternative() {
+    // A long prefix costs Work; exhaustion cannot become a free semantic refusal.
+    let ordinary = ac_bytes(&entity(130, b"holder.test"), &[]);
+    let names = [tlv(130, b"holder.test").repeat(100), tlv(136, &[42])].concat();
+    let bytes = ac_bytes(&seq(&[&tlv(161, &names)]), &[]);
+    let p = Parser::der(memory(1 << 20, 1 << 24));
+    let baseline = memory(0, 1 << 24);
+    accepted(read_ac(&p, &ordinary).profile(&baseline).unwrap());
+    let query = memory(0, baseline.work_used() + 10);
+    let ac = read_ac(&p, &bytes);
+    assert!(ac.profile(&query).unwrap_err().is_terminal());
+    assert_eq!(query.used(), 0);
+}

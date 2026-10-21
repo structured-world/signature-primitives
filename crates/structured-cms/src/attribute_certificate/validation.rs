@@ -50,6 +50,8 @@ pub enum Reason {
     Validity,
     /// A holder baseCertificateID has an out-of-profile issuer name.
     HolderIssuer,
+    /// RFC5755 §4.2 excludes X.400, EDI party and registered-ID name forms.
+    NameForm,
     /// Optional objectDigestInfo names a forbidden object/type combination.
     ObjectDigest,
     /// Criticality contradicts the extension's profile.
@@ -118,6 +120,31 @@ fn directory<'n, 'a>(names: &'n [GeneralName<'a>]) -> Option<&'n Name<'a>> {
         [GeneralName::Directory(name)] if !name.is_empty() => Some(name),
         _ => None,
     }
+}
+
+fn check_name(name: &GeneralName<'_>, work: &impl Work, source: Span) -> Result<Check<()>> {
+    charge(work, 1, source.start)?;
+    // RFC5755 §4.2 forbids these GeneralName choices throughout its profile,
+    // even when their ASN.1 syntax is readable or a PKC SAN has equal bytes.
+    // The general PKIX decoder must still preserve them for inspection.
+    // <https://www.rfc-editor.org/rfc/rfc5755#section-4.2>
+    if matches!(
+        name,
+        GeneralName::X400(_) | GeneralName::EdiParty(_) | GeneralName::RegisteredId(_)
+    ) {
+        return Ok(refused(Reason::NameForm, source));
+    }
+    Ok(Check::Accepted(()))
+}
+
+fn check_names(names: &[GeneralName<'_>], work: &impl Work, source: Span) -> Result<Check<()>> {
+    charge(work, names.len() as u64, source.start)?;
+    for name in names {
+        if let rejected @ Check::Rejected(_) = check_name(name, work, source)? {
+            return Ok(rejected);
+        }
+    }
+    Ok(Check::Accepted(()))
 }
 
 /// A Holder alternative explicitly chosen by the authenticating protocol.
@@ -195,6 +222,11 @@ impl<'a> AttributeCertificate<'a> {
                 let Some(names) = &self.information.holder.entity_names else {
                     return Ok(refused(Reason::HolderAbsent, at));
                 };
+                // Complete the normative type check before any positive
+                // subject/SAN shortcut can hide a later forbidden alternative.
+                if let rejected @ Check::Rejected(_) = check_names(names, &execution, at)? {
+                    return Ok(rejected);
+                }
                 // §4.2.2 permits subject OR SAN identity. A matching subject
                 // needs no SAN parsing/storage; certificate profile/path
                 // validation is independent of this identity-only operation.

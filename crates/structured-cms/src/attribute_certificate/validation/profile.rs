@@ -1,4 +1,7 @@
-use super::{Check, DigestedObject, IssuerForm, Reason, charge, directory, proxy, refused, target};
+use super::{
+    Check, DigestedObject, IssuerForm, Reason, charge, check_name, check_names, directory, proxy,
+    refused, target,
+};
 use crate::attribute_certificate::AttributeCertificate;
 use crate::{Error, Result};
 use structured_asn1::memory::{MemoryError, Work};
@@ -151,6 +154,11 @@ fn check_fields<W: Work>(ac: &AttributeCertificate<'_>, work: &W) -> Result<Chec
     {
         return Ok(refused(Reason::HolderIssuer, at));
     }
+    if let Some(names) = &info.holder.entity_names
+        && let rejected @ Check::Rejected(_) = check_names(names, work, at)?
+    {
+        return Ok(rejected);
+    }
     if let Some(digest) = &info.holder.object_digest
         && (digest.object_type == DigestedObject::Other || digest.other_type.is_some())
     {
@@ -182,6 +190,9 @@ fn read_access<'a>(
     let mut pointer = false;
     for entry in access.descriptions() {
         charge(work, entry.method().as_bytes().len() as u64 + 1, at.start)?;
+        if let Check::Rejected(reason) = check_name(entry.location(), work, at)? {
+            return Ok(Check::Rejected(reason));
+        }
         if entry.method() == oid::OCSP {
             let GeneralName::Uri(uri) = entry.location() else {
                 return Ok(refused(Reason::OcspLocation, at));
@@ -232,6 +243,72 @@ fn read_no_revocation(extension: &Extension<'_>, work: &impl Work) -> Result<()>
     super::super::end(&reader, super::FIELD)
 }
 
+fn check_targets(
+    targets: &[target::Target<'_>],
+    certificates: &[target::TargetCertificate<'_>],
+    work: &impl Work,
+) -> Result<Check<()>> {
+    if let Some(forbidden) = certificates.first() {
+        return Ok(refused(Reason::TargetCertificate, forbidden.element.span()));
+    }
+    if let Some(first) = targets.first() {
+        charge(work, targets.len() as u64, first.element.span().start)?;
+    }
+    for target in targets {
+        match &target.value {
+            target::Value::Name(name) | target::Value::Group(name) => {
+                if let rejected @ Check::Rejected(_) =
+                    check_name(name, work, target.element.span())?
+                {
+                    return Ok(rejected);
+                }
+            }
+            target::Value::Certificate(_) => {
+                return Ok(refused(Reason::TargetCertificate, target.element.span()));
+            }
+        }
+    }
+    Ok(Check::Accepted(()))
+}
+
+fn read_targeting<'a>(
+    extension: &Extension<'a>,
+    work: &impl Work,
+) -> Result<Check<target::TargetInformation<'a>>> {
+    let targets = target::TargetInformation::read(extension, work)?;
+    if let Check::Rejected(reason) = check_targets(targets.targets(), targets.certificates(), work)?
+    {
+        return Ok(Check::Rejected(reason));
+    }
+    Ok(Check::Accepted(targets))
+}
+
+fn read_proxying<'a>(
+    extension: &Extension<'a>,
+    work: &impl Work,
+) -> Result<Check<proxy::ProxyInfo<'a>>> {
+    let proxy = proxy::ProxyInfo::read(extension, work)?;
+    if let Check::Rejected(reason) = check_targets(proxy.targets(), proxy.certificates(), work)? {
+        return Ok(Check::Rejected(reason));
+    }
+    Ok(Check::Accepted(proxy))
+}
+
+fn read_authority_key<'a>(
+    extension: &Extension<'a>,
+    work: &impl Work,
+) -> Result<Check<AuthorityKeyIdentifier<'a>>> {
+    let key = AuthorityKeyIdentifier::read(extension, work).map_err(Error::pkix)?;
+    if let Check::Rejected(reason) = check_names(key.issuer(), work, extension.span())? {
+        return Ok(Check::Rejected(reason));
+    }
+    // RFC5280 §4.2.1.1, incorporated by RFC5755 §4.3.3.
+    if key.key_id().is_none() {
+        return Ok(refused(Reason::AuthorityKeyIdentifier, extension.span()));
+    }
+    Ok(Check::Accepted(key))
+}
+
 pub(super) fn check<'r, 'a, W: Work>(
     ac: &'r AttributeCertificate<'a>,
     work: &W,
@@ -270,33 +347,28 @@ pub(super) fn check<'r, 'a, W: Work>(
                 if let Some(failure) = critical(extension, true) {
                     return Ok(failure);
                 }
-                let targets = target::TargetInformation::read(extension, &execution)?;
-                if let Some(forbidden) = targets.certificates().first() {
-                    return Ok(refused(Reason::TargetCertificate, forbidden.element.span()));
-                }
-                facts.targets = Some(targets);
+                facts.targets = Some(match read_targeting(extension, &execution)? {
+                    Check::Accepted(value) => value,
+                    Check::Rejected(reason) => return Ok(Check::Rejected(reason)),
+                });
             }
             kind if kind == proxy::IDENTIFIER => {
                 if let Some(failure) = critical(extension, true) {
                     return Ok(failure);
                 }
-                let proxy = proxy::ProxyInfo::read(extension, &execution)?;
-                if let Some(forbidden) = proxy.certificates().first() {
-                    return Ok(refused(Reason::TargetCertificate, forbidden.element.span()));
-                }
-                facts.proxy = Some(proxy);
+                facts.proxy = Some(match read_proxying(extension, &execution)? {
+                    Check::Accepted(value) => value,
+                    Check::Rejected(reason) => return Ok(Check::Rejected(reason)),
+                });
             }
             kind if kind == oid::AUTHORITY_KEY_IDENTIFIER => {
                 if let Some(failure) = critical(extension, false) {
                     return Ok(failure);
                 }
-                let key =
-                    AuthorityKeyIdentifier::read(extension, &execution).map_err(Error::pkix)?;
-                // RFC5280 §4.2.1.1, incorporated by RFC5755 §4.3.3.
-                if key.key_id().is_none() {
-                    return Ok(refused(Reason::AuthorityKeyIdentifier, at));
-                }
-                facts.authority_key = Some(key);
+                facts.authority_key = Some(match read_authority_key(extension, &execution)? {
+                    Check::Accepted(value) => value,
+                    Check::Rejected(reason) => return Ok(Check::Rejected(reason)),
+                });
             }
             kind if kind == oid::AUTHORITY_INFO_ACCESS => {
                 if let Some(failure) = critical(extension, false) {

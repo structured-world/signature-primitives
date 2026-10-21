@@ -1,11 +1,12 @@
 //! CRL issuing-distribution-point grammar shares certificate DP name parsing.
 
+use super::{RevocationScheme, RevocationTarget, TargetKind};
 use crate::access::{self, DistributionPoint, PointName};
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
 use crate::general_name::GeneralName;
 use crate::name::{self, Name, RelativeName};
-use crate::{Certificate, Version, oid};
+use crate::{Version, oid};
 use structured_asn1::BitString;
 use structured_asn1::memory::Work;
 
@@ -44,13 +45,15 @@ impl Reasons {
 /// Geometric issuer/name/category scope mismatch, not a signature verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeFailure {
+    /// The AC explicitly uses the `NoRevAvail` scheme, not CRL absence.
+    NoRevAvail,
     /// Candidate CRL does not name the applicable issuer.
     Issuer,
     /// A DP naming a separate CRL issuer requires an indirect CRL.
     IndirectRequired,
     /// Expanded distribution-point names do not match.
     DistributionName,
-    /// Category does not cover this public-key certificate.
+    /// Category does not cover this target's certificate schema.
     CertificateKind,
     /// A user-only/CA-only IDP cannot cover a v1/v2 certificate.
     CertificateVersion,
@@ -67,14 +70,26 @@ pub enum ScopeOutcome {
     NotApplicable(ScopeFailure),
 }
 
-impl<'a> super::Authenticated<'_, 'a> {
+impl super::Authenticated<'_, '_> {
     /// Derive applicability from the target's own signed DP extension. Relative
     /// names are compared as borrowed composed RDN views, never encoded again.
     /// If no explicit DP applies, also consider the RFC 5280 §6.3.3 issuer-name
     /// fallback over supplied CRLs; this performs no fetching or discovery.
-    pub fn scope<W: Work>(&self, target: &Certificate<'a>, execution: &W) -> Result<ScopeOutcome> {
+    pub fn scope<'t, T: RevocationTarget<'t>, W: Work>(
+        &self,
+        target: &T,
+        execution: &W,
+    ) -> Result<ScopeOutcome> {
         const FIELD: &str = "certificateList.scope";
         let crl = self.crl();
+        let execution = &crl.tbs().signature().query_in(execution);
+        let target_execution = target.execution_in(execution);
+        target_execution
+            .charge_work(1)
+            .map_err(|e| Error::resource(e, FIELD, target.span().start))?;
+        if target.revocation_scheme() == RevocationScheme::NoRevAvail {
+            return Ok(ScopeOutcome::NotApplicable(ScopeFailure::NoRevAvail));
+        }
         execution
             .charge_work(1)
             .map_err(|reason| Error::resource(reason, FIELD, crl.span().start))?;
@@ -87,22 +102,28 @@ impl<'a> super::Authenticated<'_, 'a> {
         if let Some(idp) = &idp {
             match idp.kind {
                 CertificateKind::Attribute => {
-                    return Ok(ScopeOutcome::NotApplicable(ScopeFailure::CertificateKind));
+                    if target.kind() != TargetKind::Attribute {
+                        return Ok(ScopeOutcome::NotApplicable(ScopeFailure::CertificateKind));
+                    }
                 }
                 CertificateKind::EndEntity | CertificateKind::Authority => {
                     // RFC5280 §5.2.5 excludes v1/v2 for BOTH user-only and
                     // CA-only CRLs. The cA tests in §6.3.3(b)(2)(ii–iii) are
                     // additional conditions, not an exception to that scope.
                     // <https://www.rfc-editor.org/rfc/rfc5280#section-5.2.5>
-                    if target.tbs().version() != Version::V3 {
+                    let TargetKind::PublicKey(version) = target.kind() else {
+                        return Ok(ScopeOutcome::NotApplicable(ScopeFailure::CertificateKind));
+                    };
+                    if version != Version::V3 {
                         return Ok(ScopeOutcome::NotApplicable(
                             ScopeFailure::CertificateVersion,
                         ));
                     }
                     let ca = target
-                        .tbs()
                         .extensions()
-                        .basic_constraints(execution)?
+                        .map(|ext| ext.basic_constraints(&target_execution))
+                        .transpose()?
+                        .flatten()
                         .is_some_and(crate::constraints::BasicConstraints::is_authority);
                     if ca != (idp.kind == CertificateKind::Authority) {
                         return Ok(ScopeOutcome::NotApplicable(ScopeFailure::CertificateKind));
@@ -118,10 +139,9 @@ impl<'a> super::Authenticated<'_, 'a> {
         // RFC 5280 §6.3.3 final paragraph: synthetic DP names comprise the
         // target issuer DN and issuerAltName, with no cRLIssuer or reasons.
         // https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3
-        if !crl
-            .tbs()
+        if !target
             .issuer()
-            .matches(target.tbs().issuer(), execution)?
+            .matches(crl.tbs().issuer(), &target_execution)?
         {
             return Ok(ScopeOutcome::NotApplicable(ScopeFailure::Issuer));
         }
@@ -131,12 +151,23 @@ impl<'a> super::Authenticated<'_, 'a> {
             let mut matched = point_name_matches_directory(
                 idp,
                 crl.tbs().issuer(),
-                target.tbs().issuer(),
-                execution,
+                target.issuer(),
+                &target_execution,
             )?;
-            if !matched && let Some(names) = target.tbs().extensions().issuer_alt_name(execution)? {
-                matched =
-                    point_name_matches_names::<false>(idp, crl.tbs().issuer(), &names, execution)?;
+            if !matched
+                && matches!(target.kind(), TargetKind::PublicKey(_))
+                && let Some(names) = target
+                    .extensions()
+                    .map(|ext| ext.issuer_alt_name(&target_execution))
+                    .transpose()?
+                    .flatten()
+            {
+                matched = point_name_matches_names::<false>(
+                    idp,
+                    crl.tbs().issuer(),
+                    &names,
+                    &target_execution,
+                )?;
             }
             if !matched {
                 return Ok(ScopeOutcome::NotApplicable(ScopeFailure::DistributionName));
@@ -150,24 +181,26 @@ impl<'a> super::Authenticated<'_, 'a> {
     }
 }
 
-fn specified_scope<W: Work>(
+fn specified_scope<'t, T: RevocationTarget<'t>, W: Work>(
     issuer: &Name<'_>,
     idp: Option<&IssuingDistributionPoint<'_>>,
-    target: &Certificate<'_>,
+    target: &T,
     execution: &W,
 ) -> Result<Option<ScopeOutcome>> {
     let mut coverage = Reasons::NONE;
     let mut failure = None;
+    let target_execution = target.execution_in(execution);
     if let Some(points) = target
-        .tbs()
         .extensions()
-        .crl_distribution_points(execution)?
+        .map(|ext| ext.crl_distribution_points(&target_execution))
+        .transpose()?
+        .flatten()
     {
         for point in points.points() {
-            execution.charge_work(1).map_err(|reason| {
+            target_execution.charge_work(1).map_err(|reason| {
                 Error::resource(reason, "certificateList.scope", target.span().start)
             })?;
-            match point_scope(issuer, idp, target, point, execution)? {
+            match point_scope(issuer, idp, target, point, &target_execution)? {
                 ScopeOutcome::Applicable(reasons) => coverage = coverage.union(reasons),
                 ScopeOutcome::NotApplicable(ScopeFailure::NoReasons) => {
                     failure = Some(ScopeFailure::NoReasons);
@@ -209,10 +242,10 @@ fn reason_mask(flags: Option<BitString<'_>>, execution: &impl Work, at: u64) -> 
     Ok(Reasons(mask))
 }
 
-fn point_scope(
+fn point_scope<'t, T: RevocationTarget<'t>>(
     issuer: &Name<'_>,
     idp: Option<&IssuingDistributionPoint<'_>>,
-    target: &Certificate<'_>,
+    target: &T,
     point: &DistributionPoint<'_>,
     execution: &impl Work,
 ) -> Result<ScopeOutcome> {
@@ -235,7 +268,7 @@ fn point_scope(
         if !matches {
             return Ok(ScopeOutcome::NotApplicable(ScopeFailure::Issuer));
         }
-    } else if !issuer.matches(target.tbs().issuer(), execution)? {
+    } else if !issuer.matches(target.issuer(), execution)? {
         return Ok(ScopeOutcome::NotApplicable(ScopeFailure::Issuer));
     }
     if let Some(idp) = idp
@@ -243,7 +276,7 @@ fn point_scope(
     {
         let matched = if let Some(relative) = point.name_relative_to_issuer() {
             let base = if point.issuer().is_empty() {
-                target.tbs().issuer()
+                target.issuer()
             } else {
                 match &point.issuer()[0] {
                     GeneralName::Directory(name) => name,

@@ -1,6 +1,8 @@
 //! Original AC profile, explicit PKC bindings and complete AA-path restrictions.
 #[path = "ac_validation/authentication.rs"]
 mod authentication;
+#[path = "ac_validation/revocation.rs"]
+mod revocation;
 use std::sync::Arc;
 use structured_asn1::memory::{Memory, MemoryAccount};
 use structured_asn1::{Limits, Oid, Parser};

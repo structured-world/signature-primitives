@@ -2874,6 +2874,10 @@ fn assert_ocsp_archive<'source, W: Work + 'source, C: Work>(
     // The actual whole response, signer binding, issuer scope and CertID
     // matching run through the common kernel; the archive needs the envelope.
     use structured_ltv::material::status::{self, StatusPart, StatusSource};
+    // This independent OCSP query keeps the same per-operation limits instead
+    // of spending fuel left by the preceding complete/delta CRL assertions.
+    let operation = funded();
+    let access = &Access::new(xml, access.snapshot(), &operation);
     let (target, issuer, early, path) = actor;
     assert_eq!(view.basic_responses().len(), 1);
     let response = view.basic_responses()[0].response();
@@ -2921,12 +2925,12 @@ fn assert_ocsp_archive<'source, W: Work + 'source, C: Work>(
     }
 }
 
-fn assert_no_check_archive<W: Work, C: Work>(
+fn assert_no_check_archive<W: Work, C: Work, Q: Work>(
     target: &structured_ltv::pki::CheckedPath<'_>,
     index: &material::Index<'_, usize, u8, u8, W>,
     coverage: &structured_ltv::material::Coverage<usize, u8, u8, C, structured_xades::Xades>,
     evidence: &structured_ltv::timestamp::Verified<usize, u8, u8, structured_xades::Xades>,
-    access: &Access<'_, Tree, W>,
+    access: &Access<'_, Tree, Q>,
 ) {
     // An actually exempt responder needs its original certificate in archive
     // material, but no fabricated status. Here that certificate is absent from

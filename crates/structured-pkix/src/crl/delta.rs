@@ -1,6 +1,6 @@
 //! Binding an authenticated delta to an authenticated complete CRL.
 
-use super::{Authenticated, EntryLookup, Reason, RevokedCertificate};
+use super::{Authenticated, EntryLookup, Reason, RevocationTarget, RevokedCertificate};
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{Extension, Extensions};
 use crate::identifier::AuthorityKeyIdentifier;
@@ -107,9 +107,9 @@ impl<'b, 'r, 'a> BoundDelta<'b, 'r, 'a> {
     /// leaks between lists. Critical demands and conflicting duplicates are
     /// checked in both sources before selecting a delta override.
     /// <https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3>
-    pub fn entry<W: Work>(
+    pub fn entry<'t, T: RevocationTarget<'t>, W: Work>(
         self,
-        target: &crate::Certificate<'_>,
+        target: &T,
         execution: &W,
     ) -> Result<CombinedEntry<'r, 'a>> {
         let base = match usable(self.base.entry(target, execution)?, EntryOrigin::Complete) {

@@ -315,6 +315,11 @@ impl<W: Work> Verify<W> for Oracle {
     }
 }
 
+pub(super) fn native_signature_verifier()
+-> impl Verify<structured_asn1::memory::Memory, Error: core::fmt::Debug> {
+    Oracle::new(Fault::None)
+}
+
 #[test]
 fn real_ed25519_signature_receipt_preserves_originals_and_pending_obligations() {
     // Actual arithmetic authenticates only the supplied exact DER acinfo and key.

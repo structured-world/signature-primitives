@@ -71,6 +71,12 @@ structured-cms = "0.8"
   distinct. Returned facts retain profile storage, the authority, effective key
   and evaluation interval. Holder/path/direct-AA trust, target/proxy effects,
   revocation and authorization remain explicit caller obligations; AKI is a hint.
+- Checked AC `Profile` implements PKIX `crl::RevocationTarget`: use the same
+  authenticated CRL scope, entry, complete/delta evaluation and reason coverage
+  operations as for PKC. Facts retain the actual profile and original AC, without
+  constructing a public-key certificate or copying its identity. `NoRevAvail`
+  remains a distinct written scheme; status evidence does not discharge other
+  profile, trust, targeting or authorization obligations.
 - `AttributeCertificate::bind_holder_digest` checks an explicitly selected whole
   certificate or effective public key against Holder `objectDigestInfo`.
   `validation::digest::ObjectDigestProvider` uses the existing incremental digest

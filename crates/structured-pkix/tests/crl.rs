@@ -608,7 +608,6 @@ fn assert_current_crl_query<'r, 'a>(
 fn assert_current_coverage_growth<'r, 'a>(
     coverage: &mut structured_pkix::crl::Coverage<'r, 'a>,
     next: &structured_pkix::crl::AbsenceEvidence<'r, 'a>,
-    width: usize,
     execution: &Memory,
 ) {
     // Metadata/identity admission is not credit for subsequent copy/growth.
@@ -621,7 +620,10 @@ fn assert_current_coverage_growth<'r, 'a>(
     let limited = Parser::new(
         Encoding::Der,
         Limits {
-            max_work: 2 + 2 * u64::try_from(width).unwrap(),
+            // Same target pointer needs one time and two source-metadata
+            // admissions, without a redundant encoded-byte scan. Leave no
+            // credit for the subsequent source-handle copy or growth.
+            max_work: 3,
             ..Limits::default()
         },
         execution.clone(),
@@ -690,12 +692,7 @@ fn qualified_coverage_retains_sources_and_never_accepts_unusable_time() {
             .unwrap(),
         CoverageAdmission::DifferentExecution
     );
-    assert_current_coverage_growth(
-        &mut coverage,
-        &second_absence,
-        target.as_bytes().len(),
-        &execution,
-    );
+    assert_current_coverage_growth(&mut coverage, &second_absence, &execution);
     assert_eq!(
         coverage.add(second_absence, &execution).unwrap(),
         CoverageAdmission::Added

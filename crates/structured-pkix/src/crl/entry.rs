@@ -1,10 +1,10 @@
 //! Deferred entry extension decoding in the current execution account.
 
-use super::{Authenticated, IssuingDistributionPoint, RevokedCertificate};
+use super::{Authenticated, IssuingDistributionPoint, RevocationTarget, RevokedCertificate};
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
 use crate::general_name::{self, GeneralName};
-use crate::{Certificate, Time, oid};
+use crate::{Time, oid};
 use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Oid, Span, Tag, universal};
 
@@ -36,33 +36,31 @@ impl<'r, 'a> Authenticated<'r, 'a> {
     /// Search by issuer plus serial, retaining indirect issuer inheritance.
     /// Unknown critical extensions anywhere in the list invalidate use for all
     /// statuses, including demands on entries unrelated to this target.
-    pub fn entry<W: Work>(
+    pub fn entry<'t, T: RevocationTarget<'t>, W: Work>(
         &self,
-        target: &Certificate<'_>,
+        target: &T,
         execution: &W,
     ) -> Result<EntryLookup<'r, 'a>> {
         const FIELD: &str = "certificateList.entryLookup";
         let crl = self.crl();
+        let execution = &crl.tbs().signature().query_in(execution);
+        let target_execution = target.execution_in(execution);
+        target_execution
+            .charge_work(1)
+            .map_err(|e| Error::resource(e, FIELD, target.span().start))?;
         execution
             .charge_work(1)
             .map_err(|reason| Error::resource(reason, FIELD, crl.span().start))?;
-        let extensions = crl.tbs().extensions();
         let is_delta = delta_source(crl, execution)?;
-        let idp = extensions
-            .get(oid::ISSUING_DISTRIBUTION_POINT, execution)?
-            .map(|extension| IssuingDistributionPoint::read(extension, execution))
-            .transpose()?;
-        let indirect = idp
-            .as_ref()
-            .is_some_and(IssuingDistributionPoint::is_indirect);
+        let indirect = indirect_source(crl, execution)?;
         if let Some(extension) = check_source_metadata(crl, is_delta, execution)? {
             return Ok(EntryLookup::Unsupported {
                 kind: extension.kind(),
                 span: extension.span(),
             });
         }
-        let target_serial = target.tbs().serial().as_bytes();
-        let target_issuer = target.tbs().issuer().as_bytes();
+        let target_serial = target.serial().as_bytes();
+        let target_issuer = target.issuer().as_bytes();
         let mut inherited = None;
         let mut default_matches = None;
         let mut found = None;
@@ -74,21 +72,11 @@ impl<'r, 'a> Authenticated<'r, 'a> {
             // RFC 5280 §5.3: an unknown critical entry extension prevents
             // using this CRL for the status of ANY certificate.
             // https://www.rfc-editor.org/rfc/rfc5280#section-5.3
-            for extension in entry.extensions.criticals(execution) {
-                let extension = extension?;
-                let kind = extension.kind();
-                execution
-                    .charge_work(19)
-                    .map_err(|reason| Error::resource(reason, FIELD, extension.span().start))?;
-                if kind != oid::CRL_REASON
-                    && kind != oid::INVALIDITY_DATE
-                    && kind != oid::CERTIFICATE_ISSUER
-                {
-                    return Ok(EntryLookup::Unsupported {
-                        kind,
-                        span: extension.span(),
-                    });
-                }
+            if let Some(extension) = unsupported_entry(entry, execution)? {
+                return Ok(EntryLookup::Unsupported {
+                    kind: extension.kind(),
+                    span: extension.span(),
+                });
             }
             // Known extension syntax is checked even on unmatched entries.
             validate_status_extensions(entry, is_delta, execution)?;
@@ -105,24 +93,32 @@ impl<'r, 'a> Authenticated<'r, 'a> {
                     execution
                         .charge_work(1)
                         .map_err(|reason| Error::resource(reason, FIELD, entry.span.start))?;
-                    if let GeneralName::Directory(name) = name
-                        && equal_bytes(name.as_bytes(), target_issuer, execution, entry.span.start)?
-                    {
-                        issuer_matches = true;
-                        break;
+                    if let GeneralName::Directory(name) = name {
+                        target_execution
+                            .charge_work(target_issuer.len() as u64)
+                            .map_err(|e| Error::resource(e, FIELD, target.span().start))?;
+                        if equal_bytes(name.as_bytes(), target_issuer, execution, entry.span.start)?
+                        {
+                            issuer_matches = true;
+                            break;
+                        }
                     }
                 }
             } else {
                 issuer_matches = if let Some(matched) = default_matches {
                     matched
                 } else {
-                    let matched = crl
-                        .tbs()
+                    let matched = target
                         .issuer()
-                        .matches(target.tbs().issuer(), execution)?;
+                        .matches(crl.tbs().issuer(), &target_execution)?;
                     default_matches = Some(matched);
                     matched
                 };
+            }
+            if issuer_matches {
+                target_execution
+                    .charge_work(target_serial.len() as u64)
+                    .map_err(|e| Error::resource(e, FIELD, target.span().start))?;
             }
             if issuer_matches
                 && equal_bytes(
@@ -149,6 +145,42 @@ impl<'r, 'a> Authenticated<'r, 'a> {
             None => EntryLookup::Absent,
         })
     }
+}
+
+fn indirect_source(crl: &super::CertificateList<'_>, execution: &impl Work) -> Result<bool> {
+    let idp = crl
+        .tbs()
+        .extensions()
+        .get(oid::ISSUING_DISTRIBUTION_POINT, execution)?
+        .map(|extension| IssuingDistributionPoint::read(extension, execution))
+        .transpose()?;
+    Ok(idp
+        .as_ref()
+        .is_some_and(IssuingDistributionPoint::is_indirect))
+}
+
+fn unsupported_entry<'r, 'a>(
+    entry: &'r RevokedCertificate<'a>,
+    execution: &impl Work,
+) -> Result<Option<&'r Extension<'a>>> {
+    for extension in entry.extensions.criticals(execution) {
+        let extension = extension?;
+        execution.charge_work(19).map_err(|reason| {
+            Error::resource(
+                reason,
+                "certificateList.entryLookup",
+                extension.span().start,
+            )
+        })?;
+        let kind = extension.kind();
+        if kind != oid::CRL_REASON
+            && kind != oid::INVALIDITY_DATE
+            && kind != oid::CERTIFICATE_ISSUER
+        {
+            return Ok(Some(extension));
+        }
+    }
+    Ok(None)
 }
 
 fn validate_status_extensions<W: Work>(

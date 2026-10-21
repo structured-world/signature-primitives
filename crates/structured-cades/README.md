@@ -22,6 +22,9 @@ do not establish registry availability or consumer adoption.
 `prepare::Preparation` reads the requested level, signed and unsigned property
 syntax, independent ESS sets and the complete nested counter/timestamp census.
 It preserves required versus advisory findings and original malformed values.
+Present timestamp envelopes and carried information are syntax-checked even
+for a B-B request. Envelope models are retained once for later checks; unreadable
+information keeps its original failure and independently retained source map.
 An attribute OID or a successful subset cannot promote the requested level.
 
 Use the existing CMS `verify::DocumentBatch` for the actual carried or explicit
@@ -36,7 +39,8 @@ actual format owner. `Complete` exists only after every value authenticated
 with actual authority paths, a direct anchor, or an explicit certificate-free
 mechanism. Reading a credential envelope never authenticates its contents.
 
-`material::Pool` holds original root/token models once. Its token visitors use
+`material::Pool` borrows the original token models from preparation and holds
+the parsed revocation models once. Its token visitors use
 saved encoding, depth and source context, and `timestamp::Context` chooses the
 actual original content, owner signature or `ATSv3` archive input. `CheckTime`
 contains explicit UTC facts and an optional caller-supplied reference; there is

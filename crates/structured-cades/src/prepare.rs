@@ -13,6 +13,8 @@ use structured_ltv::baseline::ArchiveCensus;
 use structured_ltv::timestamp::{Purpose, RequiredToken, TimestampRequirements, TimestampScope};
 
 const FIELD: &str = "cades";
+pub(crate) mod tokens;
+pub use tokens::ReadError;
 
 /// One located mandatory rule or advisory. A SHOULD is not a failed SHALL.
 #[derive(Debug)]
@@ -165,6 +167,7 @@ pub struct Preparation<'model, 'document> {
     conforming: bool,
     basic_conforming: bool,
     preservation: OwnedVec<crate::preservation::Required<'document>>,
+    pub(crate) parsed: tokens::Cache<'document>,
 }
 
 impl<'m, 'd> Preparation<'m, 'd> {
@@ -175,12 +178,16 @@ impl<'m, 'd> Preparation<'m, 'd> {
     /// EN319122-1 V1.3.1 §§6.2.2/6.3 table 1 makes the requested level explicit;
     /// '*' is advisory and an optional archive never promotes a lower request.
     /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf>
+    #[expect(
+        clippy::result_large_err,
+        reason = "keep original timestamp syntax failures and their independent source maps without refusal-time allocation"
+    )]
     pub fn read(
         document: &'m Document<'m, 'd>,
         signer: &'m SignerInfo<'d>,
         requested: Level,
         parent: &Reader<'d>,
-    ) -> Result<Self> {
+    ) -> core::result::Result<Self, ReadError> {
         let selected = document.signer(signer)?;
         document.message().require_session(parent, FIELD)?;
         let execution = parent.execution();
@@ -236,9 +243,11 @@ impl<'m, 'd> Preparation<'m, 'd> {
             {
                 return Err(Error::Foreign {
                     at: counter.node.span().start,
-                });
+                }
+                .into());
             }
         }
+        let parsed = tokens::read(document, &timestamps, parent, &mut findings)?;
         for finding in &findings {
             execution.charge_work(1).map_err(|cause| {
                 Error::resource(cause, FIELD, finding.location.node.span().start)
@@ -276,6 +285,7 @@ impl<'m, 'd> Preparation<'m, 'd> {
             conforming,
             basic_conforming,
             preservation: preservation.into_owned(),
+            parsed,
         })
     }
 

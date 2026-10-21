@@ -58,8 +58,8 @@ pub enum VisitError<E> {
     Callback(E),
 }
 
-/// Opens exactly one original token under its saved source context. Temporary
-/// models cannot escape this callback; retained evidence owns its own storage.
+/// Borrows exactly one original prepared token under current execution.
+/// No envelope is reparsed; retained evidence owns its own storage.
 pub fn with_token<'m, 'd, R, E>(
     prepared: &Preparation<'m, 'd>,
     ordinal: usize,
@@ -82,16 +82,20 @@ pub fn with_token<'m, 'd, R, E>(
     let source = entry.source().ok_or(VisitError::Unreadable {
         property: entry.property(),
     })?;
-    let mut reader = source
+    let reader = source
         .reader_in(operation)
         .map_err(VisitError::Processing)?;
-    let token =
-        Token::read_from(&mut reader).map_err(|cause| VisitError::Processing(Error::Cms(cause)))?;
+    let Some(Some(index)) = prepared.parsed.ordinals.get(ordinal) else {
+        return Err(VisitError::Unreadable {
+            property: entry.property(),
+        });
+    };
+    let token = &prepared.parsed.models[*index].token;
     visitor(Context {
         prepared,
         ordinal,
         entry,
-        token: &token,
+        token,
         reader: &reader,
     })
     .map_err(VisitError::Callback)
@@ -526,26 +530,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
                 recognizes,
                 |input| {
                     if self.entry.purpose() == Purpose::Archive {
-                        // EN319122-1 §5.5.2 permits the hash index only in
-                        // unsigned attributes of this archive TSA signer.
-                        // Reuse the ESS reading of this very check; a valid
-                        // unsigned index cannot hide a prohibited signed copy.
-                        let faults = structured_cms::cades::findings_from_reading(
-                            input.token.signer(),
-                            structured_cms::cades::Role::ArchiveTimestamp,
-                            input.ess,
-                            input.parent,
-                        )
-                        .map_err(|cause| ProfileFailure {
-                            source: ProfileSource::Envelope,
-                            cause: ProfileError::Cades(cause),
-                        })?;
-                        if let Some(cause) = faults.into_iter().next() {
-                            return Err(ProfileFailure {
-                                source: ProfileSource::Envelope,
-                                cause: ProfileError::Cades(cause),
-                            });
-                        }
+                        Self::archive_profile(&input)?;
                     }
                     restriction.set(Self::profile_rules(&input, path, provider)?);
                     profile(input).map_err(|cause| ProfileFailure {
@@ -599,6 +584,31 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
             restrictions: restriction.get(),
             actor,
         })
+    }
+    fn archive_profile<PE, FE>(
+        input: &tsp::ProfileInput<'_, 'd, '_, '_>,
+    ) -> Result<(), ProfileFailure<ProfileError<PE, FE>>> {
+        // EN319122-1 §5.5.2 permits the hash index only in
+        // unsigned attributes of this archive TSA signer.
+        // Reuse the ESS reading of this very check; a valid
+        // unsigned index cannot hide a prohibited signed copy.
+        let faults = structured_cms::cades::findings_from_reading(
+            input.token.signer(),
+            structured_cms::cades::Role::ArchiveTimestamp,
+            input.ess,
+            input.parent,
+        )
+        .map_err(|cause| ProfileFailure {
+            source: ProfileSource::Envelope,
+            cause: ProfileError::Cades(cause),
+        })?;
+        if let Some(cause) = faults.into_iter().next() {
+            return Err(ProfileFailure {
+                source: ProfileSource::Envelope,
+                cause: ProfileError::Cades(cause),
+            });
+        }
+        Ok(())
     }
     fn profile_rules<'a, P, PE, FE>(
         input: &tsp::ProfileInput<'_, 'd, 'a, '_>,

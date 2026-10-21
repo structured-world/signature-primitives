@@ -63,10 +63,6 @@ pub struct Open<'a> {
     pub cause: Option<Error>,
 }
 
-struct TokenModel<'d> {
-    ordinal: usize,
-    token: Token<'d>,
-}
 struct Crl<'d> {
     value: CertificateList<'d>,
     node: Node,
@@ -82,9 +78,9 @@ struct Ocsp<'d> {
 /// once; CRL/OCSP models are parsed once, and index creation never replays them.
 pub struct Pool<'prepared, 'model, 'document> {
     prepared: &'prepared Preparation<'model, 'document>,
-    tokens: OwnedVec<TokenModel<'document>>,
-    token_index: OwnedVec<Option<usize>>,
-    token_faults: OwnedVec<(Node, Error)>,
+    tokens: &'prepared [crate::prepare::tokens::Model<'document>],
+    token_index: &'prepared [Option<usize>],
+    token_faults: &'prepared [(Node, crate::prepare::ReadError)],
     crls: OwnedVec<Crl<'document>>,
     ocsp: OwnedVec<Ocsp<'document>>,
     open: OwnedVec<Open<'document>>,
@@ -112,59 +108,7 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
             .message()
             .require_session(operation, "cades.material")?;
         let work = operation.execution();
-        let mut tokens = work.vector();
-        let mut token_index = work.vector();
-        token_index
-            .try_reserve_exact(prepared.timestamps().len())
-            .map_err(|cause| {
-                Error::resource(cause, "cades.material", prepared.signer().span().start)
-            })?;
-        let mut token_faults = work.vector();
-        for (ordinal, entry) in prepared.timestamps().iter().enumerate() {
-            work.charge_work(1).map_err(|cause| {
-                Error::resource(cause, "cades.material", entry.property().span().start)
-            })?;
-            let mut selected = None;
-            if let Some(source) = entry.source() {
-                let mut reader = source.reader_in(operation)?;
-                match Token::read_from(&mut reader) {
-                    Ok(token) => {
-                        selected = Some(tokens.len());
-                        tokens
-                            .try_push(TokenModel { ordinal, token })
-                            .map_err(|cause| {
-                                Error::resource(
-                                    cause,
-                                    "cades.material",
-                                    entry.property().span().start,
-                                )
-                            })?;
-                    }
-                    Err(cause) if cause.is_terminal() => return Err(Error::Cms(cause)),
-                    Err(cause) => token_faults
-                        .try_push((entry.property(), Error::Cms(cause)))
-                        .map_err(|cause| {
-                            Error::resource(cause, "cades.material", entry.property().span().start)
-                        })?,
-                }
-            } else {
-                token_faults
-                    .try_push((
-                        entry.property(),
-                        Error::Syntax {
-                            code: structured_cms::ErrorCode::MissingField,
-                            field: "cades.timestamp",
-                            at: entry.property().span().start,
-                        },
-                    ))
-                    .map_err(|cause| {
-                        Error::resource(cause, "cades.material", entry.property().span().start)
-                    })?;
-            }
-            token_index.try_push(selected).map_err(|cause| {
-                Error::resource(cause, "cades.material", entry.property().span().start)
-            })?;
-        }
+        let tokens = &*prepared.parsed.models;
         let mut crls = work.vector();
         let mut ocsp = work.vector();
         let mut open = work.vector();
@@ -176,7 +120,7 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
             &mut ocsp,
             &mut open,
         )?;
-        for model in &tokens {
+        for model in tokens {
             work.charge_work(1).map_err(|cause| {
                 Error::resource(cause, "cades.material", model.token.message().span().start)
             })?;
@@ -191,9 +135,9 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
         }
         Ok(Self {
             prepared,
-            tokens: tokens.into_owned(),
-            token_index: token_index.into_owned(),
-            token_faults: token_faults.into_owned(),
+            tokens,
+            token_index: &prepared.parsed.ordinals,
+            token_faults: &prepared.parsed.faults,
             crls: crls.into_owned(),
             ocsp: ocsp.into_owned(),
             open: open.into_owned(),
@@ -206,8 +150,8 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
     }
     /// Every unreadable original timestamp and its retained failure.
     #[must_use]
-    pub fn token_faults(&self) -> &[(Node, Error)] {
-        &self.token_faults
+    pub fn token_faults(&self) -> &[(Node, crate::prepare::ReadError)] {
+        self.token_faults
     }
     /// Every original unknown or known-malformed material enclosure.
     #[must_use]
@@ -320,7 +264,7 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
             &mut index,
             query,
         )?;
-        for token in &self.tokens {
+        for token in self.tokens {
             query
                 .admit(signature.node, 1)
                 .map_err(material::IndexError::Scope)?;

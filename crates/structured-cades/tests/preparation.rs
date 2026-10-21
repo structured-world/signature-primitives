@@ -65,14 +65,14 @@ fn token() -> Vec<u8> {
     ));
     info.extend([2, 1, 7]);
     info.extend(tlv(24, b"20260101000000Z"));
+    token_information(&tlv(0x30, &info))
+}
+
+fn token_information(info: &[u8]) -> Vec<u8> {
     let mut body = vec![2, 1, 3, 0x31, 0];
     body.extend(tlv(
         0x30,
-        &[
-            tlv(6, oid::TST_INFO.as_bytes()),
-            tlv(0xa0, &tlv(4, &tlv(0x30, &info))),
-        ]
-        .concat(),
+        &[tlv(6, oid::TST_INFO.as_bytes()), tlv(0xa0, &tlv(4, info))].concat(),
     ));
     body.extend(tlv(0x31, &signer(&[])));
     tlv(
@@ -101,6 +101,44 @@ fn message_with(signed: &[Vec<u8>], unsigned: &[Vec<u8>]) -> Vec<u8> {
         ]
         .concat(),
     )
+}
+
+#[test]
+fn optional_timestamp_syntax_is_required_even_for_basic() {
+    // Optional does not mean untyped: retain an empty token's original
+    // obligation AND a located format finding, even without requesting B-T.
+    for value in [tlv(0x30, &[]), token_information(&tlv(0x30, &[]))] {
+        let time = attribute(oid::CONTENT_TIMESTAMP.as_bytes(), &[value]);
+        let bytes = message_with(&[time], &[]);
+        let account = memory();
+        let parser = Parser::ber(account.clone());
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        let property = prepared.timestamps()[0].property();
+        assert_eq!(prepared.timestamp_requirements().entries().len(), 1);
+        assert!(
+            prepared
+                .findings()
+                .iter()
+                .any(
+                    |finding| finding.location.node.span().start >= property.span().start
+                        && finding.location.node.span().start < property.span().end()
+                        && finding.severity == Severity::Required
+                )
+        );
+        let storage = account.used();
+        let pool = structured_cades::material::Pool::read(&prepared, &parent).unwrap();
+        assert_eq!(
+            account.used(),
+            storage,
+            "empty material pool borrows prepared token models"
+        );
+        assert_eq!(pool.token_faults().len(), 1);
+        assert!(!pool.token_faults()[0].1.is_terminal());
+    }
 }
 
 #[test]

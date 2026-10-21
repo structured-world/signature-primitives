@@ -1,0 +1,244 @@
+//! One original timestamp envelope reading shared by preparation and material.
+
+use super::{Finding, Rule, Severity, Timestamp, finding};
+use crate::{
+    Error,
+    source::{Document, Node},
+};
+use core::convert::Infallible;
+use structured_asn1::{
+    Reader,
+    memory::{OwnedVec, Work},
+};
+use structured_cms::{
+    content_source::ContentError,
+    timestamp::{InfoError, Token},
+};
+
+/// An original timestamp syntax refusal with independently retained source maps.
+#[derive(Debug)]
+pub enum ReadError {
+    /// Original outer-source or processing refusal.
+    Processing(Error),
+    /// Original carried-information refusal. The retained map describes the
+    /// cause's coordinate system; the physical carrier is an honest enclosure.
+    Information(ContentError<InfoError<Infallible>>),
+}
+impl From<Error> for ReadError {
+    fn from(cause: Error) -> Self {
+        Self::Processing(cause)
+    }
+}
+impl From<structured_cms::Error> for ReadError {
+    fn from(cause: structured_cms::Error) -> Self {
+        Self::Processing(Error::Cms(cause))
+    }
+}
+impl ReadError {
+    /// Resource/source misuse aborts preparation rather than becoming a finding.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            Self::Processing(cause) => cause.is_terminal(),
+            Self::Information(cause) => information_cause(cause).is_terminal(),
+        }
+    }
+    /// Original physical failure position or carried-source enclosure start.
+    #[must_use]
+    pub fn offset(&self) -> u64 {
+        match self {
+            Self::Processing(cause) => cause.offset(),
+            Self::Information(ContentError::Processing(cause)) => cause.offset(),
+            Self::Information(
+                ContentError::Decoding { context, .. } | ContentError::Callback { context, .. },
+            ) => context.carrier().start,
+        }
+    }
+}
+fn information_cause(cause: &ContentError<InfoError<Infallible>>) -> &structured_cms::Error {
+    match cause {
+        ContentError::Processing(cause)
+        | ContentError::Decoding { source: cause, .. }
+        | ContentError::Callback {
+            source: InfoError::Processing(cause),
+            ..
+        } => cause,
+        ContentError::Callback {
+            source: InfoError::Callback(never),
+            ..
+        } => match *never {},
+    }
+}
+pub(crate) struct Model<'d> {
+    pub(crate) ordinal: usize,
+    pub(crate) token: Token<'d>,
+}
+pub(crate) struct Cache<'d> {
+    pub(crate) models: OwnedVec<Model<'d>>,
+    pub(crate) ordinals: OwnedVec<Option<usize>>,
+    pub(crate) faults: OwnedVec<(Node, ReadError)>,
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "retain the original information refusal and source map without allocating while refusing resources"
+)]
+pub(super) fn read<'m, 'd>(
+    document: &Document<'m, 'd>,
+    timestamps: &[Timestamp<'d>],
+    parent: &Reader<'d>,
+    findings: &mut OwnedVec<Finding<'m, 'd>, impl Work>,
+) -> Result<Cache<'d>, ReadError> {
+    let work = parent.execution();
+    let mut models = work.vector();
+    let mut ordinals = work.vector();
+    let mut faults = work.vector();
+    ordinals
+        .try_reserve_exact(timestamps.len())
+        .map_err(|cause| {
+            Error::resource(cause, "cades.timestamp", document.message().span().start)
+        })?;
+    for (ordinal, entry) in timestamps.iter().enumerate() {
+        let at = entry.property.span().start;
+        let resource = |cause| Error::resource(cause, "cades.timestamp", at);
+        work.charge_work(1).map_err(resource)?;
+        let mut selected = None;
+        if let Some(source) = entry.value {
+            let mut reader = source.reader_in(parent)?;
+            match Token::read_from(&mut reader) {
+                Ok(token) => {
+                    if let Err(cause) = inspect(document, entry, &token, &reader, findings) {
+                        if cause.is_terminal() {
+                            return Err(cause);
+                        }
+                        let ReadError::Information(source) = cause else {
+                            return Err(cause);
+                        };
+                        finding(
+                            document,
+                            entry.property.span(),
+                            Severity::Required,
+                            Rule::Schema {
+                                code: information_cause(&source).code(),
+                                field: information_cause(&source).field(),
+                            },
+                            findings,
+                        )?;
+                        faults
+                            .try_push((entry.property, ReadError::Information(source)))
+                            .map_err(resource)?;
+                    }
+                    selected = Some(models.len());
+                    models
+                        .try_push(Model { ordinal, token })
+                        .map_err(resource)?;
+                }
+                Err(cause) => {
+                    if cause.is_terminal() {
+                        return Err(cause.into());
+                    }
+                    finding(
+                        document,
+                        entry.property.span(),
+                        Severity::Required,
+                        Rule::Schema {
+                            code: cause.code(),
+                            field: cause.field(),
+                        },
+                        findings,
+                    )?;
+                    faults
+                        .try_push((entry.property, ReadError::from(cause)))
+                        .map_err(resource)?;
+                }
+            }
+        } else {
+            let cause = Error::Syntax {
+                code: structured_cms::ErrorCode::MissingField,
+                field: "cades.timestamp",
+                at,
+            };
+            finding(
+                document,
+                entry.property.span(),
+                Severity::Required,
+                Rule::Schema {
+                    code: structured_cms::ErrorCode::MissingField,
+                    field: "cades.timestamp",
+                },
+                findings,
+            )?;
+            faults
+                .try_push((entry.property, ReadError::from(cause)))
+                .map_err(resource)?;
+        }
+        ordinals.try_push(selected).map_err(resource)?;
+    }
+    Ok(Cache {
+        models: models.into_owned(),
+        ordinals: ordinals.into_owned(),
+        faults: faults.into_owned(),
+    })
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "retain the original information refusal and source map without allocating while refusing resources"
+)]
+fn inspect<'m, 'd>(
+    document: &Document<'m, 'd>,
+    entry: &Timestamp<'d>,
+    token: &Token<'d>,
+    reader: &Reader<'d>,
+    findings: &mut OwnedVec<Finding<'m, 'd>, impl Work>,
+) -> Result<(), ReadError> {
+    // The envelope model is retained once. A subsequent cryptographic check
+    // opens information under CURRENT work: temporary joined TSTInfo cannot
+    // be pinned in this cache. Its faults use a physical attribute enclosure,
+    // never a logical offset disguised as an original document position.
+    let inspection = token.with_info(reader, |info, _, _| {
+        for cause in token
+            .faults()
+            .iter()
+            .chain(token.message().faults())
+            .chain(token.signer().faults())
+            .chain(info.faults())
+        {
+            reader
+                .charge(1)
+                .map_err(|cause| Error::encoding(cause, "cades.timestamp"))?;
+            finding(
+                document,
+                entry.property.span(),
+                Severity::Required,
+                Rule::Schema {
+                    code: cause.code(),
+                    field: cause.field(),
+                },
+                findings,
+            )?;
+        }
+        Ok::<_, Error>(())
+    });
+    let source = match inspection {
+        Ok(()) => return Ok(()),
+        Err(ContentError::Callback {
+            source: InfoError::Callback(cause),
+            ..
+        }) => {
+            return Err(cause.into());
+        }
+        Err(ContentError::Processing(cause)) => ContentError::Processing(cause),
+        Err(ContentError::Decoding { source, context }) => {
+            ContentError::Decoding { source, context }
+        }
+        Err(ContentError::Callback {
+            source: InfoError::Processing(source),
+            context,
+        }) => ContentError::Callback {
+            source: InfoError::Processing(source),
+            context,
+        },
+    };
+    Err(ReadError::Information(source))
+}

@@ -358,6 +358,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             4 | 6 | 7 => Level::Archival,
             _ => Level::Timestamped,
         };
+        let started = std::time::Instant::now();
         let prepared = Preparation::read(&document, selected, level, &parent).unwrap();
         assert!(
             prepared.all_format_requirements_met(),
@@ -386,6 +387,12 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         let credentials = credentials.complete().unwrap();
         let basic = basic::basic(&binding, counter_paths, &parent).unwrap();
         let pool = material::Pool::read(&prepared, &parent).unwrap();
+        eprintln!(
+            "prepare+pool mode={mode} input_bytes={} elapsed_us={} retained_bytes={}",
+            bytes.len(),
+            started.elapsed().as_micros(),
+            work.memory().used()
+        );
         let time = structured_cades::timestamp::CheckTime {
             utc: &utc,
             reference: Some(interval.to_instant()),

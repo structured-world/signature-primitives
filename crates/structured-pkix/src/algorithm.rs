@@ -45,6 +45,19 @@ pub(crate) struct Nested<'a> {
 }
 
 impl<'a> Nested<'a> {
+    pub(crate) fn encoding(self) -> Encoding {
+        self.encoding
+    }
+    pub(crate) fn execution_in<'q, W: Work>(
+        self,
+        work: &'q W,
+    ) -> structured_asn1::memory::Execution<'q>
+    where
+        'a: 'q,
+    {
+        work.execution_for(self.parser)
+    }
+
     /// Original start, without opening or scanning the nested value.
     pub(crate) fn offset(self) -> u64 {
         self.at

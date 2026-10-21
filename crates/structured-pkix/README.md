@@ -160,6 +160,21 @@ from another certificate. The inherited parameter source retains its separate
 ceiling and coordinates. A source refusal remains a located resource error,
 never a completed mismatch, malformed point, or successfully decoded key.
 
+### Effective SubjectPublicKeyInfo digest input
+
+`key::effective::EffectiveSpki::read(working_key, &work)` prepares a borrowed DER
+stream containing the effective parameters, including those inherited from an
+issuer. `visit(&work, visitor)` emits original OID, parameter and key payloads
+with small stack-resident DER headers. It does not allocate a combined SPKI,
+parse synthesized bytes or clone a resource account. Every part retains source
+and current-operation ceilings; callback failures retain the part and its real
+enclosing source context. Synthesized framing has no claimed physical range.
+
+This supplies RFC5755 §7.3 digest input, not algorithm-specific key acceptance.
+The selected provider must validate the original key and effective parameters
+under its algorithm profile before hashing. A valid DER frame cannot repair
+invalid RSA/DSA/EC parameters or establish mathematical validity or key possession.
+
 ### DSA public-key structure
 
 `key::dsa::read(working_key, &execution)` reads the unsigned `p`, `q`, `g`

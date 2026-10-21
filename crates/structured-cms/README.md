@@ -61,7 +61,15 @@ structured-cms = "0.8"
   explicitly selected AA CA, checks path distance and intersects attribute
   permissions without discarding original attributes. These checks retain
   original ranges and current/source limits. They do not authenticate paths,
-  verify signatures or object digests, select trust or establish authorization.
+  verify signatures, select trust or establish authorization.
+- `AttributeCertificate::bind_holder_digest` checks an explicitly selected whole
+  certificate or effective public key against Holder `objectDigestInfo`.
+  `validation::digest::ObjectDigestProvider` uses the existing incremental digest
+  contract plus a required algorithm-specific key-encoding gate. Key hashing
+  includes effective inherited parameters; certificate hashing includes its
+  signature. Unsupported capabilities, malformed assertions, mismatches and
+  processing/provider failures remain distinct. A bound receipt retains the
+  original AC and selected object; it proves neither key possession nor trust.
 - `attribute_certificate::clearance` reads current and historical Clearance
   encodings, preserving default classification, policy-specific bits and opaque
   security categories. Both registered OIDs are supported without assigning

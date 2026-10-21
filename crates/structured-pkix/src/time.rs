@@ -159,6 +159,16 @@ pub struct Calendar {
 pub const NO_WELL_DEFINED_EXPIRY: i64 = 253_402_300_799;
 
 impl Time {
+    /// Reads an original fixed-width UTC or `GeneralizedTime` profile label.
+    ///
+    /// The enclosing schema selects the permitted tag. This uses the same
+    /// calendar kernel as certificate validity, with seconds and `Z`, without
+    /// fractions. The supplied reader must be the element's producing context;
+    /// its original and current-operation ceilings fund the conversion.
+    pub fn read(parent: &Reader<'_>, element: &Element<'_>, field: &'static str) -> Result<Self> {
+        read_in(parent, element, field)
+    }
+
     /// Project the original UTC label into XSD1.0 year numbering.
     /// This retains second sixty; [`Xsd10Label::at_utc`] performs the separate
     /// XSD value normalization. It does not change this time's UTC identity.

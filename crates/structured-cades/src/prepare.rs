@@ -73,7 +73,7 @@ pub enum Rule {
     PolicyStore,
     /// Actual use of MD5 violates the format, independently of backend support.
     Md5,
-    /// A SHA-1 `ESSCertIDv2` requires the V1 signing-certificate service too.
+    /// A V2 certificate reference uses SHA-1 instead of a different hash.
     SigningCertificateVersion,
     /// Optional issuerSerial hint SHOULD be omitted (§6.3(g)).
     IssuerHint,
@@ -566,7 +566,12 @@ fn mechanism_findings<'m, 'd, W: Work>(
                         findings,
                     )?;
                 }
-                if identifier.algorithm() == oid::SHA1 && profile.signing().v1().is_none() {
+                // EN319122-1 §5.2.2.3 narrows RFC5035: every CAdES V2
+                // reference uses a non-SHA1 hash, whether V1 coexists or not.
+                // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+                if attribute.version() == structured_cms::ess::Version::V2
+                    && identifier.algorithm() == oid::SHA1
+                {
                     finding(
                         document,
                         certificate.element().span(),

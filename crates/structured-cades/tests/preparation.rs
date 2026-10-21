@@ -18,6 +18,8 @@ fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
     let mut out = vec![tag];
     if content.len() < 128 {
         out.push(u8::try_from(content.len()).unwrap());
+    } else if content.len() < 256 {
+        out.extend([0x81, u8::try_from(content.len()).unwrap()]);
     } else {
         out.extend([0x82]);
         out.extend(u16::try_from(content.len()).unwrap().to_be_bytes());
@@ -402,6 +404,62 @@ fn equal_encoded_foreign_source_and_exhausted_query_are_terminal() {
         .charge_work(account.work_remaining() as u64)
         .unwrap();
     assert!(Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).is_err());
+}
+
+#[test]
+fn every_v2_certificate_reference_refuses_sha1_even_with_v1() {
+    // CAdES EN319122-1 §5.2.2.3 narrows generic ESS: V1 coexistence cannot
+    // waive V2's non-SHA1 semantics, including later IDs and countersigners.
+    for companion in [false, true] {
+        for counter in [false, true] {
+            for sha1 in [false, true] {
+                let mut ids = tlv(0x30, &tlv(4, &[0; 32]));
+                let hash = if sha1 { oid::SHA1 } else { oid::SHA256 };
+                ids.extend(tlv(
+                    0x30,
+                    &[tlv(0x30, &tlv(6, hash.as_bytes())), tlv(4, &[0; 20])].concat(),
+                ));
+                let mut signed = vec![attribute(
+                    oid::SIGNING_CERTIFICATE_V2.as_bytes(),
+                    &[tlv(0x30, &tlv(0x30, &ids))],
+                )];
+                if companion {
+                    signed.push(attribute(
+                        oid::SIGNING_CERTIFICATE.as_bytes(),
+                        &[tlv(0x30, &tlv(0x30, &tlv(0x30, &tlv(4, &[0; 20]))))],
+                    ));
+                }
+                let bytes = if counter {
+                    message(&[attribute(
+                        oid::COUNTERSIGNATURE.as_bytes(),
+                        &[signer_with(&signed, &[])],
+                    )])
+                } else {
+                    message_with(&signed, &[])
+                };
+                let parser = Parser::ber(memory());
+                let data = SignedData::read(&parser, &bytes, 500).unwrap();
+                let parent = parser.read(&[], 0).unwrap();
+                let document = Document::new(&data, &parent).unwrap();
+                let prepared =
+                    Preparation::read(&document, &data.signers()[0], Level::Basic, &parent)
+                        .unwrap();
+                let failures: Vec<_> = prepared
+                    .findings()
+                    .iter()
+                    .filter(|finding| matches!(finding.rule, Rule::SigningCertificateVersion))
+                    .collect();
+                assert_eq!(
+                    failures.len(),
+                    usize::from(sha1),
+                    "companion={companion} counter={counter}"
+                );
+                for failure in failures {
+                    assert_eq!(failure.severity, Severity::Required);
+                }
+            }
+        }
+    }
 }
 
 #[test]

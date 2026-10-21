@@ -94,6 +94,7 @@ impl<'a> SvceAuthInfo<'a> {
             tag(&auth, Tag::primitive(universal::OCTET_STRING), AUTH)?;
             // RFC5755 §4.4.2 forbids presence, including an empty OCTET STRING.
             // Apply the registration before Name allocations or any payload use.
+            // https://www.rfc-editor.org/rfc/rfc5755#section-4.4.2
             if matches!(syntax, Syntax::Access) {
                 return Err(Error::schema(
                     ErrorCode::AttributeSyntax,
@@ -139,6 +140,9 @@ impl<'a> SvceAuthInfo<'a> {
                 attribute.span().start,
             ));
         };
+        // RFC5755 §4.1's Attribute definition requires at least one value,
+        // independently of §4.2.7's nonempty outer attributes SEQUENCE.
+        // https://www.rfc-editor.org/rfc/rfc5755#section-4.1
         if attribute.values().is_empty() {
             return Err(Error::schema(
                 ErrorCode::AttributeCardinality,

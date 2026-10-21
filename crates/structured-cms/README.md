@@ -52,6 +52,12 @@ structured-cms = "0.8"
   structural inspection, not RFC5755 profile validation or authorization: the
   caller checks holder binding, algorithm agreement, signature, AA trust,
   targeting, validity, critical extensions and revocation before using attributes.
+- `attribute_certificate::target` reads RFC5755 TargetInformation and checks
+  recipient names or caller-supplied group membership. Multiple Targets groups
+  form one union; noncritical extensions and forbidden targetCert alternatives
+  cannot produce a match. Original ranges and current/source work admission are
+  preserved. Unknown membership or opaque name semantics remain unproven; this
+  predicate does not authenticate the AC or authorize attribute use.
 - `timestamp::Request` reads original TimeStampReq. `timestamp::Token` separates
   readable inspection from complete signature, ESS, TSA, imprint, request and
   time checking. The caller supplies UTC information and request windows.

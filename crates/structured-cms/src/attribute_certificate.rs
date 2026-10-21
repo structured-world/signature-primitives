@@ -23,7 +23,10 @@ use structured_pkix::{AlgorithmIdentifier, Extensions, Time};
 const FIELD: &str = "attributeCertificate";
 const INFO: &str = "attributeCertificate.acinfo";
 
+pub mod clearance;
+pub mod controls;
 pub mod ietf;
+pub mod proxy;
 pub mod role;
 pub mod service;
 pub mod target;

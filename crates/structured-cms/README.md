@@ -52,6 +52,15 @@ structured-cms = "0.8"
   structural inspection, not RFC5755 profile validation or authorization: the
   caller checks holder binding, algorithm agreement, signature, AA trust,
   targeting, validity, critical extensions and revocation before using attributes.
+- `attribute_certificate::clearance` reads current and historical Clearance
+  encodings, preserving default classification, policy-specific bits and opaque
+  security categories. Both registered OIDs are supported without assigning
+  clearance levels or permissions. `attribute_certificate::controls::AaControls`
+  reads the PKC extension and checks its attribute restrictions and supplied
+  path distance; trust-anchor selection and complete path validation stay with
+  the caller. `attribute_certificate::proxy::ProxyInfo` checks the authenticated
+  sender, recipient and supplied complete forwarding path against one common
+  proxy set, with unknown group membership and processing errors kept distinct.
 - `attribute_certificate::target` reads RFC5755 TargetInformation and checks
   recipient names or caller-supplied group membership. Multiple Targets groups
   form one union; noncritical extensions and forbidden targetCert alternatives

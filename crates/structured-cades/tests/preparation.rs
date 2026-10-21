@@ -786,6 +786,52 @@ fn credential_references_need_protected_credentials_of_the_same_signer() {
 }
 
 #[test]
+fn unknown_policy_qualifiers_still_require_the_declared_value() {
+    // AnnexD's qualifier ANY is mandatory, independently of OID recognition.
+    // SignedAssertion's differently declared OPTIONAL remains optional.
+    for value in [None, Some(tlv(5, &[]))] {
+        let mut pair = tlv(6, &[42]);
+        if let Some(value) = &value {
+            pair.extend(value);
+        }
+        let policy = attribute(
+            oid::SIGNATURE_POLICY_IDENTIFIER.as_bytes(),
+            &[tlv(
+                0x30,
+                &[
+                    tlv(6, &[43]),
+                    tlv(
+                        0x30,
+                        &[tlv(0x30, &tlv(6, oid::SHA256.as_bytes())), tlv(4, &[1; 32])].concat(),
+                    ),
+                    tlv(0x30, &tlv(0x30, &pair)),
+                ]
+                .concat(),
+            )],
+        );
+        let assertion = attribute(
+            oid::SIGNER_ATTRIBUTES_V2.as_bytes(),
+            &[tlv(
+                0x30,
+                &tlv(0xa2, &tlv(0x30, &tlv(0x30, &tlv(6, &[42])))),
+            )],
+        );
+        let bytes = message_with(&[policy, assertion], &[]);
+        let parser = Parser::ber(memory());
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        let invalid = |kind| {
+            prepared.findings().iter().any(|finding| matches!(finding.rule, Rule::Value { attribute, .. } if attribute == kind))
+        };
+        assert_eq!(invalid(oid::SIGNATURE_POLICY_IDENTIFIER), value.is_none());
+        assert!(!invalid(oid::SIGNER_ATTRIBUTES_V2));
+    }
+}
+
+#[test]
 fn local_policy_store_requires_uri_syntax_without_fetching_it() {
     // EN319122-1 §5.2.10 selects a URI, not arbitrary ASCII text. A proper
     // protected policy hash cannot waive the local-store value's own grammar.

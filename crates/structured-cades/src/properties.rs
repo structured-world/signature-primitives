@@ -535,6 +535,10 @@ fn open_pair<'a, W: Work>(
         .map_err(|cause| Error::encoding(cause, field))?;
     end(&pair, field)?;
     if role == OpenRole::PolicyQualifier {
+        // AnnexD SigPolicyQualifierInfo requires its ANY value even when
+        // the qualifier OID is unknown. Other open pairs declare OPTIONAL.
+        // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+        let part = value.ok_or_else(|| syntax(field, element.span().start))?;
         let uri = Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 5, 1]);
         let notice = Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 5, 2]);
         let specification = Oid::from_bytes(&[4, 0, 0x81, 0x95, 0x32, 2, 1]);
@@ -542,7 +546,6 @@ fn open_pair<'a, W: Work>(
             .charge(3 * (1 + kind.as_bytes().len() as u64))
             .map_err(|cause| Error::encoding(cause, field))?;
         if kind == uri || kind == notice || kind == specification {
-            let part = value.ok_or_else(|| syntax(field, element.span().start))?;
             if kind == uri {
                 uri_value(&pair, &part, field)?;
             } else if kind == specification {

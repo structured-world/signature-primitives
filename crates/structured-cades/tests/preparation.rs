@@ -1620,3 +1620,42 @@ fn optional_timestamp_md5_is_a_preparation_finding_at_basic() {
         }
     }
 }
+
+#[test]
+fn signer_attributes_require_actual_entries_not_only_empty_wrappers() {
+    // EN319122-1 §5.2.6.1 forbids an empty whole value, while an empty
+    // claimed field may accompany a nonempty assertion. Certified fields
+    // retain their independent nonempty requirement.
+    let empty_claimed = tlv(0xa0, &tlv(0x30, &[]));
+    let claimed = tlv(0xa0, &tlv(0x30, &attribute(&[42], &[tlv(12, b"role")])));
+    let assertion = tlv(0xa2, &tlv(0x30, &tlv(0x30, &tlv(6, &[42]))));
+    let empty_certified = tlv(0xa1, &tlv(0x30, &[]));
+    for (fields, valid) in [
+        (vec![], false),
+        (empty_claimed.clone(), false),
+        (claimed.clone(), true),
+        ([empty_claimed.clone(), assertion].concat(), true),
+        ([empty_claimed, empty_certified.clone()].concat(), false),
+        ([claimed, empty_certified].concat(), false),
+    ] {
+        for in_counter in [false, true] {
+            let signed = attribute(oid::SIGNER_ATTRIBUTES_V2.as_bytes(), &[tlv(0x30, &fields)]);
+            let bytes = if in_counter {
+                message(&[attribute(
+                    oid::COUNTERSIGNATURE.as_bytes(),
+                    &[signer_with(&[signed], &[])],
+                )])
+            } else {
+                message_with(&[signed], &[])
+            };
+            let parser = Parser::ber(memory());
+            let data = SignedData::read(&parser, &bytes, 500).unwrap();
+            let parent = parser.read(&[], 0).unwrap();
+            let document = Document::new(&data, &parent).unwrap();
+            let prepared =
+                Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+            let invalid=prepared.findings().iter().any(|f|f.severity==Severity::Required && matches!(f.rule,Rule::Value {attribute,..} if attribute==oid::SIGNER_ATTRIBUTES_V2));
+            assert_eq!(invalid, !valid, "fields={fields:?} counter={in_counter}");
+        }
+    }
+}

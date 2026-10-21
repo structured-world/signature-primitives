@@ -451,6 +451,7 @@ fn attributes<'a, W: Work>(
     open: &mut OwnedVec<OpenValue<'a>, W>,
 ) -> Result<()> {
     let mut previous = None;
+    let mut populated = false;
     while let Some(value) = reader
         .next_element()
         .map_err(|cause| Error::encoding(cause, field))?
@@ -479,6 +480,7 @@ fn attributes<'a, W: Work>(
             .next_element()
             .map_err(|cause| Error::encoding(cause, field))?
         {
+            populated = true;
             if number == 0 {
                 let claimed = Attribute::read(&entries, &entry, field)?;
                 claimed_value(&claimed, &entries, field)?;
@@ -528,7 +530,11 @@ fn attributes<'a, W: Work>(
             }
         }
     }
-    if previous.is_none() {
+    // EN319122-1 §5.2.6.1 forbids an empty signer-attributes-v2, not
+    // merely an absent wrapper. An empty claimedAttributes is allowed only
+    // when another field actually contributes an entry.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+    if !populated {
         return Err(syntax(field, reader.offset()));
     }
     Ok(())

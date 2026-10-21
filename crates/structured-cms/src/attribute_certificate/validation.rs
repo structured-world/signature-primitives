@@ -17,6 +17,7 @@ pub mod aa_path;
 pub mod authentication;
 pub mod digest;
 mod profile;
+mod revocation;
 pub use profile::{AUDIT_IDENTITY, NO_REV_AVAILABLE, Profile, Revocation};
 
 const FIELD: &str = "attributeCertificate.validation";

@@ -378,6 +378,21 @@ formatted strings keep their capacity charge independently of the input/parser.
 
 ## CRL, delta CRL and OCSP evidence
 
+CRL scope, entry search, complete/delta evidence and reason coverage accept
+`crl::RevocationTarget` with original borrowed identity and source execution.
+`Certificate` implements it; CMS checked AC `Profile` implements the same
+contract. Attribute-only, public-key-only and unrestricted IDP categories remain
+distinct, and `NoRevAvail` never becomes CRL absence. Returned facts and coverage
+retain the actual target type and original reference; PKC remains the default
+type parameter. Explicit method generic arguments now include the target type
+(use inference or `_` for it). Custom implementations are trusted, coherent,
+constant-time projections; they must preserve original source provenance.
+
+The existing CRL core retains indirect issuers, full critical-demand checks,
+delta binding, exact distribution names, reason intersections and UTC update
+facts. Status components do not authenticate the target or settle trust,
+authorization, acquisition or historical retention policy.
+
 The source version adds `crl` and `ocsp`; these modules are not in crates.io
 0.1.2. They process caller-supplied DER without fetching, a clock, implicit trust
 discovery, or a built-in cryptographic backend. The original signed ranges,

@@ -14,7 +14,9 @@ use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{BitString, Element, Integer, Parser, Reader, Span, Tag, universal};
 
 mod scope;
+mod target;
 pub use scope::{CertificateKind, IssuingDistributionPoint, Reasons, ScopeFailure, ScopeOutcome};
+pub use target::{RevocationScheme, RevocationTarget, TargetKind};
 mod entry;
 pub use entry::EntryLookup;
 pub use entry::Reason;

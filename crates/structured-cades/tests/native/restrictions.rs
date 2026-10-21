@@ -4,21 +4,13 @@ use super::*;
 use p256::ecdsa::{Signature, signature::hazmat::PrehashSigner};
 use sha2::{Digest, Sha256};
 
-#[test]
-fn certificate_anchor_is_not_an_ess_path_restriction_member() {
-    // RFC5280 §6.1 keeps the anchor outside the prospective path. Two ESS
-    // identifiers activate the restriction, but an unrelated additional ID
-    // does not require the anchor to be named (RFC5035 §§3/5).
-    let root_key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
-    let key = SigningKey::from_bytes((&[2; 32]).into()).unwrap();
-    let root_bytes = certificate("Root", "Root", &root_key, &root_key, false);
-    let leaf_bytes = certificate("Signer", "Root", &key, &root_key, false);
+fn signer_with_restrictions(leaf_bytes: &[u8], key: &SigningKey) -> Vec<u8> {
     let ids = [
-        tlv(0x30, &tlv(4, &Sha256::digest(&leaf_bytes))),
+        tlv(0x30, &tlv(4, &Sha256::digest(leaf_bytes))),
         tlv(0x30, &tlv(4, &[9; 32])),
     ]
     .concat();
-    let mut attributes = vec![
+    let mut attributes = [
         attribute(oid::CONTENT_TYPE.as_bytes(), &tlv(6, oid::DATA.as_bytes())),
         attribute(
             oid::MESSAGE_DIGEST.as_bytes(),
@@ -35,7 +27,7 @@ fn certificate_anchor_is_not_an_ess_path_restriction_member() {
     let signature: Signature = key
         .sign_prehash(&Sha256::digest(tlv(0x31, &attrs)))
         .unwrap();
-    let encoded_signer = tlv(
+    tlv(
         0x30,
         &[
             vec![2, 1, 1],
@@ -46,7 +38,19 @@ fn certificate_anchor_is_not_an_ess_path_restriction_member() {
             tlv(4, signature.to_der().as_bytes()),
         ]
         .concat(),
-    );
+    )
+}
+
+#[test]
+fn certificate_anchor_is_not_an_ess_path_restriction_member() {
+    // RFC5280 §6.1 keeps the anchor outside the prospective path. Two ESS
+    // identifiers activate the restriction, but an unrelated additional ID
+    // does not require the anchor to be named (RFC5035 §§3/5).
+    let root_key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
+    let key = SigningKey::from_bytes((&[2; 32]).into()).unwrap();
+    let root_bytes = certificate("Root", "Root", &root_key, &root_key, false);
+    let leaf_bytes = certificate("Signer", "Root", &key, &root_key, false);
+    let encoded_signer = signer_with_restrictions(&leaf_bytes, &key);
     let bytes = message(
         oid::DATA.as_bytes(),
         Some(b"sample"),

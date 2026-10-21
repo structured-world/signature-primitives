@@ -104,19 +104,19 @@ impl<'a> Octets<'a> {
     fn read_tagged(
         parent: &Reader<'a>,
         element: &Element<'a>,
-        number: u32,
+        outer_number: u32,
         context: bool,
         field: &'static str,
     ) -> Result<Self> {
         let primitive = if context {
-            Tag::context(false, number)
+            Tag::context(false, outer_number)
         } else {
-            Tag::primitive(number)
+            Tag::primitive(outer_number)
         };
         let constructed = if context {
-            Tag::context(true, number)
+            Tag::context(true, outer_number)
         } else {
-            Tag::constructed(number)
+            Tag::constructed(outer_number)
         };
         if element.tag() == primitive {
             return Ok(Self {
@@ -165,6 +165,12 @@ impl<'a> Octets<'a> {
                 frames.pop();
                 continue;
             };
+            // Only the OUTER tag changes: X.690 §8.23.3 defines restricted
+            // strings as [UNIVERSAL x] IMPLICIT OCTET STRING. Its §8.23.5.4
+            // example encodes constructed VisibleString with child tag 04,
+            // not another VisibleString. IA5String follows the same rule:
+            // 36 03 04 01 61 is valid; 36 03 16 01 61 is not.
+            // https://www.itu.int/rec/T-REC-X.690-202102-I/en
             if child.tag() == Tag::primitive(universal::OCTET_STRING) {
                 length = length.checked_add(child.contents().len()).ok_or_else(|| {
                     Error::schema(ErrorCode::LengthOverflow, field, child.span().start)

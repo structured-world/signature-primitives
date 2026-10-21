@@ -6,6 +6,33 @@ use structured_asn1::{Encoding, Limits, Parser};
 use structured_cms::{ErrorCode, Octets};
 
 #[test]
+fn ia5_implicit_tag_changes_only_the_outer_encoding() {
+    // X.690 §8.23.3 and the §8.23.5.4 example require OCTET STRING
+    // children. A recursive IA5 tag must not become an accepted alternative.
+    let account = Memory::new(Arc::new(MemoryAccount::new(65536, 65536)));
+    let parser = Parser::ber(account.clone());
+    let valid = [0x36, 3, 4, 1, b'a'];
+    let mut reader = parser.read(&valid, 500).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let value = Octets::read_ia5(&reader, &element, "uri").unwrap();
+    assert_eq!(value.as_one(), Some(&b"a"[..]));
+    assert_eq!(value.pieces()[0].span().start, 504);
+    drop(value);
+    assert_eq!(account.used(), 0);
+    let invalid = [0x36, 3, 0x16, 1, b'a'];
+    let mut reader = parser.read(&invalid, 800).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let error = Octets::read_ia5(&reader, &element, "uri").unwrap_err();
+    assert_eq!(error.code(), ErrorCode::UnexpectedTag);
+    assert_eq!(error.offset(), 802);
+    assert_eq!(account.used(), 0);
+    let parser = Parser::der(account);
+    let mut reader = parser.read(&valid, 900).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    assert!(Octets::read_ia5(&reader, &element, "uri").is_err());
+}
+
+#[test]
 fn ia5_contents_preserve_borrowed_fragments_and_reject_non_ascii() {
     // Primitive input stays borrowed; the shared constructed base-string walk
     // keeps original OCTET fragment spans and frees its paid catalogue on drop.

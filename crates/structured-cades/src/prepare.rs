@@ -895,11 +895,25 @@ fn root_rules<'m, 'd, W: Work>(
             findings,
         )?;
     }
-    match structured_cms::binding::inspect(
+    binding_findings(
+        document,
         signer,
-        parent,
         structured_cms::binding::Scope::Content(document.message().content().kind()),
-    ) {
+        parent,
+        findings,
+    )?;
+    protected_rules(document, signer, profile, parent, findings)?;
+    unsigned_rules(document, signer, requested, parent, findings)
+}
+
+fn binding_findings<'m, 'd, 'a, W: Work>(
+    document: &Document<'m, 'd>,
+    signer: &SignerInfo<'a>,
+    scope: structured_cms::binding::Scope<'a>,
+    parent: &Reader<'a>,
+    findings: &mut OwnedVec<Finding<'m, 'd>, W>,
+) -> Result<()> {
+    match structured_cms::binding::inspect(signer, parent, scope) {
         Ok(_) => {}
         Err(error) if error.is_terminal() => return Err(Error::Cms(error)),
         Err(error) => finding(
@@ -916,8 +930,7 @@ fn root_rules<'m, 'd, W: Work>(
             findings,
         )?,
     }
-    protected_rules(document, signer, profile, parent, findings)?;
-    unsigned_rules(document, signer, requested, parent, findings)
+    Ok(())
 }
 
 fn protected_rules<'m, 'd, W: Work>(
@@ -1170,6 +1183,17 @@ fn read_counters<'m, 'd, W: Work>(
                 let profile =
                     structured_cms::cades::inspect_profile(child, Role::Countersignature, reader)?;
                 schema_findings(document, child, &profile, reader, findings)?;
+                // RFC5652 §11.4 gives counters their own protected-field
+                // rules. Inspect them before keys/math, using the same kernel
+                // as actual counter verification; preserve readable siblings.
+                // https://www.rfc-editor.org/rfc/rfc5652#section-11.4
+                binding_findings(
+                    document,
+                    child,
+                    structured_cms::binding::Scope::CounterSignature,
+                    reader,
+                    findings,
+                )?;
                 let properties = crate::properties::Properties::read(child, reader)?;
                 property_findings(document, &properties, reader, findings)?;
                 mechanism_findings(document, child, &profile, &properties, reader, findings)?;

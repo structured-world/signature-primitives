@@ -157,6 +157,75 @@ fn message(unsigned: &[Vec<u8>]) -> Vec<u8> {
     message_with(&[], unsigned)
 }
 
+#[test]
+fn counter_binding_syntax_is_inspected_at_every_preparation_depth() {
+    // RFC5652 §11.4 forbids content-type and requires message-digest when a
+    // counter has signed attributes. A later crypto check cannot repair the
+    // format result, and a bad child must not erase readable siblings.
+    for nested in [false, true] {
+        for mode in 0..6 {
+            let digest = attribute(oid::MESSAGE_DIGEST.as_bytes(), &[tlv(4, &[0; 32])]);
+            let signed = match mode {
+                0 => vec![attribute(
+                    oid::SIGNING_TIME.as_bytes(),
+                    &[tlv(23, b"260101000000Z")],
+                )],
+                1 => vec![
+                    digest,
+                    attribute(
+                        oid::CONTENT_TYPE.as_bytes(),
+                        &[tlv(6, oid::DATA.as_bytes())],
+                    ),
+                ],
+                2 => vec![attribute(oid::MESSAGE_DIGEST.as_bytes(), &[tlv(2, &[1])])],
+                3 => vec![digest.clone(), digest],
+                4 => vec![digest],
+                _ => vec![],
+            };
+            let child = signer_with(&signed, &[]);
+            let child = if nested {
+                signer(&[attribute(oid::COUNTERSIGNATURE.as_bytes(), &[child])])
+            } else {
+                child
+            };
+            let bytes = message(&[attribute(
+                oid::COUNTERSIGNATURE.as_bytes(),
+                &[child, signer(&[])],
+            )]);
+            let parser = Parser::ber(memory());
+            let data = SignedData::read(&parser, &bytes, 500).unwrap();
+            let parent = parser.read(&[], 0).unwrap();
+            let document = Document::new(&data, &parent).unwrap();
+            let prepared =
+                Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+            assert_eq!(prepared.counters().len(), if nested { 3 } else { 2 });
+            let affected = &prepared.counters()[usize::from(nested)];
+            assert!(affected.malformed().is_none());
+            let field = match mode {
+                1 => "signerInfo.signedAttrs.contentType",
+                3 => "signerInfo.signedAttrs",
+                _ => "signerInfo.signedAttrs.messageDigest",
+            };
+            let found = prepared.findings().iter().any(|finding| {
+                matches!(finding.rule, Rule::Schema { field: actual, .. } if actual == field)
+                    && finding.severity == Severity::Required
+                    && finding.location.node.span().start >= affected.node().span().start
+                    && finding.location.node.span().start <= affected.node().span().end()
+            });
+            assert_eq!(found, mode < 4, "nested={nested} mode={mode}");
+            if mode == 3 {
+                assert!(prepared.findings().iter().any(|finding| matches!(
+                    finding.rule,
+                    Rule::Schema {
+                        code: structured_cms::ErrorCode::DuplicateAttribute,
+                        field: "signerInfo.signedAttrs"
+                    }
+                )));
+            }
+        }
+    }
+}
+
 fn message_with(signed: &[Vec<u8>], unsigned: &[Vec<u8>]) -> Vec<u8> {
     let mut body = vec![2, 1, 3, 0x31, 0];
     body.extend(tlv(0x30, &tlv(6, oid::DATA.as_bytes())));

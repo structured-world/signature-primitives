@@ -349,11 +349,11 @@ pub(crate) fn restrictions<'a, P: AsnDigest<'a>>(
                 at: set.element().span().start,
             }));
         };
-        for certificate in authorities
-            .iter()
-            .map(|member| member.certificate())
-            .chain(path.anchor().certificate())
-        {
+        // RFC5280 §6.1 excludes even a certificate-backed trust anchor from
+        // the prospective path. Its separate material-presence obligation
+        // does not make it an ESS-restricted path member.
+        // https://www.rfc-editor.org/rfc/rfc5280#section-6.1
+        for certificate in authorities.iter().map(|member| member.certificate()) {
             let answers = set
                 .bind_validation_certificate(provider, certificate, parent)
                 .map_err(BindError::Ess)?;

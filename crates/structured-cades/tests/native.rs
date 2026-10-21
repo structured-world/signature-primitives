@@ -4,6 +4,8 @@
 mod credential_material;
 #[path = "native/legacy.rs"]
 mod legacy;
+#[path = "native/restrictions.rs"]
+mod restrictions;
 mod support;
 use p256::ecdsa::SigningKey;
 use std::{cell::Cell, convert::Infallible};

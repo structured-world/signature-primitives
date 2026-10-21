@@ -266,7 +266,7 @@ fn ber_wrapper(original: &[u8], indefinite: bool) -> Vec<u8> {
 fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_accuracy() {
     // This is real ECDSA/SHA-256 on both CMS signatures and certificates.
     // A valid TSA signature alone cannot establish input or full time bounds.
-    for mode in 0..14 {
+    for mode in 0..16 {
         let root_key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
         let signer_key = SigningKey::from_bytes((&[2; 32]).into()).unwrap();
         let tsa_key = SigningKey::from_bytes((&[3; 32]).into()).unwrap();
@@ -317,7 +317,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             unsigned[0] = ber_wrapper(&unsigned[0], mode == 9);
         }
 
-        if mode >= 11 {
+        if (11..=13).contains(&mode) {
             let references = reference_material(&root_bytes, &crls[0]);
             let suffix = if mode == 11 { 25 } else { 26 };
             let mut input = Vec::new();
@@ -343,8 +343,14 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 &timestamp,
             ));
         }
-        let certs = [root_bytes.clone(), leaf_bytes.clone(), tsa_bytes.clone()];
-        if matches!(mode, 4 | 6..=8) {
+        // B-LT requires the TSA certificate in the root certificate set.
+        // Archive augmentation may reuse its actual copy in the timestamp.
+        let certs = if mode >= 14 {
+            vec![root_bytes.clone(), leaf_bytes.clone()]
+        } else {
+            vec![root_bytes.clone(), leaf_bytes.clone(), tsa_bytes.clone()]
+        };
+        if matches!(mode, 4 | 6..=8 | 15) {
             let before_signer = signer(
                 Some(oid::DATA.as_bytes()),
                 b"sample",
@@ -392,11 +398,19 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             .iter()
             .find(|value| value.as_bytes() == leaf_bytes)
             .unwrap();
-        let tsa = message
-            .certificates()
-            .iter()
-            .find(|value| value.as_bytes() == tsa_bytes)
-            .unwrap();
+        let external_tsa = if mode >= 14 {
+            Some(structured_pkix::Certificate::read(&parser, &tsa_bytes, 0).unwrap())
+        } else {
+            None
+        };
+        let tsa = match &external_tsa {
+            Some(tsa) => tsa,
+            None => message
+                .certificates()
+                .iter()
+                .find(|value| value.as_bytes() == tsa_bytes)
+                .unwrap(),
+        };
         let oracle = Oracle::new();
         let interval = Interval::between(
             leaf.tbs().validity().not_before().seconds(),
@@ -447,8 +461,8 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         .unwrap();
         let document = Document::new(&message, &parent).unwrap();
         let level = match mode {
-            3 => Level::LongTerm,
-            4 | 6..=8 => Level::Archival,
+            3 | 14 => Level::LongTerm,
+            4 | 6..=8 | 15 => Level::Archival,
             _ => Level::Timestamped,
         };
         let started = std::time::Instant::now();
@@ -670,7 +684,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         } else {
             None
         };
-        let archive = if matches!(mode, 4 | 6..=8) {
+        let archive = if matches!(mode, 4 | 6..=8 | 15) {
             let ordinal = prepared
                 .timestamps()
                 .iter()
@@ -746,7 +760,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             };
             let timed = baseline::timestamped(&basic, &paths, &query).unwrap();
             assert!(timed.all_static_time_requirements_met());
-            if mode >= 11 {
+            if (11..=13).contains(&mode) {
                 // AnnexA reference timestamps are advisory at B-T, independently
                 // of their unavailable historical whole-actor proof. A later
                 // actual old archive must still activate preservation blocking.
@@ -770,7 +784,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 &paths,
                 &query,
             );
-            if mode >= 11 {
+            if (11..=13).contains(&mode) {
                 assert!(
                     matches!(
                         required,
@@ -883,7 +897,23 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 let index = pool.index(&query).unwrap();
                 let x509 = material::check_participants(&prepared, &pool, &inputs, &index, &query)
                     .unwrap();
-                assert!(x509.all_x509_requirements_met(), "{:?}", x509.findings());
+                assert_eq!(
+                    x509.all_x509_requirements_met(),
+                    mode != 14,
+                    "{:?}",
+                    x509.findings()
+                );
+                if mode == 14 {
+                    assert!(
+                        x509.presence().all_present(),
+                        "the token copy is present but misplaced for B-LT"
+                    );
+                    assert!(
+                        x509.findings()
+                            .iter()
+                            .any(|finding| matches!(finding, material::Finding::Placement { .. }))
+                    );
+                }
                 let whole_credentials = material::credentials::check(
                     &credentials,
                     basic.counter_paths(),
@@ -896,7 +926,13 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 .unwrap();
                 assert!(whole_credentials.all_requirements_met());
                 let long = baseline::long_term(&timed, &x509, &whole_credentials, &query).unwrap();
-                assert!(long.all_material_requirements_met());
+                assert_eq!(long.all_material_requirements_met(), mode != 14);
+                if mode == 14 {
+                    let assessment =
+                        baseline::assess(baseline::Evidence::LongTerm(&long), &parent).unwrap();
+                    assert!(!assessment.all_requirements_met());
+                    continue;
+                }
                 if let Some(archive) = &archive {
                     let earlier = archive.requirements(&prepared, &parent).unwrap();
                     assert_eq!(

@@ -64,6 +64,8 @@ all resulting certificates, complete/delta CRLs and whole OCSP envelopes using
 the existing exact-artifact index. The credential format's material visitor
 operates on its retained authentication evidence, without replaying it; empty
 X.509 paths or certificate-free authentication cannot waive other dependencies.
+For B-LT, the validation certificates must occur in the root certificate set;
+archive augmentation can reuse actual token material under its separate rule.
 `baseline::long_term` requires both material reports from the same receipts.
 
 For each original root `ATSv3`, `ArchiveChecked::requirements` derives preceding

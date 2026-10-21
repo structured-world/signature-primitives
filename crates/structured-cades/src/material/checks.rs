@@ -102,8 +102,9 @@ pub enum CheckError {
 /// Check ALL actual validation artifacts using the existing LTV role closure,
 /// exact-artifact index and incorporation kernel. Root/counter/credential/TSA
 /// and reached status-authority artifacts cannot be replaced with an arbitrary
-/// nonempty bag. Existing timestamp material need not be duplicated (§5.5.3
-/// Note5); CRLs and whole OCSP values still use their actual revocation choices
+/// nonempty bag. B-LT requires certificates in the root certificate set
+/// (§6.3(d)); archive augmentation may reuse existing timestamp material
+/// (§5.5.3 Note5). CRLs and whole OCSP values use their actual revocation choices
 /// (§§5.4.2/6.3(q,r)). No parser, math, path or status evaluation is replayed.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf>
 pub fn check_participants<'cl, 'r, 'v, 'c, 'd, 'm, Q, W>(
@@ -138,6 +139,7 @@ where
     let presence =
         material::incorporation(&artifacts, index, query).map_err(CheckError::Presence)?;
     let mut findings = query.execution().vector();
+    let archive_augmentation = prepared.requested() == crate::Level::Archival;
     let resource = |cause| {
         CheckError::Processing(Error::resource(
             cause,
@@ -155,10 +157,13 @@ where
             present = true;
             allowed |= match artifact {
                 ArtifactRef::Certificate(_) => {
-                    matches!(
-                        copy.placement(),
-                        Placement::RootCertificate(_) | Placement::TokenCertificate { .. }
-                    ) || copy.embedded_certificate().is_some()
+                    // EN319122-1 §6.3(d) names SignedData.certificates for
+                    // B-LT. §5.5.3 Note5's reuse of token validation data is
+                    // specific to archive augmentation, not a B-LT waiver.
+                    matches!(copy.placement(), Placement::RootCertificate(_))
+                        || (archive_augmentation
+                            && (matches!(copy.placement(), Placement::TokenCertificate { .. })
+                                || copy.embedded_certificate().is_some()))
                 }
                 ArtifactRef::Crl(_) | ArtifactRef::Ocsp(_) => matches!(
                     copy.placement(),

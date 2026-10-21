@@ -1386,3 +1386,71 @@ fn legacy_other_cert_id_reports_its_original_issuer_hint_on_roots_and_counters()
         }
     }
 }
+
+#[test]
+fn legacy_reference_times_preserve_the_producing_ber_der_boundary() {
+    // AnnexA references are BER-capable: X.690 §§8.23/8.25 permit useful
+    // time segmentation into OCTET STRING fragments; §10.2 forbids it in DER.
+    // Exercise the complete public CRL/OCSP path, not only a tag predicate.
+    for number in [23, 24] {
+        for constructed in [false, true] {
+            for der in [false, true] {
+                let text = if number == 23 {
+                    b"260101000000Z".as_slice()
+                } else {
+                    b"20260101000000Z".as_slice()
+                };
+                let time = if constructed {
+                    tlv(
+                        number | 32,
+                        &[tlv(4, &text[..6]), tlv(4, &text[6..])].concat(),
+                    )
+                } else {
+                    tlv(number, text)
+                };
+                let value = if number == 23 {
+                    let identifier = tlv(0x30, &[tlv(0x30, &[]), time].concat());
+                    let item = tlv(0x30, &[tlv(4, &[0; 20]), identifier].concat());
+                    tlv(0x30, &tlv(0x30, &tlv(0xa0, &tlv(0x30, &tlv(0x30, &item)))))
+                } else {
+                    let identifier = tlv(0x30, &[tlv(0xa2, &tlv(4, &[0; 20])), time].concat());
+                    let item = tlv(0x30, &identifier);
+                    tlv(0x30, &tlv(0x30, &tlv(0xa1, &tlv(0x30, &tlv(0x30, &item)))))
+                };
+                let kind =
+                    structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 22]);
+                let bytes = message(&[attribute(kind.as_bytes(), &[value])]);
+                let parser = if der {
+                    Parser::der(memory())
+                } else {
+                    Parser::ber(memory())
+                };
+                let read = SignedData::read(&parser, &bytes, 500);
+                if constructed && der {
+                    let cause = read.unwrap_err();
+                    assert_eq!(
+                        cause.code(),
+                        structured_cms::ErrorCode::Pkix(structured_pkix::ErrorCode::Encoding(
+                            structured_asn1::ErrorCode::UnexpectedTag
+                        ))
+                    );
+                    continue;
+                }
+                let data = read.unwrap();
+                let parent = parser.read(&[], 0).unwrap();
+                let document = Document::new(&data, &parent).unwrap();
+                let prepared =
+                    Preparation::read(&document, &data.signers()[0], Level::Basic, &parent)
+                        .unwrap();
+                assert!(
+                    !prepared
+                        .properties()
+                        .faults()
+                        .iter()
+                        .any(|fault| fault.attribute == kind),
+                    "number={number} constructed={constructed} der={der}"
+                );
+            }
+        }
+    }
+}

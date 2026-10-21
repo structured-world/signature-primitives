@@ -315,6 +315,11 @@ fn time_value(parent: &Reader<'_>, value: &Element<'_>, number: u32) -> Result<(
     }
     // A reference uses its declared ASN.1 time under the producing BER/DER
     // rules. Embedded certificate/CRL/OCSP models retain their own DER profile.
+    // Despite its module name, conforms follows parent.encoding(); it does
+    // NOT reread under DER. BER useful times inherit VisibleString's
+    // constructed OCTET STRING fragments (X.690 §§8.23, 8.25), which DER
+    // alone forbids (§10.2). Forcing DER here would reject valid AnnexA data.
+    // https://www.itu.int/rec/T-REC-X.690-202102-I/en
     structured_pkix::der::conforms(parent, value, FIELD).map_err(Error::Pkix)
 }
 

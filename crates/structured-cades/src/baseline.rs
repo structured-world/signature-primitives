@@ -189,13 +189,20 @@ pub fn assess<'a, 'm, 'd, E>(
         .map_err(|_| LevelError::Foreign)?;
     let work = operation.execution();
     work.charge_work(1).map_err(LevelError::Resource)?;
-    if requested >= Level::Timestamped
-        && let Some(required) = prepared.preservation().first()
-    {
-        return Err(LevelError::UnavailablePreservation {
-            property: required.property,
-            kind: required.kind,
-        });
+    if requested >= Level::Timestamped {
+        for required in prepared.preservation() {
+            work.charge_work(1).map_err(LevelError::Resource)?;
+            // §6.3 table1 permits AnnexA reference timestamps at B-T.
+            // Only old archive/PoE mechanisms select §5.5.3's preservation
+            // strategy. Retaining their full actor obligations is separate.
+            // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+            if !required.kind.is_reference_timestamp() {
+                return Err(LevelError::UnavailablePreservation {
+                    property: required.property,
+                    kind: required.kind,
+                });
+            }
+        }
     }
     let met = match &evidence {
         Evidence::Basic(basic) => basic.all_basic_requirements_met(),

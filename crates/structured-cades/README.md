@@ -79,13 +79,15 @@ algorithm longevity and historical trust decisions.
 ## Historical and open-format obligations
 
 `Preparation::preservation` retains older archive/long-term-validation fields
-and reference timestamps
-from every parallel root and selected counter. These are separate historical
+and reference timestamps from every parallel root and selected counter. These are separate historical
 mechanisms, potentially including RFC 4998 evidence records; they are not
 silently parsed as `ATSv3`. Without their qualified proof/authority processing,
-complete participant and timestamped-or-higher assessment returns an explicit
-unavailable-preservation result. A valid modern archive cannot erase that
-obligation or assert that an older protected container was never changed.
+complete participant assessment returns an explicit unavailable-preservation
+result. Older archive/long-term-validation mechanisms also block a positive
+timestamped-or-higher baseline assessment. Reference timestamps remain advisory
+at B-T and do not activate that archive-preservation blocker. A valid modern
+archive cannot erase an older archive obligation or assert that an older
+protected container was never changed.
 
 Optional policy qualifiers and credential formats retain their original open
 values for their actual owners. Policy-store linkage requires a protected,

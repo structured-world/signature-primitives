@@ -189,6 +189,46 @@ fn archive_token(
     )
 }
 
+// Trusted DER fixture writers provide complete certificate/CRL references.
+fn reference_material(certificate: &[u8], crl: &[u8]) -> [Vec<u8>; 2] {
+    let hash = |value: &[u8]| {
+        tlv(
+            0x30,
+            &[
+                tlv(0x30, &tlv(6, oid::SHA256.as_bytes())),
+                tlv(4, &Sha256::digest(value)),
+            ]
+            .concat(),
+        )
+    };
+    [
+        attribute(
+            &[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 21],
+            &tlv(0x30, &tlv(0x30, &hash(certificate))),
+        ),
+        attribute(
+            &[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 22],
+            &tlv(
+                0x30,
+                &tlv(
+                    0x30,
+                    &tlv(0xa0, &tlv(0x30, &tlv(0x30, &tlv(0x30, &hash(crl))))),
+                ),
+            ),
+        ),
+    ]
+}
+
+// The trusted fixture's own definite header is excluded by AnnexA.1.5 inputs.
+fn attribute_body(original: &[u8]) -> &[u8] {
+    let width = if original[1] < 128 {
+        0
+    } else {
+        usize::from(original[1] & 0x7f)
+    };
+    &original[2 + width..]
+}
+
 // Change only the outer Attribute header; all original token bytes stay exact.
 fn ber_wrapper(original: &[u8], indefinite: bool) -> Vec<u8> {
     let width = if original[1] < 128 {
@@ -226,7 +266,7 @@ fn ber_wrapper(original: &[u8], indefinite: bool) -> Vec<u8> {
 fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_accuracy() {
     // This is real ECDSA/SHA-256 on both CMS signatures and certificates.
     // A valid TSA signature alone cannot establish input or full time bounds.
-    for mode in 0..11 {
+    for mode in 0..14 {
         let root_key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
         let signer_key = SigningKey::from_bytes((&[2; 32]).into()).unwrap();
         let tsa_key = SigningKey::from_bytes((&[3; 32]).into()).unwrap();
@@ -271,12 +311,31 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         } else {
             token(&covered, &tsa_bytes, &root_bytes, &tsa_key, mode != 2, None)
         };
+        let crls = [crl(&root_key)];
         let mut unsigned = vec![attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &timestamp)];
-        if mode >= 9 {
+        if matches!(mode, 9 | 10) {
             unsigned[0] = ber_wrapper(&unsigned[0], mode == 9);
         }
 
-        if mode == 6 {
+        if mode >= 11 {
+            let references = reference_material(&root_bytes, &crls[0]);
+            let suffix = if mode == 11 { 25 } else { 26 };
+            let mut input = Vec::new();
+            if suffix == 25 {
+                input.extend(&covered);
+                input.extend(attribute_body(&unsigned[0]));
+            }
+            for reference in &references {
+                input.extend(attribute_body(reference));
+            }
+            unsigned.extend(references);
+            let stamped = token(&input, &tsa_bytes, &root_bytes, &tsa_key, true, None);
+            unsigned.push(attribute(
+                &[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, suffix],
+                &stamped,
+            ));
+        }
+        if mode == 6 || mode == 13 {
             // EN319122-1 §5.5.3: a new valid ATSv3 cannot erase an older
             // original preservation obligation or manufacture its actors.
             unsigned.push(attribute(
@@ -285,7 +344,6 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             ));
         }
         let certs = [root_bytes.clone(), leaf_bytes.clone(), tsa_bytes.clone()];
-        let crls = [crl(&root_key)];
         if matches!(mode, 4 | 6..=8) {
             let before_signer = signer(
                 Some(oid::DATA.as_bytes()),
@@ -397,7 +455,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         let prepared = Preparation::read(&document, selected, level, &parent).unwrap();
         assert_eq!(
             prepared.all_format_requirements_met(),
-            mode < 9,
+            !matches!(mode, 9 | 10),
             "{:?}",
             prepared.findings()
         );
@@ -412,7 +470,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         )
         .unwrap();
         assert!(binding.is_bound());
-        if mode >= 9 {
+        if matches!(mode, 9 | 10) {
             // Table1(l) requires DER for baseline conformance. This is NOT a
             // generic CMS decoding or signature-math prohibition: the real
             // token, root signature and imprint must still independently check.
@@ -621,6 +679,23 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             };
             let timed = baseline::timestamped(&basic, &paths, &query).unwrap();
             assert!(timed.all_static_time_requirements_met());
+            if mode >= 11 {
+                // AnnexA reference timestamps are advisory at B-T, independently
+                // of their unavailable historical whole-actor proof. A later
+                // actual old archive must still activate preservation blocking.
+                let assessed = baseline::assess(baseline::Evidence::timestamped(&timed), &parent);
+                if mode == 13 {
+                    assert!(matches!(
+                        assessed,
+                        Err(baseline::LevelError::UnavailablePreservation {
+                            kind: structured_cades::preservation::Kind::ArchiveV2,
+                            ..
+                        })
+                    ));
+                } else {
+                    assert!(assessed.unwrap().all_requirements_met());
+                }
+            }
             let required = structured_cades::participants::participants(
                 basic.binding(),
                 basic.counter_paths(),
@@ -628,6 +703,16 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 &paths,
                 &query,
             );
+            if mode >= 11 {
+                assert!(
+                    matches!(
+                        required,
+                        Err(structured_cades::participants::Error::Preservation { .. })
+                    ),
+                    "B-T cannot manufacture a complete historical TSA census"
+                );
+                continue;
+            }
             if mode == 6 {
                 assert!(
                     matches!(

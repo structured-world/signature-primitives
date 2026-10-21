@@ -13,13 +13,17 @@ use crate::attribute::Attribute;
 use crate::signer::required;
 use crate::{Error, ErrorCode, Result};
 use structured_asn1::memory::{OwnedVec, SortError, Work};
-use structured_asn1::{BitString, Element, Integer, Oid, Reader, Tag, universal};
+use structured_asn1::{
+    BitString, Element, Integer, Oid, Parser, Reader, ScopedReader, Tag, universal,
+};
 use structured_pkix::general_name::{self, GeneralName};
 use structured_pkix::signature::SignatureValue;
 use structured_pkix::{AlgorithmIdentifier, Extensions, Time};
 
 const FIELD: &str = "attributeCertificate";
 const INFO: &str = "attributeCertificate.acinfo";
+
+pub mod target;
 fn sequence() -> Tag {
     Tag::constructed(universal::SEQUENCE)
 }
@@ -119,6 +123,7 @@ pub struct Information<'a> {
 /// A v2 attribute certificate's structure and exact original signature inputs.
 #[derive(Debug)]
 pub struct AttributeCertificate<'a> {
+    parser: &'a Parser,
     information: Information<'a>,
     algorithm: AlgorithmIdentifier<'a>,
     signature: SignatureValue<'a>,
@@ -175,6 +180,7 @@ impl<'a> AttributeCertificate<'a> {
             .map_err(Error::pkix)?;
         end(&inside, FIELD)?;
         Ok(Self {
+            parser: parent.parser(),
             information,
             algorithm,
             signature,
@@ -187,6 +193,28 @@ impl<'a> AttributeCertificate<'a> {
     #[must_use]
     pub fn information(&self) -> &Information<'a> {
         &self.information
+    }
+
+    /// Decodes the optional original recipient-targeting extension under the
+    /// current operation. `None` means no targeting restriction (RFC5755 §4.3.2);
+    /// a present empty set is returned as such and matches no recipient.
+    /// Readability alone does not authenticate the AC or its asserted targets.
+    pub fn target_information<W: Work>(
+        &self,
+        work: &W,
+    ) -> Result<Option<target::TargetInformation<'a>>> {
+        let execution = work.execution_for(self.parser);
+        execution
+            .charge_work(1)
+            .map_err(|e| Error::resource(e, target::FIELD, self.element.span().start))?;
+        let Some(extensions) = &self.information.extensions else {
+            return Ok(None);
+        };
+        extensions
+            .get(target::IDENTIFIER, &execution)
+            .map_err(Error::pkix)?
+            .map(|extension| target::TargetInformation::read(extension, &execution))
+            .transpose()
     }
 
     /// Exact whole original acinfo TLV, not a re-encoding of the parsed fields.
@@ -357,7 +385,7 @@ fn v2_form<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<Issuer<'a>>
 }
 
 fn issuer_serial<'a>(
-    parent: &Reader<'a>,
+    parent: &ScopedReader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<IssuerSerial<'a>> {
@@ -381,7 +409,7 @@ fn issuer_serial<'a>(
 }
 
 fn object_digest<'a>(
-    parent: &Reader<'a>,
+    parent: &ScopedReader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<ObjectDigestInfo<'a>> {
@@ -438,7 +466,7 @@ fn object_digest<'a>(
 }
 
 fn names<'a>(
-    parent: &Reader<'a>,
+    parent: &ScopedReader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<OwnedVec<GeneralName<'a>>> {
@@ -532,7 +560,7 @@ fn attributes<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<OwnedVec
     Ok(attributes.into_owned())
 }
 
-fn integer<'a>(parent: &mut Reader<'a>, field: &'static str) -> Result<Integer<'a>> {
+fn integer<'a>(parent: &mut ScopedReader<'a, '_>, field: &'static str) -> Result<Integer<'a>> {
     let value = parent
         .expect(Tag::primitive(universal::INTEGER))
         .map_err(|e| Error::encoding(e, field))?;
@@ -549,7 +577,7 @@ fn time(parent: &mut Reader<'_>, field: &'static str) -> Result<Time> {
 }
 
 fn algorithm<'a>(
-    parent: &Reader<'a>,
+    parent: &ScopedReader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<AlgorithmIdentifier<'a>> {
@@ -557,7 +585,7 @@ fn algorithm<'a>(
 }
 
 fn optional<'a>(
-    parent: &mut Reader<'a>,
+    parent: &mut ScopedReader<'a, '_>,
     next: &mut Option<Element<'a>>,
     expected: Tag,
     field: &'static str,
@@ -574,7 +602,7 @@ fn optional<'a>(
 }
 
 fn optional_bits<'a>(
-    parent: &mut Reader<'a>,
+    parent: &mut ScopedReader<'a, '_>,
     next: &mut Option<Element<'a>>,
     field: &'static str,
 ) -> Result<Option<BitString<'a>>> {
@@ -606,7 +634,7 @@ fn tag(element: &Element<'_>, expected: Tag, field: &'static str) -> Result<()> 
     }
 }
 
-fn end(parent: &Reader<'_>, field: &'static str) -> Result<()> {
+fn end(parent: &ScopedReader<'_, '_>, field: &'static str) -> Result<()> {
     if parent.is_empty() {
         Ok(())
     } else {

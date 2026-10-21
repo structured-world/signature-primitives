@@ -3,7 +3,7 @@
 use crate::attribute::{Attributes, Placement};
 use crate::{Error, ErrorCode, Octets, Result};
 use structured_asn1::memory::{OwnedVec, Work};
-use structured_asn1::{Element, Encoding, Integer, Reader, Span, Tag, universal};
+use structured_asn1::{Element, Encoding, Integer, Reader, ScopedReader, Span, Tag, universal};
 use structured_pkix::Name;
 use structured_pkix::algorithm::AlgorithmReading;
 
@@ -450,7 +450,10 @@ fn field_range<'a>(signer: &Element<'a>, first: &Element<'a>, last: &Element<'a>
     &bytes[start..end]
 }
 
-pub(crate) fn required<'a>(reader: &mut Reader<'a>, field: &'static str) -> Result<Element<'a>> {
+pub(crate) fn required<'a>(
+    reader: &mut ScopedReader<'a, '_>,
+    field: &'static str,
+) -> Result<Element<'a>> {
     reader
         .next_element()
         .map_err(|error| Error::encoding(error, field))?

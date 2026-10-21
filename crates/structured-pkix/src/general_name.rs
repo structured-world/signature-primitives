@@ -116,7 +116,19 @@ pub fn matches(
     equality::matches(left, right, &parent.execution(), Some(parent), at, field)
 }
 
-pub(crate) fn matches_at(
+/// Compares successfully decoded retained names using the current operation.
+///
+/// This is the same semantic core as [`matches()`], without requiring a cursor
+/// for metadata that has already been decoded. `execution` must carry the
+/// producing source admission when used in a deferred document query (for
+/// example [`Work::execution_for`]). Directory names also retain their own
+/// normalization provenance. `at` and `field` locate refusal in the caller's
+/// source; no original bytes are rewritten. Opaque Other/X.400/EDI values have
+/// encoded identity only, as documented on [`GeneralName::matches`].
+///
+/// # Errors
+/// Resource and normalization failures remain errors, never `Ok(false)`.
+pub fn matches_at(
     left: &GeneralName<'_>,
     right: &GeneralName<'_>,
     execution: &impl structured_asn1::memory::Work,

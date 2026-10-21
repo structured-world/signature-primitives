@@ -83,49 +83,58 @@ impl<'a> TargetInformation<'a> {
     /// Catalogues and nested Name storage obey source and current work/capacity
     /// admission; no bytes are joined, retagged or re-encoded.
     pub fn read<W: Work>(extension: &Extension<'a>, work: &W) -> Result<Self> {
+        Self::read_as(extension, work, IDENTIFIER, FIELD)
+    }
+
+    pub(super) fn read_as<W: Work>(
+        extension: &Extension<'a>,
+        work: &W,
+        identifier: Oid<'_>,
+        field: &'static str,
+    ) -> Result<Self> {
         let execution = work.execution_for(extension.parser());
         execution
-            .charge_work(IDENTIFIER.as_bytes().len() as u64 + 1)
-            .map_err(|e| Error::resource(e, FIELD, extension.span().start))?;
-        if extension.kind() != IDENTIFIER {
+            .charge_work(identifier.as_bytes().len() as u64 + 1)
+            .map_err(|e| Error::resource(e, field, extension.span().start))?;
+        if extension.kind() != identifier {
             return Err(Error::schema(
                 ErrorCode::UnexpectedContentType,
-                FIELD,
+                field,
                 extension.span().start,
             ));
         }
         let mut reader = extension
             .reader_scoped(&execution)
-            .map_err(|e| Error::encoding(e, FIELD))?;
-        let element = required(&mut reader, FIELD)?;
-        tag(&element, sequence(), FIELD)?;
-        end(&reader, FIELD)?;
+            .map_err(|e| Error::encoding(e, field))?;
+        let element = required(&mut reader, field)?;
+        tag(&element, sequence(), field)?;
+        end(&reader, field)?;
         let mut inside = reader
             .enter(&element)
-            .map_err(|e| Error::encoding(e, FIELD))?;
+            .map_err(|e| Error::encoding(e, field))?;
         let mut groups = execution.vector();
         let mut targets = execution.vector();
         let mut certificates = execution.vector();
         while let Some(group) = inside
             .next_element()
-            .map_err(|e| Error::encoding(e, FIELD))?
+            .map_err(|e| Error::encoding(e, field))?
         {
-            tag(&group, sequence(), FIELD)?;
+            tag(&group, sequence(), field)?;
             groups
                 .try_reserve(1)
-                .map_err(|e| Error::resource(e, FIELD, group.span().start))?;
+                .map_err(|e| Error::resource(e, field, group.span().start))?;
             let start = targets.len();
             let mut entries = inside
                 .enter(&group)
-                .map_err(|e| Error::encoding(e, FIELD))?;
+                .map_err(|e| Error::encoding(e, field))?;
             while let Some(entry) = entries
                 .next_element()
-                .map_err(|e| Error::encoding(e, FIELD))?
+                .map_err(|e| Error::encoding(e, field))?
             {
                 let at = entry.span().start;
                 targets
                     .try_reserve(1)
-                    .map_err(|e| Error::resource(e, FIELD, at))?;
+                    .map_err(|e| Error::resource(e, field, at))?;
                 let value = if entry.tag() == Tag::context(true, 0)
                     || entry.tag() == Tag::context(true, 1)
                 {
@@ -133,11 +142,11 @@ impl<'a> TargetInformation<'a> {
                     // its selected name tag remains inside an explicit wrapper.
                     let mut name = entries
                         .enter(&entry)
-                        .map_err(|e| Error::encoding(e, FIELD))?;
-                    let encoded = required(&mut name, FIELD)?;
+                        .map_err(|e| Error::encoding(e, field))?;
+                    let encoded = required(&mut name, field)?;
                     let decoded =
-                        general_name::read(&name, &encoded, FIELD).map_err(Error::pkix)?;
-                    end(&name, FIELD)?;
+                        general_name::read(&name, &encoded, field).map_err(Error::pkix)?;
+                    end(&name, field)?;
                     if entry.tag() == Tag::context(true, 0) {
                         Value::Name(decoded)
                     } else {
@@ -146,15 +155,15 @@ impl<'a> TargetInformation<'a> {
                 } else if entry.tag() == Tag::context(true, 2) {
                     certificates
                         .try_reserve(1)
-                        .map_err(|e| Error::resource(e, FIELD, at))?;
-                    let decoded = certificate(&entries, &entry, targets.len())?;
+                        .map_err(|e| Error::resource(e, field, at))?;
+                    let decoded = certificate(&entries, &entry, targets.len(), field)?;
                     let index = certificates.len();
                     certificates
                         .try_push(decoded)
-                        .map_err(|e| Error::resource(e, FIELD, at))?;
+                        .map_err(|e| Error::resource(e, field, at))?;
                     Value::Certificate(index)
                 } else {
-                    return Err(Error::schema(ErrorCode::UnexpectedTag, FIELD, at));
+                    return Err(Error::schema(ErrorCode::UnexpectedTag, field, at));
                 };
                 targets
                     .try_push(Target {
@@ -162,14 +171,14 @@ impl<'a> TargetInformation<'a> {
                         group: groups.len(),
                         value,
                     })
-                    .map_err(|e| Error::resource(e, FIELD, at))?;
+                    .map_err(|e| Error::resource(e, field, at))?;
             }
             groups
                 .try_push(Group {
                     element: group,
                     targets: start..targets.len(),
                 })
-                .map_err(|e| Error::resource(e, FIELD, group.span().start))?;
+                .map_err(|e| Error::resource(e, field, group.span().start))?;
         }
         Ok(Self {
             parser: extension.parser(),
@@ -250,36 +259,10 @@ impl<'a> TargetInformation<'a> {
         }
         let mut unknown = false;
         for (index, target) in self.targets.iter().enumerate() {
-            let at = target.element.span().start;
-            pay(at)?;
-            match &target.value {
-                Value::Name(name) => {
-                    if opaque(name) {
-                        unknown = true;
-                        continue;
-                    }
-                    for recipient in recipients {
-                        pay(at)?;
-                        if general_name::matches_at(name, recipient, &execution, at, FIELD)
-                            .map_err(|e| CheckError::Processing(Error::pkix(e)))?
-                        {
-                            return Ok(Decision::Matches { target: index });
-                        }
-                    }
-                }
-                Value::Group(name) => {
-                    match membership(name, &execution).map_err(|source| CheckError::Callback {
-                        target: target.element.span(),
-                        source,
-                    })? {
-                        Membership::Member => return Ok(Decision::Matches { target: index }),
-                        Membership::NotMember => {}
-                        Membership::Unknown => unknown = true,
-                    }
-                }
-                // All certificate alternatives were indexed during the complete
-                // read and rejected above, before any successful short circuit.
-                Value::Certificate(_) => unreachable!("certificate preflight"),
+            match matches_target(target, recipients, &execution, FIELD, &mut membership)? {
+                Membership::Member => return Ok(Decision::Matches { target: index }),
+                Membership::NotMember => {}
+                Membership::Unknown => unknown = true,
             }
         }
         Ok(if unknown {
@@ -290,47 +273,87 @@ impl<'a> TargetInformation<'a> {
     }
 }
 
-fn opaque(name: &GeneralName<'_>) -> bool {
+pub(super) fn opaque(name: &GeneralName<'_>) -> bool {
     matches!(
         name,
         GeneralName::Other { .. } | GeneralName::X400(_) | GeneralName::EdiParty(_)
     )
 }
 
+// Recipient targeting and proxy-set matching differ in their quantifiers,
+// not the meaning or funding of one target. Keep that identity kernel shared.
+pub(super) fn matches_target<'a, E>(
+    target: &Target<'a>,
+    recipients: &[GeneralName<'_>],
+    execution: &Execution<'_>,
+    field: &'static str,
+    membership: &mut impl FnMut(&GeneralName<'a>, &Execution<'_>) -> core::result::Result<Membership, E>,
+) -> core::result::Result<Membership, CheckError<E>> {
+    let at = target.element.span().start;
+    let pay = || {
+        execution
+            .charge_work(1)
+            .map_err(|e| CheckError::Processing(Error::resource(e, field, at)))
+    };
+    pay()?;
+    match &target.value {
+        Value::Name(name) => {
+            if opaque(name) {
+                return Ok(Membership::Unknown);
+            }
+            for recipient in recipients {
+                pay()?;
+                if general_name::matches_at(name, recipient, execution, at, field)
+                    .map_err(|e| CheckError::Processing(Error::pkix(e)))?
+                {
+                    return Ok(Membership::Member);
+                }
+            }
+            Ok(Membership::NotMember)
+        }
+        Value::Group(name) => membership(name, execution).map_err(|source| CheckError::Callback {
+            target: target.element.span(),
+            source,
+        }),
+        Value::Certificate(_) => unreachable!("complete certificate preflight"),
+    }
+}
+
 fn certificate<'a>(
     parent: &ScopedReader<'a, '_>,
     element: &Element<'a>,
     target: usize,
+    field: &'static str,
 ) -> Result<TargetCertificate<'a>> {
     let mut inside = parent
         .enter(element)
-        .map_err(|e| Error::encoding(e, FIELD))?;
-    let issuer = required(&mut inside, FIELD)?;
-    tag(&issuer, sequence(), FIELD)?;
-    let certificate = issuer_serial(&inside, &issuer, FIELD)?;
+        .map_err(|e| Error::encoding(e, field))?;
+    let issuer = required(&mut inside, field)?;
+    tag(&issuer, sequence(), field)?;
+    let certificate = issuer_serial(&inside, &issuer, field)?;
     let mut next = inside
         .next_element()
-        .map_err(|e| Error::encoding(e, FIELD))?;
+        .map_err(|e| Error::encoding(e, field))?;
     let name = if next
         .as_ref()
         .is_some_and(|e| e.tag().class() == Class::ContextSpecific)
     {
-        let decoded = general_name::read(&inside, next.as_ref().expect("present name"), FIELD)
+        let decoded = general_name::read(&inside, next.as_ref().expect("present name"), field)
             .map_err(Error::pkix)?;
         next = inside
             .next_element()
-            .map_err(|e| Error::encoding(e, FIELD))?;
+            .map_err(|e| Error::encoding(e, field))?;
         Some(decoded)
     } else {
         None
     };
     let digest = if let Some(value) = next {
-        tag(&value, sequence(), FIELD)?;
-        Some(object_digest(&inside, &value, FIELD)?)
+        tag(&value, sequence(), field)?;
+        Some(object_digest(&inside, &value, field)?)
     } else {
         None
     };
-    end(&inside, FIELD)?;
+    end(&inside, field)?;
     Ok(TargetCertificate {
         target,
         element: *element,

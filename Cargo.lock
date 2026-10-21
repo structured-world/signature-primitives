@@ -690,6 +690,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "structured-cades"
+version = "0.9.2"
+dependencies = [
+ "p256",
+ "sha2",
+ "structured-asn1",
+ "structured-cms",
+ "structured-ltv",
+ "structured-pkix",
+]
+
+[[package]]
 name = "structured-cms"
 version = "0.9.2"
 dependencies = [

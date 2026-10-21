@@ -1,12 +1,68 @@
 use crate::error::ErrorCode;
 use crate::fixtures::{extension, extension_error, ia5, int, oid as oid_of, seq, with_extension};
 use crate::oid;
+use alloc::vec;
 use structured_asn1::Oid;
 
 /// A policy an issuer defines for itself, which is what a trusted list points
 /// at when it names the service that issued a certificate.
 const ISSUER_POLICY: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x24, 0x01, 0x02]);
 const OTHER_POLICY: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x24, 0x01, 0x03]);
+
+#[test]
+fn shared_notice_profiles_preserve_their_distinct_display_text_choices() {
+    // RFC5280 §4.2.1.4 permits IA5String; EN319122-1 AnnexD's SPUserNotice
+    // does not. Reusing the kernel must preserve BOTH normative choices.
+    let parser = structured_asn1::Parser::der(crate::fixtures::memory());
+    for (tag, content, ades) in [
+        (22, b"A".as_slice(), false),
+        (12, b"A".as_slice(), true),
+        (26, b"A".as_slice(), true),
+        (30, &[0, b'A'][..], true),
+    ] {
+        let bytes = vec![
+            0x30,
+            u8::try_from(content.len() + 2).unwrap(),
+            tag,
+            u8::try_from(content.len()).unwrap(),
+        ];
+        let bytes = [bytes, content.to_vec()].concat();
+        let mut reader = parser.read(&bytes, 700).unwrap();
+        let value = reader.next_element().unwrap().unwrap();
+        assert!(super::user_notice_understood::<true>(&reader, &value).unwrap());
+        assert_eq!(
+            super::signature_notice_understood(&reader, &value).unwrap(),
+            ades
+        );
+        assert_eq!(value.span().start, 700);
+    }
+}
+
+#[test]
+fn signature_notice_keeps_scalar_bounds_and_resource_refusals() {
+    // DisplayText SIZE counts Unicode scalars, never UTF8 bytes. A paid
+    // schema query must propagate exhausted work rather than saying unknown.
+    let memory = crate::fixtures::memory();
+    let parser = structured_asn1::Parser::der(memory.clone());
+    for (count, expected) in [(0, false), (200, true), (201, false)] {
+        let text = "é".repeat(count);
+        let text = crate::fixtures::tlv(12, text.as_bytes());
+        let bytes = seq(&[text]);
+        let mut reader = parser.read(&bytes, 900).unwrap();
+        let value = reader.next_element().unwrap().unwrap();
+        assert_eq!(
+            super::signature_notice_understood(&reader, &value).unwrap(),
+            expected
+        );
+    }
+    let bytes = [0x30, 3, 12, 1, b'A'];
+    let mut reader = parser.read(&bytes, 1200).unwrap();
+    let value = reader.next_element().unwrap().unwrap();
+    memory.charge_work(memory.work_remaining() as u64).unwrap();
+    let cause = super::signature_notice_understood(&reader, &value).unwrap_err();
+    assert!(cause.is_resource());
+    assert_eq!(value.as_bytes(), bytes);
+}
 
 #[test]
 fn cps_pointer_does_not_inherit_certificate_name_host_requirements() {

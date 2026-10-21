@@ -30,3 +30,8 @@ name = "structured-xades"
 git_tag_name = "structured-xades-v{{ version }}"
 version_group = "primitives"
 changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-ltv"]
+
+# Initial publication and its trusted publisher are configured separately.
+[[package]]
+name = "structured-cades"
+release = false

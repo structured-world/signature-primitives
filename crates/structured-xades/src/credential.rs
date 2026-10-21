@@ -32,22 +32,7 @@ impl<N: Copy, D: Copy, G: Copy> Credential<N, D, G> {
     }
 }
 
-/// Completed format authentication, separate from application authorization.
-pub enum Authentication<'path, 'document, E> {
-    /// This original credential format has no selected authentication handler.
-    Unsupported,
-    /// The selected handler completed and rejected the original credential.
-    Rejected,
-    /// Original signature/issuer authentication succeeded using exactly these
-    /// checked authority paths and their effective keys. This is not approval
-    /// of asserted roles, historical trust or revocation/freshness.
-    Authenticated {
-        /// Actual format-specific authentication receipt, not a trusted flag.
-        evidence: E,
-        /// Actual format authority/anchor requirements used by this receipt.
-        authorities: Authorities<'path, 'document>,
-    },
-}
+pub use structured_ltv::credential::Authentication;
 
 /// Format-specific authentication at the original protected credential source.
 ///

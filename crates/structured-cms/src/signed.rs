@@ -321,7 +321,7 @@ impl<'a> SignedData<'a> {
         &self.signers
     }
     /// Refuses a reader of another parser session.
-    pub(crate) fn require_session(&self, parent: &Reader<'_>, field: &'static str) -> Result<()> {
+    pub fn require_session(&self, parent: &Reader<'_>, field: &'static str) -> Result<()> {
         if !core::ptr::eq(self.parser, parent.parser()) {
             return Err(Error::pkix(structured_pkix::Error::new(
                 structured_pkix::ErrorCode::ForeignReader,
@@ -335,11 +335,7 @@ impl<'a> SignedData<'a> {
     ///
     /// Constant work: a reference to one of these signers lies inside their
     /// storage, so an address range test replaces a scan of every signer.
-    pub(crate) fn require_signer(
-        &self,
-        signer: &SignerInfo<'_>,
-        field: &'static str,
-    ) -> Result<()> {
+    pub fn require_signer(&self, signer: &SignerInfo<'_>, field: &'static str) -> Result<()> {
         let storage = self.signers.as_ptr_range();
         let address = core::ptr::from_ref(signer).cast::<SignerInfo<'a>>();
         if !storage.contains(&address) {

@@ -313,6 +313,9 @@ pub struct SigningCertificate<'a> {
 /// diagnostics separate from certificate/hash/path checking.
 #[derive(Debug)]
 pub struct SigningAttributes<'a> {
+    parser: &'a structured_asn1::Parser,
+    signer: &'a [u8],
+    signer_start: u64,
     signed_attributes_present: bool,
     v1: Option<SigningCertificate<'a>>,
     v2: Option<SigningCertificate<'a>>,
@@ -320,6 +323,28 @@ pub struct SigningAttributes<'a> {
 }
 
 impl<'a> SigningAttributes<'a> {
+    pub(crate) fn require_signer(
+        &self,
+        signer: &SignerInfo<'_>,
+        parent: &Reader<'_>,
+    ) -> Result<()> {
+        signer.require_session(parent, "signerInfo.signedAttrs")?;
+        // One Parser can read independent buffers at the same base. Physical
+        // offsets alone therefore cannot identify the source of this reading;
+        // compare the original borrowed encoding identity as well, in O(1).
+        if !core::ptr::eq(self.parser, parent.parser())
+            || self.signer_start != signer.span().start
+            || !core::ptr::eq(self.signer, signer.as_bytes())
+        {
+            return Err(Error::pkix(structured_pkix::Error::new(
+                structured_pkix::ErrorCode::ForeignReader,
+                "signerInfo.signedAttrs",
+                signer.span().start,
+            )));
+        }
+        Ok(())
+    }
+
     /// Reads the recognized signed fields using original value provenance.
     ///
     /// RFC5035 §§3/5 require one instance and one value in signed attributes.
@@ -329,6 +354,22 @@ impl<'a> SigningAttributes<'a> {
     /// hash state, signature or caller payload is accessed during this step.
     /// <https://www.rfc-editor.org/rfc/rfc5035#section-3>
     pub fn read(signer: &SignerInfo<'a>, parent: &Reader<'a>) -> Result<Self> {
+        Self::read_with(signer, parent, false)
+    }
+
+    /// Reads the same ESS grammar while retaining nonterminal selection/schema
+    /// failures. A conflicting or unreadable version has no selected binding;
+    /// its original cause remains in [`Self::faults`]. This permits protocol
+    /// inspection without choosing a certificate or hiding later obligations.
+    ///
+    /// # Errors
+    /// Source/session, depth, memory or work refusal, including refusal to
+    /// retain a diagnostic. None becomes a recoverable document finding.
+    pub fn inspect(signer: &SignerInfo<'a>, parent: &Reader<'a>) -> Result<Self> {
+        Self::read_with(signer, parent, true)
+    }
+
+    fn read_with(signer: &SignerInfo<'a>, parent: &Reader<'a>, inspect: bool) -> Result<Self> {
         signer.require_session(parent, "signerInfo.signedAttrs")?;
         let execution = parent.execution();
         execution.charge_work(1).map_err(|reason| {
@@ -351,8 +392,8 @@ impl<'a> SigningAttributes<'a> {
                 }
             }
         }
-        let v1 = read_attribute(signer, parent, Version::V1, &mut faults)?;
-        let v2 = read_attribute(signer, parent, Version::V2, &mut faults)?;
+        let v1 = inspect_attribute(signer, parent, Version::V1, &mut faults, inspect)?;
+        let v2 = inspect_attribute(signer, parent, Version::V2, &mut faults, inspect)?;
         if v1.is_none()
             && let Some(v2) = &v2
         {
@@ -394,6 +435,9 @@ impl<'a> SigningAttributes<'a> {
             }
         }
         Ok(Self {
+            parser: parent.parser(),
+            signer: signer.as_bytes(),
+            signer_start: signer.span().start,
             signed_attributes_present: signer.signed_attributes().is_some(),
             v1,
             v2,
@@ -421,6 +465,26 @@ impl<'a> SigningAttributes<'a> {
     #[must_use]
     pub fn faults(&self) -> &[Error] {
         &self.faults
+    }
+}
+
+fn inspect_attribute<'a, W: Work>(
+    signer: &SignerInfo<'a>,
+    parent: &Reader<'a>,
+    version: Version,
+    faults: &mut OwnedVec<Error, W>,
+    inspect: bool,
+) -> Result<Option<SigningCertificate<'a>>> {
+    match read_attribute(signer, parent, version, faults) {
+        // RFC5035 cardinality does not select one of conflicting assertions.
+        // Inspection retains the cause and NO binding for that version, so a
+        // format layer can continue its complete actor census. Processing
+        // refusal remains terminal, including refusal to retain this fault.
+        Err(cause) if inspect && !cause.is_terminal() => {
+            record(cause, faults, version.field())?;
+            Ok(None)
+        }
+        reading => reading,
     }
 }
 

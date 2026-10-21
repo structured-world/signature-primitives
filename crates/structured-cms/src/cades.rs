@@ -167,13 +167,19 @@ const RULES: [Rule; 14] = [
             "atsHashIndexV3",
         )
     },
-    // §5.5.3
-    rule(
-        oid::ARCHIVE_TIMESTAMP_V3,
-        Set::Unsigned,
-        true,
-        "archiveTimeStampV3",
-    ),
+    // §5.5.3(3) archives a SignedData.signerInfos item. Its nested counters
+    // are protected through the indexed unsigned values (§5.5.2 note6,
+    // §5.5.3 note4), not selected as another root of the archive input.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+    Rule {
+        signers: Signers::NotCountersignature,
+        ..rule(
+            oid::ARCHIVE_TIMESTAMP_V3,
+            Set::Unsigned,
+            true,
+            "archiveTimeStampV3",
+        )
+    },
 ];
 
 /// Reports every `CAdES` profile violation of one `SignerInfo`, in rule order,
@@ -237,9 +243,75 @@ pub fn profile_faults<'a>(
     role: Role,
     parent: &Reader<'a>,
 ) -> Result<OwnedVec<Error>> {
+    Ok(profile(signer, role, parent)?.faults)
+}
+
+/// One original ESS reading and its CAdES-specific profile findings. Keeping
+/// the reading lets a baseline layer bind the certificate without parsing the
+/// same signed attribute a second time in that operation.
+#[derive(Debug)]
+pub struct Profile<'a> {
+    signing: SigningAttributes<'a>,
+    faults: OwnedVec<Error>,
+}
+
+impl<'a> Profile<'a> {
+    /// Original ESS signer/path restrictions, independently of hash agreement.
+    #[must_use]
+    pub fn signing(&self) -> &SigningAttributes<'a> {
+        &self.signing
+    }
+
+    /// `CAdES` placement/cardinality/profile violations from the same pass.
+    /// ESS reading diagnostics remain on [`Self::signing`].
+    #[must_use]
+    pub fn faults(&self) -> &[Error] {
+        &self.faults
+    }
+}
+
+/// Runs the same profile kernel as [`profile_faults`], retaining the already
+/// parsed ESS reading for subsequent baseline certificate binding. No result
+/// here supplies a baseline level, mathematical agreement or trust.
+pub fn profile<'a>(
+    signer: &SignerInfo<'a>,
+    role: Role,
+    parent: &Reader<'a>,
+) -> Result<Profile<'a>> {
     // The producing parser's ceilings fund every scan below.
     signer.require_session(parent, "signerInfo")?;
     let signing = SigningAttributes::read(signer, parent)?;
+    let faults = findings_from_reading(signer, role, &signing, parent)?;
+    Ok(Profile { signing, faults })
+}
+
+/// Inspects the same profile while retaining nonterminal ESS selection/schema
+/// failures as located findings. A conflicting version has no selected binding;
+/// it cannot silently become the first assertion or an empty successful set.
+/// Source/resource refusal still returns an error without a successful prefix.
+/// This permits a format layer to inventory later timestamps and counters even
+/// when the original signer's ESS fields are nonconforming.
+pub fn inspect_profile<'a>(
+    signer: &SignerInfo<'a>,
+    role: Role,
+    parent: &Reader<'a>,
+) -> Result<Profile<'a>> {
+    signer.require_session(parent, "signerInfo")?;
+    let signing = SigningAttributes::inspect(signer, parent)?;
+    let faults = findings_from_reading(signer, role, &signing, parent)?;
+    Ok(Profile { signing, faults })
+}
+
+/// Applies the same profile kernel to the SAME already parsed ESS reading.
+/// Source identity is checked before traversal; no ESS value is reparsed and
+/// no signature, certificate binding or application trust is established.
+pub fn findings_from_reading(
+    signer: &SignerInfo<'_>,
+    role: Role,
+    signing: &SigningAttributes<'_>,
+    parent: &Reader<'_>,
+) -> Result<OwnedVec<Error>> {
+    signing.require_signer(signer, parent)?;
     let execution = parent.execution();
     let mut faults = execution.vector();
     for rule in &RULES {

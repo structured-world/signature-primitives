@@ -236,6 +236,22 @@ impl<'a> Certificate<'a> {
     pub fn signed_bytes(&self) -> &'a [u8] {
         self.tbs.der
     }
+
+    /// Borrow the original certificate's execution under the current operation.
+    ///
+    /// Deferred metadata, catalogue growth and comparisons must retain the
+    /// producing local ceiling as well as the current operation/account. This
+    /// reuses the original algorithm provenance without reading parameters,
+    /// opening a signature payload, allocating, or cloning an account owner.
+    pub fn execution_in<'operation, W: structured_asn1::memory::Work>(
+        &self,
+        work: &'operation W,
+    ) -> structured_asn1::memory::Execution<'operation>
+    where
+        'a: 'operation,
+    {
+        self.tbs.signature.query_in(work)
+    }
 }
 
 impl<'a> TbsCertificate<'a> {

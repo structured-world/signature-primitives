@@ -30,6 +30,7 @@ pub mod proxy;
 pub mod role;
 pub mod service;
 pub mod target;
+pub mod validation;
 fn sequence() -> Tag {
     Tag::constructed(universal::SEQUENCE)
 }

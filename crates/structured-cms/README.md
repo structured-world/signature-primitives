@@ -52,6 +52,16 @@ structured-cms = "0.8"
   structural inspection, not RFC5755 profile validation or authorization: the
   caller checks holder binding, algorithm agreement, signature, AA trust,
   targeting, validity, critical extensions and revocation before using attributes.
+- `attribute_certificate::validation` checks the AC's static profile and all
+  RFC5755 §4.3 extension values, preserving audit identity, targeting/proxying
+  obligations and explicit revocation requirements. `bind_holder` uses an
+  explicitly selected baseCertificateID or entityName and a supplied PKC;
+  `bind_authority` checks issuer DN/UID and the AA's signature-use/non-CA rules.
+  `validation::aa_path::AaPath` collects every AAControls restriction below an
+  explicitly selected AA CA, checks path distance and intersects attribute
+  permissions without discarding original attributes. These checks retain
+  original ranges and current/source limits. They do not authenticate paths,
+  verify signatures or object digests, select trust or establish authorization.
 - `attribute_certificate::clearance` reads current and historical Clearance
   encodings, preserving default classification, policy-specific bits and opaque
   security categories. Both registered OIDs are supported without assigning

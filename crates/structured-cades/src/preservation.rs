@@ -26,6 +26,10 @@ pub enum Kind {
     ArchiveV2,
     /// TS101733 §6.5.1 `PoE` wrapper, potentially carrying an evidence record.
     LongTermValidation,
+    /// AnnexA.1.5.1 timestamp of certificate/revocation references.
+    References,
+    /// AnnexA.1.5.2 timestamp of the signature and its validation references.
+    SignatureReferences,
 }
 impl Kind {
     fn oid(self) -> Oid<'static> {
@@ -33,7 +37,14 @@ impl Kind {
             Self::ArchiveV1 => Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 27]),
             Self::ArchiveV2 => Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 48]),
             Self::LongTermValidation => Oid::from_bytes(&[4, 0, 0x8d, 0x45, 2, 2]),
+            Self::References => Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 26]),
+            Self::SignatureReferences => {
+                Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 25])
+            }
         }
+    }
+    pub(crate) fn is_reference_timestamp(self) -> bool {
+        matches!(self, Self::References | Self::SignatureReferences)
     }
 }
 
@@ -77,11 +88,17 @@ pub(crate) fn collect<'d, W: Work>(
     {
         for attribute in set.items() {
             parent
-                .charge(3 * (1 + attribute.kind().as_bytes().len().min(11) as u64))
+                .charge(5 * (1 + attribute.kind().as_bytes().len().min(11) as u64))
                 .map_err(|cause| Error::encoding(cause, "cades.preservation"))?;
-            let kind = [Kind::ArchiveV1, Kind::ArchiveV2, Kind::LongTermValidation]
-                .into_iter()
-                .find(|kind| attribute.kind() == kind.oid());
+            let kind = [
+                Kind::ArchiveV1,
+                Kind::ArchiveV2,
+                Kind::LongTermValidation,
+                Kind::References,
+                Kind::SignatureReferences,
+            ]
+            .into_iter()
+            .find(|kind| attribute.kind() == kind.oid());
             let Some(kind) = kind else {
                 continue;
             };

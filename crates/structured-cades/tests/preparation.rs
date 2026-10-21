@@ -71,10 +71,14 @@ fn token() -> Vec<u8> {
 }
 
 fn token_information(info: &[u8]) -> Vec<u8> {
+    token_carried(&tlv(4, info))
+}
+
+fn token_carried(octets: &[u8]) -> Vec<u8> {
     let mut body = vec![2, 1, 3, 0x31, 0];
     body.extend(tlv(
         0x30,
-        &[tlv(6, oid::TST_INFO.as_bytes()), tlv(0xa0, &tlv(4, info))].concat(),
+        &[tlv(6, oid::TST_INFO.as_bytes()), tlv(0xa0, octets)].concat(),
     ));
     body.extend(tlv(0x31, &signer(&[])));
     tlv(
@@ -415,6 +419,41 @@ fn lower_level_timestamp_presences_are_advisories_not_failed_requirements() {
             finding.rule,
             Rule::SignatureTimestamp | Rule::ArchiveTimestamp
         )));
+    }
+}
+
+#[test]
+fn registered_legacy_values_cannot_substitute_an_arbitrary_asn1_type() {
+    // AnnexA declares six reference/value sequences and two TimeStampTokens;
+    // a lower-level advisory never waives the declared value's syntax.
+    for suffix in [21, 22, 23, 24, 25, 26, 44, 45] {
+        let kind = [42, 134, 72, 134, 247, 13, 1, 9, 16, 2, suffix];
+        let bytes = message(&[attribute(&kind, &[tlv(2, &[1])])]);
+        let parser = Parser::ber(memory());
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        let invalid =
+            prepared.findings().iter().any(|finding| {
+                if finding.severity != Severity::Required {
+                    return false;
+                }
+                match finding.rule {
+                    Rule::Value { attribute, .. } => attribute.as_bytes() == kind,
+                    Rule::Schema {
+                        code:
+                            structured_cms::ErrorCode::UnexpectedTag
+                            | structured_cms::ErrorCode::Encoding(
+                                structured_asn1::ErrorCode::UnexpectedTag,
+                            ),
+                        ..
+                    } => true,
+                    _ => false,
+                }
+            });
+        assert!(invalid, "missing legacy schema refusal for {suffix}");
     }
 }
 
@@ -1016,4 +1055,139 @@ fn nested_timestamp_inputs_and_cached_token_readers_keep_original_context() {
         .charge_work(account.work_remaining() as u64)
         .unwrap();
     assert!(prepared.signature_input(0, &parent).is_err());
+}
+
+#[test]
+fn legacy_reference_timestamps_preserve_mapped_failures_and_original_obligations() {
+    // A segmented malformed TSTInfo keeps its logical cause and physical map
+    // after all document/parser/cache owners drop; valid old tokens remain
+    // historical obligations rather than being promoted into modern proofs.
+    use structured_cades::prepare::ReadError;
+    use structured_cms::{
+        content_source::{ContentError, Coordinates},
+        timestamp::InfoError,
+    };
+    for suffix in [25, 26] {
+        let kind = [42, 134, 72, 134, 247, 13, 1, 9, 16, 2, suffix];
+        let bad = token_carried(&tlv(0x24, &[tlv(4, &[2]), tlv(4, &[1, 1])].concat()));
+        let bytes = message(&[attribute(&kind, &[bad])]);
+        let expected = 500 + bytes.windows(3).position(|v| v == [4, 1, 2]).unwrap() as u64 + 2;
+        let account = memory();
+        let map = {
+            let parser = Parser::ber(account.clone());
+            let data = SignedData::read(&parser, &bytes, 500).unwrap();
+            let parent = parser.read(&[], 0).unwrap();
+            let document = Document::new(&data, &parent).unwrap();
+            let prepared =
+                Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+            assert!(prepared.timestamps().is_empty());
+            let pool = structured_cades::material::Pool::read(&prepared, &parent).unwrap();
+            let [
+                (
+                    _,
+                    ReadError::Information(ContentError::Callback {
+                        source: InfoError::Processing(cause),
+                        context,
+                    }),
+                ),
+            ] = pool.token_faults()
+            else {
+                panic!("mapped information cause lost")
+            };
+            assert_eq!(
+                cause.code(),
+                structured_cms::ErrorCode::Encoding(structured_asn1::ErrorCode::UnexpectedTag)
+            );
+            assert_eq!(cause.field(), "tstInfo");
+            assert_eq!(cause.offset(), 0);
+            assert_eq!(context.coordinates(), Coordinates::Logical);
+            context.try_copy_in(&parent.execution()).unwrap()
+        };
+        assert!(account.used() > 0);
+        assert_eq!(map.project_offset(0, &account).unwrap(), expected);
+        drop(map);
+        assert_eq!(account.used(), 0);
+        let good = message(&[attribute(&kind, &[token()])]);
+        let parser = Parser::ber(account);
+        let data = SignedData::read(&parser, &good, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        let pool = structured_cades::material::Pool::read(&prepared, &parent).unwrap();
+        assert!(pool.token_faults().is_empty());
+        assert!(prepared.timestamps().is_empty());
+    }
+}
+
+#[test]
+fn legacy_reference_traversal_obeys_producing_and_aggregate_work_and_rolls_back() {
+    // The opaque CMS catalogue fits; inspecting every OtherCertID must then
+    // refuse under either current local work or aggregate work, releasing all
+    // temporary preparation storage without disguising refusal as a finding.
+    let kind = [42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 21];
+    let entry = tlv(0x30, &tlv(4, &[1; 20]));
+    let bytes = message(&[attribute(&kind, &[tlv(0x30, &entry.repeat(512))])]);
+    for (local, aggregate) in [(20_000, 100_000_000), (100_000_000, 20_000)] {
+        let account = Memory::new(Arc::new(MemoryAccount::new(1 << 20, aggregate)));
+        let parser = Parser::new(
+            structured_asn1::Encoding::Ber,
+            structured_asn1::Limits {
+                max_work: local,
+                ..Default::default()
+            },
+            account.clone(),
+        );
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let storage = account.used();
+        let Err(cause) = Preparation::read(&document, &data.signers()[0], Level::Basic, &parent)
+        else {
+            panic!("legacy traversal escaped work admission")
+        };
+        assert!(cause.is_terminal());
+        drop(cause);
+        assert_eq!(account.used(), storage);
+    }
+}
+
+#[test]
+fn parallel_legacy_reference_tokens_do_not_change_selected_root_syntax() {
+    // Keep another root's historical obligation without treating its broken
+    // optional token as a syntax error in the independently selected signer.
+    let kind = [42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 26];
+    let mut body = vec![2, 1, 3, 0x31, 0];
+    body.extend(tlv(0x30, &tlv(6, oid::DATA.as_bytes())));
+    body.extend(tlv(
+        0x31,
+        &[
+            signer(&[]),
+            signer_value(
+                &[],
+                &[attribute(&kind, &[token_information(&[2, 1, 1])])],
+                9,
+            ),
+        ]
+        .concat(),
+    ));
+    let bytes = tlv(
+        0x30,
+        &[
+            tlv(6, oid::SIGNED_DATA.as_bytes()),
+            tlv(0xa0, &tlv(0x30, &body)),
+        ]
+        .concat(),
+    );
+    let parser = Parser::ber(memory());
+    let data = SignedData::read(&parser, &bytes, 500).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let document = Document::new(&data, &parent).unwrap();
+    let first = Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+    let pool = structured_cades::material::Pool::read(&first, &parent).unwrap();
+    assert!(pool.token_faults().is_empty());
+    assert_eq!(first.preservation().len(), 1);
+    let second = Preparation::read(&document, &data.signers()[1], Level::Basic, &parent).unwrap();
+    let pool = structured_cades::material::Pool::read(&second, &parent).unwrap();
+    assert_eq!(pool.token_faults().len(), 1);
 }

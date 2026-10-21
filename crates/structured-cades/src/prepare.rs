@@ -1,5 +1,6 @@
 //! Source-derived baseline obligations, before keys, provider states or content.
 
+use crate::properties::legacy::LEGACY;
 use crate::source::{Document, DocumentId, Node, Original};
 use crate::{Cades, Error, ISSUER, Level, Result};
 use structured_asn1::memory::{OwnedMap, OwnedVec, Work};
@@ -197,25 +198,8 @@ impl<'m, 'd> Preparation<'m, 'd> {
         let execution = parent.execution();
         let profile = structured_cms::cades::profile(signer, Role::Signature, parent)?;
         let mut findings = execution.vector();
-        root_rules(document, signer, requested, &profile, parent, &mut findings)?;
-        let properties = crate::properties::Properties::read(signer, parent)?;
-        property_findings(document, &properties, parent, &mut findings)?;
-        mechanism_findings(
-            document,
-            signer,
-            &profile,
-            &properties,
-            parent,
-            &mut findings,
-        )?;
-        legacy_rules(
-            document,
-            signer,
-            &properties,
-            Some(requested),
-            parent,
-            &mut findings,
-        )?;
+        let properties =
+            root_properties(document, signer, requested, &profile, parent, &mut findings)?;
         let mut timestamps = execution.vector();
         collect_timestamps(signer, parent, &mut timestamps)?;
         let mut signatures = execution.vector();
@@ -259,7 +243,15 @@ impl<'m, 'd> Preparation<'m, 'd> {
                 .into());
             }
         }
-        let parsed = tokens::read(document, &timestamps, parent, &mut findings)?;
+        let parsed = tokens::read(
+            document,
+            &timestamps,
+            &preservation,
+            selected.node,
+            &counter_index,
+            parent,
+            &mut findings,
+        )?;
         apply_findings(
             &findings,
             &execution,
@@ -443,6 +435,29 @@ impl<'m, 'd> ArchiveCensus for Preparation<'m, 'd> {
             None
         }
     }
+}
+
+fn root_properties<'m, 'd, W: Work>(
+    document: &Document<'m, 'd>,
+    signer: &SignerInfo<'d>,
+    requested: Level,
+    profile: &structured_cms::cades::Profile<'d>,
+    parent: &Reader<'d>,
+    findings: &mut OwnedVec<Finding<'m, 'd>, W>,
+) -> Result<crate::properties::Properties<'d>> {
+    root_rules(document, signer, requested, profile, parent, findings)?;
+    let properties = crate::properties::Properties::read(signer, parent)?;
+    property_findings(document, &properties, parent, findings)?;
+    mechanism_findings(document, signer, profile, &properties, parent, findings)?;
+    legacy_rules(
+        document,
+        signer,
+        &properties,
+        Some(requested),
+        parent,
+        findings,
+    )?;
+    Ok(properties)
 }
 
 fn apply_findings<W: Work>(
@@ -1119,19 +1134,6 @@ fn collect_timestamps<'a, W: Work>(
     }
     Ok(())
 }
-
-// EN319122-1 AnnexA/Table1: complete cert/revocation refs, values,
-// credential refs, and the two reference timestamps. Pure wire identifiers.
-const LEGACY: [structured_asn1::Oid<'static>; 8] = [
-    structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 21]),
-    structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 22]),
-    structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 23]),
-    structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 24]),
-    structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 25]),
-    structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 26]),
-    structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 44]),
-    structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 45]),
-];
 
 fn read_counters<'m, 'd, W: Work>(
     document: &Document<'m, 'd>,

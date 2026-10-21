@@ -363,6 +363,21 @@ pub struct BasicResponse<'a> {
 }
 
 impl<'a> BasicResponse<'a> {
+    /// Reads an original bare `BasicOCSPResponse`, for example in a `CAdES`
+    /// revocation-values attribute. This is not an `OCSPResponse` envelope.
+    /// RFC6960 §4.2.1 requires DER; the producing reader's depth, source and
+    /// current execution remain active. Reading does not authenticate it.
+    /// <https://www.rfc-editor.org/rfc/rfc6960#section-4.2.1>
+    pub fn read_element(parent: &Reader<'a>, element: &Element<'a>) -> Result<Self> {
+        let mut outer = parent.reread(element, Encoding::Der).field(BASIC)?;
+        let value = outer
+            .expect(Tag::constructed(universal::SEQUENCE))
+            .field(BASIC)?;
+        let response = read_basic(&outer, &value)?;
+        end(&outer, BASIC)?;
+        Ok(response)
+    }
+
     /// Original responder identity, not a resolved signing authority.
     #[must_use]
     pub fn responder(&self) -> &ResponderId<'a> {

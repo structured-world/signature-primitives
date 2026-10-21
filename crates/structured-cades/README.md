@@ -79,6 +79,7 @@ algorithm longevity and historical trust decisions.
 ## Historical and open-format obligations
 
 `Preparation::preservation` retains older archive/long-term-validation fields
+and reference timestamps
 from every parallel root and selected counter. These are separate historical
 mechanisms, potentially including RFC 4998 evidence records; they are not
 silently parsed as `ATSv3`. Without their qualified proof/authority processing,

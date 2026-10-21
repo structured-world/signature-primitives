@@ -7,6 +7,8 @@ use structured_asn1::{Element, Oid, Reader, Tag, universal};
 use structured_cms::{ErrorCode, Octets, attribute::Attribute, oid, signer::SignerInfo};
 use structured_pkix::algorithm::{self, AlgorithmIdentifier};
 
+pub(crate) mod legacy;
+
 /// Complete original value diagnostic. Processing refusals are never retained
 /// here as malformed syntax: they terminate before a partial report escapes.
 #[derive(Debug)]
@@ -86,6 +88,8 @@ impl<'a> Properties<'a> {
     /// Read each recognized value under its original attribute reader. Existing
     /// CMS placement/cardinality and signed-DER checks remain the CMS kernel's
     /// responsibility; this adds the value schemas from EN319122-1 Annex D.
+    /// Reference timestamp envelopes and carried `TSTInfo` are inspected by
+    /// full preparation, retaining mapped diagnostics with the original source.
     pub fn read(signer: &SignerInfo<'a>, parent: &Reader<'a>) -> Result<Self> {
         signer.require_session(parent, "cades.properties")?;
         let work = parent.execution();
@@ -104,6 +108,7 @@ impl<'a> Properties<'a> {
                     .charge(11 * (1 + attribute.kind().as_bytes().len().min(12) as u64))
                     .map_err(|cause| Error::encoding(cause, "cades.properties"))?;
                 let Some((kind, field)) = known(attribute.kind()) else {
+                    legacy::inspect(attribute, parent, &mut faults)?;
                     continue;
                 };
                 let reading = read_value(

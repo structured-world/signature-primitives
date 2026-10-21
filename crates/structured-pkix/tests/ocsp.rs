@@ -74,6 +74,35 @@ fn decode_basic<'a>(
 }
 
 #[test]
+fn bare_basic_response_uses_the_same_kernel_and_original_producing_source() {
+    // A bare response must not acquire a fabricated success envelope. The
+    // same decoder retains original DER, storage ownership and DER refusal.
+    let bytes = basic(&data(&assertion(&[0x80, 0])));
+    let account = memory(100_000, 1_000_000);
+    let parser = Parser::ber(account.clone());
+    let mut parent = parser.read(&bytes, 700).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let before = account.used();
+    let parsed = structured_pkix::ocsp::BasicResponse::read_element(&parent, &element).unwrap();
+    assert_eq!(parsed.as_bytes(), bytes);
+    assert_eq!(parsed.as_bytes().as_ptr(), bytes.as_ptr());
+    assert_eq!(parsed.span().start, 700);
+    assert_eq!(parsed.responses().len(), 1);
+    assert!(account.used() > before);
+    drop(parsed);
+    assert_eq!(account.used(), before);
+    let mut indefinite = vec![0x30, 0x80];
+    indefinite.extend(element.contents());
+    indefinite.extend([0, 0]);
+    let mut parent = parser.read(&indefinite, 900).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let error = structured_pkix::ocsp::BasicResponse::read_element(&parent, &element).unwrap_err();
+    assert!(matches!(error.code(), ErrorCode::Encoding(_)));
+    // The valid tag is at 900; DER refuses the indefinite LENGTH octet.
+    assert_eq!(error.offset(), 901);
+}
+
+#[test]
 fn borrowed_basic_query_preserves_original_bytes_and_uses_the_current_capacity_owner() {
     // A lazy query may belong to a different operation. Its results retain the
     // new storage charge, while original payload/offsets remain borrowed in place.

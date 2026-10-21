@@ -314,7 +314,8 @@ pub struct SigningCertificate<'a> {
 #[derive(Debug)]
 pub struct SigningAttributes<'a> {
     parser: &'a structured_asn1::Parser,
-    signer: structured_asn1::Span,
+    signer: &'a [u8],
+    signer_start: u64,
     signed_attributes_present: bool,
     v1: Option<SigningCertificate<'a>>,
     v2: Option<SigningCertificate<'a>>,
@@ -328,7 +329,13 @@ impl<'a> SigningAttributes<'a> {
         parent: &Reader<'_>,
     ) -> Result<()> {
         signer.require_session(parent, "signerInfo.signedAttrs")?;
-        if !core::ptr::eq(self.parser, parent.parser()) || self.signer != signer.span() {
+        // One Parser can read independent buffers at the same base. Physical
+        // offsets alone therefore cannot identify the source of this reading;
+        // compare the original borrowed encoding identity as well, in O(1).
+        if !core::ptr::eq(self.parser, parent.parser())
+            || self.signer_start != signer.span().start
+            || !core::ptr::eq(self.signer, signer.as_bytes())
+        {
             return Err(Error::pkix(structured_pkix::Error::new(
                 structured_pkix::ErrorCode::ForeignReader,
                 "signerInfo.signedAttrs",
@@ -413,7 +420,8 @@ impl<'a> SigningAttributes<'a> {
         }
         Ok(Self {
             parser: parent.parser(),
-            signer: signer.span(),
+            signer: signer.as_bytes(),
+            signer_start: signer.span().start,
             signed_attributes_present: signer.signed_attributes().is_some(),
             v1,
             v2,

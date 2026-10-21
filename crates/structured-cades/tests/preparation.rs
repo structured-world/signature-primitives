@@ -153,6 +153,8 @@ fn reused_ess_profile_refuses_another_original_signer_or_parser() {
     let other = Parser::ber(account.clone());
     let first = SignedData::read(&parser, &bytes, 500).unwrap();
     let second = SignedData::read(&parser, &bytes, 1500).unwrap();
+    let copied_bytes = bytes.clone();
+    let copied = SignedData::read(&parser, &copied_bytes, 500).unwrap();
     let parent = parser.read(&[], 0).unwrap();
     let foreign = other.read(&[], 0).unwrap();
     let reading =
@@ -161,6 +163,7 @@ fn reused_ess_profile_refuses_another_original_signer_or_parser() {
     for (signer, reader) in [
         (&second.signers()[0], &parent),
         (&first.signers()[0], &foreign),
+        (&copied.signers()[0], &parent),
     ] {
         let cause = structured_cms::cades::findings_from_reading(
             signer,

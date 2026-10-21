@@ -25,6 +25,7 @@ const INFO: &str = "attributeCertificate.acinfo";
 
 pub mod ietf;
 pub mod role;
+pub mod service;
 pub mod target;
 fn sequence() -> Tag {
     Tag::constructed(universal::SEQUENCE)

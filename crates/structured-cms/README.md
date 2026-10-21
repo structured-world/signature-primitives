@@ -69,6 +69,12 @@ structured-cms = "0.8"
   and preserve multiple assertions in source order, with DER and source/current
   resource admission. Authority trust, role allocation and permissions remain
   application decisions; decoding never dereferences the URI.
+- `attribute_certificate::service::SvceAuthInfo` decodes service/holder names
+  and optional borrowed authentication bytes. Registered authenticationInfo and
+  accessIdentity reads preserve every original value; accessIdentity rejects
+  authInfo even when empty. Source/current resource admission and DER apply,
+  while authentication and authorization remain with the application. Debug
+  formatting shows source ranges only, without credential contents.
 - `timestamp::Request` reads original TimeStampReq. `timestamp::Token` separates
   readable inspection from complete signature, ESS, TSA, imprint, request and
   time checking. The caller supplies UTC information and request windows.

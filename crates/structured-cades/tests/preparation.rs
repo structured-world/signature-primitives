@@ -419,6 +419,66 @@ fn lower_level_timestamp_presences_are_advisories_not_failed_requirements() {
 }
 
 #[test]
+fn legacy_attributes_require_unsigned_placement_for_root_and_counter_signers() {
+    // AnnexA's unsigned placement is mandatory independently of Table1's
+    // lower-level advice or LT/LTA absence. Preserve the actual attribute span.
+    for suffix in [21, 22, 23, 24, 25, 26, 44, 45] {
+        let kind = [42, 134, 72, 134, 247, 13, 1, 9, 16, 2, suffix];
+        let attribute = attribute(&kind, &[tlv(0x30, &[])]);
+        for counter in [false, true] {
+            for protected in [false, true] {
+                let (signed, unsigned) = if protected {
+                    (vec![attribute.clone()], vec![])
+                } else {
+                    (vec![], vec![attribute.clone()])
+                };
+                let bytes = if counter {
+                    message(&[self::attribute(
+                        oid::COUNTERSIGNATURE.as_bytes(),
+                        &[signer_with(&signed, &unsigned)],
+                    )])
+                } else {
+                    message_with(&signed, &unsigned)
+                };
+                let at = 500
+                    + bytes
+                        .windows(attribute.len())
+                        .position(|bytes| bytes == attribute)
+                        .unwrap() as u64;
+                let parser = Parser::ber(memory());
+                let data = SignedData::read(&parser, &bytes, 500).unwrap();
+                let parent = parser.read(&[], 0).unwrap();
+                let document = Document::new(&data, &parent).unwrap();
+                for level in [
+                    Level::Basic,
+                    Level::Timestamped,
+                    Level::LongTerm,
+                    Level::Archival,
+                ] {
+                    let prepared =
+                        Preparation::read(&document, &data.signers()[0], level, &parent).unwrap();
+                    let misplaced = prepared.findings().iter().any(|finding| {
+                        finding.severity == Severity::Required
+                            && finding.location.node.span().start == at
+                            && matches!(
+                                finding.rule,
+                                Rule::Schema {
+                                    code: structured_cms::ErrorCode::AttributePlacement,
+                                    ..
+                                }
+                            )
+                    });
+                    assert_eq!(
+                        misplaced, protected,
+                        "suffix={suffix} counter={counter} protected={protected} level={level:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn legacy_reference_attributes_are_forbidden_only_at_long_term_levels() {
     // EN6.3 Table1 permits these with advisory '*' at B-B/B-T, forbids LT/LTA.
     let certificate_refs = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 1, 9, 16, 2, 21];

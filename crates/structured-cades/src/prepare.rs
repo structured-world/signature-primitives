@@ -208,6 +208,14 @@ impl<'m, 'd> Preparation<'m, 'd> {
             parent,
             &mut findings,
         )?;
+        legacy_rules(
+            document,
+            signer,
+            &properties,
+            Some(requested),
+            parent,
+            &mut findings,
+        )?;
         let mut timestamps = execution.vector();
         collect_timestamps(signer, parent, &mut timestamps)?;
         let mut signatures = execution.vector();
@@ -252,20 +260,12 @@ impl<'m, 'd> Preparation<'m, 'd> {
             }
         }
         let parsed = tokens::read(document, &timestamps, parent, &mut findings)?;
-        for finding in &findings {
-            execution.charge_work(1).map_err(|cause| {
-                Error::resource(cause, FIELD, finding.location.node.span().start)
-            })?;
-            if finding.severity == Severity::Required {
-                conforming = false;
-                if !matches!(
-                    finding.rule,
-                    Rule::SignatureTimestamp | Rule::ArchiveTimestamp | Rule::Forbidden(_)
-                ) {
-                    basic_conforming = false;
-                }
-            }
-        }
+        apply_findings(
+            &findings,
+            &execution,
+            &mut conforming,
+            &mut basic_conforming,
+        )?;
         let required = TimestampRequirements::with_counters(
             ISSUER,
             selected.node,
@@ -443,6 +443,28 @@ impl<'m, 'd> ArchiveCensus for Preparation<'m, 'd> {
             None
         }
     }
+}
+
+fn apply_findings<W: Work>(
+    findings: &[Finding<'_, '_>],
+    work: &W,
+    conforming: &mut bool,
+    basic_conforming: &mut bool,
+) -> Result<()> {
+    for finding in findings {
+        work.charge_work(1)
+            .map_err(|cause| Error::resource(cause, FIELD, finding.location.node.span().start))?;
+        if finding.severity == Severity::Required {
+            *conforming = false;
+            if !matches!(
+                finding.rule,
+                Rule::SignatureTimestamp | Rule::ArchiveTimestamp | Rule::Forbidden(_)
+            ) {
+                *basic_conforming = false;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn schema_findings<'m, 'd, W: Work>(
@@ -625,40 +647,71 @@ fn mechanism_findings<'m, 'd, W: Work>(
             findings,
         )?;
     }
-    credential_references(document, signer, properties, parent, findings)
+    Ok(())
 }
 
-fn credential_references<'m, 'd, W: Work>(
+fn legacy_rules<'m, 'd, W: Work>(
     document: &Document<'m, 'd>,
     signer: &SignerInfo<'_>,
     properties: &crate::properties::Properties<'_>,
+    level: Option<Level>,
     parent: &Reader<'_>,
     findings: &mut OwnedVec<Finding<'m, 'd>, W>,
 ) -> Result<()> {
     let mut credentials = None;
-    if let Some(unsigned) = signer.unsigned_attributes() {
-        for attribute in unsigned.items() {
-            parent
-                .charge(1 + 2 * attribute.kind().as_bytes().len().min(12) as u64)
-                .map_err(|cause| Error::encoding(cause, FIELD))?;
-            let kind = if attribute.kind() == LEGACY[6] {
-                LEGACY[6]
-            } else if attribute.kind() == LEGACY[7] {
-                LEGACY[7]
-            } else {
+    for (protected, set) in [
+        (true, signer.signed_attributes()),
+        (false, signer.unsigned_attributes()),
+    ] {
+        let Some(set) = set else {
+            continue;
+        };
+        for attribute in set.items() {
+            let Some(kind) = legacy_kind(attribute.kind(), parent)? else {
                 continue;
             };
-            let present = match credentials {
-                Some(present) => present,
-                None => {
-                    let present = protected_credential(signer, properties, parent)?;
-                    credentials = Some(present);
-                    present
-                }
-            };
-            // EN319122-1 §6.3 Table1(n) is a SHALL NOT without this
-            // protected service, even where the separate '*' is advisory.
+            // AnnexA defines these as unsigned. Placement is mandatory in
+            // root and counter signers, regardless of the baseline-level row.
             // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+            if protected {
+                finding(
+                    document,
+                    attribute.span(),
+                    Severity::Required,
+                    Rule::Schema {
+                        code: ErrorCode::AttributePlacement,
+                        field: "cades.legacy.unsignedAttrs",
+                    },
+                    findings,
+                )?;
+            }
+            // The requested Table1 row belongs to the selected baseline root;
+            // counters still receive the same placement and credential rules.
+            if let Some(level) = level {
+                finding(
+                    document,
+                    attribute.span(),
+                    if level >= Level::LongTerm {
+                        Severity::Required
+                    } else {
+                        Severity::Advisory
+                    },
+                    Rule::Forbidden(kind),
+                    findings,
+                )?;
+            }
+            if kind != LEGACY[6] && kind != LEGACY[7] {
+                continue;
+            }
+            let present = if let Some(present) = credentials {
+                present
+            } else {
+                let present = protected_credential(signer, properties, parent)?;
+                credentials = Some(present);
+                present
+            };
+            // §6.3 Table1(n) is SHALL NOT without this protected service,
+            // even where the separate '*' presence rule is only advisory.
             if !present {
                 finding(
                     document,
@@ -673,15 +726,30 @@ fn credential_references<'m, 'd, W: Work>(
     Ok(())
 }
 
+fn legacy_kind(
+    kind: structured_asn1::Oid<'_>,
+    parent: &Reader<'_>,
+) -> Result<Option<structured_asn1::Oid<'static>>> {
+    for expected in LEGACY {
+        parent
+            .charge(1 + kind.as_bytes().len().min(expected.as_bytes().len()) as u64)
+            .map_err(|cause| Error::encoding(cause, FIELD))?;
+        if kind == expected {
+            return Ok(Some(expected));
+        }
+    }
+    Ok(None)
+}
+
 fn protected_credential(
     signer: &SignerInfo<'_>,
     properties: &crate::properties::Properties<'_>,
     parent: &Reader<'_>,
 ) -> Result<bool> {
-    let Some(signed) = signer.signed_attributes() else {
+    let Some(protected_set) = signer.signed_attributes() else {
         return Ok(false);
     };
-    let protected = signed.element().span();
+    let protected = protected_set.element().span();
     for value in properties.open_values() {
         parent
             .charge(1)
@@ -869,28 +937,6 @@ fn unsigned_rules<'m, 'd, W: Work>(
                     findings,
                 )?;
             }
-            // §6.3 table1 explicitly forbids the AnnexA reference/value forms
-            // at LT/LTA, but '*' at B-B/B-T is only an advisory.
-            // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
-            for kind in LEGACY {
-                parent
-                    .charge(1 + attribute.kind().as_bytes().len().min(kind.as_bytes().len()) as u64)
-                    .map_err(|e| Error::encoding(e, FIELD))?;
-                if attribute.kind() == kind {
-                    finding(
-                        document,
-                        attribute.span(),
-                        if requested >= Level::LongTerm {
-                            Severity::Required
-                        } else {
-                            Severity::Advisory
-                        },
-                        Rule::Forbidden(kind),
-                        findings,
-                    )?;
-                    break;
-                }
-            }
         }
     }
     if requested >= Level::Timestamped && signature_times == 0 {
@@ -1052,6 +1098,7 @@ fn read_counters<'m, 'd, W: Work>(
                 let properties = crate::properties::Properties::read(child, reader)?;
                 property_findings(document, &properties, reader, findings)?;
                 mechanism_findings(document, child, &profile, &properties, reader, findings)?;
+                legacy_rules(document, child, &properties, None, reader, findings)?;
                 collect_timestamps(child, reader, timestamps)?;
                 let start = signatures.len();
                 signatures

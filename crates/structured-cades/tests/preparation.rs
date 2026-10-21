@@ -1516,3 +1516,107 @@ fn conflicting_ess_keeps_findings_and_the_complete_timestamp_counter_census() {
         }
     }
 }
+
+#[test]
+fn optional_timestamp_md5_is_a_preparation_finding_at_basic() {
+    // EN319122-1 §6.2.1 is unconditional: requesting only B-B cannot hide
+    // a forbidden actual digest inside an optional root or nested timestamp.
+    let md5 = [42, 134, 72, 134, 247, 13, 2, 5];
+    for (signer_md5, imprint_md5) in [(true, false), (false, true), (true, true), (false, false)] {
+        let signer_algorithm = if signer_md5 {
+            md5.as_slice()
+        } else {
+            oid::SHA256.as_bytes()
+        };
+        let imprint_algorithm = if imprint_md5 {
+            md5.as_slice()
+        } else {
+            oid::SHA256.as_bytes()
+        };
+        let hash = vec![0; if imprint_md5 { 16 } else { 32 }];
+        let info = tlv(
+            0x30,
+            &[
+                vec![2, 1, 1],
+                tlv(6, &[43]),
+                tlv(
+                    0x30,
+                    &[tlv(0x30, &tlv(6, imprint_algorithm)), tlv(4, &hash)].concat(),
+                ),
+                vec![2, 1, 7],
+                tlv(24, b"20260101000000Z"),
+            ]
+            .concat(),
+        );
+        let token_signer = tlv(
+            0x30,
+            &[
+                vec![2, 1, 3, 0x80, 1, 7],
+                tlv(0x30, &tlv(6, signer_algorithm)),
+                tlv(0x30, &tlv(6, &[0x2b, 0x65, 0x70])),
+                tlv(4, &[8]),
+            ]
+            .concat(),
+        );
+        let body = tlv(
+            0x30,
+            &[
+                vec![2, 1, 3, 0x31, 0],
+                tlv(
+                    0x30,
+                    &[tlv(6, oid::TST_INFO.as_bytes()), tlv(0xa0, &tlv(4, &info))].concat(),
+                ),
+                tlv(0x31, &token_signer),
+            ]
+            .concat(),
+        );
+        let token = tlv(
+            0x30,
+            &[tlv(6, oid::SIGNED_DATA.as_bytes()), tlv(0xa0, &body)].concat(),
+        );
+        for kind in [
+            oid::CONTENT_TIMESTAMP,
+            oid::SIGNATURE_TIMESTAMP,
+            oid::ARCHIVE_TIMESTAMP_V3,
+        ] {
+            for in_counter in [false, true] {
+                let stamp = attribute(kind.as_bytes(), std::slice::from_ref(&token));
+                let signed = if kind == oid::CONTENT_TIMESTAMP {
+                    vec![stamp.clone()]
+                } else {
+                    vec![]
+                };
+                let unsigned = if kind != oid::CONTENT_TIMESTAMP {
+                    vec![stamp]
+                } else {
+                    vec![]
+                };
+                let bytes = if in_counter {
+                    message(&[attribute(
+                        oid::COUNTERSIGNATURE.as_bytes(),
+                        &[signer_with(&signed, &unsigned)],
+                    )])
+                } else {
+                    message_with(&signed, &unsigned)
+                };
+                let parser = Parser::ber(memory());
+                let data = SignedData::read(&parser, &bytes, 500).unwrap();
+                let parent = parser.read(&[], 0).unwrap();
+                let document = Document::new(&data, &parent).unwrap();
+                let prepared =
+                    Preparation::read(&document, &data.signers()[0], Level::Basic, &parent)
+                        .unwrap();
+                assert_eq!(
+                    prepared
+                        .findings()
+                        .iter()
+                        .filter(|f| matches!(f.rule, Rule::Md5))
+                        .count(),
+                    usize::from(signer_md5) + usize::from(imprint_md5),
+                    "signer={signer_md5} imprint={imprint_md5} counter={in_counter} kind={kind:?}"
+                );
+                assert_eq!(prepared.timestamps().len(), 1);
+            }
+        }
+    }
+}

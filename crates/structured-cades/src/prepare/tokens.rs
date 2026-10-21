@@ -315,11 +315,59 @@ fn inspect<'m, 'd>(
     reader: &Reader<'d>,
     findings: &mut OwnedVec<Finding<'m, 'd>, impl Work>,
 ) -> Result<(), ReadError> {
+    let md5 = structured_asn1::Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 2, 5]);
+    let digest = token.signer().digest_algorithm();
+    reader
+        .charge(
+            1 + digest
+                .algorithm()
+                .as_bytes()
+                .len()
+                .min(md5.as_bytes().len()) as u64,
+        )
+        .map_err(|cause| Error::encoding(cause, "cades.timestamp"))?;
+    // EN319122-1 §6.2.1 applies even when only B-B was requested and no
+    // timestamp math will run. Inspect actual use, before opening TSTInfo;
+    // a malformed information value cannot hide the envelope's digest.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+    if digest.algorithm() == md5 {
+        finding(
+            document,
+            entry.property.span(),
+            Severity::Required,
+            Rule::Md5,
+            findings,
+        )?;
+    }
     // The envelope model is retained once. A subsequent cryptographic check
     // opens information under CURRENT work: temporary joined TSTInfo cannot
     // be pinned in this cache. Its faults use a physical attribute enclosure,
     // never a logical offset disguised as an original document position.
-    let inspection = token.with_info(reader, |info, _, _| {
+    let inspection = token.with_info(reader, |info, inside, _| {
+        if let structured_cms::timestamp::HashAlgorithmReading::Identifier(algorithm) =
+            info.imprint().algorithm()
+        {
+            inside
+                .charge(
+                    1 + algorithm
+                        .algorithm()
+                        .as_bytes()
+                        .len()
+                        .min(md5.as_bytes().len()) as u64,
+                )
+                .map_err(|cause| Error::encoding(cause, "cades.timestamp"))?;
+            if algorithm.algorithm() == md5 {
+                // The original physical carrier is the location here, not an
+                // inner logical offset mislabeled as a document position.
+                finding(
+                    document,
+                    entry.property.span(),
+                    Severity::Required,
+                    Rule::Md5,
+                    findings,
+                )?;
+            }
+        }
         for cause in token
             .faults()
             .iter()

@@ -109,6 +109,50 @@ fn timestamp_signed_attributes() -> Vec<Vec<u8>> {
     ]
 }
 
+#[test]
+fn mime_type_accepts_media_type_and_whole_header_representations() {
+    // EN319122-1 §5.2.4.2 / Annex E.3 permits the complete MIME header,
+    // not only the bare media type. Folding belongs to its field body;
+    // malformed fields and a message body must not be hidden by a valid type.
+    for (value, valid) in [
+        ("application/pdf", true),
+        (
+            "Content-Type: application/pdf\r\nContent-Transfer-Encoding: base64",
+            true,
+        ),
+        (
+            "Content-Description: JCFV201.pdf\r\ncontent-type: text/plain;\r\n\tcharset=\"us-ascii\"\r\nContent-Disposition: filename=\"JCFV201.pdf\"\r\n",
+            true,
+        ),
+        ("Content-Type: application/pdf\r\n\r\n", true),
+        ("Content-Type: text", false),
+        ("Content Type: application/pdf", false),
+        ("Content-Description: document.pdf", false),
+        (
+            "Content-Type: application/pdf\nContent-Description: pdf",
+            false,
+        ),
+        (
+            "Content-Type: application/pdf\r\nContent-Type: text/plain",
+            false,
+        ),
+        ("Content-Type: application/pdf\r\n\r\nbody", false),
+        ("Content-Type: application/pdf\r\nBroken", false),
+        ("Content-Type: application/pdf\r\nX-Extra: ü", false),
+    ] {
+        let mime = attribute(oid::MIME_TYPE.as_bytes(), &[tlv(12, value.as_bytes())]);
+        let bytes = message_with(&[mime], &[]);
+        let parser = Parser::ber(memory());
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        let invalid = prepared.findings().iter().any(|finding| matches!(finding.rule, Rule::Value { attribute, .. } if attribute == oid::MIME_TYPE));
+        assert_eq!(invalid, !valid, "{value:?}");
+    }
+}
+
 fn message(unsigned: &[Vec<u8>]) -> Vec<u8> {
     message_with(&[], unsigned)
 }

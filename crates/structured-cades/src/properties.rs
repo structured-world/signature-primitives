@@ -242,10 +242,10 @@ fn read_value<'a, W: Work>(
     if kind == oid::MIME_TYPE {
         require_tag(&value, Tag::primitive(universal::UTF8_STRING), field)?;
         structured_pkix::der::conforms(&reader, &value, field).map_err(Error::Pkix)?;
-        let mut mime = structured_cms::mime::Syntax::<false>::new();
-        mime.feed(value.contents(), &reader.execution())
-            .map_err(|cause| Error::resource(cause, field, value.span().start))?;
-        return if mime.complete() {
+        let valid =
+            structured_cms::mime::media_type_or_headers(value.contents(), &reader.execution())
+                .map_err(|cause| Error::resource(cause, field, value.span().start))?;
+        return if valid {
             Ok(())
         } else {
             Err(syntax(field, value.span().start))

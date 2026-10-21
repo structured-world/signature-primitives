@@ -1,6 +1,9 @@
-//! Allocation-free RFC2045 media-type syntax over caller-provided fragments.
+//! Allocation-free MIME media types and original header-field framing.
 
 use structured_asn1::memory::{MemoryError, Work};
+
+mod headers;
+pub use headers::media_type_or_headers;
 
 #[derive(Clone, Copy)]
 enum Phase {

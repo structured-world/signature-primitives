@@ -3,6 +3,29 @@
 use std::sync::Arc;
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError};
 use structured_cms::mime::Syntax;
+use structured_cms::mime::media_type_or_headers;
+
+#[test]
+fn complete_header_framing_and_content_type_are_funded_without_storage() {
+    // Generic RFC822 field bodies stay opaque; Content-Type shares the media
+    // grammar. Exact current-work refusal cannot be treated as invalid syntax
+    // or choose an uncharged alternative, even with zero retained capacity.
+    let body = " text/plain;\r\n\tcharset=\"us-ascii\"";
+    let header = format!("X-Extension: original\0text\r\nContent-Type:{body}\r\n");
+    let units = header.len() * 8 + body.len() * 4;
+    let execution = work(units);
+    assert!(media_type_or_headers(header.as_bytes(), &execution).unwrap());
+    assert_eq!(execution.used(), 0);
+    assert_eq!(execution.charge_work(1), Err(MemoryError::WorkExceeded));
+    assert_eq!(
+        media_type_or_headers(header.as_bytes(), &work(units - 1)),
+        Err(MemoryError::WorkExceeded)
+    );
+    assert_eq!(
+        media_type_or_headers(b"text/plain", &work(0)),
+        Err(MemoryError::WorkExceeded)
+    );
+}
 
 fn work(units: usize) -> Memory {
     Memory::new(Arc::new(MemoryAccount::new(0, units)))

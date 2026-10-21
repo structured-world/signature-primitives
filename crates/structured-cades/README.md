@@ -22,6 +22,8 @@ do not establish registry availability or consumer adoption.
 `prepare::Preparation` reads the requested level, signed and unsigned property
 syntax, independent ESS sets and the complete nested counter/timestamp census.
 It preserves required versus advisory findings and original malformed values.
+The signed MIME description accepts a media type or complete original MIME
+header fields with an explicit Content-Type, using the common MIME grammar.
 Present timestamp envelopes and carried information are syntax-checked even
 for a B-B request, including TSA ESS and protected CMS fields. Each `ATSv3`
 also receives non-cryptographic profile/index inspection. Known digest widths

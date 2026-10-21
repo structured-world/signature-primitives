@@ -331,8 +331,12 @@ fn inspect<'m, 'd>(
     reader: &Reader<'d>,
     findings: &mut OwnedVec<Finding<'m, 'd>, impl Work>,
 ) -> Result<(), ReadError> {
-    let signing_fields = signing::read(document, entry, token, reader, findings)?;
-    let index_algorithm = index::read(document, entry, token, &signing_fields, reader, findings)?;
+    let index_algorithm = {
+        let signing_fields = signing::read(document, entry, token, reader, findings)?;
+        index::read(document, entry, token, &signing_fields, reader, findings)?
+    };
+    // ESS/index catalogues are temporary inspection scratch. Release their
+    // capacity before opening potentially fragmented carried information.
     // The envelope model is retained once. A subsequent cryptographic check
     // opens information under CURRENT work: temporary joined TSTInfo cannot
     // be pinned in this cache. Its faults use a physical attribute enclosure,

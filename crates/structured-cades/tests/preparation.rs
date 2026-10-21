@@ -1586,10 +1586,10 @@ fn optional_timestamp_md5_is_a_preparation_finding_at_basic() {
                 } else {
                     vec![]
                 };
-                let unsigned = if kind != oid::CONTENT_TIMESTAMP {
-                    vec![stamp]
-                } else {
+                let unsigned = if kind == oid::CONTENT_TIMESTAMP {
                     vec![]
+                } else {
+                    vec![stamp]
                 };
                 let bytes = if in_counter {
                     message(&[attribute(

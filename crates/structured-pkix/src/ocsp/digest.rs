@@ -5,8 +5,9 @@ use super::ResponderId;
 use crate::Certificate;
 use crate::algorithm::digest::{self, Algorithm, AsnDigest};
 use crate::error::{CallbackError, CallbackResult, Error, ErrorCode};
+use crate::revocation::RevocationTarget;
 use structured_asn1::digest::{OnceError, Resolution, matches_once};
-use structured_asn1::memory::{MemoryError, Work};
+use structured_asn1::memory::Work;
 
 // A provider output of the wrong width is located at the selector it hashed for.
 fn once<E>(error: OnceError<E>, field: &'static str, at: u64) -> CallbackError<E> {
@@ -107,33 +108,42 @@ impl CertId<'_> {
     /// contents. The caller retains their authenticated issuer/path provenance;
     /// matching hashes does not verify the target certificate's signature.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-4.1.1>
-    pub fn matches<'d, D: AsnDigest<'d> + ?Sized, E: Work>(
+    pub fn matches<'t, 'd, T: RevocationTarget<'t>, D: AsnDigest<'d> + ?Sized, E: Work>(
         &self,
-        target: &Certificate<'_>,
+        target: &T,
         issuer: &Certificate<'_>,
         digest: &'d D,
         execution: &E,
     ) -> CallbackResult<CertMatch, D::Error> {
         const FIELD: &str = "ocspResponse.certID";
         let at = self.span.start;
+        let source = self.algorithm.query_in(execution);
+        let target_work = target.execution_in(execution);
+        let issuer_work = issuer.execution_in(execution);
         let left = self.serial.as_bytes();
-        let right = target.tbs().serial().as_bytes();
-        let work = u64::try_from(left.len().max(right.len()))
-            .ok()
-            .and_then(|n| n.checked_mul(2))
-            .and_then(|n| n.checked_add(1))
-            .ok_or_else(|| Error::resource(MemoryError::WorkExceeded, FIELD, at))?;
-        execution
-            .charge_work(work)
+        // Read each operand under its own producing source and the same current
+        // operation. A fresh query must not erase an exhausted original source.
+        source
+            .charge_work(left.len() as u64 + 1)
             .map_err(|reason| Error::resource(reason, FIELD, at))?;
+        target_work
+            .charge_work(1)
+            .map_err(|reason| Error::resource(reason, FIELD, target.span().start))?;
+        let right = target.serial().as_bytes();
+        target_work
+            .charge_work(right.len() as u64)
+            .map_err(|reason| Error::resource(reason, FIELD, target.span().start))?;
         if left != right {
             return Ok(CertMatch::Differs);
         }
-        if !target
-            .tbs()
-            .issuer()
-            .matches(issuer.tbs().subject(), execution)?
-        {
+        issuer_work
+            .charge_work(1)
+            .map_err(|reason| Error::resource(reason, FIELD, issuer.span().start))?;
+        if !target.issuer().matches_between(
+            issuer.tbs().subject(),
+            (&target_work, target.source_parser()),
+            (&issuer_work, issuer.source_parser()),
+        )? {
             return Ok(CertMatch::Differs);
         }
         let identity = match digest::resolve(digest, &self.algorithm, execution)? {
@@ -147,14 +157,26 @@ impl CertId<'_> {
         {
             return Ok(CertMatch::MalformedHashWidth);
         }
-        for (input, expected) in [
-            (target.tbs().issuer().as_bytes(), self.issuer_name_hash),
+        // RFC6960 §4.1.1: the name is the target's original issuer DER,
+        // not a semantically equal re-encoding of the AA's subject.
+        // RFC5755 §4.3.4 applies the same OCSP identity to ACs.
+        // https://www.rfc-editor.org/rfc/rfc5755#section-4.3.4
+        for (input, expected, work) in [
+            (
+                target.issuer().as_bytes(),
+                self.issuer_name_hash,
+                &target_work,
+            ),
             (
                 issuer.tbs().public_key().key().as_bytes(),
                 self.issuer_key_hash,
+                &issuer_work,
             ),
         ] {
-            match matches_once(digest, &identity, input, expected, execution)
+            source
+                .charge_work(expected.len() as u64)
+                .map_err(|reason| Error::resource(reason, FIELD, at))?;
+            match matches_once(digest, &identity, input, expected, work)
                 .map_err(|error| once(error, FIELD, at))?
             {
                 Resolution::Supported(true) => {}

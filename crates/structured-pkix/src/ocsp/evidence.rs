@@ -6,15 +6,17 @@ use super::{
 };
 use crate::algorithm::digest::AsnDigest;
 use crate::error::{CallbackResult, Result};
+use crate::revocation::{RevocationScheme, RevocationTarget, TargetKind};
 use crate::temporal::{LeapTable, Reading};
 use crate::{Certificate, Error};
+use core::marker::PhantomData;
 use structured_asn1::memory::{Memory, MemoryError, Work};
 use structured_asn1::{Oid, Span};
 
 /// Actual caller request facts, never inferred from the received response.
-pub struct Request<'p, 'a> {
-    /// Certificate identified by the actual request and authenticated issuer path.
-    pub target: &'p Certificate<'a>,
+pub struct Request<'p, 'a, T = Certificate<'a>> {
+    /// Original target identified by the actual request and its selected issuer.
+    pub target: &'p T,
     /// Actual sent nonce, not a newly generated replacement.
     pub nonce: Option<RequestNonce<'p>>,
     /// Optional expected exact signer certificate chosen by the caller. Absent
@@ -110,6 +112,12 @@ impl<'r, 'a> Evidence<'r, 'a> {
     reason = "retain source/key/time facts by value rather than allocate a box per target merely to discriminate the result"
 )]
 pub enum TargetEvidence<'r, 'a> {
+    /// The AC explicitly uses RFC5755 §6 `NoRevAvail`; no status is minted.
+    NoRevAvail,
+    /// Ordinary direct PKC delegation cannot confer AC status authority:
+    /// RFC5755 §4.5 forbids the AA from also issuing public-key certificates.
+    /// Use the actual AA or independently configured responder trust instead.
+    AttributeDelegation,
     /// Identity and supported extension semantics completed; policy facts remain.
     Evidence(Evidence<'r, 'a>),
     /// Actual signer differs from the caller's intended exact signer.
@@ -129,16 +137,21 @@ pub enum TargetEvidence<'r, 'a> {
 /// Target and response lifetimes are independent; no temporary request,
 /// evaluation context, provider or execution wrapper is retained.
 #[derive(Debug)]
-pub struct TargetReading<'target, 'request, 'response, 'source> {
-    target: &'target Certificate<'request>,
+pub struct TargetReading<'target, 'request, 'response, 'source, T = Certificate<'request>> {
+    target: &'target T,
+    // The default PKC source lifetime remains explicit in the public type;
+    // a different target carries its own borrowed source in T, at zero cost.
+    request_source: PhantomData<&'request ()>,
     evaluated_at: Reading,
     outcome: TargetEvidence<'response, 'source>,
 }
 
-impl<'target, 'request, 'response, 'source> TargetReading<'target, 'request, 'response, 'source> {
+impl<'target, 'request, 'response, 'source, T>
+    TargetReading<'target, 'request, 'response, 'source, T>
+{
     /// Original actual target, not another certificate with a matching hint.
     #[must_use]
-    pub fn target(&self) -> &'target Certificate<'request> {
+    pub fn target(&self) -> &'target T {
         self.target
     }
     /// Exact label used by the same update-window/revocation-time processing.
@@ -155,10 +168,11 @@ impl<'target, 'request, 'response, 'source> TargetReading<'target, 'request, 're
     /// Status, temporal uncertainty, nonce and delegated-responder requirements
     /// remain exactly as reported; this does not mean the status is Good.
     #[must_use]
-    pub fn evidence(&self) -> Option<BoundEvidence<'target, 'request, 'response, 'source>> {
+    pub fn evidence(&self) -> Option<BoundEvidence<'target, 'request, 'response, 'source, T>> {
         match self.outcome {
             TargetEvidence::Evidence(evidence) => Some(BoundEvidence {
                 target: self.target,
+                request_source: PhantomData,
                 evaluated_at: self.evaluated_at,
                 evidence,
             }),
@@ -174,17 +188,25 @@ impl<'target, 'request, 'response, 'source> TargetReading<'target, 'request, 're
 
 /// Privately bound target and facts from the same completed common evaluation.
 /// This association cannot be created from an unrelated certificate and result.
-#[derive(Debug, Clone, Copy)]
-pub struct BoundEvidence<'target, 'request, 'response, 'source> {
-    target: &'target Certificate<'request>,
+#[derive(Debug)]
+pub struct BoundEvidence<'target, 'request, 'response, 'source, T = Certificate<'request>> {
+    target: &'target T,
+    request_source: PhantomData<&'request ()>,
     evaluated_at: Reading,
     evidence: Evidence<'response, 'source>,
 }
 
-impl<'target, 'request, 'response, 'source> BoundEvidence<'target, 'request, 'response, 'source> {
+impl<T> Copy for BoundEvidence<'_, '_, '_, '_, T> {}
+impl<T> Clone for BoundEvidence<'_, '_, '_, '_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'target, 'response, 'source, T> BoundEvidence<'target, '_, 'response, 'source, T> {
     /// Original requested certificate whose identity the common kernel matched.
     #[must_use]
-    pub fn target(self) -> &'target Certificate<'request> {
+    pub fn target(self) -> &'target T {
         self.target
     }
     /// Original evaluation label; the caller cannot relabel status in time.
@@ -223,15 +245,24 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
     /// original requested certificate. No hashing, parsing or allocation is
     /// repeated to recover provenance later. Failures retain their original
     /// result/cause; no positive target binding is returned for a lookup failure.
-    pub fn evaluate_with_target<'target, 'request, 'd, D: AsnDigest<'d> + ?Sized, E: Work>(
+    pub fn evaluate_with_target<
+        'target,
+        'request,
+        't,
+        'd,
+        T: RevocationTarget<'t>,
+        D: AsnDigest<'d> + ?Sized,
+        E: Work,
+    >(
         self,
-        request: &Request<'target, 'request>,
+        request: &Request<'target, 'request, T>,
         time: &Evaluation<'_, E>,
         digest: &'d D,
-    ) -> CallbackResult<TargetReading<'target, 'request, 'r, 'a>, D::Error> {
+    ) -> CallbackResult<TargetReading<'target, 'request, 'r, 'a, T>, D::Error> {
         let outcome = self.evaluate(request, time, digest)?;
         Ok(TargetReading {
             target: request.target,
+            request_source: PhantomData,
             evaluated_at: time.now,
             outcome,
         })
@@ -241,14 +272,33 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
     /// RFC6960 §3.2 requires identity, signer, authorization and temporal checks;
     /// this operation composes mechanism facts without choosing caller policy.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-3.2>
-    pub fn evaluate<'d, D: AsnDigest<'d> + ?Sized, E: Work>(
+    pub fn evaluate<'t, 'd, T: RevocationTarget<'t>, D: AsnDigest<'d> + ?Sized, E: Work>(
         self,
-        request: &Request<'_, '_>,
+        request: &Request<'_, '_, T>,
         time: &Evaluation<'_, E>,
         digest: &'d D,
     ) -> CallbackResult<TargetEvidence<'r, 'a>, D::Error> {
-        let execution = time.execution;
         let response = self.signed().response();
+        let execution = &response.signature_algorithm().query_in(time.execution);
+        execution.charge_work(1).map_err(|reason| {
+            Error::resource(reason, "ocspResponse.target", response.span().start)
+        })?;
+        let target_work = request.target.execution_in(time.execution);
+        target_work.charge_work(1).map_err(|reason| {
+            Error::resource(reason, "ocspResponse.target", request.target.span().start)
+        })?;
+        if request.target.revocation_scheme() == RevocationScheme::NoRevAvail {
+            return Ok(TargetEvidence::NoRevAvail);
+        }
+        // RFC5755 §4.5: an AA cannot also issue the PKC required by
+        // RFC6960 §4.2.2.2's direct certificate-delegation branch. This does
+        // not infer configured trust from an included certificate or OCSP EKU.
+        // https://www.rfc-editor.org/rfc/rfc5755#section-4.5
+        if request.target.kind() == TargetKind::Attribute
+            && matches!(self.source(), super::AuthoritySource::Delegate { .. })
+        {
+            return Ok(TargetEvidence::AttributeDelegation);
+        }
         let recipient = match request.intended_signer {
             None => RecipientBinding::NotSpecified,
             Some(expected) => {

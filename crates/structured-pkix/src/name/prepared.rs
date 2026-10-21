@@ -113,7 +113,18 @@ impl<'a, W: Work> Prepared<'a, W> {
     ) -> Result<Self, Error> {
         Ok(Self {
             attribute,
-            canonical: canonical(attribute, memory, parent)?,
+            canonical: canonical(attribute, memory, parent, None)?,
+        })
+    }
+
+    fn of_original(
+        attribute: Attribute<'a>,
+        memory: &W,
+        parser: &'a structured_asn1::Parser,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            attribute,
+            canonical: canonical(attribute, memory, None, Some(parser))?,
         })
     }
 
@@ -122,26 +133,53 @@ impl<'a, W: Work> Prepared<'a, W> {
         other: &Prepared<'_, V>,
         memory: &E,
     ) -> Result<Ordering, MemoryError> {
+        self.order_admitted(other, |left, right, combined| {
+            let amount = if combined {
+                left.checked_add(right).ok_or(MemoryError::WorkExceeded)?
+            } else {
+                left.max(right)
+            };
+            memory.charge_work(amount)
+        })
+    }
+
+    fn order_between<V: Work, L: Work, R: Work>(
+        &self,
+        other: &Prepared<'_, V>,
+        left_work: &L,
+        right_work: &R,
+    ) -> Result<Ordering, Error> {
+        self.order_admitted(other, |left, right, _| {
+            left_work.charge_work(left).map_err(|reason| {
+                Error::resource(reason, "name.attribute", self.attribute.value.offset)
+            })?;
+            right_work.charge_work(right).map_err(|reason| {
+                Error::resource(reason, "name.attribute", other.attribute.value.offset)
+            })
+        })
+    }
+
+    fn order_admitted<V: Work, E>(
+        &self,
+        other: &Prepared<'_, V>,
+        mut admit: impl FnMut(u64, u64, bool) -> Result<(), E>,
+    ) -> Result<Ordering, E> {
         let left = self.attribute.kind.as_bytes();
         let right = other.attribute.kind.as_bytes();
-        memory.charge_work(left.len().max(right.len()) as u64)?;
+        admit(left.len() as u64, right.len() as u64, false)?;
         let kind = left.cmp(right);
         if kind != Ordering::Equal {
             return Ok(kind);
         }
         match (&self.canonical, &other.canonical) {
             (Some(left), Some(right)) => {
-                memory.charge_work(
-                    left.work()
-                        .checked_add(right.work())
-                        .ok_or(MemoryError::WorkExceeded)?,
-                )?;
+                admit(left.work(), right.work(), true)?;
                 Ok(left.characters().cmp(right.characters()))
             }
             (None, None) => {
                 let left = self.attribute.value.der;
                 let right = other.attribute.value.der;
-                memory.charge_work(left.len().max(right.len()) as u64)?;
+                admit(left.len() as u64, right.len() as u64, false)?;
                 Ok(left.cmp(right))
             }
             (Some(_), None) => Ok(Ordering::Less),
@@ -192,20 +230,21 @@ impl Iterator for Characters<'_> {
 }
 
 pub(super) fn folds(attribute: Attribute<'_>, memory: &Memory) -> Result<bool, Error> {
-    Ok(canonical(attribute, memory, None)?.is_some())
+    Ok(canonical(attribute, memory, None, None)?.is_some())
 }
 
 pub(super) fn folds_in(
     attribute: Attribute<'_>,
     parent: &structured_asn1::ScopedReader<'_, '_>,
 ) -> Result<bool, Error> {
-    Ok(canonical(attribute, &parent.execution(), Some(parent))?.is_some())
+    Ok(canonical(attribute, &parent.execution(), Some(parent), None)?.is_some())
 }
 
 fn canonical<'a, W: Work>(
     attribute: Attribute<'a>,
     memory: &W,
     parent: Option<&structured_asn1::ScopedReader<'_, '_>>,
+    source: Option<&'a structured_asn1::Parser>,
 ) -> Result<Option<Canonical<'a, W>>, Error> {
     let value = attribute.value;
     let fail = |reason| Error::resource(reason, "name.attribute", value.offset);
@@ -228,6 +267,21 @@ fn canonical<'a, W: Work>(
         let encoding = super::AttributeValue { tag, ..value }.encoding();
         if !super::permits(attribute.kind, encoding) {
             return Ok(None);
+        }
+        if let Some(source) = source {
+            // This is still the original value, not a new document: retain
+            // its actual parser/depth so empty fragment headers pay the same
+            // source and current ceilings as payload and normalization.
+            let reader = memory
+                .read_source(
+                    source,
+                    value.der,
+                    value.offset,
+                    structured_asn1::Encoding::Ber,
+                    value.depth,
+                )
+                .field("name.attribute")?;
+            return canonical_segmented(attribute, memory, reader);
         }
         if let Some(parent) = parent {
             // Name attributes are read inside SEQUENCE/RDN/attribute frames.
@@ -449,41 +503,86 @@ pub(super) fn compare_parts_in<W: Work>(
         left.attributes
             .iter()
             .copied()
-            .map(|attribute| Prepared::of_in(attribute, execution, parent)),
+            .map(|a| Prepared::of_in(a, execution, parent)),
         right
             .attributes
             .iter()
             .copied()
-            .map(|attribute| Prepared::of_in(attribute, execution, parent)),
+            .map(|a| Prepared::of_in(a, execution, parent)),
         execution,
         |reason| Error::resource(reason, "name.attribute", left.attributes[0].value.offset),
+    )
+}
+
+pub(super) fn compare_parts_between<'a, 'b, L: Work, R: Work>(
+    left: &RelativeName<'a>,
+    right: &RelativeName<'b>,
+    left_source: (&L, &'a structured_asn1::Parser),
+    right_source: (&R, &'b structured_asn1::Parser),
+) -> Result<Ordering, Error> {
+    let (left_work, left_parser) = left_source;
+    let (right_work, right_parser) = right_source;
+    compare_views_admitted(
+        left.attributes
+            .iter()
+            .copied()
+            .map(|attribute| Prepared::of_original(attribute, left_work, left_parser)),
+        right
+            .attributes
+            .iter()
+            .copied()
+            .map(|attribute| Prepared::of_original(attribute, right_work, right_parser)),
+        left_work,
+        right_work,
+        |left, right| left.order_between(right, left_work, right_work),
+        |reason| Error::resource(reason, "name.attribute", left.attributes[0].value.offset),
+        |reason| Error::resource(reason, "name.attribute", right.attributes[0].value.offset),
     )
 }
 
 /// Borrowed projections are evaluated only as preparation requires them.
 /// Singleton RDNs allocate no catalogue; multi-valued RDNs allocate only
 /// the prepared sorting scratch shared with certificate Name comparison.
-pub(super) fn compare_views<'a, 'b, E, W: Work>(
-    mut left: impl ExactSizeIterator<Item = Result<Prepared<'a, W>, E>>,
-    mut right: impl ExactSizeIterator<Item = Result<Prepared<'b, W>, E>>,
+pub(super) fn compare_views<'a, 'b, E, L: Work, R: Work, W: Work>(
+    left: impl ExactSizeIterator<Item = Result<Prepared<'a, L>, E>>,
+    right: impl ExactSizeIterator<Item = Result<Prepared<'b, R>, E>>,
     execution: &W,
     fail: impl Fn(MemoryError) -> E + Copy,
+) -> Result<Ordering, E> {
+    compare_views_admitted(
+        left,
+        right,
+        execution,
+        execution,
+        |left, right| left.order(right, execution).map_err(fail),
+        fail,
+        fail,
+    )
+}
+
+fn compare_views_admitted<'a, 'b, E, L: Work, R: Work, X: Work, Y: Work>(
+    mut left: impl ExactSizeIterator<Item = Result<Prepared<'a, L>, E>>,
+    mut right: impl ExactSizeIterator<Item = Result<Prepared<'b, R>, E>>,
+    left_work: &X,
+    right_work: &Y,
+    compare: impl Fn(&Prepared<'a, L>, &Prepared<'b, R>) -> Result<Ordering, E>,
+    fail_left: impl Fn(MemoryError) -> E + Copy,
+    fail_right: impl Fn(MemoryError) -> E + Copy,
 ) -> Result<Ordering, E> {
     let length = left.len().cmp(&right.len());
     if length != Ordering::Equal {
         return Ok(length);
     }
     if left.len() == 1 {
-        return left
-            .next()
-            .expect("one attribute")?
-            .order(&right.next().expect("one attribute")?, execution)
-            .map_err(fail);
+        return compare(
+            &left.next().expect("one attribute")?,
+            &right.next().expect("one attribute")?,
+        );
     }
-    let left = prepare_view(left, execution, fail)?;
-    let right = prepare_view(right, execution, fail)?;
+    let left = prepare_view(left, left_work, fail_left)?;
+    let right = prepare_view(right, right_work, fail_right)?;
     for (left, right) in left.iter().zip(&right) {
-        let order = left.order(right, execution).map_err(fail)?;
+        let order = compare(left, right)?;
         if order != Ordering::Equal {
             return Ok(order);
         }
@@ -491,11 +590,11 @@ pub(super) fn compare_views<'a, 'b, E, W: Work>(
     Ok(Ordering::Equal)
 }
 
-fn prepare_view<'a, E, W: Work>(
-    attributes: impl ExactSizeIterator<Item = Result<Prepared<'a, W>, E>>,
+fn prepare_view<'a, E, V: Work, W: Work>(
+    attributes: impl ExactSizeIterator<Item = Result<Prepared<'a, V>, E>>,
     execution: &W,
     fail: impl Fn(MemoryError) -> E + Copy,
-) -> Result<OwnedVec<Prepared<'a, W>, W>, E> {
+) -> Result<OwnedVec<Prepared<'a, V>, W>, E> {
     execution
         .charge_work(attributes.len() as u64)
         .map_err(fail)?;
@@ -514,6 +613,142 @@ mod tests {
     use super::*;
     use crate::{fixtures, name, oid};
     use structured_asn1::Parser;
+
+    #[test]
+    fn deferred_segment_headers_keep_the_original_source_ceiling() {
+        // Empty BER fragments still cost header work. A temporary retained-name
+        // parser must not move that scan outside the actual source's ceiling.
+        fn read<'a>(parser: &'a Parser, data: &'a [u8]) -> crate::Name<'a> {
+            let mut reader = parser.read(data, 777).unwrap();
+            let element = reader.next_element().unwrap().unwrap();
+            name::read(&reader, &element, "name").unwrap()
+        }
+        // X.690 §8.23.3: constructed restricted strings carry OCTET STRING
+        // fragments; the enclosing type remains UTF8String.
+        let mut fragments = [4, 0].repeat(2000);
+        fragments.extend([4, 1, b'x']);
+        let left_bytes = fixtures::seq(&[fixtures::set(&[fixtures::seq(&[
+            fixtures::oid(oid::COMMON_NAME),
+            fixtures::tlv(44, &fragments),
+        ])])]);
+        let right_bytes = fixtures::seq(&[fixtures::set(&[fixtures::seq(&[
+            fixtures::oid(oid::COMMON_NAME),
+            fixtures::utf8("x"),
+        ])])]);
+        let left_parser = Parser::new(
+            structured_asn1::Encoding::Ber,
+            structured_asn1::Limits::default(),
+            fixtures::memory(),
+        );
+        let right_parser = Parser::der(fixtures::memory());
+        let operation = Parser::der(fixtures::memory());
+        let left = read(&left_parser, &left_bytes);
+        let right = read(&right_parser, &right_bytes);
+        let query = operation.read(&[], 0).unwrap();
+        let work = query.execution();
+        let left_work = work.execution_for(&left_parser);
+        let right_work = work.execution_for(&right_parser);
+        let held = work.memory().used();
+        assert!(
+            left.matches_between(
+                &right,
+                (&left_work, &left_parser),
+                (&right_work, &right_parser)
+            )
+            .unwrap()
+        );
+        let narrow = Parser::new(
+            structured_asn1::Encoding::Der,
+            structured_asn1::Limits {
+                max_depth: 0,
+                ..structured_asn1::Limits::default()
+            },
+            fixtures::memory(),
+        );
+        let reader = narrow.read(&[], 0).unwrap();
+        let narrow_work = reader.execution();
+        let left_query = narrow_work.execution_for(&left_parser);
+        let right_query = narrow_work.execution_for(&right_parser);
+        let error = left
+            .matches_between(
+                &right,
+                (&left_query, &left_parser),
+                (&right_query, &right_parser),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            crate::ErrorCode::Encoding(structured_asn1::ErrorCode::LimitExceeded(
+                structured_asn1::Limit::Depth
+            ))
+        );
+        let source = left_parser.read(&[], 0).unwrap();
+        let budget = source.execution();
+        budget
+            .charge_work(budget.work_remaining() as u64 - 2000)
+            .unwrap();
+        assert!(
+            left.matches_between(
+                &right,
+                (&left_work, &left_parser),
+                (&right_work, &right_parser)
+            )
+            .is_err_and(|error| error.is_resource())
+        );
+        assert_eq!(work.memory().used(), held);
+    }
+
+    #[test]
+    fn separate_source_preparation_funds_its_own_multivalue_scratch() {
+        // Source capacity/copy/sort work cannot escape to a generous query
+        // after the source paid only primitive attribute preparation.
+        fn read<'a>(parser: &'a Parser, data: &'a [u8]) -> crate::Name<'a> {
+            let mut r = parser.read(data, 777).unwrap();
+            let e = r.next_element().unwrap().unwrap();
+            name::read(&r, &e, "name").unwrap()
+        }
+        let bytes = |value| {
+            fixtures::seq(&[fixtures::set(&[
+                fixtures::seq(&[
+                    fixtures::oid(structured_asn1::Oid::from_bytes(&[42])),
+                    fixtures::utf8(value),
+                ]),
+                fixtures::seq(&[
+                    fixtures::oid(structured_asn1::Oid::from_bytes(&[43])),
+                    fixtures::utf8(value),
+                ]),
+            ])])
+        };
+        let left_bytes = bytes("x");
+        let right_bytes = bytes("y");
+        let left_parser = Parser::der(fixtures::memory());
+        let right_parser = Parser::der(fixtures::memory());
+        let operation = Parser::der(fixtures::memory());
+        let left = read(&left_parser, &left_bytes);
+        let right = read(&right_parser, &right_bytes);
+        let source = left_parser.read(&[], 0).unwrap();
+        let budget = source.execution();
+        // Two metadata steps, the equal-length original-byte gate and two
+        // primitive scans (64 kind-byte passes plus four value-byte passes).
+        let allowance = left_bytes.len() as u64 + 2 + 2 * (64 + 4);
+        budget
+            .charge_work(budget.work_remaining() as u64 - allowance)
+            .unwrap();
+        let query = operation.read(&[], 0).unwrap();
+        let work = query.execution();
+        let left_work = work.execution_for(&left_parser);
+        let right_work = work.execution_for(&right_parser);
+        let held = work.memory().used();
+        assert!(
+            left.matches_between(
+                &right,
+                (&left_work, &left_parser),
+                (&right_work, &right_parser)
+            )
+            .is_err_and(|error| error.is_resource())
+        );
+        assert_eq!(work.memory().used(), held);
+    }
 
     #[test]
     fn prepared_names_preserve_multiset_and_part_order() {

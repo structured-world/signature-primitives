@@ -72,9 +72,15 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
         self.source
     }
     /// Select a target assertion using the same issuer as the signer binding.
-    pub fn find<'d, D: AsnDigest<'d> + ?Sized, E: Work>(
+    pub fn find<
+        't,
+        'd,
+        T: crate::revocation::RevocationTarget<'t>,
+        D: AsnDigest<'d> + ?Sized,
+        E: Work,
+    >(
         self,
-        target: &Certificate<'_>,
+        target: &T,
         digest: &'d D,
         execution: &E,
     ) -> CallbackResult<Lookup<'r, 'a>, D::Error> {

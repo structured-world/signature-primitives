@@ -71,12 +71,18 @@ structured-cms = "0.8"
   distinct. Returned facts retain profile storage, the authority, effective key
   and evaluation interval. Holder/path/direct-AA trust, target/proxy effects,
   revocation and authorization remain explicit caller obligations; AKI is a hint.
-- Checked AC `Profile` implements PKIX `crl::RevocationTarget`: use the same
+- Checked AC `Profile` implements PKIX `revocation::RevocationTarget`: use the same
   authenticated CRL scope, entry, complete/delta evaluation and reason coverage
   operations as for PKC. Facts retain the actual profile and original AC, without
   constructing a public-key certificate or copying its identity. `NoRevAvail`
   remains a distinct written scheme; status evidence does not discharge other
   profile, trust, targeting or authorization obligations.
+  The same profile is an OCSP target for `CertId`/lookup and
+  `ScopedResponse::evaluate_with_target`; the returned binding retains this
+  actual profile, not a fabricated PKC. Original issuer DER/serial and the real
+  AA key identify it. Direct AA and explicit configured-responder authority are
+  supported; PKC delegation cannot confer AC authority under RFC5755 §4.5.
+  Nonce, time, critical demand and `NoRevAvail` outcomes stay distinct.
 - `AttributeCertificate::bind_holder_digest` checks an explicitly selected whole
   certificate or effective public key against Holder `objectDigestInfo`.
   `validation::digest::ObjectDigestProvider` uses the existing incremental digest

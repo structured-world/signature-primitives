@@ -419,6 +419,52 @@ fn lower_level_timestamp_presences_are_advisories_not_failed_requirements() {
 }
 
 #[test]
+fn legacy_catalogue_enforces_value_and_baseline_instance_cardinality() {
+    // AnnexA fixes one value per instance. Table1 permits repeated reference
+    // timestamps, while its other six legacy rows permit at most one instance.
+    for suffix in [21, 22, 23, 24, 25, 26, 44, 45] {
+        let kind = [42, 134, 72, 134, 247, 13, 1, 9, 16, 2, suffix];
+        for count in [0, 1, 2] {
+            let bytes = message(&[attribute(&kind, &vec![tlv(0x30, &[]); count])]);
+            let parser = Parser::ber(memory());
+            let data = SignedData::read(&parser, &bytes, 500).unwrap();
+            let parent = parser.read(&[], 0).unwrap();
+            let document = Document::new(&data, &parent).unwrap();
+            let prepared =
+                Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+            let invalid = prepared.findings().iter().any(|finding| {
+                matches!(
+                    finding.rule,
+                    Rule::Schema {
+                        code: structured_cms::ErrorCode::AttributeCardinality,
+                        ..
+                    }
+                )
+            });
+            assert_eq!(invalid, count != 1, "suffix={suffix} count={count}");
+        }
+        let entry = attribute(&kind, &[tlv(0x30, &[])]);
+        let bytes = message(&[entry.clone(), entry]);
+        let parser = Parser::ber(memory());
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let prepared =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        let duplicate = prepared.findings().iter().any(|finding| {
+            matches!(
+                finding.rule,
+                Rule::Schema {
+                    code: structured_cms::ErrorCode::DuplicateAttribute,
+                    ..
+                }
+            )
+        });
+        assert_eq!(duplicate, suffix != 25 && suffix != 26, "suffix={suffix}");
+    }
+}
+
+#[test]
 fn legacy_attributes_require_unsigned_placement_for_root_and_counter_signers() {
     // AnnexA's unsigned placement is mandatory independently of Table1's
     // lower-level advice or LT/LTA absence. Preserve the actual attribute span.

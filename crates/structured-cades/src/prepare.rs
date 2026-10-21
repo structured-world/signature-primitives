@@ -4,7 +4,7 @@ use crate::source::{Document, DocumentId, Node, Original};
 use crate::{Cades, Error, ISSUER, Level, Result};
 use structured_asn1::memory::{OwnedMap, OwnedVec, Work};
 use structured_asn1::{Element, Reader, Span};
-use structured_cms::attribute::Attributes;
+use structured_cms::attribute::{Attribute, Attributes};
 use structured_cms::cades::{Profile, Role};
 use structured_cms::counter::{self, Visit, WalkError};
 use structured_cms::signer::SignerInfo;
@@ -659,6 +659,7 @@ fn legacy_rules<'m, 'd, W: Work>(
     findings: &mut OwnedVec<Finding<'m, 'd>, W>,
 ) -> Result<()> {
     let mut credentials = None;
+    let mut seen = 0u8;
     for (protected, set) in [
         (true, signer.signed_attributes()),
         (false, signer.unsigned_attributes()),
@@ -667,9 +668,18 @@ fn legacy_rules<'m, 'd, W: Work>(
             continue;
         };
         for attribute in set.items() {
-            let Some(kind) = legacy_kind(attribute.kind(), parent)? else {
+            let Some((ordinal, kind)) = legacy_kind(attribute.kind(), parent)? else {
                 continue;
             };
+            legacy_cardinality(
+                document,
+                attribute,
+                ordinal,
+                &mut seen,
+                level.is_some() && !protected,
+                parent,
+                findings,
+            )?;
             // AnnexA defines these as unsigned. Placement is mandatory in
             // root and counter signers, regardless of the baseline-level row.
             // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
@@ -726,16 +736,64 @@ fn legacy_rules<'m, 'd, W: Work>(
     Ok(())
 }
 
+fn legacy_cardinality<'m, 'd, W: Work>(
+    document: &Document<'m, 'd>,
+    attribute: &Attribute<'_>,
+    ordinal: u8,
+    seen: &mut u8,
+    root: bool,
+    parent: &Reader<'_>,
+    findings: &mut OwnedVec<Finding<'m, 'd>, W>,
+) -> Result<()> {
+    parent
+        .charge(2)
+        .map_err(|cause| Error::encoding(cause, FIELD))?;
+    // AnnexA.1 specifies one value in each of these eight attributes.
+    // Table1 permits repeated reference timestamps (the two timestamp rows),
+    // but the six reference/value rows have baseline cardinality 0 or 1.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+    if attribute.values().len() != 1 {
+        finding(
+            document,
+            attribute.span(),
+            Severity::Required,
+            Rule::Schema {
+                code: ErrorCode::AttributeCardinality,
+                field: "cades.legacy.values",
+            },
+            findings,
+        )?;
+    }
+    if root && ordinal != 4 && ordinal != 5 {
+        debug_assert!(ordinal < 8);
+        let bit = 1u8 << ordinal;
+        if *seen & bit != 0 {
+            finding(
+                document,
+                attribute.span(),
+                Severity::Required,
+                Rule::Schema {
+                    code: ErrorCode::DuplicateAttribute,
+                    field: "cades.legacy",
+                },
+                findings,
+            )?;
+        }
+        *seen |= bit;
+    }
+    Ok(())
+}
+
 fn legacy_kind(
     kind: structured_asn1::Oid<'_>,
     parent: &Reader<'_>,
-) -> Result<Option<structured_asn1::Oid<'static>>> {
-    for expected in LEGACY {
+) -> Result<Option<(u8, structured_asn1::Oid<'static>)>> {
+    for (ordinal, expected) in (0u8..).zip(LEGACY) {
         parent
             .charge(1 + kind.as_bytes().len().min(expected.as_bytes().len()) as u64)
             .map_err(|cause| Error::encoding(cause, FIELD))?;
         if kind == expected {
-            return Ok(Some(expected));
+            return Ok(Some((ordinal, expected)));
         }
     }
     Ok(None)

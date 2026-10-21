@@ -109,6 +109,11 @@ impl<'a> RoleSyntax<'a> {
             ));
         }
         let mut values = execution.vector();
+        // The immutable Attribute already supplies the complete count. Reserve
+        // the result once, avoiding descriptor moves on geometric growth.
+        values
+            .try_reserve_exact(attribute.values().len())
+            .map_err(|e| Error::resource(e, FIELD, attribute.span().start))?;
         for index in 0..attribute.values().len() {
             let mut reader = attribute
                 .value_reader_scoped(index, &execution, FIELD)?
@@ -120,9 +125,6 @@ impl<'a> RoleSyntax<'a> {
                     )
                 })?;
             let at = reader.offset();
-            values
-                .try_reserve(1)
-                .map_err(|e| Error::resource(e, FIELD, at))?;
             let value = Self::read(&mut reader)?;
             values
                 .try_push(value)

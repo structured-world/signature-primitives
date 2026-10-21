@@ -127,13 +127,17 @@ impl Fixture {
 
     /// Adds `empty` unsigned attributes whose value sets are empty.
     fn with_empty_attributes(empty: usize) -> Self {
-        let certificates = vec![
+        Self::with_repeated_elements(empty, [0; 3])
+    }
+
+    fn with_repeated_elements(empty: usize, repeats: [usize; 3]) -> Self {
+        let mut certificates = vec![
             // Version-1 attribute certificate and an other-format choice,
             // preserved as encoded without X.509 parsing.
             tlv(0xa1, &tlv(0x30, &[2, 1, 1])),
             tlv(0xa3, &[tlv(6, &[0x2a, 5]), vec![5, 0]].concat()),
         ];
-        let revocations = vec![
+        let mut revocations = vec![
             tlv(0xa1, &[tlv(6, &[0x2a, 6]), tlv(4, &[9])].concat()),
             tlv(0xa1, &[tlv(6, &[0x2a, 7]), tlv(4, &[10, 11])].concat()),
         ];
@@ -141,6 +145,16 @@ impl Fixture {
             (tlv(6, &[0x2a, 3]), vec![tlv(2, &[1]), tlv(2, &[2])]),
             (tlv(6, &[0x2a, 4]), vec![tlv(12, b"x")]),
         ];
+        for _ in 0..repeats[0] {
+            certificates.push(certificates[0].clone());
+        }
+        for _ in 0..repeats[1] {
+            revocations.push(revocations[0].clone());
+        }
+        for _ in 0..repeats[2] {
+            let value = attributes[0].1[0].clone();
+            attributes[0].1.push(value);
+        }
         attributes.extend((0..empty).map(|_| (tlv(6, &[0x2a, 9]), Vec::new())));
         let signer_fields = [
             vec![2, 1, 3],
@@ -237,7 +251,16 @@ fn coverage_measured(fixture: &Fixture, encoded_index: &[u8], work: usize) -> (C
     // A completed check hashes each original element exactly once, however
     // many entries name it; an unresolved algorithm hashes nothing.
     match &result {
-        Ok(Resolution::Supported(_)) => assert_eq!(provider.starts.get(), 7),
+        Ok(Resolution::Supported(_)) => assert_eq!(
+            provider.starts.get(),
+            fixture.certificates.len()
+                + fixture.revocations.len()
+                + fixture
+                    .attributes
+                    .iter()
+                    .map(|(_, values)| values.len())
+                    .sum::<usize>()
+        ),
         Ok(_) => assert_eq!(provider.starts.get(), 0),
         Err(_) => {}
     }
@@ -784,5 +807,83 @@ fn archive_algorithm_comparison_keeps_both_original_source_limits() {
             }
         }
         assert_eq!(current.used(), 0);
+    }
+}
+
+#[test]
+fn index_entries_consume_exactly_one_original_instance_per_hash() {
+    // EN319122-1 §5.5.2 requires one entry per original instance, not a
+    // membership set. Test missing/excess multiplicity in all three lists.
+    for selected in 0..3 {
+        for originals in [2, 1, 8] {
+            let mut repeats = [0; 3];
+            repeats[selected] = originals - 1;
+            let fixture = Fixture::with_repeated_elements(0, repeats);
+            for change in [-1, 0, 1] {
+                let mut lists = [
+                    fixture.certificate_hashes(),
+                    fixture.revocation_hashes(),
+                    fixture.value_hashes(),
+                ];
+                if change < 0 {
+                    lists[selected].remove(0);
+                }
+                if change > 0 {
+                    let hash = lists[selected][0].clone();
+                    lists[selected].push(hash);
+                }
+                lists[selected].reverse();
+                let encoded = index(SHA256_OID, [&lists[0], &lists[1], &lists[2]]);
+                let result = supported(coverage(&fixture, &encoded, 1_000_000).unwrap());
+                let flags = match selected {
+                    0 => result.certificates().to_vec(),
+                    1 => result.revocations().to_vec(),
+                    _ => result
+                        .attribute_values()
+                        .iter()
+                        .map(|(_, covered)| *covered)
+                        .collect(),
+                };
+                let expected = fixture.certificates.len()
+                    + fixture.revocations.len()
+                    + fixture.value_hashes().len();
+                let total = result
+                    .certificates()
+                    .iter()
+                    .filter(|covered| **covered)
+                    .count()
+                    + result
+                        .revocations()
+                        .iter()
+                        .filter(|covered| **covered)
+                        .count()
+                    + result
+                        .attribute_values()
+                        .iter()
+                        .filter(|(_, covered)| *covered)
+                        .count();
+                assert_eq!(
+                    total,
+                    expected - usize::from(change < 0),
+                    "list={selected} originals={originals} change={change}"
+                );
+                assert_eq!(
+                    flags.iter().filter(|covered| !**covered).count(),
+                    usize::from(change < 0)
+                );
+                assert_eq!(result.is_valid(), change <= 0);
+                assert_eq!(result.unmatched().len(), usize::from(change > 0));
+                if change > 0 {
+                    assert_eq!(
+                        result.unmatched()[0].list,
+                        match selected {
+                            0 => IndexList::Certificates,
+                            1 => IndexList::Revocations,
+                            _ => IndexList::AttributeValues,
+                        }
+                    );
+                }
+            }
+        }
     }
 }

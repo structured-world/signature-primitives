@@ -594,8 +594,16 @@ impl<'a, P: Digest<'a>> Hasher<'_, 'a, P> {
 // one provider comparison and log n byte comparisons. `Digest::matches` answers
 // exact byte equality (its strategy governs how bytes are compared, not which
 // differing bytes are equal), so no other hash can match an entry its nearest
-// one does not, and every hash need not be tried. Equal hashes name equal
-// encodings and are all marked.
+// one does not, and every hash need not be tried. Each equal-hash group has
+// one consumption cursor at its first sorted member: EN319122-1 §5.5.2
+// requires one index entry PER INSTANCE, not membership in a set. A missing
+// entry leaves one occurrence uncovered; an excess entry is unmatched.
+// https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+struct Ranked {
+    ordinal: usize,
+    consumed: usize,
+}
+
 fn mark<'a, P: Digest<'a>>(
     digest: &Hasher<'_, 'a, P>,
     hashes: &[P::Output],
@@ -613,11 +621,28 @@ fn mark<'a, P: Digest<'a>>(
     let mut order = execution.vector();
     order.try_reserve_exact(hashes.len()).map_err(refusal)?;
     for ordinal in 0..hashes.len() {
-        order.try_push(ordinal).map_err(refusal)?;
+        order
+            .try_push(Ranked {
+                ordinal,
+                consumed: 0,
+            })
+            .map_err(refusal)?;
     }
     order
         .try_sort_unstable_by(|left, right| {
-            compare(hashes[*left].as_ref(), hashes[*right].as_ref(), execution)
+            let compared = compare(
+                hashes[left.ordinal].as_ref(),
+                hashes[right.ordinal].as_ref(),
+                execution,
+            )?;
+            if compared == Ordering::Equal {
+                execution.charge_work(1)?;
+                // Consume indistinguishable instances in original order;
+                // unstable sort must not pick an arbitrary source occurrence.
+                Ok(left.ordinal.cmp(&right.ordinal))
+            } else {
+                Ok(compared)
+            }
         })
         .map_err(|error| match error {
             SortError::Resource(reason) | SortError::Comparison(reason) => refusal(reason),
@@ -628,39 +653,37 @@ fn mark<'a, P: Digest<'a>>(
         covered.try_push(false).map_err(refusal)?;
     }
     for (ordinal, entry) in entries.iter().enumerate() {
+        execution.charge_work(1).map_err(refusal)?;
         let first = lower_bound(&order, hashes, entry, execution).map_err(refusal)?;
         // No hash at all leaves nothing an entry could name.
         let nearest = order.get(first).or_else(|| order.last());
         let matched = match nearest {
-            Some(&candidate) => digest.matches(&hashes[candidate], entry, execution)?,
+            Some(candidate) => digest.matches(&hashes[candidate.ordinal], entry, execution)?,
             None => false,
         };
-        if let Some(&nearest) = nearest
-            && matched
-        {
-            let candidate = hashes[nearest].as_ref();
-            let mut position =
-                lower_bound(&order, hashes, candidate, execution).map_err(refusal)?;
-            while position < order.len()
-                && compare(hashes[order[position]].as_ref(), candidate, execution)
+        if matched && first < order.len() {
+            debug_assert!(order[first].consumed <= order.len() - first);
+            let position = first + order[first].consumed;
+            if position < order.len()
+                && compare(hashes[order[position].ordinal].as_ref(), entry, execution)
                     .map_err(refusal)?
                     == Ordering::Equal
             {
-                covered[order[position]] = true;
-                position += 1;
+                covered[order[position].ordinal] = true;
+                order[first].consumed += 1;
+                continue;
             }
-        } else {
-            unmatched.try_reserve(1).map_err(refusal)?;
-            unmatched
-                .try_push(Unmatched { list, ordinal })
-                .map_err(refusal)?;
         }
+        unmatched.try_reserve(1).map_err(refusal)?;
+        unmatched
+            .try_push(Unmatched { list, ordinal })
+            .map_err(refusal)?;
     }
     Ok(covered.into_owned())
 }
 
 fn lower_bound<O: AsRef<[u8]>>(
-    order: &[usize],
+    order: &[Ranked],
     hashes: &[O],
     entry: &[u8],
     execution: &impl Work,
@@ -669,7 +692,7 @@ fn lower_bound<O: AsRef<[u8]>>(
     let mut to = order.len();
     while from < to {
         let middle = from + (to - from) / 2;
-        if compare(hashes[order[middle]].as_ref(), entry, execution)? == Ordering::Less {
+        if compare(hashes[order[middle].ordinal].as_ref(), entry, execution)? == Ordering::Less {
             from = middle + 1;
         } else {
             to = middle;

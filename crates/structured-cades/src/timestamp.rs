@@ -228,6 +228,8 @@ pub enum CheckError<SE, PE, RE, FE = core::convert::Infallible> {
 /// Original source-specific baseline preflight failure.
 #[derive(Debug)]
 pub enum ProfileError<PE, E> {
+    /// Located profile/placement violation on the actual archive TSA signer.
+    Cades(structured_cms::Error),
     /// Actual signed ESS/path restriction execution refused.
     Restriction(BindError<PE>),
     /// The format prohibits actual MD5 use (§6.2.1), independently of support.
@@ -523,6 +525,28 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
                 covered,
                 recognizes,
                 |input| {
+                    if self.entry.purpose() == Purpose::Archive {
+                        // EN319122-1 §5.5.2 permits the hash index only in
+                        // unsigned attributes of this archive TSA signer.
+                        // Reuse the ESS reading of this very check; a valid
+                        // unsigned index cannot hide a prohibited signed copy.
+                        let faults = structured_cms::cades::findings_from_reading(
+                            input.token.signer(),
+                            structured_cms::cades::Role::ArchiveTimestamp,
+                            input.ess,
+                            input.parent,
+                        )
+                        .map_err(|cause| ProfileFailure {
+                            source: ProfileSource::Envelope,
+                            cause: ProfileError::Cades(cause),
+                        })?;
+                        if let Some(cause) = faults.into_iter().next() {
+                            return Err(ProfileFailure {
+                                source: ProfileSource::Envelope,
+                                cause: ProfileError::Cades(cause),
+                            });
+                        }
+                    }
                     restriction.set(Self::profile_rules(&input, path, provider)?);
                     profile(input).map_err(|cause| ProfileFailure {
                         source: cause.source,

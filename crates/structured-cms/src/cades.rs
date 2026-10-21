@@ -275,6 +275,20 @@ pub fn profile<'a>(
     // The producing parser's ceilings fund every scan below.
     signer.require_session(parent, "signerInfo")?;
     let signing = SigningAttributes::read(signer, parent)?;
+    let faults = findings_from_reading(signer, role, &signing, parent)?;
+    Ok(Profile { signing, faults })
+}
+
+/// Applies the same profile kernel to the SAME already parsed ESS reading.
+/// Source identity is checked before traversal; no ESS value is reparsed and
+/// no signature, certificate binding or application trust is established.
+pub fn findings_from_reading(
+    signer: &SignerInfo<'_>,
+    role: Role,
+    signing: &SigningAttributes<'_>,
+    parent: &Reader<'_>,
+) -> Result<OwnedVec<Error>> {
+    signing.require_signer(signer, parent)?;
     let execution = parent.execution();
     let mut faults = execution.vector();
     for rule in &RULES {
@@ -343,10 +357,7 @@ pub fn profile<'a>(
             )?;
         }
     }
-    Ok(Profile {
-        signing,
-        faults: faults.into_owned(),
-    })
+    Ok(faults.into_owned())
 }
 
 fn report<W: Work>(

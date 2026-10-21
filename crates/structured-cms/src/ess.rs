@@ -313,6 +313,8 @@ pub struct SigningCertificate<'a> {
 /// diagnostics separate from certificate/hash/path checking.
 #[derive(Debug)]
 pub struct SigningAttributes<'a> {
+    parser: &'a structured_asn1::Parser,
+    signer: structured_asn1::Span,
     signed_attributes_present: bool,
     v1: Option<SigningCertificate<'a>>,
     v2: Option<SigningCertificate<'a>>,
@@ -320,6 +322,22 @@ pub struct SigningAttributes<'a> {
 }
 
 impl<'a> SigningAttributes<'a> {
+    pub(crate) fn require_signer(
+        &self,
+        signer: &SignerInfo<'_>,
+        parent: &Reader<'_>,
+    ) -> Result<()> {
+        signer.require_session(parent, "signerInfo.signedAttrs")?;
+        if !core::ptr::eq(self.parser, parent.parser()) || self.signer != signer.span() {
+            return Err(Error::pkix(structured_pkix::Error::new(
+                structured_pkix::ErrorCode::ForeignReader,
+                "signerInfo.signedAttrs",
+                signer.span().start,
+            )));
+        }
+        Ok(())
+    }
+
     /// Reads the recognized signed fields using original value provenance.
     ///
     /// RFC5035 §§3/5 require one instance and one value in signed attributes.
@@ -394,6 +412,8 @@ impl<'a> SigningAttributes<'a> {
             }
         }
         Ok(Self {
+            parser: parent.parser(),
+            signer: signer.span(),
             signed_attributes_present: signer.signed_attributes().is_some(),
             v1,
             v2,

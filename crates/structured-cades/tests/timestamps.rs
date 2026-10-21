@@ -71,7 +71,7 @@ fn token(
         root,
         key,
         accuracy,
-        index,
+        index.map(|bytes| (bytes, false)),
         oid::SHA256.as_bytes(),
     )
 }
@@ -81,7 +81,7 @@ fn token_digest(
     root: &[u8],
     key: &SigningKey,
     accuracy: bool,
-    index: Option<&[u8]>,
+    index: Option<(&[u8], bool)>,
     digest: &[u8],
 ) -> Vec<u8> {
     let imprint = tlv(
@@ -106,14 +106,19 @@ fn token_digest(
     let info = tlv(0x30, &fields);
     let unsigned: Vec<_> = index
         .into_iter()
-        .map(|index| attribute(oid::ATS_HASH_INDEX_V3.as_bytes(), index))
+        .map(|(bytes, _)| attribute(oid::ATS_HASH_INDEX_V3.as_bytes(), bytes))
+        .collect();
+    let signed: Vec<_> = index
+        .filter(|(_, misplaced)| *misplaced)
+        .map(|(bytes, _)| attribute(oid::ATS_HASH_INDEX_V3.as_bytes(), bytes))
+        .into_iter()
         .collect();
     let signature = support::signer_digest(
         Some(oid::TST_INFO.as_bytes()),
         &info,
         cert,
         key,
-        &[],
+        &signed,
         &unsigned,
         digest,
     );
@@ -126,7 +131,13 @@ fn token_digest(
     )
 }
 
-fn archive_token(before: &[u8], cert: &[u8], root: &[u8], key: &SigningKey) -> Vec<u8> {
+fn archive_token(
+    before: &[u8],
+    cert: &[u8],
+    root: &[u8],
+    key: &SigningKey,
+    misplaced: bool,
+) -> Vec<u8> {
     // Trusted DER fixture writer follows EN319122-1 §§5.5.2–5.5.3.
     // The existing CMS index/range core is separately checked against the DSS
     // compatibility corpus; here real token crypto tests the complete wiring.
@@ -167,7 +178,15 @@ fn archive_token(before: &[u8], cert: &[u8], root: &[u8], key: &SigningKey) -> V
     for range in ranges {
         input.extend(range);
     }
-    token(&input, cert, root, key, true, Some(&index))
+    token_digest(
+        &input,
+        cert,
+        root,
+        key,
+        true,
+        Some((&index, misplaced)),
+        oid::SHA256.as_bytes(),
+    )
 }
 
 #[test]
@@ -182,7 +201,7 @@ fn archive_token(before: &[u8], cert: &[u8], root: &[u8], key: &SigningKey) -> V
 fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_accuracy() {
     // This is real ECDSA/SHA-256 on both CMS signatures and certificates.
     // A valid TSA signature alone cannot establish input or full time bounds.
-    for mode in 0..7 {
+    for mode in 0..8 {
         let root_key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
         let signer_key = SigningKey::from_bytes((&[2; 32]).into()).unwrap();
         let tsa_key = SigningKey::from_bytes((&[3; 32]).into()).unwrap();
@@ -232,7 +251,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         }
         let certs = [root_bytes.clone(), leaf_bytes.clone(), tsa_bytes.clone()];
         let crls = [crl(&root_key)];
-        if mode == 4 || mode == 6 {
+        if matches!(mode, 4 | 6 | 7) {
             let before_signer = signer(
                 Some(oid::DATA.as_bytes()),
                 b"sample",
@@ -248,7 +267,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 &crls,
                 &[before_signer],
             );
-            let archive = archive_token(&before, &tsa_bytes, &root_bytes, &tsa_key);
+            let archive = archive_token(&before, &tsa_bytes, &root_bytes, &tsa_key, mode == 7);
             unsigned.push(attribute(oid::ARCHIVE_TIMESTAMP_V3.as_bytes(), &archive));
         }
         let signature = signer(
@@ -336,7 +355,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         let document = Document::new(&message, &parent).unwrap();
         let level = match mode {
             3 => Level::LongTerm,
-            4 | 6 => Level::Archival,
+            4 | 6 | 7 => Level::Archival,
             _ => Level::Timestamped,
         };
         let prepared = Preparation::read(&document, selected, level, &parent).unwrap();
@@ -400,20 +419,43 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             continue;
         }
         let answer = answer.unwrap();
-        let archive = if mode == 4 || mode == 6 {
+        let archive = if matches!(mode, 4 | 6 | 7) {
             let ordinal = prepared
                 .timestamps()
                 .iter()
                 .position(|entry| entry.purpose() == structured_ltv::timestamp::Purpose::Archive)
                 .unwrap();
-            Some(
-                pool.with_token(ordinal, &parent, |selected| {
-                    selected.check_archive_carried(&oracle, &tsa_path, &parent, &time, |_, _| {
-                        Ok::<_, Infallible>(true)
-                    })
+            let result = pool.with_token(ordinal, &parent, |selected| {
+                selected.check_archive_carried(&oracle, &tsa_path, &parent, &time, |_, _| {
+                    Ok::<_, Infallible>(true)
                 })
-                .unwrap(),
-            )
+            });
+            if mode == 7 {
+                // A genuine token signature and a valid unsigned index cannot
+                // hide a second, prohibited signed hash-index occurrence.
+                let Err(structured_cades::timestamp::VisitError::Callback(
+                    structured_cades::timestamp::ArchiveCheckError::Timestamp(
+                        structured_cades::timestamp::CheckError::Check(
+                            structured_cms::timestamp::ProfileCheckError::Profile {
+                                source, ..
+                            },
+                        ),
+                    ),
+                )) = result
+                else {
+                    panic!("signed hash-index must refuse the archive profile")
+                };
+                assert_eq!(
+                    source.source,
+                    structured_cms::timestamp::ProfileSource::Envelope
+                );
+                let structured_cades::timestamp::ProfileError::Cades(cause) = source.cause else {
+                    panic!("original CAdES placement cause must survive")
+                };
+                assert_eq!(cause.code(), structured_cms::ErrorCode::AttributePlacement);
+                continue;
+            }
+            Some(result.unwrap())
         } else {
             None
         };

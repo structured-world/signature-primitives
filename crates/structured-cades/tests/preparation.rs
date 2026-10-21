@@ -104,6 +104,37 @@ fn message_with(signed: &[Vec<u8>], unsigned: &[Vec<u8>]) -> Vec<u8> {
 }
 
 #[test]
+fn reused_ess_profile_refuses_another_original_signer_or_parser() {
+    // Reusing a parsed reading saves a parse, but must never allow another
+    // signer's empty ESS reading to erase this signer's actual profile facts.
+    let bytes = message(&[]);
+    let account = memory();
+    let parser = Parser::ber(account.clone());
+    let other = Parser::ber(account.clone());
+    let first = SignedData::read(&parser, &bytes, 500).unwrap();
+    let second = SignedData::read(&parser, &bytes, 1500).unwrap();
+    let parent = parser.read(&[], 0).unwrap();
+    let foreign = other.read(&[], 0).unwrap();
+    let reading =
+        structured_cms::ess::SigningAttributes::read(&first.signers()[0], &parent).unwrap();
+    let before = account.used();
+    for (signer, reader) in [
+        (&second.signers()[0], &parent),
+        (&first.signers()[0], &foreign),
+    ] {
+        let cause = structured_cms::cades::findings_from_reading(
+            signer,
+            structured_cms::cades::Role::ArchiveTimestamp,
+            &reading,
+            reader,
+        )
+        .unwrap_err();
+        assert!(cause.is_terminal());
+        assert_eq!(account.used(), before);
+    }
+}
+
+#[test]
 fn duplicate_singletons_keep_findings_and_the_complete_original_census() {
     // A format violation must not truncate preparation before counters and
     // timestamps are catalogued. Duplicate presence is still presence.

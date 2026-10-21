@@ -14,6 +14,7 @@ use structured_pkix::general_name::{self, GeneralName};
 use structured_pkix::{Certificate, Name};
 
 pub mod aa_path;
+pub mod authentication;
 pub mod digest;
 mod profile;
 pub use profile::{AUDIT_IDENTITY, NO_REV_AVAILABLE, Profile, Revocation};

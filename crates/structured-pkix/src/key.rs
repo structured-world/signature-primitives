@@ -28,6 +28,18 @@ pub struct PublicKeyInfo<'a> {
 }
 
 impl<'a> PublicKeyInfo<'a> {
+    /// Fund deferred key operations from this original source and current Work.
+    /// No source bytes are scanned and no reader, account or allocation is created.
+    pub fn execution_in<'operation, W: structured_asn1::memory::Work>(
+        &self,
+        work: &'operation W,
+    ) -> structured_asn1::memory::Execution<'operation>
+    where
+        'a: 'operation,
+    {
+        self.algorithm.query_in(work)
+    }
+
     /// Which algorithm this key belongs to.
     #[must_use]
     pub fn algorithm(self) -> AlgorithmIdentifier<'a> {

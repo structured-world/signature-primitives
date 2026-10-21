@@ -726,7 +726,7 @@ fn present_optional_attributes_must_satisfy_their_value_schemas() {
 
 #[test]
 fn empty_counter_and_ber_signature_timestamp_are_not_conforming() {
-    // RFC5652 §11.4 needs at least one counter value; EN319122-1 §5.3
+    // RFC5652 §11.4 needs at least one counter value; EN319122-1 §6.3(l)
     // requires the whole signature-time-stamp attribute to be DER encoded.
     let mut ber_timestamp = attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &[tlv(0x30, &[])]);
     ber_timestamp.insert(1, 0x81);

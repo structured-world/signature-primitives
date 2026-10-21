@@ -189,6 +189,31 @@ fn archive_token(
     )
 }
 
+// Change only the outer Attribute header; all original token bytes stay exact.
+fn ber_wrapper(original: &[u8], indefinite: bool) -> Vec<u8> {
+    let width = if original[1] < 128 {
+        0
+    } else {
+        usize::from(original[1] & 0x7f)
+    };
+    let mut changed = if indefinite {
+        vec![0x30, 0x80]
+    } else {
+        let mut header = vec![0x30, 0x80 | u8::try_from(width + 1).unwrap(), 0];
+        if width == 0 {
+            header.push(original[1]);
+        } else {
+            header.extend(&original[2..2 + width]);
+        }
+        header
+    };
+    changed.extend(&original[2 + width..]);
+    if indefinite {
+        changed.extend([0, 0]);
+    }
+    changed
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -201,7 +226,7 @@ fn archive_token(
 fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_accuracy() {
     // This is real ECDSA/SHA-256 on both CMS signatures and certificates.
     // A valid TSA signature alone cannot establish input or full time bounds.
-    for mode in 0..9 {
+    for mode in 0..11 {
         let root_key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
         let signer_key = SigningKey::from_bytes((&[2; 32]).into()).unwrap();
         let tsa_key = SigningKey::from_bytes((&[3; 32]).into()).unwrap();
@@ -247,6 +272,10 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             token(&covered, &tsa_bytes, &root_bytes, &tsa_key, mode != 2, None)
         };
         let mut unsigned = vec![attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &timestamp)];
+        if mode >= 9 {
+            unsigned[0] = ber_wrapper(&unsigned[0], mode == 9);
+        }
+
         if mode == 6 {
             // EN319122-1 §5.5.3: a new valid ATSv3 cannot erase an older
             // original preservation obligation or manufacture its actors.
@@ -366,8 +395,9 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         };
         let started = std::time::Instant::now();
         let prepared = Preparation::read(&document, selected, level, &parent).unwrap();
-        assert!(
+        assert_eq!(
             prepared.all_format_requirements_met(),
+            mode < 9,
             "{:?}",
             prepared.findings()
         );
@@ -382,6 +412,47 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         )
         .unwrap();
         assert!(binding.is_bound());
+        if mode >= 9 {
+            // Table1(l) requires DER for baseline conformance. This is NOT a
+            // generic CMS decoding or signature-math prohibition: the real
+            // token, root signature and imprint must still independently check.
+            assert!(binding.mathematical());
+            let pool = material::Pool::read(&prepared, &parent).unwrap();
+            let time = structured_cades::timestamp::CheckTime {
+                utc: &utc,
+                reference: Some(interval.to_instant()),
+            };
+            let answer = pool
+                .with_token(0, &parent, |selected| {
+                    selected.check_signature(&oracle, &tsa_path, &parent, &time, |_, _| {
+                        Ok::<_, Infallible>(true)
+                    })
+                })
+                .unwrap();
+            assert!(answer.actor().is_some());
+            assert!(pool.token_faults().is_empty());
+            let [fault] = prepared.properties().faults() else {
+                panic!("one original wrapper finding")
+            };
+            assert_eq!(fault.attribute, oid::SIGNATURE_TIMESTAMP);
+            let structured_cades::Error::Encoding { cause, .. } = &fault.cause else {
+                panic!("original DER cause")
+            };
+            assert_eq!(
+                cause.code(),
+                if mode == 9 {
+                    structured_asn1::ErrorCode::IndefiniteLengthNotAllowed
+                } else {
+                    structured_asn1::ErrorCode::LengthNotMinimal
+                }
+            );
+            assert_eq!(
+                cause.offset(),
+                prepared.timestamps()[0].property().span().start + 1
+            );
+            continue;
+        }
+
         let counter_checks = counters::bind(&prepared, &parent, |context| {
             context.check(&oracle, leaf, &path)
         })

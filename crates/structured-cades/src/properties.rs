@@ -88,7 +88,9 @@ pub struct Properties<'a> {
 impl<'a> Properties<'a> {
     /// Read each recognized value under its original attribute reader. Existing
     /// CMS placement/cardinality and signed-DER checks remain the CMS kernel's
-    /// responsibility; this adds the value schemas from EN319122-1 Annex D.
+    /// responsibility; this adds the value schemas from EN319122-1 Annex D
+    /// and baseline attribute encoding requirements. A finding does not forbid
+    /// independent CMS decoding or mathematical verification.
     /// Reference timestamp envelopes and carried `TSTInfo` are inspected by
     /// full preparation, retaining mapped diagnostics with the original source.
     pub fn read(signer: &SignerInfo<'a>, parent: &Reader<'a>) -> Result<Self> {
@@ -211,8 +213,10 @@ fn read_value<'a, W: Work>(
         };
     }
     if kind == oid::SIGNATURE_TIMESTAMP {
-        // §5.3 fixes the WHOLE attribute to DER, independently of its envelope.
-        // Reuse the shared DER walker, with the original header reread as DER.
+        // EN319122-1 §6.3 Table1(l), not §5.3, requires DER for the WHOLE
+        // signature-time-stamp attribute. §5.3 only specifies its token type.
+        // This reports baseline conformance; generic CMS BER decoding and
+        // independent root/token signature verification remain available.
         // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
         let mut der = parent
             .reread(attribute.element(), structured_asn1::Encoding::Der)

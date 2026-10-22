@@ -329,8 +329,12 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
         let nonce = super::nonce::bind(
             request.nonce,
             processed.nonce,
-            execution,
-            response.span().start,
+            (execution, "ocspResponse.nonce", response.span().start),
+            (
+                &response.signature_algorithm().query_in(execution),
+                "ocspResponse.nonce",
+                response.span().start,
+            ),
         )?;
         let window = assertion.update_window(time.now, time.utc, execution)?;
         let revocation_time = assertion.revocation_relation(time.now, time.utc, execution)?;

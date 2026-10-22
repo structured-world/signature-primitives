@@ -1,6 +1,6 @@
 //! Applicable assertions are selected without discarding duplicate evidence.
 
-use super::{CertMatch, SignedResponse, SingleResponse};
+use super::{BasicResponse, CertId, CertMatch, SignedResponse, SingleResponse};
 use crate::algorithm::digest::AsnDigest;
 use crate::error::{CallbackResult, Error};
 use crate::{Certificate, revocation::RevocationTarget};
@@ -43,33 +43,57 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
         digest: &'d D,
         execution: &E,
     ) -> CallbackResult<Lookup<'r, 'a>, D::Error> {
-        let execution = &self.response().signature_algorithm().query_in(execution);
-        let mut first = None;
-        for response in self.response().responses() {
-            execution.charge_work(1).map_err(|reason| {
-                Error::resource(reason, "ocspResponse.responses", response.span().start)
-            })?;
-            match response.id().matches(target, issuer, digest, execution)? {
-                CertMatch::Differs => {}
-                CertMatch::UnsupportedHash => return Ok(Lookup::UnsupportedHash(response)),
-                CertMatch::MalformedHashWidth => return Ok(Lookup::MalformedHashWidth(response)),
-                CertMatch::MalformedHashAlgorithm => {
-                    return Ok(Lookup::MalformedHashAlgorithm(response));
-                }
-                CertMatch::Matches => match first {
-                    None => first = Some(response),
-                    Some(first) => {
-                        return Ok(Lookup::Ambiguous {
-                            first,
-                            second: response,
-                        });
-                    }
-                },
-            }
-        }
-        Ok(match first {
-            Some(response) => Lookup::Found(response),
-            None => Lookup::Missing,
+        locate(self.response(), execution, |id| {
+            id.matches(target, issuer, digest, execution)
         })
     }
+
+    /// Locate an actual sent wire `CertID` without rehashing certificates or
+    /// losing duplicates. Full digest identity/width checks use the same
+    /// source-aware comparison as the complete request batch binding.
+    pub fn find_id<'d, D: AsnDigest<'d> + ?Sized, E: Work>(
+        self,
+        requested: &CertId<'_>,
+        digest: &'d D,
+        execution: &E,
+    ) -> CallbackResult<Lookup<'r, 'a>, D::Error> {
+        locate(self.response(), execution, |id| {
+            id.matches_id(requested, digest, execution)
+        })
+    }
+}
+
+fn locate<'r, 'a, E, W: Work>(
+    original: &'r BasicResponse<'a>,
+    execution: &W,
+    mut compare: impl FnMut(CertId<'a>) -> CallbackResult<CertMatch, E>,
+) -> CallbackResult<Lookup<'r, 'a>, E> {
+    let execution = &original.signature_algorithm().query_in(execution);
+    let mut first = None;
+    for response in original.responses() {
+        execution.charge_work(1).map_err(|reason| {
+            Error::resource(reason, "ocspResponse.responses", response.span().start)
+        })?;
+        match compare(response.id())? {
+            CertMatch::Differs => {}
+            CertMatch::UnsupportedHash => return Ok(Lookup::UnsupportedHash(response)),
+            CertMatch::MalformedHashWidth => return Ok(Lookup::MalformedHashWidth(response)),
+            CertMatch::MalformedHashAlgorithm => {
+                return Ok(Lookup::MalformedHashAlgorithm(response));
+            }
+            CertMatch::Matches => match first {
+                None => first = Some(response),
+                Some(first) => {
+                    return Ok(Lookup::Ambiguous {
+                        first,
+                        second: response,
+                    });
+                }
+            },
+        }
+    }
+    Ok(match first {
+        Some(response) => Lookup::Found(response),
+        None => Lookup::Missing,
+    })
 }

@@ -56,7 +56,11 @@ impl<'a> BasicResponse<'a> {
                 Error::resource(reason, "ocspResponse.extensions", extension.span().start)
             })?;
             if extension.kind() == oid::OCSP_NONCE {
-                nonce = Some(super::nonce::read(extension, execution)?);
+                nonce = Some(super::nonce::read(
+                    extension,
+                    execution,
+                    "ocspResponse.nonce",
+                )?);
             } else if extension.kind() == oid::OCSP_EXTENDED_REVOKE {
                 retention::extended_revoke(extension, execution)?;
                 extended_revoke = true;

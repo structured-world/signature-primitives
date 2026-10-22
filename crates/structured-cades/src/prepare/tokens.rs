@@ -88,30 +88,146 @@ fn information_cause(cause: &ContentError<InfoError<Infallible>>) -> &structured
 pub(crate) struct Model<'d> {
     pub(crate) ordinal: usize,
     pub(crate) token: Token<'d>,
+    pub(crate) properties: Option<crate::properties::Properties<'d>>,
 }
-pub(crate) struct Cache<'d> {
+pub(crate) struct Cache<'m, 'd> {
     pub(crate) models: OwnedVec<Model<'d>>,
     pub(crate) ordinals: OwnedVec<Option<usize>>,
     pub(crate) faults: OwnedVec<(Node, ReadError)>,
+    pub(crate) related: Option<OwnedVec<Finding<'m, 'd>>>,
+}
+
+pub(super) struct Findings<'a, 'm, 'd, W: Work> {
+    pub(super) rows: &'a mut OwnedVec<Finding<'m, 'd>, W>,
+    pub(super) work: &'a W,
+}
+struct Reading<'d> {
+    model: Option<Model<'d>>,
+    fault: Option<ReadError>,
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "retain the original source map without allocating during resource refusal"
+)]
+fn read_one<'m, 'd, W: Work>(
+    document: &Document<'m, 'd>,
+    ordinal: usize,
+    entry: &Timestamp<'d>,
+    parent: &Reader<'d>,
+    findings: &mut OwnedVec<Finding<'m, 'd>, W>,
+) -> Result<Reading<'d>, ReadError> {
+    let at = entry.property.span().start;
+    let cause = if let Some(source) = entry.value {
+        let mut reader = source.reader_in(parent)?;
+        match Token::read_from(&mut reader) {
+            Ok(token) => {
+                let properties =
+                    if crate::properties::Properties::has_legacy_values(token.signer(), &reader)? {
+                        // The shared property reader retains AnnexA cardinality
+                        // faults too, before skipping an unreadable value.
+                        // Timestamp signers must not rely on root-only rules.
+                        let properties =
+                            crate::properties::Properties::read(token.signer(), &reader)?;
+                        super::property_findings(document, &properties, &reader, findings)?;
+                        Some(properties)
+                    } else {
+                        None
+                    };
+                let fault = if let Err(cause) = inspect(document, entry, &token, &reader, findings)
+                {
+                    if cause.is_terminal() {
+                        return Err(cause);
+                    }
+                    let ReadError::Information(source) = cause else {
+                        return Err(cause);
+                    };
+                    finding(
+                        document,
+                        entry.property.span(),
+                        Severity::Required,
+                        Rule::Schema {
+                            code: information_cause(&source).code(),
+                            field: information_cause(&source).field(),
+                        },
+                        findings,
+                    )?;
+                    Some(ReadError::Information(source))
+                } else {
+                    None
+                };
+                return Ok(Reading {
+                    model: Some(Model {
+                        ordinal,
+                        token,
+                        properties,
+                    }),
+                    fault,
+                });
+            }
+            Err(cause) => {
+                if cause.is_terminal() {
+                    return Err(cause.into());
+                }
+                finding(
+                    document,
+                    entry.property.span(),
+                    Severity::Required,
+                    Rule::Schema {
+                        code: cause.code(),
+                        field: cause.field(),
+                    },
+                    findings,
+                )?;
+                ReadError::from(cause)
+            }
+        }
+    } else {
+        let cause = Error::Syntax {
+            code: structured_cms::ErrorCode::MissingField,
+            field: "cades.timestamp",
+            at,
+        };
+        finding(
+            document,
+            entry.property.span(),
+            Severity::Required,
+            Rule::Schema {
+                code: structured_cms::ErrorCode::MissingField,
+                field: "cades.timestamp",
+            },
+            findings,
+        )?;
+        ReadError::from(cause)
+    };
+    Ok(Reading {
+        model: None,
+        fault: Some(cause),
+    })
 }
 
 #[expect(
     clippy::result_large_err,
     reason = "retain the original information refusal and source map without allocating while refusing resources"
 )]
-pub(super) fn read<'m, 'd>(
+pub(super) fn read<'m, 'd, W: Work>(
     document: &Document<'m, 'd>,
     timestamps: &[Timestamp<'d>],
     preservation: &[crate::preservation::Required<'d>],
     root: Node,
     counters: &OwnedMap<Node, usize, impl Work>,
     parent: &Reader<'d>,
-    findings: &mut OwnedVec<Finding<'m, 'd>, impl Work>,
-) -> Result<Cache<'d>, ReadError> {
+    findings: Findings<'_, 'm, 'd, W>,
+) -> Result<Cache<'m, 'd>, ReadError> {
+    let Findings {
+        rows: findings,
+        work: findings_work,
+    } = findings;
     let work = parent.execution();
     let mut models = work.vector();
     let mut ordinals = work.vector();
     let mut faults = work.vector();
+    let mut related = None;
     ordinals
         .try_reserve_exact(timestamps.len())
         .map_err(|cause| {
@@ -121,76 +237,30 @@ pub(super) fn read<'m, 'd>(
         let at = entry.property.span().start;
         let resource = |cause| Error::resource(cause, "cades.timestamp", at);
         work.charge_work(1).map_err(resource)?;
-        let mut selected = None;
-        if let Some(source) = entry.value {
-            let mut reader = source.reader_in(parent)?;
-            match Token::read_from(&mut reader) {
-                Ok(token) => {
-                    if let Err(cause) = inspect(document, entry, &token, &reader, findings) {
-                        if cause.is_terminal() {
-                            return Err(cause);
-                        }
-                        let ReadError::Information(source) = cause else {
-                            return Err(cause);
-                        };
-                        finding(
-                            document,
-                            entry.property.span(),
-                            Severity::Required,
-                            Rule::Schema {
-                                code: information_cause(&source).code(),
-                                field: information_cause(&source).field(),
-                            },
-                            findings,
-                        )?;
-                        faults
-                            .try_push((entry.property, ReadError::Information(source)))
-                            .map_err(resource)?;
-                    }
-                    selected = Some(models.len());
-                    models
-                        .try_push(Model { ordinal, token })
-                        .map_err(resource)?;
-                }
-                Err(cause) => {
-                    if cause.is_terminal() {
-                        return Err(cause.into());
-                    }
-                    finding(
-                        document,
-                        entry.property.span(),
-                        Severity::Required,
-                        Rule::Schema {
-                            code: cause.code(),
-                            field: cause.field(),
-                        },
-                        findings,
-                    )?;
-                    faults
-                        .try_push((entry.property, ReadError::from(cause)))
-                        .map_err(resource)?;
-                }
-            }
+        let selected_owner = entry.owner == root
+            || counters
+                .get(&entry.owner, &work)
+                .map_err(resource)?
+                .is_some();
+        // Other roots' preservation findings stay visible without becoming
+        // this selected root's B-B syntax. Their actual tokens STILL enter
+        // the complete historical TSA census and must independently validate.
+        let entry_findings = if selected_owner {
+            &mut *findings
         } else {
-            let cause = Error::Syntax {
-                code: structured_cms::ErrorCode::MissingField,
-                field: "cades.timestamp",
-                at,
-            };
-            finding(
-                document,
-                entry.property.span(),
-                Severity::Required,
-                Rule::Schema {
-                    code: structured_cms::ErrorCode::MissingField,
-                    field: "cades.timestamp",
-                },
-                findings,
-            )?;
-            faults
-                .try_push((entry.property, ReadError::from(cause)))
-                .map_err(resource)?;
+            related.get_or_insert_with(|| findings_work.vector())
+        };
+        let reading = read_one(document, ordinal, entry, parent, entry_findings)?;
+        if let Some(fault) = reading.fault {
+            faults.try_push((entry.property, fault)).map_err(resource)?;
         }
+        let selected = if let Some(model) = reading.model {
+            let index = models.len();
+            models.try_push(model).map_err(resource)?;
+            Some(index)
+        } else {
+            None
+        };
         ordinals.try_push(selected).map_err(resource)?;
     }
     inspect_references(
@@ -206,6 +276,9 @@ pub(super) fn read<'m, 'd>(
         models: models.into_owned(),
         ordinals: ordinals.into_owned(),
         faults: faults.into_owned(),
+        related: related
+            .filter(|rows| !rows.is_empty())
+            .map(OwnedVec::into_owned),
     })
 }
 
@@ -245,6 +318,7 @@ fn inspect_references<'m, 'd>(
             property: requirement.property,
             value: requirement.value,
             purpose: structured_ltv::timestamp::Purpose::ValidationData,
+            preservation_kind: Some(requirement.kind),
         };
         let Some(source) = entry.value else {
             finding(

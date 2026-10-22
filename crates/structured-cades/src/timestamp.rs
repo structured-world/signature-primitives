@@ -38,8 +38,10 @@ pub struct CheckTime<'a, 'document> {
 }
 
 mod archive;
+pub mod historical;
+mod requirements;
 pub use archive::{
-    ArchiveCheckError, ArchiveChecked, ArchiveError, ArchiveStreamError, NoDetached,
+    ArchiveCheckError, ArchiveChecked, ArchiveError, ArchiveStreamError, ArchiveView, NoDetached,
     ScopeError as ArchiveScopeError,
 };
 
@@ -225,6 +227,12 @@ pub enum CheckError<SE, PE, RE, FE = core::convert::Infallible> {
     /// Requested entry does not cover this kind of input, or a path has no
     /// actual target. Refused before provider/source side effects.
     Selection(Error),
+    /// Known validation-values syntax is malformed. The original unchanged
+    /// causes remain available from this context's retained properties.
+    Material {
+        /// Actual containing timestamp attribute, in the original source.
+        property: Node,
+    },
     /// Original input/callback/processing failure and its source maps.
     Check(ProfileCheckError<SE, PE, RE, ProfileError<PE, FE>>),
 }
@@ -292,6 +300,13 @@ impl<S: Source> Source for ContentInput<'_, '_, S> {
 }
 
 impl<'m, 'd> Context<'_, 'm, 'd> {
+    /// First-read original legacy validation models and unchanged diagnostics.
+    /// This does not reparse the timestamp or a material field.
+    #[must_use]
+    pub fn properties(&self) -> Option<&crate::properties::Properties<'d>> {
+        let index = self.prepared.parsed.ordinals.get(self.ordinal)?.as_ref()?;
+        self.prepared.parsed.models[*index].properties.as_ref()
+    }
     /// Original envelope for pool selection/inspection without another parse.
     #[must_use]
     pub fn token(&self) -> &Token<'d> {
@@ -486,7 +501,47 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
     where
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
     {
+        self.check_computed_profile(
+            provider,
+            path,
+            certificate_parent,
+            time,
+            &mut tsp::RawInput::new(covered),
+            callbacks,
+        )
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "mapped original causes remain unboxed on an exhausted account"
+    )]
+    fn check_computed_profile<'a, 'p, P, S, PE, RE, FE>(
+        &'a self,
+        provider: &'a P,
+        path: &'p CheckedPath<'d>,
+        certificate_parent: &Reader<'d>,
+        time: &CheckTime<'_, 'd>,
+        covered: &mut S,
+        callbacks: (
+            impl FnMut(&tsp::TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+            impl for<'view, 'scope> FnOnce(
+                tsp::ProfileInput<'view, 'd, 'a, 'scope>,
+            ) -> Result<(), ProfileFailure<FE>>,
+        ),
+    ) -> Result<Checked<'m, 'd, 'p>, CheckError<S::Error, PE, RE, FE>>
+    where
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+        S: tsp::ComputedInput<P, PE>,
+    {
         let (recognizes, profile) = callbacks;
+        if self
+            .properties()
+            .is_some_and(|properties| !properties.faults().is_empty())
+        {
+            return Err(CheckError::Material {
+                property: self.entry.property(),
+            });
+        }
         let digest = self.token.signer().digest_algorithm();
         self.reader
             .charge(1 + digest.algorithm().as_bytes().len().min(8) as u64)
@@ -520,16 +575,18 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
             window: None,
         };
         let restriction = core::cell::Cell::new(PathRestriction::Unproven);
-        let mut checked = self
+        let checked = self
             .token
-            .check_with_profile(
+            .check_input_with_profile(
                 provider,
                 self.reader,
                 &selection,
                 covered,
                 recognizes,
                 |input| {
-                    if self.entry.purpose() == Purpose::Archive {
+                    if self.entry.purpose() == Purpose::Archive
+                        && self.entry.preservation_kind().is_none()
+                    {
                         Self::archive_profile(&input)?;
                     }
                     restriction.set(Self::profile_rules(&input, path, provider)?);
@@ -540,10 +597,19 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
                 },
             )
             .map_err(CheckError::Check)?;
+        Ok(self.checked(checked, restriction.get(), certificate, key))
+    }
+    fn checked<'p>(
+        &self,
+        mut checked: tsp::CheckedTimestamp<'_>,
+        restriction: PathRestriction,
+        certificate: &'p structured_pkix::Certificate<'d>,
+        key: structured_pkix::path::WorkingKey<'d>,
+    ) -> Checked<'m, 'd, 'p> {
         let actor = match checked.take_evidence() {
             Some(evidence)
                 if matches!(
-                    restriction.get(),
+                    restriction,
                     PathRestriction::Unstated | PathRestriction::Matches
                 ) =>
             {
@@ -552,7 +618,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
                     self.prepared.document().locate(
                         self.entry
                             .value()
-                            .expect("with_token requires an original value")
+                            .expect("with_token requires original value")
                             .span(),
                     ),
                     self.entry.owner(),
@@ -572,7 +638,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
             tsp::TokenSignature::Unsupported(part) => Signature::Unsupported(part),
             tsp::TokenSignature::Malformed(cause) => Signature::Malformed(cause),
         };
-        Ok(Checked {
+        Checked {
             signature,
             identifier: checked.identifier,
             bindings: checked.bindings,
@@ -581,9 +647,9 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
             accuracy: checked.accuracy_error,
             timeliness: checked.timeliness,
             unknown_critical: checked.unknown_critical,
-            restrictions: restriction.get(),
+            restrictions: restriction,
             actor,
-        })
+        }
     }
     fn archive_profile<PE, FE>(
         input: &tsp::ProfileInput<'_, 'd, '_, '_>,

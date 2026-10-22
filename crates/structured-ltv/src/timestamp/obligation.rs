@@ -11,7 +11,9 @@ use structured_asn1::memory::OwnedVec;
 pub enum TimestampScope<N, D, G> {
     /// Whole selected signature; no archive-precedence assertion is made.
     All(Location<N, D, G>),
-    /// Original archive timestamp, excluding its own and later unsigned tokens.
+    /// Original archive INPUT subject, excluding its own and later tokens.
+    /// A member-specific input uses that token's location; property-shared
+    /// input uses the property's location, matching `Coverage::subject`.
     BeforeArchive(Location<N, D, G>),
 }
 

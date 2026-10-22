@@ -14,6 +14,7 @@ use structured_ltv::baseline::ArchiveCensus;
 use structured_ltv::timestamp::{Purpose, RequiredToken, TimestampRequirements, TimestampScope};
 
 const FIELD: &str = "cades";
+pub(crate) mod encoding;
 pub(crate) mod tokens;
 pub use tokens::ReadError;
 
@@ -95,6 +96,7 @@ pub struct Timestamp<'a> {
     property: Node,
     value: Option<crate::source::Value<'a>>,
     purpose: Purpose,
+    preservation_kind: Option<crate::preservation::Kind>,
 }
 
 impl<'a> Timestamp<'a> {
@@ -123,6 +125,12 @@ impl<'a> Timestamp<'a> {
     pub fn purpose(&self) -> Purpose {
         self.purpose
     }
+    /// Historical mechanism, when this is not a modern content/signature/ATSv3
+    /// occurrence. An archive purpose alone never selects an `ATSHashIndexV3`.
+    #[must_use]
+    pub fn preservation_kind(&self) -> Option<crate::preservation::Kind> {
+        self.preservation_kind
+    }
 }
 
 /// One original counter value. Malformed values retain a real location and
@@ -133,6 +141,7 @@ pub struct Counter<'a> {
     malformed: Option<structured_cms::Error>,
     signature: core::ops::Range<usize>,
     properties: Option<crate::properties::Properties<'a>>,
+    pub(crate) encoding: Option<encoding::SignerEncoding<'a>>,
 }
 
 impl<'a> Counter<'a> {
@@ -168,14 +177,22 @@ pub struct Preparation<'model, 'document> {
     properties: crate::properties::Properties<'document>,
     findings: OwnedVec<Finding<'model, 'document>>,
     counters: OwnedVec<Counter<'document>>,
+    parallel: Option<Parallel<'document>>,
     counter_index: OwnedMap<Node, usize>,
     signatures: OwnedVec<structured_cms::octets::Piece<'document>>,
     timestamps: OwnedVec<Timestamp<'document>>,
+    pub(crate) timestamp_ranges: Option<OwnedMap<Node, core::ops::Range<usize>>>,
     required: TimestampRequirements<Node, DocumentId<'model, 'document>, (), Cades>,
     conforming: bool,
     basic_conforming: bool,
     preservation: OwnedVec<crate::preservation::Required<'document>>,
-    pub(crate) parsed: tokens::Cache<'document>,
+    pub(crate) parsed: tokens::Cache<'model, 'document>,
+}
+
+struct Parallel<'d> {
+    counters: Option<OwnedVec<Counter<'d>>>,
+    index: Option<OwnedMap<Node, usize>>,
+    timestamps: Option<OwnedVec<Timestamp<'d>>>,
 }
 
 impl<'m, 'd> Preparation<'m, 'd> {
@@ -216,45 +233,35 @@ impl<'m, 'd> Preparation<'m, 'd> {
             &mut signatures,
             &mut preservation,
         )?;
+        let mut parallel =
+            read_parallel(document, signer, parent, &mut signatures, &mut preservation)?;
+        let timestamp_ranges = history_timestamps(
+            &preservation,
+            &mut timestamps,
+            &mut parallel,
+            parent,
+            Node::of(signer.span()),
+        )?;
         let tokens = token_obligations(&timestamps, &execution, selected.node.span().start)?;
-        let mut children = execution.vector();
-        children
-            .try_reserve_exact(counters.len())
-            .map_err(|cause| Error::resource(cause, FIELD, selected.node.span().start))?;
-        let mut conforming = true;
-        let mut basic_conforming = true;
-        let mut counter_index = execution.map();
-        for (ordinal, counter) in counters.iter().enumerate() {
-            execution
-                .charge_work(1)
-                .map_err(|cause| Error::resource(cause, FIELD, counter.node.span().start))?;
-            if counter.malformed.is_some() {
-                conforming = false;
-                basic_conforming = false;
-            }
-            children
-                .try_push(counter.node)
-                .map_err(|cause| Error::resource(cause, FIELD, counter.node.span().start))?;
-            if counter_index
-                .try_insert(counter.node, ordinal)
-                .map_err(|cause| Error::resource(cause, FIELD, counter.node.span().start))?
-                .is_some()
-            {
-                return Err(Error::Foreign {
-                    at: counter.node.span().start,
-                }
-                .into());
-            }
-        }
-        let parsed = tokens::read(
+        let CounterCatalogue {
+            children,
+            index: counter_index,
+            mut conforming,
+        } = counter_catalogue(&counters, parent, selected.node)?;
+        let mut basic_conforming = conforming;
+        let mut parsed = tokens::read(
             document,
             &timestamps,
             &preservation,
             selected.node,
             &counter_index,
             parent,
-            &mut findings,
+            tokens::Findings {
+                rows: &mut findings,
+                work: &execution,
+            },
         )?;
+        parallel_findings(document, parallel.as_ref(), &mut parsed, parent)?;
         apply_findings(
             &findings,
             &execution,
@@ -277,9 +284,11 @@ impl<'m, 'd> Preparation<'m, 'd> {
             properties,
             findings: findings.into_owned(),
             counters,
+            parallel,
             counter_index: counter_index.into_owned(),
             signatures: signatures.into_owned(),
             timestamps: timestamps.into_owned(),
+            timestamp_ranges,
             required,
             conforming,
             basic_conforming,
@@ -299,6 +308,12 @@ impl<'m, 'd> Preparation<'m, 'd> {
     #[must_use]
     pub fn preservation(&self) -> &[crate::preservation::Required<'d>] {
         &self.preservation
+    }
+    /// Located preservation findings on OTHER parallel roots/counters. These
+    /// do not change the selected root's B-B syntax facts; their TSA actors
+    /// are nevertheless mandatory in the full historical timestamp census.
+    pub fn preservation_findings(&self) -> &[Finding<'m, 'd>] {
+        self.parsed.related.as_deref().unwrap_or(&[])
     }
     /// Original selected root signer.
     #[must_use]
@@ -324,6 +339,24 @@ impl<'m, 'd> Preparation<'m, 'd> {
     #[must_use]
     pub fn counters(&self) -> &[Counter<'d>] {
         &self.counters
+    }
+    /// Original counters of OTHER parallel roots, retained only as source and
+    /// preservation metadata. Their presence does not assert their signature
+    /// math or add their signer paths to this selected root's counter census.
+    pub fn parallel_counters(&self) -> &[Counter<'d>] {
+        self.parallel
+            .as_ref()
+            .and_then(|parallel| parallel.counters.as_deref())
+            .unwrap_or(&[])
+    }
+    pub(crate) fn source_timestamps(&self) -> impl Iterator<Item = &Timestamp<'d>> {
+        self.timestamps.iter().chain(
+            self.parallel
+                .as_ref()
+                .and_then(|parallel| parallel.timestamps.as_deref())
+                .unwrap_or(&[])
+                .iter(),
+        )
     }
     /// Original signature CONTENT octets of a timestamp's actual owner. A
     /// counter timestamp covers that counter, not the counter's parent/root.
@@ -356,39 +389,100 @@ impl<'m, 'd> Preparation<'m, 'd> {
         let Some(token) = self.timestamps.get(timestamp) else {
             return Ok(None);
         };
-        if token.owner == Node::of(self.signer.span()) {
-            return Ok(None);
+        match self.counter_parent(token.owner, parent)? {
+            None => Ok(None),
+            Some(owner) => self.signature_of(owner, parent).map(Some),
         }
-        let Some(ordinal) = self
-            .counter_index
-            .get(&token.owner, &parent.execution())
-            .map_err(|cause| Error::resource(cause, FIELD, token.property.span().start))?
-        else {
-            return Err(Error::Foreign {
-                at: token.property.span().start,
-            });
-        };
-        self.signature_of(self.counters[*ordinal].parent, parent)
-            .map(Some)
     }
-    fn signature_of(
+    pub(crate) fn signature_of(
         &self,
         owner: Node,
         parent: &Reader<'_>,
     ) -> Result<&[structured_cms::octets::Piece<'d>]> {
+        self.signature_of_in(owner, parent, parent)
+    }
+    pub(crate) fn signature_of_in(
+        &self,
+        owner: Node,
+        origin: &Reader<'_>,
+        operation: &Reader<'_>,
+    ) -> Result<&[structured_cms::octets::Piece<'d>]> {
+        self.document.message().require_session(origin, FIELD)?;
+        let work = origin.execution_query(operation);
+        work.charge_work(1)
+            .map_err(|cause| Error::resource(cause, FIELD, owner.span().start))?;
         if owner == Node::of(self.signer.span()) {
             return Ok(self.signer.signature().pieces());
         }
-        let Some(ordinal) = self
-            .counter_index
-            .get(&owner, &parent.execution())
-            .map_err(|cause| Error::resource(cause, FIELD, owner.span().start))?
-        else {
-            return Err(Error::Foreign {
+        for signer in self.document.message().signers() {
+            work.charge_work(1)
+                .map_err(|cause| Error::resource(cause, FIELD, owner.span().start))?;
+            if owner == Node::of(signer.span()) {
+                return Ok(signer.signature().pieces());
+            }
+        }
+        Ok(&self.signatures[self.counter_record(owner, &work)?.signature.clone()])
+    }
+    pub(crate) fn signer_encoding(
+        &self,
+        owner: Node,
+        parent: &Reader<'_>,
+    ) -> Result<encoding::SignerView<'_, 'd>> {
+        self.document.message().require_session(parent, FIELD)?;
+        for signer in self.document.message().signers() {
+            parent
+                .charge(1)
+                .map_err(|cause| Error::encoding(cause, FIELD))?;
+            if owner == Node::of(signer.span()) {
+                return Ok(encoding::SignerView::Root(signer));
+            }
+        }
+        let work = parent.execution();
+        self.counter_record(owner, &work)?
+            .encoding
+            .as_ref()
+            .map(encoding::SignerView::Counter)
+            .ok_or(Error::Foreign {
                 at: owner.span().start,
-            });
-        };
-        Ok(&self.signatures[self.counters[*ordinal].signature.clone()])
+            })
+    }
+    pub(crate) fn counter_parent(&self, owner: Node, parent: &Reader<'_>) -> Result<Option<Node>> {
+        self.counter_parent_in(owner, parent, parent)
+    }
+    pub(crate) fn counter_parent_in(
+        &self,
+        owner: Node,
+        origin: &Reader<'_>,
+        operation: &Reader<'_>,
+    ) -> Result<Option<Node>> {
+        self.document.message().require_session(origin, FIELD)?;
+        let work = origin.execution_query(operation);
+        for signer in self.document.message().signers() {
+            work.charge_work(1)
+                .map_err(|cause| Error::resource(cause, FIELD, owner.span().start))?;
+            if owner == Node::of(signer.span()) {
+                return Ok(None);
+            }
+        }
+        Ok(Some(self.counter_record(owner, &work)?.parent))
+    }
+    fn counter_record(&self, owner: Node, work: &impl Work) -> Result<&Counter<'d>> {
+        let resource = |cause| Error::resource(cause, FIELD, owner.span().start);
+        if let Some(index) = self.counter_index.get(&owner, work).map_err(resource)? {
+            return Ok(&self.counters[*index]);
+        }
+        if let Some(parallel) = &self.parallel
+            && let Some(index) = &parallel.index
+            && let Some(ordinal) = index.get(&owner, work).map_err(resource)?
+        {
+            return Ok(&parallel
+                .counters
+                .as_ref()
+                .expect("index belongs to its counter catalogue")[*ordinal]);
+        }
+        Err(Error::Foreign {
+            at: owner.span().start,
+        })
     }
     /// All original root/counter timestamp occurrences, including failed ones.
     #[must_use]
@@ -433,7 +527,10 @@ impl<'m, 'd> ArchiveCensus for Preparation<'m, 'd> {
     fn archive(&self, ordinal: usize) -> Option<Node> {
         let token = &self.timestamps[ordinal];
         if token.owner == Node::of(self.signer.span()) && token.purpose == Purpose::Archive {
-            Some(token.property)
+            Some(match token.value {
+                Some(value) => Node::of(value.element().span()),
+                None => token.property,
+            })
         } else {
             None
         }
@@ -492,6 +589,31 @@ fn schema_findings<'m, 'd, W: Work>(
     parent: &Reader<'_>,
     findings: &mut OwnedVec<Finding<'m, 'd>, W>,
 ) -> Result<()> {
+    if let Some(signed) = signer.signed_attributes() {
+        for attribute in signed.items() {
+            parent
+                .charge(1 + attribute.kind().as_bytes().len().min(11) as u64)
+                .map_err(|cause| Error::encoding(cause, FIELD))?;
+            if crate::preservation::Kind::from_oid(attribute.kind())
+                .is_some_and(crate::preservation::Kind::is_archive)
+            {
+                // RFC5126 §6.4.1 (and RFC3126 §4.4.1) define an UNSIGNED
+                // archive attribute. Retain readable values for inspection,
+                // but never turn this placement into format conformance.
+                // https://www.rfc-editor.org/rfc/rfc5126#section-6.4.1
+                finding(
+                    document,
+                    attribute.span(),
+                    Severity::Required,
+                    Rule::Schema {
+                        code: ErrorCode::AttributePlacement,
+                        field: "cades.historical",
+                    },
+                    findings,
+                )?;
+            }
+        }
+    }
     for error in signer
         .faults()
         .iter()
@@ -566,9 +688,19 @@ fn property_findings<'m, 'd, W: Work>(
                 length: 0,
             },
             Severity::Required,
-            Rule::Value {
-                attribute: fault.attribute,
-                field: fault.field,
+            match &fault.cause {
+                Error::Syntax {
+                    code: ErrorCode::AttributeCardinality,
+                    field,
+                    ..
+                } => Rule::Schema {
+                    code: ErrorCode::AttributeCardinality,
+                    field,
+                },
+                _ => Rule::Value {
+                    attribute: fault.attribute,
+                    field: fault.field,
+                },
             },
             findings,
         )?;
@@ -778,22 +910,10 @@ fn legacy_cardinality<'m, 'd, W: Work>(
     parent
         .charge(2)
         .map_err(|cause| Error::encoding(cause, FIELD))?;
-    // AnnexA.1 specifies one value in each of these eight attributes.
-    // Table1 permits repeated reference timestamps (the two timestamp rows),
-    // but the six reference/value rows have baseline cardinality 0 or 1.
+    // Properties::read retains AnnexA.1 value-cardinality faults for EVERY
+    // signer, including timestamp signers. This phase only adds Table1's
+    // attribute-occurrence rule: repeated timestamp rows, other rows 0 or 1.
     // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
-    if attribute.values().len() != 1 {
-        finding(
-            document,
-            attribute.span(),
-            Severity::Required,
-            Rule::Schema {
-                code: ErrorCode::AttributeCardinality,
-                field: "cades.legacy.values",
-            },
-            findings,
-        )?;
-    }
     if root && ordinal != 4 && ordinal != 5 {
         debug_assert!(ordinal < 8);
         let bit = 1u8 << ordinal;
@@ -1140,6 +1260,7 @@ fn collect_timestamps<'a, W: Work>(
                     property: Node::of(attribute.span()),
                     value: None,
                     purpose,
+                    preservation_kind: None,
                 })
                 .map_err(|cause| Error::resource(cause, FIELD, attribute.span().start))?;
             }
@@ -1155,10 +1276,309 @@ fn collect_timestamps<'a, W: Work>(
                     property: Node::of(attribute.span()),
                     value: Some(crate::source::Value::of(&source, *value, FIELD)),
                     purpose,
+                    preservation_kind: None,
                 })
                 .map_err(|cause| Error::resource(cause, FIELD, value.span().start))?;
             }
         }
+    }
+    Ok(())
+}
+
+fn collect_historical_timestamps<'d, W: Work>(
+    required: &[crate::preservation::Required<'d>],
+    parent: &Reader<'d>,
+    timestamps: &mut OwnedVec<Timestamp<'d>, W>,
+) -> Result<()> {
+    for entry in required {
+        parent
+            .charge(1)
+            .map_err(|cause| Error::encoding(cause, FIELD))?;
+        if !entry.kind.is_archive() {
+            continue;
+        }
+        timestamps
+            .try_push(Timestamp {
+                owner: entry.signature,
+                property: entry.property,
+                value: entry.value,
+                purpose: Purpose::Archive,
+                preservation_kind: Some(entry.kind),
+            })
+            .map_err(|cause| Error::resource(cause, FIELD, entry.property.span().start))?;
+    }
+    Ok(())
+}
+
+struct CounterCatalogue {
+    children: OwnedVec<Node>,
+    index: OwnedMap<Node, usize>,
+    conforming: bool,
+}
+fn counter_catalogue(
+    counters: &[Counter<'_>],
+    parent: &Reader<'_>,
+    signature: Node,
+) -> Result<CounterCatalogue> {
+    let work = parent.execution();
+    let mut children = work.vector();
+    children
+        .try_reserve_exact(counters.len())
+        .map_err(|cause| Error::resource(cause, FIELD, signature.span().start))?;
+    let mut index = work.map();
+    let mut conforming = true;
+    for (ordinal, counter) in counters.iter().enumerate() {
+        work.charge_work(1)
+            .map_err(|cause| Error::resource(cause, FIELD, counter.node.span().start))?;
+        if counter.malformed.is_some() {
+            conforming = false;
+        }
+        children
+            .try_push(counter.node)
+            .map_err(|cause| Error::resource(cause, FIELD, counter.node.span().start))?;
+        if index
+            .try_insert(counter.node, ordinal)
+            .map_err(|cause| Error::resource(cause, FIELD, counter.node.span().start))?
+            .is_some()
+        {
+            return Err(Error::Foreign {
+                at: counter.node.span().start,
+            });
+        }
+    }
+    Ok(CounterCatalogue {
+        children: children.into_owned(),
+        index: index.into_owned(),
+        conforming,
+    })
+}
+
+fn timestamp_ranges(
+    timestamps: &[Timestamp<'_>],
+    parent: &Reader<'_>,
+) -> Result<OwnedMap<Node, core::ops::Range<usize>>> {
+    let work = parent.execution();
+    let mut ranges = work.map();
+    for (ordinal, entry) in timestamps.iter().enumerate() {
+        let resource = |cause| Error::resource(cause, FIELD, entry.property.span().start);
+        work.charge_work(1).map_err(resource)?;
+        if let Some(previous) = ranges.get_mut(&entry.property, &work).map_err(resource)? {
+            let previous: &mut core::ops::Range<usize> = previous;
+            // Each source attribute is collected once, in its original value
+            // order. A range must never include another attribute's values.
+            if previous.end != ordinal {
+                return Err(Error::Foreign {
+                    at: entry.property.span().start,
+                });
+            }
+            previous.end += 1;
+        } else {
+            ranges
+                .try_insert(entry.property, ordinal..ordinal + 1)
+                .map_err(resource)?;
+        }
+    }
+    Ok(ranges.into_owned())
+}
+
+fn history_timestamps<'d, W: Work>(
+    preservation: &[crate::preservation::Required<'d>],
+    timestamps: &mut OwnedVec<Timestamp<'d>, W>,
+    parallel: &mut Option<Parallel<'d>>,
+    parent: &Reader<'d>,
+    signer: Node,
+) -> Result<Option<OwnedMap<Node, core::ops::Range<usize>>>> {
+    let execution = parent.execution();
+    let mut historical = false;
+    for required in preservation {
+        execution
+            .charge_work(1)
+            .map_err(|cause| Error::resource(cause, FIELD, required.property.span().start))?;
+        if required.kind.is_archive() {
+            historical = true;
+            break;
+        }
+    }
+    if historical
+        && let Some(parallel) = parallel
+        && let Some(extra) = parallel.timestamps.take()
+    {
+        execution
+            .charge_work(extra.len() as u64)
+            .map_err(|cause| Error::resource(cause, FIELD, signer.span().start))?;
+        for entry in extra {
+            timestamps
+                .try_push(entry)
+                .map_err(|cause| Error::resource(cause, FIELD, signer.span().start))?;
+        }
+    }
+    collect_historical_timestamps(preservation, parent, timestamps)?;
+    if historical {
+        Ok(Some(timestamp_ranges(timestamps, parent)?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn parallel_lookup(
+    counters: Option<&[Counter<'_>]>,
+    parent: &Reader<'_>,
+) -> Result<Option<OwnedMap<Node, usize>>> {
+    let Some(counters) = counters else {
+        return Ok(None);
+    };
+    let work = parent.execution();
+    let mut lookup = work.map();
+    for (ordinal, counter) in counters.iter().enumerate() {
+        if lookup
+            .try_insert(counter.node, ordinal)
+            .map_err(|cause| Error::resource(cause, FIELD, counter.node.span().start))?
+            .is_some()
+        {
+            return Err(Error::Foreign {
+                at: counter.node.span().start,
+            });
+        }
+    }
+    Ok(Some(lookup.into_owned()))
+}
+
+fn read_parallel<'d, W: Work>(
+    document: &Document<'_, 'd>,
+    selected: &SignerInfo<'d>,
+    parent: &Reader<'d>,
+    signatures: &mut OwnedVec<structured_cms::octets::Piece<'d>, W>,
+    preservation: &mut OwnedVec<crate::preservation::Required<'d>, W>,
+) -> Result<Option<Parallel<'d>>> {
+    let work = parent.execution();
+    let mut counters = None;
+    let mut timestamps = None;
+    for root in document.message().signers() {
+        work.charge_work(1)
+            .map_err(|cause| Error::resource(cause, FIELD, root.span().start))?;
+        if core::ptr::eq(root, selected) {
+            continue;
+        }
+        collect_timestamps(
+            root,
+            parent,
+            timestamps.get_or_insert_with(|| work.vector()),
+        )?;
+        let visited = counter::walk(root, parent, |visit, reader| -> Result<()> {
+            let entry = match visit {
+                Visit::Signer {
+                    signer,
+                    parent: owner,
+                    ..
+                } => {
+                    crate::preservation::collect(signer, reader, preservation)?;
+                    collect_timestamps(
+                        signer,
+                        reader,
+                        timestamps.get_or_insert_with(|| work.vector()),
+                    )?;
+                    let start = signatures.len();
+                    signatures
+                        .try_extend_from_slice(signer.signature().pieces())
+                        .map_err(|cause| Error::resource(cause, FIELD, signer.span().start))?;
+                    let properties =
+                        if crate::properties::Properties::has_legacy_values(signer, reader)? {
+                            Some(crate::properties::Properties::read(signer, reader)?)
+                        } else {
+                            None
+                        };
+                    Counter {
+                        parent: Node::of(owner),
+                        node: Node::of(signer.span()),
+                        malformed: None,
+                        signature: start..signatures.len(),
+                        properties,
+                        encoding: Some(encoding::SignerEncoding::read(signer, reader)?),
+                    }
+                }
+                Visit::Malformed {
+                    source,
+                    parent: owner,
+                } => Counter {
+                    parent: Node::of(owner),
+                    node: Node::of(Span {
+                        start: source.offset(),
+                        length: 0,
+                    }),
+                    malformed: Some(source),
+                    signature: signatures.len()..signatures.len(),
+                    properties: None,
+                    encoding: None,
+                },
+            };
+            let at = entry.node.span().start;
+            counters
+                .get_or_insert_with(|| work.vector())
+                .try_push(entry)
+                .map_err(|cause| Error::resource(cause, FIELD, at))
+        })
+        .map_err(|cause| match cause {
+            WalkError::Processing(cause) => Error::Cms(cause),
+            WalkError::Callback { source, .. } => source,
+        })?;
+        drop(visited);
+    }
+    let timestamps = timestamps
+        .filter(|rows| !rows.is_empty())
+        .map(OwnedVec::into_owned);
+    let index = parallel_lookup(counters.as_deref(), parent)?;
+    let counters = counters.map(OwnedVec::into_owned);
+    if counters.is_none() && timestamps.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Parallel {
+        counters,
+        index,
+        timestamps,
+    }))
+}
+
+fn parallel_findings<'m, 'd>(
+    document: &Document<'m, 'd>,
+    parallel: Option<&Parallel<'d>>,
+    parsed: &mut tokens::Cache<'m, 'd>,
+    parent: &Reader<'d>,
+) -> Result<()> {
+    let Some(counters) = parallel.and_then(|parallel| parallel.counters.as_deref()) else {
+        return Ok(());
+    };
+    let work = parent.execution();
+    let mut related = None;
+    for counter in counters {
+        work.charge_work(1)
+            .map_err(|cause| Error::resource(cause, FIELD, counter.node.span().start))?;
+        let Some(cause) = counter.malformed() else {
+            continue;
+        };
+        if related.is_none() {
+            related = Some(match parsed.related.take() {
+                Some(saved) => saved.with_execution(&work).map_err(|_| Error::Foreign {
+                    at: counter.node.span().start,
+                })?,
+                None => work.vector(),
+            });
+        }
+        // The full history census cannot treat an unreadable source as an
+        // empty set of historical properties. Keep the original cause on the
+        // counter and its negative finding SEPARATE from selected B-B syntax.
+        finding(
+            document,
+            counter.node.span(),
+            Severity::Required,
+            Rule::Schema {
+                code: cause.code(),
+                field: cause.field(),
+            },
+            related.as_mut().expect("created for this original finding"),
+        )?;
+    }
+    if let Some(related) = related {
+        parsed.related = Some(related.into_owned());
     }
     Ok(())
 }
@@ -1210,6 +1630,7 @@ fn read_counters<'m, 'd, W: Work>(
                     malformed: None,
                     signature: start..end,
                     properties: Some(properties),
+                    encoding: Some(encoding::SignerEncoding::read(child, reader)?),
                 })
             }
             Visit::Malformed {
@@ -1226,6 +1647,7 @@ fn read_counters<'m, 'd, W: Work>(
                     malformed: Some(source),
                     signature: signatures.len()..signatures.len(),
                     properties: None,
+                    encoding: None,
                 })
             }
         }

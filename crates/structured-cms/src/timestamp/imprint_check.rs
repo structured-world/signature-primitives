@@ -2,12 +2,11 @@
 
 use super::{HashAlgorithmReading, MessageImprint};
 use crate::Error;
-use crate::digest::{DigestBatch, DigestError, PassError};
+use crate::digest::{DigestError, PassError};
 use crate::provider::DigestAlgorithm;
 use crate::stream::Source;
 use structured_asn1::Reader;
 use structured_asn1::digest::Resolution;
-use structured_asn1::memory::Work;
 use structured_pkix::algorithm::digest::AsnDigest;
 
 /// Imprint agreement alone does not establish token signature or authority trust.
@@ -40,6 +39,11 @@ pub enum ImprintError<SE, PE> {
     Pass(PassError<SE, PE>),
     /// A prepared request was not present after successful common finalization.
     LostRequest,
+    /// A recipe substituted another operation's state, output or receipt.
+    ForeignInput,
+    /// A recipe abandoned a state or returned refusal without a retained cause.
+    /// This is a caller/computation failure, never malformed document syntax.
+    IncompleteInput,
 }
 
 pub(super) enum Resolved<I> {
@@ -63,11 +67,29 @@ impl<'a> MessageImprint<'a> {
         parent: &Reader<'a>,
         source: &mut S,
     ) -> Result<ImprintAgreement, ImprintError<S::Error, P::Error>> {
+        self.check_input(provider, parent, &mut super::RawInput::new(source))
+    }
+
+    /// Checks a complete computed input under the original written algorithm.
+    /// Alternative encodings or reduced hash trees reuse the same resolution,
+    /// width, current-work and closed final comparison as ordinary raw input.
+    /// No digest bytes/OID pair, externally writable boolean or unfinished
+    /// state can produce a successful comparison receipt.
+    pub fn check_input<P, I>(
+        &self,
+        provider: &'a P,
+        parent: &Reader<'a>,
+        input: &mut I,
+    ) -> Result<ImprintAgreement, ImprintError<I::Error, P::Error>>
+    where
+        P: AsnDigest<'a>,
+        I: super::ComputedInput<P, P::Error>,
+    {
         let resolved = self
             .resolve(provider, parent)
             .map_err(ImprintError::Processing)?;
         match resolved {
-            Resolved::Ready(identity) => self.compute(provider, parent, source, identity),
+            Resolved::Ready(identity) => self.compute_input(provider, parent, input, identity),
             Resolved::Unusable(answer) => Ok(answer),
         }
     }
@@ -117,51 +139,17 @@ impl<'a> MessageImprint<'a> {
         Ok(Resolved::Ready(identity))
     }
 
-    pub(super) fn compute<P: AsnDigest<'a>, S: Source>(
+    pub(super) fn compute_input<P, I>(
         &self,
         provider: &'a P,
         parent: &Reader<'a>,
-        source: &mut S,
+        input: &mut I,
         identity: P::Identity,
-    ) -> Result<ImprintAgreement, ImprintError<S::Error, P::Error>> {
-        let field = self.fields().hashed;
-        let at = self.hashed().span().start;
-        let joined;
-        // Admit any expected-hash materialization before state or source effects.
-        let expected = if let Some(bytes) = self.hashed().as_one() {
-            bytes
-        } else {
-            joined = self
-                .hashed()
-                .copy_in(parent, field, at)
-                .map_err(ImprintError::Processing)?;
-            &*joined
-        };
-        let execution = parent.execution();
-        let mut identities = execution.vector();
-        identities
-            .try_push(identity)
-            .map_err(|reason| ImprintError::Processing(Error::resource(reason, field, at)))?;
-        let batch = DigestBatch::prepare(provider, identities.into_owned(), &execution, field, at)
-            .map_err(ImprintError::Digest)?;
-        let memo = batch.run(source, &execution).map_err(ImprintError::Pass)?;
-        let output = memo
-            .for_request(0, &execution)
-            .map_err(ImprintError::Digest)?
-            .ok_or(ImprintError::LostRequest)?;
-        let matches = crate::binding::matches_digest(
-            provider,
-            output.finished(),
-            expected,
-            &execution,
-            field,
-            self.hashed().span(),
-        )
-        .map_err(ImprintError::Comparison)?;
-        Ok(match matches {
-            crate::binding::DigestBinding::Matches => ImprintAgreement::Matches,
-            crate::binding::DigestBinding::Differs => ImprintAgreement::Differs,
-            crate::binding::DigestBinding::Malformed(_) => ImprintAgreement::MalformedHash,
-        })
+    ) -> Result<ImprintAgreement, ImprintError<I::Error, P::Error>>
+    where
+        P: AsnDigest<'a>,
+        I: super::ComputedInput<P, P::Error>,
+    {
+        super::computed::compute(self, provider, parent, input, identity)
     }
 }

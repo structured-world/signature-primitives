@@ -30,11 +30,13 @@ pub(crate) const LEGACY: [Oid<'static>; 8] = [
 ];
 const FIELD: &str = "cades.legacy";
 
-pub(super) fn inspect<W: Work>(
-    attribute: &Attribute<'_>,
-    parent: &Reader<'_>,
+pub(super) fn inspect<'d, W: Work>(
+    attribute: &Attribute<'d>,
+    parent: &Reader<'d>,
     faults: &mut OwnedVec<Fault, W>,
     hints: &mut OwnedVec<Span, W>,
+    values: &mut Option<super::values::Values<'d, W>>,
+    work: &W,
 ) -> Result<()> {
     for (ordinal, kind) in LEGACY.into_iter().enumerate() {
         parent
@@ -43,13 +45,29 @@ pub(super) fn inspect<W: Work>(
         if attribute.kind() != kind {
             continue;
         }
-        // Cardinality is reported by the common catalogue. Reference timestamps
-        // are inspected with TSTInfo/SourceMap by prepare::tokens, not reparsed
-        // or downgraded to a bare SEQUENCE here.
-        if attribute.values().len() != 1 || matches!(ordinal, 4 | 5) {
+        // AnnexA.1 specifies exactly one value, also when this signer is
+        // inside a timestamp. CMS's open attribute catalogue cannot enforce
+        // these registered schemas. Retain the fault before skipping decoding.
+        // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+        if attribute.values().len() != 1 {
+            faults
+                .try_push(Fault {
+                    attribute: kind,
+                    field: "cades.legacy.values",
+                    cause: Error::Syntax {
+                        code: structured_cms::ErrorCode::AttributeCardinality,
+                        field: "cades.legacy.values",
+                        at: attribute.span().start,
+                    },
+                })
+                .map_err(|cause| Error::resource(cause, FIELD, attribute.span().start))?;
             return Ok(());
         }
-        let reading = read_attribute(attribute, ordinal, parent, hints);
+        // Reference timestamps use prepare::tokens' original SourceMap path.
+        if matches!(ordinal, 4 | 5) {
+            return Ok(());
+        }
+        let reading = read_attribute(attribute, ordinal, parent, hints, values, work);
         if let Err(cause) = reading {
             if cause.is_terminal() {
                 return Err(cause);
@@ -68,11 +86,13 @@ pub(super) fn inspect<W: Work>(
     Ok(())
 }
 
-fn read_attribute<W: Work>(
-    attribute: &Attribute<'_>,
+fn read_attribute<'d, W: Work>(
+    attribute: &Attribute<'d>,
     ordinal: usize,
-    parent: &Reader<'_>,
+    parent: &Reader<'d>,
     hints: &mut OwnedVec<Span, W>,
+    values: &mut Option<super::values::Values<'d, W>>,
+    work: &W,
 ) -> Result<()> {
     let mut reader = attribute
         .value_reader_in(0, parent, FIELD)?
@@ -85,8 +105,18 @@ fn read_attribute<W: Work>(
         0 => certificate_refs(&reader, &value, Some(hints)),
         6 => certificate_refs::<W>(&reader, &value, None),
         1 | 7 => revocation_refs(&reader, &value),
-        2 => certificate_values(&reader, &value),
-        3 => revocation_values(&reader, &value),
+        2 => certificate_values(
+            &reader,
+            &value,
+            attribute.span(),
+            values.get_or_insert_with(|| super::values::Values::new(work)),
+        ),
+        3 => revocation_values(
+            &reader,
+            &value,
+            attribute.span(),
+            values.get_or_insert_with(|| super::values::Values::new(work)),
+        ),
         _ => Err(Error::Foreign {
             at: value.span().start,
         }),
@@ -168,13 +198,30 @@ fn other_hash(parent: &Reader<'_>, value: &Element<'_>) -> Result<()> {
     Ok(())
 }
 
-fn certificate_values(parent: &Reader<'_>, value: &Element<'_>) -> Result<()> {
+fn certificate_values<'d, W: Work>(
+    parent: &Reader<'d>,
+    value: &Element<'d>,
+    property: Span,
+    saved: &mut super::values::Values<'d, W>,
+) -> Result<()> {
     let mut list = sequence(parent, value, FIELD)?;
+    let enclosure = crate::source::Node::of(value.span());
+    let mut ordinal = 0;
     while let Some(value) = list
         .next_element()
         .map_err(|cause| Error::encoding(cause, FIELD))?
     {
-        Certificate::read_element(&list, &value).map_err(Error::Pkix)?;
+        let certificate = Certificate::read_element(&list, &value).map_err(Error::Pkix)?;
+        saved
+            .certificates
+            .try_push(super::values::Located {
+                property: crate::source::Node::of(property),
+                enclosure,
+                ordinal,
+                value: certificate,
+            })
+            .map_err(|cause| Error::resource(cause, FIELD, value.span().start))?;
+        ordinal += 1;
     }
     Ok(())
 }
@@ -205,8 +252,14 @@ fn next_choice(previous: &mut Option<u32>, value: &Element<'_>) -> Result<u32> {
     Ok(number)
 }
 
-fn revocation_values(parent: &Reader<'_>, value: &Element<'_>) -> Result<()> {
+fn revocation_values<'d, W: Work>(
+    parent: &Reader<'d>,
+    value: &Element<'d>,
+    property: Span,
+    saved: &mut super::values::Values<'d, W>,
+) -> Result<()> {
     let mut fields = sequence(parent, value, FIELD)?;
+    let enclosure = crate::source::Node::of(value.span());
     let mut previous = None;
     while let Some(value) = fields
         .next_element()
@@ -215,17 +268,48 @@ fn revocation_values(parent: &Reader<'_>, value: &Element<'_>) -> Result<()> {
         let number = next_choice(&mut previous, &value)?;
         let mut entries = explicit(&fields, &value, number)?;
         if number == 2 {
-            open_revocation(&mut entries)?;
+            let (kind, values) = open_revocation(&mut entries)?;
+            saved
+                .other
+                .try_push(super::values::OtherRevocation {
+                    property: crate::source::Node::of(property),
+                    kind,
+                    enclosure: value,
+                    values,
+                })
+                .map_err(|cause| Error::resource(cause, FIELD, value.span().start))?;
         } else {
+            let mut ordinal = 0;
             while let Some(entry) = entries
                 .next_element()
                 .map_err(|cause| Error::encoding(cause, FIELD))?
             {
                 if number == 0 {
-                    CertificateList::read_element(&entries, &entry).map_err(Error::Pkix)?;
+                    let value =
+                        CertificateList::read_element(&entries, &entry).map_err(Error::Pkix)?;
+                    saved
+                        .crls
+                        .try_push(super::values::Located {
+                            property: crate::source::Node::of(property),
+                            enclosure,
+                            ordinal,
+                            value,
+                        })
+                        .map_err(|cause| Error::resource(cause, FIELD, entry.span().start))?;
                 } else {
-                    BasicResponse::read_element(&entries, &entry).map_err(Error::Pkix)?;
+                    let value =
+                        BasicResponse::read_element(&entries, &entry).map_err(Error::Pkix)?;
+                    saved
+                        .ocsp
+                        .try_push(super::values::Located {
+                            property: crate::source::Node::of(property),
+                            enclosure,
+                            ordinal,
+                            value,
+                        })
+                        .map_err(|cause| Error::resource(cause, FIELD, entry.span().start))?;
                 }
+                ordinal += 1;
             }
         }
     }
@@ -323,12 +407,13 @@ fn time_value(parent: &Reader<'_>, value: &Element<'_>, number: u32) -> Result<(
     structured_pkix::der::conforms(parent, value, FIELD).map_err(Error::Pkix)
 }
 
-fn open_revocation(fields: &mut Reader<'_>) -> Result<()> {
-    fields
+fn open_revocation<'d>(fields: &mut Reader<'d>) -> Result<(Oid<'d>, crate::source::Value<'d>)> {
+    let kind = fields
         .read_oid()
         .map_err(|cause| Error::encoding(cause, FIELD))?;
     let values = next(fields, FIELD)?;
     end(fields, FIELD)?;
+    let original = crate::source::Value::of(fields, values, FIELD);
     let mut values = sequence(fields, &values, FIELD)?;
     while let Some(value) = values
         .next_element()
@@ -338,5 +423,5 @@ fn open_revocation(fields: &mut Reader<'_>) -> Result<()> {
         // remain outside this format; original ASN.1 syntax is still accounted.
         structured_pkix::der::conforms(&values, &value, FIELD).map_err(Error::Pkix)?;
     }
-    Ok(())
+    Ok((kind, original))
 }

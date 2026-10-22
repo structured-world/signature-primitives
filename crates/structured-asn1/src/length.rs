@@ -29,6 +29,52 @@ impl Encoding {
     }
 }
 
+/// Minimal definite-length octets, without a tag or copied value.
+///
+/// X.690 §10.1 requires the shortest definite form for DER. The scalar u64
+/// representation needs at most nine octets, so construction is bounded and
+/// allocation-free. A format can stream canonical framing around original
+/// borrowed fields without serializing or reparsing their payloads.
+/// <https://www.itu.int/rec/T-REC-X.690-202102-I/en>
+#[derive(Debug, Clone, Copy)]
+pub struct DerLength {
+    bytes: [u8; 9],
+    length: u8,
+}
+
+impl DerLength {
+    /// Encodes one scalar content length; this does not validate a value's
+    /// grammar, its availability, or the caller's overall output length.
+    #[must_use]
+    pub fn new(length: u64) -> Self {
+        let mut bytes = [0; 9];
+        if length < 128 {
+            bytes[0] = length.to_be_bytes()[7];
+            return Self { bytes, length: 1 };
+        }
+        let count = (64 - length.leading_zeros()).div_ceil(8).to_le_bytes()[0];
+        bytes[0] = 0x80 | count;
+        let count_usize = usize::from(count);
+        bytes[1..=count_usize].copy_from_slice(&length.to_be_bytes()[8 - count_usize..]);
+        Self {
+            bytes,
+            length: 1 + count,
+        }
+    }
+
+    /// Exact minimal length octets, not a whole element or source range.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.length)]
+    }
+}
+
+impl AsRef<[u8]> for DerLength {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
 /// Reads the length octets at the front of `input`.
 ///
 /// Returns the length and how many bytes it took.

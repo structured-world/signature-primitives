@@ -260,6 +260,13 @@ impl<'a> SignedData<'a> {
     pub fn content(&self) -> &Encapsulated<'a> {
         &self.content
     }
+    /// Whole original `encapContentInfo` TLV, including BER framing/EOC.
+    /// No element is reopened, normalized or copied. Historical archive inputs
+    /// distinguish this from the logical eContent octets (RFC5126 §6.4.1).
+    #[must_use]
+    pub fn encap_content_encoding(&self) -> &'a [u8] {
+        self.field_encoding(self.content.span())
+    }
     /// Certificate choices in their original order.
     #[must_use]
     pub fn certificate_choices(&self) -> &[CertificateChoice<'a>] {
@@ -274,6 +281,12 @@ impl<'a> SignedData<'a> {
     #[must_use]
     pub fn certificate_field(&self) -> Option<Span> {
         self.certificate_field
+    }
+    /// Whole original optional certificate field, including its context tag.
+    /// An absent field differs from a written empty set; bytes are borrowed.
+    #[must_use]
+    pub fn certificate_encoding(&self) -> Option<&'a [u8]> {
+        self.certificate_field.map(|span| self.field_encoding(span))
     }
     /// Opens an original non-X.509 certificate CHOICE under the current query.
     ///
@@ -320,6 +333,11 @@ impl<'a> SignedData<'a> {
     #[must_use]
     pub fn revocation_field(&self) -> Option<Span> {
         self.revocation_field
+    }
+    /// Whole original optional revocation field, not assembled member bytes.
+    #[must_use]
+    pub fn revocation_encoding(&self) -> Option<&'a [u8]> {
+        self.revocation_field.map(|span| self.field_encoding(span))
     }
     /// Original revocation choices, not implicitly authenticated or fetched.
     #[must_use]
@@ -408,6 +426,15 @@ impl<'a> SignedData<'a> {
     #[must_use]
     pub fn as_bytes(&self) -> &'a [u8] {
         self.element.as_bytes()
+    }
+
+    fn field_encoding(&self, span: Span) -> &'a [u8] {
+        // Each saved field was produced inside this exact element. Its
+        // differences therefore fit the borrowed encoding's usize length.
+        let start = usize::try_from(span.start - self.element.span().start)
+            .expect("original field starts inside SignedData");
+        let length = usize::try_from(span.length).expect("original field length fits SignedData");
+        &self.element.as_bytes()[start..start + length]
     }
 }
 

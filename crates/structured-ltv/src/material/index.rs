@@ -155,8 +155,10 @@ pub enum ArtifactRef<'view, 'source> {
     Certificate(&'view Certificate<'source>),
     /// Exact whole complete or delta CRL. A bound pair requires both artifacts.
     Crl(&'view CertificateList<'source>),
-    /// Exact basic response; only a retained whole `OCSPResponse` containing it
-    /// can satisfy lookup, not an unwrapped basic response injected by a caller.
+    /// Exact basic response from its format-defined retained container. CMS
+    /// RFC5940 uses a whole `OCSPResponse`; legacy `CAdES` Annex A.1.4 explicitly
+    /// carries `BasicOCSPResponse`. The format issuer admits the REAL placement;
+    /// an arbitrary caller body cannot mint an indexed occurrence or evidence.
     Ocsp(&'view BasicResponse<'source>),
 }
 
@@ -365,7 +367,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
     ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> {
         self.find(Kind::Crl, value.as_bytes(), query)
     }
-    /// Finds the exact basic response only in retained whole OCSP envelopes.
+    /// Finds the exact basic response in format-issued retained occurrences.
     /// Good-looking status or a successful wire code does not mint evidence.
     pub fn ocsp<'view, 'query, Q: Query<Id = N, Document = D, Generation = G>>(
         &'view self,

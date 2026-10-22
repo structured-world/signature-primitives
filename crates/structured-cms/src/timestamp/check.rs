@@ -4,9 +4,9 @@ use super::profile::{
     self, MappedProfileCheckError, ProfileCheckError, ProfileFailure, ProfileInput,
 };
 use super::{
-    AuthorityFacts, ImprintAgreement, RecognitionError, Request, RequestAgreement, RequestFields,
-    RequestWindow, RetainedFacts, SignatureError, Timeliness, Token, TokenExtension,
-    TokenSignature, TsaIdentity, TsaUsage,
+    AuthorityFacts, ComputedInput, ImprintAgreement, RawInput, RecognitionError, Request,
+    RequestAgreement, RequestFields, RequestWindow, RetainedFacts, SignatureError, Timeliness,
+    Token, TokenExtension, TokenSignature, TsaIdentity, TsaUsage,
 };
 use crate::{
     Error, ErrorCode,
@@ -268,7 +268,7 @@ struct Inspection<'a, 'r, P, S, R> {
     common_holds: bool,
 }
 
-impl<P, S: Source, R> Inspection<'_, '_, P, S, R> {
+impl<P, S, R> Inspection<'_, '_, P, S, R> {
     fn inspect<'scope, PE, RE>(
         &mut self,
         info: &super::TokenInfo<'scope>,
@@ -277,6 +277,7 @@ impl<P, S: Source, R> Inspection<'_, '_, P, S, R> {
     ) -> Result<Information, InfoCheckError<S::Error, PE, RE>>
     where
         P: for<'input> SignatureProvider<'input, Error = PE>,
+        S: ComputedInput<P, PE>,
         R: FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
     {
         let authority = info
@@ -298,7 +299,7 @@ impl<P, S: Source, R> Inspection<'_, '_, P, S, R> {
             Some(request) => {
                 let (imprint, agreement) = info
                     .imprint()
-                    .check_requested_content(
+                    .check_requested_input(
                         request.request.imprint(),
                         self.provider,
                         (inside, request.parent),
@@ -316,7 +317,7 @@ impl<P, S: Source, R> Inspection<'_, '_, P, S, R> {
             }
             None => (
                 info.imprint()
-                    .check_content(self.provider, inside, self.covered)
+                    .check_input(self.provider, inside, self.covered)
                     .map_err(InfoCheckError::Imprint)?,
                 None,
             ),
@@ -472,6 +473,40 @@ impl<'doc> Token<'doc> {
         'doc: 'a,
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
     {
+        self.check_input_with_profile(
+            provider,
+            parent,
+            context,
+            &mut RawInput::new(covered),
+            recognizes,
+            profile,
+        )
+    }
+
+    /// Same complete timestamp, with a computed imprint rather than raw bytes.
+    /// Common CMS/ESS/authority/time/profile checks execute once; only the
+    /// recipe defines the normative hash input. A closed completed comparison
+    /// is required before mathematical timestamp evidence can be retained.
+    #[expect(
+        clippy::result_large_err,
+        reason = "retain opaque input/provider/profile failures and original source maps"
+    )]
+    pub fn check_input_with_profile<'a, P, I, PE, RE, FE>(
+        &'a self,
+        provider: &'a P,
+        parent: &Reader<'a>,
+        context: &CheckContext<'a, '_>,
+        covered: &mut I,
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+        profile: impl for<'view, 'scope> FnOnce(
+            ProfileInput<'view, 'doc, 'a, 'scope>,
+        ) -> Result<(), ProfileFailure<FE>>,
+    ) -> Result<CheckedTimestamp<'a>, ProfileCheckError<I::Error, PE, RE, FE>>
+    where
+        'doc: 'a,
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+        I: ComputedInput<P, PE>,
+    {
         self.check_in(
             provider,
             (parent, None),
@@ -531,6 +566,38 @@ impl<'doc> Token<'doc> {
         'doc: 'a,
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
     {
+        self.check_mapped_input_with_profile(
+            provider,
+            source,
+            context,
+            &mut RawInput::new(covered),
+            recognizes,
+            profile,
+        )
+    }
+
+    /// Computed input with the same independent envelope/information source
+    /// maps as the raw path. Foreign sessions refuse before profile dispatch.
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserve both source frames and opaque refusal without allocating on failure"
+    )]
+    pub fn check_mapped_input_with_profile<'a, P, I, PE, RE, FE>(
+        &'a self,
+        provider: &'a P,
+        source: (&Reader<'a>, &SourceMap),
+        context: &CheckContext<'a, '_>,
+        covered: &mut I,
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+        profile: impl for<'view, 'scope> FnOnce(
+            ProfileInput<'view, 'doc, 'a, 'scope>,
+        ) -> Result<(), ProfileFailure<FE>>,
+    ) -> Result<CheckedTimestamp<'a>, MappedProfileCheckError<I::Error, PE, RE, FE>>
+    where
+        'doc: 'a,
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+        I: ComputedInput<P, PE>,
+    {
         let (parent, source) = source;
         preflight_sessions(self, parent, context)
             .map_err(|error| MappedProfileCheckError::Preflight(error.into()))?;
@@ -552,7 +619,7 @@ impl<'doc> Token<'doc> {
         clippy::result_large_err,
         reason = "retain original cause and accounted source context on refusal"
     )]
-    fn check_in<'a, P, S: Source, PE, RE, FE>(
+    fn check_in<'a, P, S, PE, RE, FE>(
         &'a self,
         provider: &'a P,
         origin: (&Reader<'a>, Option<&SourceMap>),
@@ -566,6 +633,7 @@ impl<'doc> Token<'doc> {
     where
         'doc: 'a,
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
+        S: ComputedInput<P, PE>,
     {
         let (parent, source) = origin;
         preflight(self, parent, context).map_err(CheckError::from)?;

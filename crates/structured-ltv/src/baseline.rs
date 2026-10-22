@@ -117,8 +117,9 @@ pub trait ArchiveCensus {
     fn signature(&self) -> Location<Self::Id, Self::Document, Self::Generation>;
     /// Number of timestamps of every kind.
     fn timestamps(&self) -> usize;
-    /// The archive timestamp property at this ordinal, or `None` when that
-    /// timestamp covers another kind of input.
+    /// The original archive input subject at this ordinal, or `None` for
+    /// another kind of input. Match the format's `Coverage::subject`: a token
+    /// for member-specific inputs, or the property for property-shared input.
     ///
     /// # Panics
     /// When `ordinal` is not below [`Self::timestamps`].

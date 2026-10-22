@@ -39,11 +39,18 @@ fn evidence_identity_admits_each_comparison_before_equality() {
         generation: 1u8,
     };
     let coverage = Coverage::new((), snapshot, id, id, Purpose::Archive, memory.map());
+    let identity = || Identity {
+        snapshot,
+        signature: id,
+        property: id,
+        token: id,
+        purpose: Purpose::Archive,
+    };
     for (budget, expected_calls) in [(0, 0), (127, 0), (128, 1), (255, 1)] {
         calls.set(0);
         let current = Memory::new(Arc::new(MemoryAccount::new(0, budget)));
         assert!(matches!(
-            coverage.require_identity(snapshot, id, id, Purpose::Archive, id, &current),
+            coverage.require_identity(identity(), id, &current),
             Err(CoverageError::Resource {
                 cause: MemoryError::WorkExceeded,
                 ..
@@ -53,10 +60,24 @@ fn evidence_identity_admits_each_comparison_before_equality() {
     }
     calls.set(0);
     let exact = Memory::new(Arc::new(MemoryAccount::new(0, 256)));
-    coverage
-        .require_identity(snapshot, id, id, Purpose::Archive, id, &exact)
-        .unwrap();
+    coverage.require_identity(identity(), id, &exact).unwrap();
     assert_eq!(calls.get(), 2);
     assert_eq!(exact.charge_work(1), Err(MemoryError::WorkExceeded));
     assert_eq!(exact.used(), 0);
+
+    // Token-specific inputs need a THIRD independently admitted identity
+    // comparison. Cached map funding does not pay this fresh current query.
+    let coverage = Coverage::for_token((), snapshot, id, id, id, Purpose::Archive, memory.map());
+    calls.set(0);
+    let short = Memory::new(Arc::new(MemoryAccount::new(0, 383)));
+    assert!(matches!(
+        coverage.require_identity(identity(), id, &short),
+        Err(CoverageError::Resource { .. })
+    ));
+    assert_eq!(calls.get(), 2);
+    calls.set(0);
+    let exact = Memory::new(Arc::new(MemoryAccount::new(0, 384)));
+    coverage.require_identity(identity(), id, &exact).unwrap();
+    assert_eq!(calls.get(), 3);
+    assert_eq!(exact.charge_work(1), Err(MemoryError::WorkExceeded));
 }

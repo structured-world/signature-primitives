@@ -9,7 +9,7 @@ use crate::{
     counters::Paths,
     credential::{Checked, Complete},
     source::{DocumentId, Node, Original},
-    timestamp::ArchiveChecked,
+    timestamp::ArchiveView,
 };
 use structured_asn1::{
     Reader,
@@ -198,7 +198,7 @@ pub enum Error<E> {
 /// Optional archive proof. Whole mode cannot impersonate a preceding archive;
 /// construction retains the actual token's private mathematical receipt.
 pub struct Scope<'a, 'm, 'd, 'p> {
-    archive: Option<&'a ArchiveChecked<'m, 'd, 'p>>,
+    archive: Option<ArchiveView<'a, 'm, 'd, 'p>>,
 }
 impl<'a, 'm, 'd, 'p> Scope<'a, 'm, 'd, 'p> {
     /// Whole original incorporation without archive implications.
@@ -206,11 +206,12 @@ impl<'a, 'm, 'd, 'p> Scope<'a, 'm, 'd, 'p> {
     pub fn whole() -> Self {
         Self { archive: None }
     }
-    /// Original archive whose exact input must cover the dependencies.
+    /// Actual modern or historical archive whose exact input must cover the
+    /// dependencies. Both use the SAME retained format-material mechanism.
     #[must_use]
-    pub fn before_archive(archive: &'a ArchiveChecked<'m, 'd, 'p>) -> Self {
+    pub fn before_archive(archive: impl Into<ArchiveView<'a, 'm, 'd, 'p>>) -> Self {
         Self {
-            archive: Some(archive),
+            archive: Some(archive.into()),
         }
     }
     fn require<E, Q: Query<Id = Node, Document = DocumentId<'m, 'd>, Generation = ()>, W: Work>(
@@ -239,7 +240,7 @@ impl<'a, 'm, 'd, 'p> Scope<'a, 'm, 'd, 'p> {
                     .admit(location.node, 3)
                     .map_err(|cause| Error::Index(IndexError::Scope(cause)))?;
                 if evidence.signature() != required.signature()
-                    || evidence.property() != location.node
+                    || archive.coverage().subject() != location.node
                     || evidence.token().snapshot != location.snapshot
                 {
                     return Err(Error::Foreign {

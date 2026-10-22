@@ -153,7 +153,7 @@ where
     let archive = scope.location();
     let foreign = || ParticipantArchiveError::Foreign {
         expected: archive.node,
-        actual: evidence.property(),
+        actual: coverage.subject(),
     };
     if !matches!(scope, TimestampScope::BeforeArchive(_))
         || archive.snapshot != query.snapshot()
@@ -173,7 +173,7 @@ where
         .node
         .hash_work()
         .and_then(|cost| {
-            cost.checked_add(evidence.property().hash_work()?)
+            cost.checked_add(coverage.subject().hash_work()?)
                 .ok_or(MemoryError::WorkExceeded)
         })
         .and_then(|cost| {
@@ -186,7 +186,7 @@ where
         })
         .map_err(resource)?;
     query.execution().charge_work(cost).map_err(resource)?;
-    if archive.node != evidence.property()
+    if archive.node != coverage.subject()
         || required.signature() != evidence.signature()
         || evidence.purpose() != Purpose::Archive
     {

@@ -182,12 +182,18 @@ impl<'a> SignedData<'a> {
         let mut next = required(&mut inside, "signedData.signerInfos")?;
         if next.tag() == Tag::context(true, 0) {
             certificate_field = Some(next.span());
-            (choices, certificates) = read_certificates(&inside, &next, &mut required_version)?;
+            (choices, certificates) = read_certificates(
+                &inside,
+                &next,
+                &mut required_version,
+                "signedData.certificates",
+            )?;
             next = required(&mut inside, "signedData.signerInfos")?;
         }
         if next.tag() == Tag::context(true, 1) {
             revocation_field = Some(next.span());
-            revocations = read_revocations(&inside, &next, &mut required_version)?;
+            revocations =
+                read_revocations(&inside, &next, &mut required_version, "signedData.crls")?;
             next = required(&mut inside, "signedData.signerInfos")?;
         }
         let signers = catalogue(
@@ -474,7 +480,7 @@ fn other_fields<'a>(
     Ok((inside, kind, value))
 }
 
-fn catalogue<'a, T>(
+pub(crate) fn catalogue<'a, T>(
     parent: &Reader<'a>,
     set: &Element<'a>,
     tag: Tag,
@@ -510,31 +516,31 @@ fn catalogue<'a, T>(
     Ok(values.into_owned())
 }
 
-fn read_certificates<'a>(
+pub(crate) fn read_certificates<'a>(
     parent: &Reader<'a>,
     set: &Element<'a>,
     version: &mut u64,
+    field: &'static str,
 ) -> Result<(OwnedVec<CertificateChoice<'a>>, OwnedVec<Certificate<'a>>)> {
-    const FIELD: &str = "signedData.certificates";
     let execution = parent.execution();
     let mut certificates = execution.vector();
     let choices = catalogue(
         parent,
         set,
         Tag::context(true, 0),
-        FIELD,
+        field,
         |members, entry| {
             Ok(match entry.tag() {
                 tag if tag == Tag::constructed(universal::SEQUENCE) => {
                     certificates
                         .try_reserve(1)
-                        .map_err(|reason| Error::resource(reason, FIELD, entry.span().start))?;
+                        .map_err(|reason| Error::resource(reason, field, entry.span().start))?;
                     let certificate =
                         Certificate::read_element(members, entry).map_err(Error::pkix)?;
                     let index = certificates.len();
                     certificates
                         .try_push(certificate)
-                        .map_err(|reason| Error::resource(reason, FIELD, entry.span().start))?;
+                        .map_err(|reason| Error::resource(reason, field, entry.span().start))?;
                     CertificateChoice::X509(index)
                 }
                 tag if tag == Tag::context(true, 0) => CertificateChoice::Extended(*entry),
@@ -547,14 +553,14 @@ fn read_certificates<'a>(
                     CertificateChoice::AttributeV2(*entry)
                 }
                 tag if tag == Tag::context(true, 3) => {
-                    other_format(members, entry, FIELD)?;
+                    other_format(members, entry, field)?;
                     *version = 5;
                     CertificateChoice::Other(*entry)
                 }
                 _ => {
                     return Err(Error::schema(
                         ErrorCode::UnexpectedTag,
-                        FIELD,
+                        field,
                         entry.span().start,
                     ));
                 }
@@ -577,25 +583,25 @@ fn read_version<'a>(inside: &mut Reader<'a>) -> Result<(u64, Element<'a>)> {
     Ok((version, element))
 }
 
-fn read_revocations<'a>(
+pub(crate) fn read_revocations<'a>(
     parent: &Reader<'a>,
     set: &Element<'a>,
     version: &mut u64,
+    field: &'static str,
 ) -> Result<OwnedVec<Element<'a>>> {
-    const FIELD: &str = "signedData.crls";
     catalogue(
         parent,
         set,
         Tag::context(true, 1),
-        FIELD,
+        field,
         |members, entry| {
             if entry.tag() == Tag::context(true, 1) {
-                other_format(members, entry, FIELD)?;
+                other_format(members, entry, field)?;
                 *version = 5;
             } else if entry.tag() != Tag::constructed(universal::SEQUENCE) {
                 return Err(Error::schema(
                     ErrorCode::UnexpectedTag,
-                    FIELD,
+                    field,
                     entry.span().start,
                 ));
             }

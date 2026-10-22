@@ -1,4 +1,4 @@
-//! CMS `SignedData` mechanisms over original ASN.1 ranges and explicit execution.
+//! CMS signatures, digital envelopes and timestamps over original ASN.1 ranges.
 //!
 //! Content acquisition, cryptographic engines, trust policy and application
 //! verdicts belong to the caller. This crate performs no implicit I/O.
@@ -17,6 +17,7 @@ pub mod content_source;
 pub mod counter;
 pub mod digest;
 pub mod directory;
+pub mod enveloped;
 pub mod error;
 pub mod ess;
 pub mod mime;

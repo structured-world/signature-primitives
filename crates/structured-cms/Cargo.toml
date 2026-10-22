@@ -1,6 +1,6 @@
 [package]
 name = "structured-cms"
-description = "Borrowed CMS SignedData processing with explicit providers and resource accounting"
+description = "Borrowed CMS signatures, digital envelopes and timestamps with explicit providers and resource accounting"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -26,6 +26,9 @@ ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["fas
 sha2 = { version = "=0.11.1", default-features = false }
 sha3 = { version = "=0.12.0", default-features = false }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
+aes = { version = "=0.9.3", default-features = false }
+cbc = { version = "=0.2.1", default-features = false, features = ["block-padding"] }
+aes-kw = { version = "=0.3.1", default-features = false }
 
 [lints]
 workspace = true

@@ -16,6 +16,9 @@ use structured_pkix::{AlgorithmIdentifier, PublicKeyInfo, path::WorkingKey};
 const SHA512: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 3];
 const ED25519: &[u8] = &[0x2b, 0x65, 0x70];
 
+#[path = "response/native.rs"]
+mod timestamp_response_native;
+
 #[derive(Debug)]
 enum Failure {
     Resource(MemoryError),

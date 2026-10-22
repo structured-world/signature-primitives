@@ -22,6 +22,8 @@ mod timeliness;
 pub use timeliness::{RequestWindow, Timeliness, timeliness};
 mod request;
 pub use request::Request;
+pub mod response;
+pub use response::Response;
 mod request_extensions;
 mod request_fields;
 pub use request_fields::{RequestFieldError, RequestFields};

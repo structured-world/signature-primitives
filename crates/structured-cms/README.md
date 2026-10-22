@@ -69,6 +69,19 @@ structured-cms = "0.8"
   remain distinct from invalid or unsupported signatures.
 - `ess` checks independent signing-certificate attributes; `counter` walks
   countersignatures using original parent signature content.
+- `timestamp::Response` reads a complete DER RFC3161 `TimeStampResp`: all six
+  statuses, original UTF-8 status strings, every defined failure bit and the
+  mandatory status/token association. Unknown values and malformed named-bit
+  encodings refuse. `token_reader_in` preserves the actual nested token range,
+  depth and current/source ceilings, without a replacement parser.
+  `Response::check` and `check_with_profile` require an actual parsed request in
+  `CheckContext::requested` and reuse the complete timestamp kernel for CMS,
+  ESS, certificate purpose/name, imprint/nonce/policy/certReq, covered content
+  and supplied timeliness facts. Read the returned timestamp's `evidence()`;
+  an `Ok` result and granted status alone do not mean acceptance. Status text
+  and failure flags are unauthenticated. Negative statuses invoke no provider,
+  profile, extension recognizer or content source. Trust, transport, polling,
+  replay history, clocks and application acceptance remain caller-owned.
 - `attribute_certificate::AttributeCertificate` reads the complete v2 structure,
   retaining Holder/Issuer alternatives, attributes, extensions and the exact
   original `acinfo` signature input. `SignedData::certificate_choice_reader_in`

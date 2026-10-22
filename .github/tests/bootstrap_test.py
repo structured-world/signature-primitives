@@ -9,12 +9,21 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 class BootstrapPackages(unittest.TestCase):
+    def test_cades_first_publication_has_one_package_and_release_commit_gate(self):
+        # A temporary new-crate token cannot publish existing siblings or
+        # publish an ordinary feature commit instead of an approved release.
+        config = tomllib.loads((ROOT / ".github/release-cades.toml").read_text())
+        self.assertIs(config["workspace"]["release_always"], False)
+        self.assertEqual(config["workspace"]["git_tag_name"], "structured-cades-v{{ version }}")
+        disabled = {package["name"] for package in config["package"] if package.get("release") is False}
+        self.assertEqual(disabled, {"structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades"})
+
     def test_coordinated_packages_include_each_others_changes(self):
         # One workspace version also ships sibling-only changes. Each package
         # must explain the commit responsible for that coordinated release.
         normal = tomllib.loads((ROOT / "release-plz.toml").read_text())
-        # Source-only CAdES must not join the published version/changelog group
-        # before its separately authorized initial publication.
+        # CAdES now joins the authorized coordinated publication. Every active
+        # sibling must carry the same final release explanation.
         packages = [package for package in normal["package"]
                     if package.get("release") is not False]
         names = {package["name"] for package in packages}
@@ -57,14 +66,16 @@ class BootstrapPackages(unittest.TestCase):
                 names.add(manifest["package"]["name"])
         existing = {"structured-asn1", "structured-pkix", "structured-cms"}
         new = {"structured-ltv"}
-        dependents = {"structured-xades"}
-        source_only = {"structured-cades"}
-        self.assertEqual(names, existing | new | dependents | source_only)
+        cades = {"structured-cades"}
+        dependents = {"structured-xades"} | cades
+        self.assertEqual(names, existing | new | dependents)
         for filename, expected in [
             ("release-core.toml", existing),
             ("release-ltv.toml", new),
             ("release-dependents.toml", dependents),
-            ("../release-plz.toml", names - source_only),
+            ("release-before-cades.toml", names - cades),
+            ("release-cades.toml", cades),
+            ("../release-plz.toml", names),
         ]:
             config = tomllib.loads((ROOT / ".github" / filename).read_text())
             # Only the explicitly credential-selected first LTV publication
@@ -73,7 +84,6 @@ class BootstrapPackages(unittest.TestCase):
             self.assertIs(config["workspace"]["git_release_enable"], True)
             disabled = {package["name"] for package in config["package"]
                         if package.get("release") is False}
-            self.assertTrue(source_only <= disabled)
             self.assertEqual(names - disabled, expected)
             self.assertEqual(disabled | expected, names)
 

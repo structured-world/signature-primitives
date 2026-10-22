@@ -6,32 +6,33 @@ changelog_update = true
 [[package]]
 name = "structured-asn1"
 version_group = "primitives"
-changelog_include = ["structured-pkix", "structured-cms", "structured-ltv", "structured-xades"]
+changelog_include = ["structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-cades"]
 
 [[package]]
 name = "structured-pkix"
 version_group = "primitives"
-changelog_include = ["structured-asn1", "structured-cms", "structured-ltv", "structured-xades"]
+changelog_include = ["structured-asn1", "structured-cms", "structured-ltv", "structured-xades", "structured-cades"]
 
 [[package]]
 name = "structured-cms"
 git_tag_name = "v{{ version }}"
 version_group = "primitives"
-changelog_include = ["structured-asn1", "structured-pkix", "structured-ltv", "structured-xades"]
+changelog_include = ["structured-asn1", "structured-pkix", "structured-ltv", "structured-xades", "structured-cades"]
 
 [[package]]
 name = "structured-ltv"
 git_tag_name = "structured-ltv-v{{ version }}"
 version_group = "primitives"
-changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-xades"]
+changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-xades", "structured-cades"]
 
 [[package]]
 name = "structured-xades"
 git_tag_name = "structured-xades-v{{ version }}"
 version_group = "primitives"
-changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-ltv"]
+changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-cades"]
 
-# Initial publication and its trusted publisher are configured separately.
 [[package]]
 name = "structured-cades"
-release = false
+git_tag_name = "structured-cades-v{{ version }}"
+version_group = "primitives"
+changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades"]

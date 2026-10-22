@@ -39,6 +39,7 @@ pub struct CheckTime<'a, 'document> {
 
 mod archive;
 pub mod historical;
+pub mod references;
 mod requirements;
 pub use archive::{
     ArchiveCheckError, ArchiveChecked, ArchiveError, ArchiveStreamError, ArchiveView, NoDetached,

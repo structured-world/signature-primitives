@@ -68,10 +68,10 @@ where
         query
             .admit(required.property, 1)
             .map_err(|cause| Error::Participants(ParticipantError::Scope(cause)))?;
-        // Historical archive actors can now be constructed ONLY through the
-        // complete edition-specific input check. The shared full timestamp
-        // census below rejects a missing actor; other mechanisms stay explicit.
-        if !required.kind.is_archive() {
+        // Archives and reference timestamps have distinct format-selected
+        // input checks. The SAME complete timestamp census below requires
+        // their actual actors; an unimplemented PoE wrapper remains explicit.
+        if !required.kind.is_archive() && !required.kind.is_reference_timestamp() {
             return Err(Error::Preservation {
                 property: required.property,
                 kind: required.kind,

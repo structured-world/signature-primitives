@@ -62,6 +62,20 @@ structured-cms = "0.8"
   permissions without discarding original attributes. These checks retain
   original ranges and current/source limits. They do not authenticate paths,
   verify signatures, select trust or establish authorization.
+- `validation::aa_path::validate` validates a complete caller-supplied AA path
+  through an explicitly trusted AA CA. It combines the existing PKIX processor
+  with the complete `AAControls` census and critical-extension handling, retaining
+  policy results, the actual authority key and the evaluation interval. The
+  terminal AA CA must be the separately selected trusted object; it is the local
+  trust anchor, outside the prospective PKIX path;
+  a one-certificate direct-AA trust input is deliberately a separate operation.
+  `validate_with_key` also preserves effective inherited anchor parameters.
+  `ValidatedPath::authenticate` uses that authority key and interval for the AC,
+  without repeating path signatures. `Issued::allows` intersects every control
+  for cleartext and caller-decrypted attribute types, preserving the excluding
+  certificate and source. Exclusion means ignore that attribute for authorization,
+  not discard other permitted attributes. Holder proof, target/proxy effects,
+  revocation, decryption and application authorization remain caller obligations.
 - `AttributeCertificate::authenticate` composes the static profile, supplied AA
   identity/purpose, actual effective-key binding, inclusive AC/AA validity and
   signature checks. The selected verifier implements `validation::authentication::AlgorithmAgreement`

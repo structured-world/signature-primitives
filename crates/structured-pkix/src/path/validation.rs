@@ -34,14 +34,30 @@ impl<'a> EffectiveAnchor<'a> {
     ) -> crate::Result<Option<Self>> {
         let left = anchor.key().as_bytes();
         let right = key.key().as_bytes();
-        let work = u64::try_from(left.len().max(right.len()))
-            .ok()
-            .and_then(|n| n.checked_mul(2))
-            .and_then(|n| n.checked_add(1))
-            .ok_or_else(|| anchor.name().resource(MemoryError::WorkExceeded))?;
-        execution
-            .charge_work(work)
-            .map_err(|reason| anchor.name().resource(reason))?;
+        let left_work = anchor.key().execution_in(execution);
+        let right_work = key.key().execution_in(execution);
+        let left_error = |reason| {
+            crate::Error::resource(reason, "anchor.key", anchor.key().algorithm().offset())
+        };
+        let right_error =
+            |reason| crate::Error::resource(reason, "anchor.key", key.key().algorithm().offset());
+        // Binding is a current query over two original SPKIs. Refusal must
+        // precede even a length mismatch; a fresh query cannot reset either
+        // source ceiling. Identical immutable slices need no byte scan.
+        left_work.charge_work(1).map_err(left_error)?;
+        right_work.charge_work(1).map_err(right_error)?;
+        if left.len() != right.len() {
+            return Ok(None);
+        }
+        if core::ptr::eq(left, right) {
+            return Ok(Some(Self { anchor, key }));
+        }
+        left_work
+            .charge_work(left.len() as u64)
+            .map_err(left_error)?;
+        right_work
+            .charge_work(right.len() as u64)
+            .map_err(right_error)?;
         if left != right {
             return Ok(None);
         }
@@ -393,10 +409,10 @@ pub(super) fn certificate_facts<'a, E, R: Recognizer<Q>, M: Meter, Q: Work>(
     )? {
         return Ok(None);
     }
-    facts.self_issued = certificate
-        .tbs()
-        .subject()
-        .matches(certificate.tbs().issuer(), execution)?;
+    facts.self_issued = certificate.tbs().subject().matches(
+        certificate.tbs().issuer(),
+        &certificate.execution_in(execution),
+    )?;
     match decode(meter, oid::BASIC_CONSTRAINTS, || {
         extensions.basic_constraints(execution)
     })? {

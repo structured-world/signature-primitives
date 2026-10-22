@@ -1,4 +1,6 @@
 //! Original AC profile, explicit PKC bindings and complete AA-path restrictions.
+#[path = "ac_validation/aa_chain.rs"]
+mod aa_chain;
 #[path = "ac_validation/authentication.rs"]
 mod authentication;
 #[path = "ac_validation/ocsp.rs"]

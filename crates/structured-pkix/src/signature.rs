@@ -14,7 +14,7 @@
 //! to physical locations; no contiguous physical range is invented here.
 
 use crate::error::{Error, ErrorCode, Located, Result};
-use structured_asn1::memory::Work;
+use structured_asn1::memory::{Execution, Work};
 use structured_asn1::{
     BitString, Element, Encoding, Integer, Parser, ScopedReader, Span, Tag, universal,
 };
@@ -37,6 +37,18 @@ pub struct SignatureValue<'a> {
 }
 
 impl<'a> SignatureValue<'a> {
+    /// Attach the original signed source to a current raw-verification query.
+    /// Construction scans and allocates nothing; subsequent provider work must
+    /// use this execution before touching the signature or signed input. This
+    /// preserves source/current ceilings without imposing a nested ASN.1 depth
+    /// requirement on raw algorithms. Decoding uses [`Self::reader_in`] instead.
+    pub fn execution_in<'operation, W: Work>(&self, current: &'operation W) -> Execution<'operation>
+    where
+        'a: 'operation,
+    {
+        current.execution_for(self.parser)
+    }
+
     /// Checks raw ML-DSA signature framing for an explicitly resolved set.
     ///
     /// FIPS204 §3.6.2/table2 requires exact widths. Original and current work

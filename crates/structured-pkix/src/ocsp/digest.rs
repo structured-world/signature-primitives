@@ -34,6 +34,11 @@ pub enum CertMatch {
     UnsupportedHash,
 }
 
+pub(super) enum CertDigest<I> {
+    Ready(I),
+    Rejected(CertMatch),
+}
+
 /// Responder identity alone, without signature, authority or status acceptance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponderMatch {
@@ -103,6 +108,42 @@ impl ResponderId<'_> {
 }
 
 impl CertId<'_> {
+    // Both certificate hashing and wire-request comparison use exactly the
+    // same algorithm/parameter/width gate. RFC6960 §4.1.1 identifies the hash;
+    // its standard output width does not depend on optional provider metadata.
+    pub(super) fn digest_identity<'d, D: AsnDigest<'d> + ?Sized, E: Work>(
+        &self,
+        provider: &'d D,
+        execution: &E,
+    ) -> crate::Result<CertDigest<D::Identity>> {
+        let source = self.algorithm.query_in(execution);
+        source
+            .charge_work(1)
+            .map_err(|reason| Error::resource(reason, "ocsp.certID", self.span.start))?;
+        let algorithm = match digest::algorithm(&self.algorithm, execution)? {
+            Resolution::Supported(algorithm) => algorithm,
+            Resolution::Malformed => {
+                return Ok(CertDigest::Rejected(CertMatch::MalformedHashAlgorithm));
+            }
+            Resolution::Unsupported => return Ok(CertDigest::Rejected(CertMatch::UnsupportedHash)),
+        };
+        if self.issuer_name_hash.len() != algorithm.width()
+            || self.issuer_key_hash.len() != algorithm.width()
+        {
+            return Ok(CertDigest::Rejected(CertMatch::MalformedHashWidth));
+        }
+        let Resolution::Supported(identity) = digest::supported(provider, algorithm) else {
+            return Ok(CertDigest::Rejected(CertMatch::UnsupportedHash));
+        };
+        if provider
+            .width(&identity)
+            .is_some_and(|width| width != algorithm.width())
+        {
+            return Ok(CertDigest::Rejected(CertMatch::MalformedHashWidth));
+        }
+        Ok(CertDigest::Ready(identity))
+    }
+
     /// Match the actual target and candidate issuer without re-encoding names.
     /// RFC6960 §4.1.1 hashes original target issuer DER and issuer public-key
     /// contents. The caller retains their authenticated issuer/path provenance;
@@ -146,17 +187,10 @@ impl CertId<'_> {
         )? {
             return Ok(CertMatch::Differs);
         }
-        let identity = match digest::resolve(digest, &self.algorithm, execution)? {
-            Resolution::Supported(identity) => identity,
-            Resolution::Unsupported => return Ok(CertMatch::UnsupportedHash),
-            Resolution::Malformed => return Ok(CertMatch::MalformedHashAlgorithm),
+        let identity = match self.digest_identity(digest, execution)? {
+            CertDigest::Ready(identity) => identity,
+            CertDigest::Rejected(reason) => return Ok(reason),
         };
-        // A malformed known width is classified before either hashing callback.
-        if let Some(width) = digest.width(&identity)
-            && (self.issuer_name_hash.len() != width || self.issuer_key_hash.len() != width)
-        {
-            return Ok(CertMatch::MalformedHashWidth);
-        }
         // RFC6960 §4.1.1: the name is the target's original issuer DER,
         // not a semantically equal re-encoding of the AA's subject.
         // RFC5755 §4.3.4 applies the same OCSP identity to ACs.

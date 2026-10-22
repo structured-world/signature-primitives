@@ -449,6 +449,37 @@ verdict. The caller supplies authenticated issuer paths and their trust-anchor
 provenance. Cached CRLs permit the exact `nextUpdate` boundary; newly obtained
 replacements require a strictly later expiry. Missing expiry remains explicit.
 
+### Actual OCSP requests
+
+`ocsp::OcspRequest::read` and `read_element` decode complete DER requests,
+retaining the exact signed TBS, requestor GeneralName, every CertID in wire
+order, request-wide/per-entry extensions and optional signature/certificate
+candidates. The version DEFAULT must be omitted, the batch must be nonempty,
+and a signed request must name its requestor. No request is generated, sent or
+automatically authorized.
+
+`authenticate_signature` verifies the original TBS with an explicitly selected
+certificate-bound `WorkingKey` and `path::Verify`. A `SignedRequest` reports the
+subject/SAN name relation separately; a valid signature does not authenticate
+a different declared name, establish a certificate path or grant server access.
+Verifiers use the carried `SignatureValue` source execution/reader before
+decoding or hashing original inputs, as with other signed PKIX objects.
+
+`request.bind_response(signed_response, digest, &work)` binds the complete batch
+to an already authenticated response. Each original entry retains its exact
+lookup, including missing, duplicate, malformed and unsupported outcomes, plus
+per-entry critical demands. Full resolved digest identity and issuer hash bytes
+are compared without certificate rehashing; SHA-family parameter rules reuse
+the common digest resolver. The actual request/response nonce relation remains
+explicit. Request-wide critical processing, responder authority, status,
+freshness and application acceptance remain distinct facts. Optional extensions
+other than nonce remain opaque; unknown critical demands are unsupported.
+
+Deferred request, signer and response work uses each original source ceiling
+and the current operation. Complete batch storage is admitted before comparison
+callbacks; failure drops all partial output. Nonce byte comparison funds both
+operands, including after decoding under an independently retained response.
+
 For OCSP, read the response envelope and move successful `ResponseBytes` into
 `into_basic(&execution)`. Deferred parsing keeps the original reader's offsets,
 depth and cumulative work ceiling. Unsigned error responses remain distinct

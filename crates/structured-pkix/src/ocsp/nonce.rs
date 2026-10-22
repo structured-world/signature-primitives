@@ -3,7 +3,7 @@
 use super::{BasicResponse, end};
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::oid;
-use structured_asn1::memory::{MemoryError, Work};
+use structured_asn1::memory::Work;
 
 /// Caller-generated nonce for a new RFC9654 request. Construction validates
 /// size only; the caller must use a cryptographically strong random generator.
@@ -75,33 +75,33 @@ pub enum NonceBinding {
 pub(super) fn read<'a, W: Work>(
     extension: &crate::Extension<'a>,
     execution: &W,
+    field: &'static str,
 ) -> Result<&'a [u8]> {
-    const FIELD: &str = "ocspResponse.nonce";
-    let mut reader = extension.reader_scoped(execution).field(FIELD)?;
+    let mut reader = extension.reader_scoped(execution).field(field)?;
     let value = reader
         .expect(structured_asn1::Tag::primitive(
             structured_asn1::universal::OCTET_STRING,
         ))
-        .field(FIELD)?;
-    end(&reader, FIELD)?;
+        .field(field)?;
+    end(&reader, field)?;
     let bytes = value.contents();
     // RFC9654 §2.1: encoded inner OCTET STRING, not raw extnValue bytes.
     // https://www.rfc-editor.org/rfc/rfc9654#section-2.1
     if bytes.is_empty() || bytes.len() > 128 {
         return Err(Error::new(
             ErrorCode::MalformedValue,
-            FIELD,
+            field,
             extension.span().start,
         ));
     }
     Ok(bytes)
 }
 
-pub(super) fn bind<W: Work>(
+pub(super) fn bind<L: Work, R: Work>(
     request: Option<RequestNonce<'_>>,
     response: Option<&[u8]>,
-    execution: &W,
-    at: u64,
+    left: (&L, &'static str, u64),
+    right: (&R, &'static str, u64),
 ) -> Result<NonceBinding> {
     let (request, response) = match (request, response) {
         (None, None) => return Ok(NonceBinding::NotRequested),
@@ -109,14 +109,23 @@ pub(super) fn bind<W: Work>(
         (Some(_), None) => return Ok(NonceBinding::Missing),
         (Some(request), Some(response)) => (request.as_bytes(), response),
     };
-    let work = u64::try_from(request.len().max(response.len()))
-        .ok()
-        .and_then(|n| n.checked_mul(2))
-        .and_then(|n| n.checked_add(1))
-        .ok_or_else(|| Error::resource(MemoryError::WorkExceeded, "ocspResponse.nonce", at))?;
-    execution
-        .charge_work(work)
-        .map_err(|reason| Error::resource(reason, "ocspResponse.nonce", at))?;
+    left.0
+        .charge_work(1)
+        .map_err(|reason| Error::resource(reason, left.1, left.2))?;
+    right
+        .0
+        .charge_work(1)
+        .map_err(|reason| Error::resource(reason, right.1, right.2))?;
+    if request.len() != response.len() {
+        return Ok(NonceBinding::Differs);
+    }
+    left.0
+        .charge_work(request.len() as u64)
+        .map_err(|reason| Error::resource(reason, left.1, left.2))?;
+    right
+        .0
+        .charge_work(response.len() as u64)
+        .map_err(|reason| Error::resource(reason, right.1, right.2))?;
     Ok(if request == response {
         NonceBinding::Matches
     } else {
@@ -130,7 +139,7 @@ impl<'a> BasicResponse<'a> {
     /// legacy short nonces; this does not relax new-request construction.
     pub fn nonce<W: Work>(&self, execution: &W) -> Result<Option<&'a [u8]>> {
         match self.extensions.get(oid::OCSP_NONCE, execution)? {
-            Some(extension) => read(extension, execution).map(Some),
+            Some(extension) => read(extension, execution, "ocspResponse.nonce").map(Some),
             None => Ok(None),
         }
     }
@@ -143,6 +152,12 @@ impl<'a> BasicResponse<'a> {
         request: Option<RequestNonce<'_>>,
         execution: &W,
     ) -> Result<NonceBinding> {
-        bind(request, self.nonce(execution)?, execution, self.span.start)
+        let source = self.algorithm.query_in(execution);
+        bind(
+            request,
+            self.nonce(execution)?,
+            (execution, "ocspResponse.nonce", self.span.start),
+            (&source, "ocspResponse.nonce", self.span.start),
+        )
     }
 }

@@ -1,4 +1,4 @@
-//! OCSP response evidence over original caller-supplied DER ranges.
+//! OCSP request and response evidence over original caller-supplied DER ranges.
 //!
 //! Decoding does not authenticate a responder, validate a request binding or
 //! establish certificate status. No transport, clock or trust discovery occurs.
@@ -53,6 +53,9 @@ mod evidence;
 pub use evidence::{
     BoundEvidence, Evaluation, Evidence, RecipientBinding, Request, TargetEvidence, TargetReading,
 };
+
+pub mod request;
+pub use request::{OcspRequest, RequestEntry, RequestSignature};
 
 /// Unsigned protocol failure from RFC6960 §4.2.1, never a certificate verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -558,27 +561,11 @@ fn read_basic<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<BasicRes
     let algorithm = required(&mut reader, BASIC)?;
     let algorithm = algorithm::read(&reader, &algorithm, BASIC)?;
     let signature = crate::signature::SignatureValue::read(&mut reader, BASIC)?;
-    let mut certificates = work.vector();
-    if let Some(wrapper) = reader.next_element().field(BASIC)? {
-        if wrapper.tag() != Tag::context(true, 0) {
-            return Err(Error::new(
-                ErrorCode::UnexpectedField,
-                BASIC,
-                wrapper.span().start,
-            ));
-        }
-        let mut explicit = reader.enter(&wrapper).field(BASIC)?;
-        let sequence = explicit
-            .expect(Tag::constructed(universal::SEQUENCE))
-            .field(BASIC)?;
-        end(&explicit, BASIC)?;
-        let mut inside = explicit.enter(&sequence).field(BASIC)?;
-        while let Some(certificate) = inside.next_element().field(BASIC)? {
-            certificates
-                .try_push(Certificate::read_element(&inside, &certificate)?)
-                .map_err(|reason| Error::resource(reason, BASIC, certificate.span().start))?;
-        }
-    }
+    let certificates = if let Some(wrapper) = reader.next_element().field(BASIC)? {
+        request::read_certificates(&reader, &wrapper, BASIC)?
+    } else {
+        work.vector().into_owned()
+    };
     end(&reader, BASIC)?;
     Ok(BasicResponse {
         responder,
@@ -587,7 +574,7 @@ fn read_basic<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<BasicRes
         extensions,
         algorithm,
         signature,
-        certificates: certificates.into_owned(),
+        certificates,
         signed: signed.as_bytes(),
         bytes: element.as_bytes(),
         span: element.span(),
@@ -632,7 +619,7 @@ fn read_responder<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<Resp
 fn read_single<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<SingleResponse<'a>> {
     let mut reader = sequence(parent, element, SINGLE)?;
     let id = required(&mut reader, SINGLE)?;
-    let id = read_id(&reader, &id)?;
+    let id = read_id(&reader, &id, SINGLE)?;
     let status = required(&mut reader, SINGLE)?;
     let status = match status.tag() {
         tag if tag == Tag::context(false, 0) => {
@@ -703,18 +690,22 @@ fn read_single<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<SingleR
     })
 }
 
-fn read_id<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<CertId<'a>> {
-    let mut reader = sequence(parent, element, SINGLE)?;
-    let algorithm = required(&mut reader, SINGLE)?;
-    let algorithm = algorithm::read(&reader, &algorithm, SINGLE)?;
+fn read_id<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    field: &'static str,
+) -> Result<CertId<'a>> {
+    let mut reader = sequence(parent, element, field)?;
+    let algorithm = required(&mut reader, field)?;
+    let algorithm = algorithm::read(&reader, &algorithm, field)?;
     let name = reader
         .expect(Tag::primitive(universal::OCTET_STRING))
-        .field(SINGLE)?;
+        .field(field)?;
     let key = reader
         .expect(Tag::primitive(universal::OCTET_STRING))
-        .field(SINGLE)?;
-    let serial = reader.read_integer().field(SINGLE)?;
-    end(&reader, SINGLE)?;
+        .field(field)?;
+    let serial = reader.read_integer().field(field)?;
+    end(&reader, field)?;
     Ok(CertId {
         algorithm,
         issuer_name_hash: name.contents(),

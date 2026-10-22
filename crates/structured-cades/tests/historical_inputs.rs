@@ -83,6 +83,9 @@ impl Fixture {
         )
     }
     fn token(&self, covered: &[u8]) -> Vec<u8> {
+        self.token_with_unsigned(covered, &[])
+    }
+    fn token_with_unsigned(&self, covered: &[u8], unsigned: &[Vec<u8>]) -> Vec<u8> {
         let imprint = tlv(
             0x30,
             &[
@@ -109,7 +112,7 @@ impl Fixture {
             &self.tsa,
             &self.tsa_key,
             &[],
-            &[],
+            unsigned,
         );
         message(
             oid::TST_INFO.as_bytes(),
@@ -173,6 +176,55 @@ impl Fixture {
             &[],
             &[selected, parent],
         )
+    }
+}
+
+#[test]
+fn historical_tsa_legacy_values_keep_cardinality_faults() {
+    // Registered validation-values cardinality belongs to the shared schema,
+    // including inside a TSA signer. An empty/multivalued attribute cannot
+    // become a clean optional property merely because no value is inspected.
+    let fixture = Fixture::new();
+    for last in [23, 24] {
+        for count in [0, 2] {
+            let mut kind = vec![42, 134, 72, 134, 247, 13, 1, 9, 16, 2];
+            kind.push(last);
+            let values = tlv(0x30, &[]).repeat(count);
+            let malformed = tlv(0x30, &[tlv(6, &kind), tlv(0x31, &values)].concat());
+            let token = fixture.token_with_unsigned(b"covered", &[malformed]);
+            let bytes = fixture.message(&[attribute(ARCHIVE_V2, &token)], false, false);
+            let parser = Parser::ber(memory());
+            let data = SignedData::read(&parser, &bytes, 900).unwrap();
+            let operation = parser.read(&[], 900).unwrap();
+            let document = Document::new(&data, &operation).unwrap();
+            let prepared =
+                Preparation::read(&document, &data.signers()[0], Level::Basic, &operation).unwrap();
+            timestamp::with_token(&prepared, 0, &operation, |context| {
+                let faults = context.properties().unwrap().faults();
+                assert_eq!(
+                    faults.len(),
+                    1,
+                    "TSA values count {count}, OID suffix {last}"
+                );
+                assert!(matches!(
+                    faults[0].cause,
+                    structured_cades::Error::Syntax {
+                        code: structured_cms::ErrorCode::AttributeCardinality,
+                        ..
+                    }
+                ));
+                assert_eq!(faults[0].cause.field(), Some("cades.legacy.values"));
+                let attribute = &context
+                    .token()
+                    .signer()
+                    .unsigned_attributes()
+                    .unwrap()
+                    .items()[0];
+                assert_eq!(faults[0].cause.offset(), attribute.span().start);
+                Ok::<_, Infallible>(())
+            })
+            .unwrap();
+        }
     }
 }
 
@@ -517,7 +569,20 @@ fn legacy_token_cannot_enter_the_modern_archive_dispatcher() {
     // index. Dispatch must reject the WRONG format before even looking it up.
     for edition in [Edition::Rfc3126, Edition::Ts101733V151, Edition::Rfc5126] {
         let fixture = Fixture::new();
+        // Later editions hash the complete countersignature attribute. Its
+        // nested TSA must therefore remain an earlier validation obligation;
+        // RFC3126's fixed category recipe does not include countersignatures.
+        let nested = fixture.token(b"nested signature");
+        let counter = signer(
+            None,
+            b"parent signature",
+            &fixture.certificate,
+            &fixture.signer,
+            &[],
+            &[attribute(oid::SIGNATURE_TIMESTAMP.as_bytes(), &nested)],
+        );
         let mut unsigned = vec![
+            attribute(oid::COUNTERSIGNATURE.as_bytes(), &counter),
             attribute(&[42, 3], &tlv(4, b"opaque")),
             attribute(
                 &[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 23],
@@ -576,12 +641,17 @@ fn legacy_token_cannot_enter_the_modern_archive_dispatcher() {
         let document = Document::new(&message, &operation).unwrap();
         let prepared =
             Preparation::read(&document, &message.signers()[0], Level::Basic, &operation).unwrap();
+        let ordinal = prepared
+            .timestamps()
+            .iter()
+            .position(|entry| entry.value().is_some_and(|value| value.as_bytes() == token))
+            .unwrap();
         let time = timestamp::CheckTime {
             utc: &utc,
             reference: Some(interval.to_instant()),
         };
         let starts = oracle.starts.get();
-        let result = timestamp::with_token(&prepared, 0, &operation, |context| {
+        let result = timestamp::with_token(&prepared, ordinal, &operation, |context| {
             context.check_archive_carried(&oracle, &path, &operation, &time, |_, _| {
                 Ok::<_, Infallible>(true)
             })
@@ -600,7 +670,7 @@ fn legacy_token_cannot_enter_the_modern_archive_dispatcher() {
         assert_eq!(oracle.starts.get(), starts);
         let mut input = HistoricalInput::<NoDetached>::project(
             &prepared,
-            0,
+            ordinal,
             edition,
             &[],
             &[],
@@ -608,7 +678,7 @@ fn legacy_token_cannot_enter_the_modern_archive_dispatcher() {
             None,
         )
         .unwrap();
-        let checked = timestamp::with_token(&prepared, 0, &operation, |context| {
+        let checked = timestamp::with_token(&prepared, ordinal, &operation, |context| {
             context.check_historical(&oracle, &path, &operation, &time, &mut input, |_, _| {
                 Ok::<_, Infallible>(true)
             })
@@ -627,14 +697,25 @@ fn legacy_token_cannot_enter_the_modern_archive_dispatcher() {
                 Variant::UnsignedField
             })
         );
-        assert!(
-            checked
-                .requirements(&prepared, &operation)
-                .unwrap()
-                .entries()
-                .is_empty(),
-            "archive's own TSA is excluded"
+        let required = checked.requirements(&prepared, &operation).unwrap();
+        assert_eq!(
+            required.entries().len(),
+            usize::from(edition != Edition::Rfc3126),
+            "exclude the archive's own TSA, retain every covered nested TSA"
         );
+        if let Some(entry) = required.entries().first() {
+            let nested = prepared
+                .timestamps()
+                .iter()
+                .find(|entry| {
+                    entry
+                        .value()
+                        .is_some_and(|value| value.as_bytes() == nested)
+                })
+                .unwrap();
+            assert_eq!(entry.signature, nested.owner());
+            assert_eq!(entry.property, nested.property());
+        }
     }
 }
 
@@ -694,6 +775,10 @@ fn signed_historical_attribute_keeps_its_source_but_fails_placement() {
 #[expect(
     clippy::result_large_err,
     reason = "preserve the original carried-information source map while checking the counter's actual parent binding"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "qualify the actual parallel counter's archive with its complete native TSA path and unchanged-parent refusal"
 )]
 fn other_root_counter_keeps_original_fields_and_parent_binding() {
     // The selected root has NO counters. A parallel root's child is still an
@@ -763,21 +848,106 @@ fn other_root_counter_keeps_original_fields_and_parent_binding() {
         if changed_parent {
             assert!(matches!(input, Err(SelectionError::PriorNotPreserved)));
         } else {
-            let mut input = input.unwrap();
             let oracle = Oracle::new();
-            let agreement = timestamp::with_token(&prepared, 0, &reader, |context| {
-                context
-                    .token()
-                    .with_info(context.reader(), |info, source, _| {
-                        Ok::<_, Infallible>(
-                            info.imprint()
-                                .check_input(&oracle, source, &mut input)
-                                .unwrap(),
-                        )
-                    })
+            let tsa = structured_pkix::Certificate::read(&parser, &fixture.tsa, 50000).unwrap();
+            let root = data
+                .certificates()
+                .iter()
+                .find(|value| value.as_bytes() == fixture.root)
+                .unwrap();
+            let interval = structured_pkix::path::Interval::between(
+                tsa.tbs().validity().not_before().seconds(),
+                tsa.tbs().validity().not_after().seconds(),
+            );
+            let utc =
+                structured_pkix::temporal::LeapTable::new(interval.from(), interval.to(), &[])
+                    .unwrap();
+            let work = reader.execution();
+            let validation = structured_pkix::path::ValidationContext {
+                execution: &work,
+                interval,
+                policy: structured_pkix::path::Policy::default(),
+                bounds: structured_pkix::path::ValidationBounds::default(),
+                verifier: &oracle,
+                watch: &(),
+                recognizer: &(),
+            };
+            let structured_ltv::pki::PathOutcome::Accepted(path) = structured_ltv::pki::check_path(
+                &[&tsa],
+                structured_pkix::path::Anchor::from_certificate(root),
+                &validation,
+            )
+            .unwrap() else {
+                panic!("real TSA path")
+            };
+            let time = timestamp::CheckTime {
+                utc: &utc,
+                reference: Some(interval.to_instant()),
+            };
+            let mut input = input.unwrap();
+            let checked = timestamp::with_token(&prepared, 0, &reader, |context| {
+                context.check_historical(&oracle, &path, &reader, &time, &mut input, |_, _| {
+                    Ok::<_, Infallible>(true)
+                })
             })
             .unwrap();
-            assert_eq!(agreement, ImprintAgreement::Matches);
+            assert!(checked.timestamp().actor().is_some());
+            assert_eq!(checked.timestamp().imprint, ImprintAgreement::Matches);
+            // The verified archive belongs to this parallel counter, not the
+            // selected root. Its own preceding census must still be usable.
+            let required = checked.requirements(&prepared, &reader).unwrap();
+            assert_eq!(required.signature(), owner);
+            assert!(required.entries().is_empty());
+            let pool = structured_cades::material::Pool::read(&prepared, &reader).unwrap();
+            let query = structured_ltv::source::Scope::new(
+                &document,
+                structured_ltv::source::Source::snapshot(&document),
+                &work,
+            );
+            let index = pool.index_for_archive((&checked).into(), &query).unwrap();
+            assert!(
+                matches!(
+                    index
+                        .archived(
+                            structured_ltv::material::ArtifactRef::Certificate(root),
+                            checked.coverage(),
+                            checked.timestamp().actor().unwrap().verified(),
+                            &query,
+                        )
+                        .unwrap(),
+                    structured_ltv::material::Archived::Present(_)
+                ),
+                "the counter archive hashes the actual global certificate field"
+            );
+            let refused = structured_asn1::memory::Memory::new(std::sync::Arc::new(
+                structured_asn1::memory::MemoryAccount::new(1 << 20, 0),
+            ));
+            let limited = structured_ltv::source::Scope::new(
+                &document,
+                structured_ltv::source::Source::snapshot(&document),
+                &refused,
+            );
+            assert!(matches!(
+                pool.index_for_archive((&checked).into(), &limited),
+                Err(structured_cades::material::ArchiveIndexError::Coverage(
+                    structured_ltv::material::CoverageError::Scope(
+                        structured_ltv::source::ScopeError::Resource { .. }
+                    )
+                ))
+            ));
+            assert_eq!(refused.used(), 0);
+            let foreign = structured_ltv::source::Scope::new(
+                &old_document,
+                structured_ltv::source::Source::snapshot(&old_document),
+                &refused,
+            );
+            assert!(matches!(
+                pool.index_for_archive((&checked).into(), &foreign),
+                Err(structured_cades::material::ArchiveIndexError::Index(
+                    structured_ltv::material::IndexError::Foreign { .. }
+                ))
+            ));
+            assert_eq!(refused.used(), 0);
         }
     }
 }

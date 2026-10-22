@@ -27,6 +27,17 @@ pub mod credentials;
 mod legacy;
 pub use checks::{CheckError, Checks, Finding, check_participants};
 
+/// Refusal to construct material scope for an actual checked archive owner.
+#[derive(Debug)]
+pub enum ArchiveIndexError {
+    /// Negative timestamp facts cannot establish an archive's owner.
+    Unproven,
+    /// Original source, current query or indexed storage refused.
+    Index(material::IndexError<Node>),
+    /// The archive's exact token/coverage/source binding refused.
+    Coverage(material::CoverageError<Node>),
+}
+
 /// Exact format-defined validation-values placement, without inventing a
 /// root certificate CHOICE or a whole OCSP envelope around a basic body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +294,96 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
             })?;
         crate::timestamp::with_existing(self.prepared, ordinal, token, operation, visitor)
     }
+    /// Build material scope for the actual successful archive owner, including
+    /// a historical counter or parallel root. Sources are the same original
+    /// pool; no signature is replayed and no parsed artifact is cloned.
+    pub fn index_for_archive<'source, Q>(
+        &'source self,
+        archive: crate::timestamp::ArchiveView<'_, 'm, 'd, '_>,
+        query: &Q,
+    ) -> Result<Index<'source, 'm, 'd, Q::Work>, ArchiveIndexError>
+    where
+        Q: Query<Id = Node, Document = DocumentId<'m, 'd>, Generation = ()>,
+        'd: 'source,
+    {
+        let actor = archive
+            .timestamp()
+            .actor()
+            .ok_or(ArchiveIndexError::Unproven)?;
+        let evidence = actor.verified();
+        let snapshot = self
+            .prepared
+            .document()
+            .locate(self.prepared.signer().span())
+            .snapshot;
+        if evidence.token().snapshot != snapshot || query.snapshot() != snapshot {
+            return Err(ArchiveIndexError::Index(material::IndexError::Foreign {
+                signature: evidence.signature(),
+            }));
+        }
+        archive
+            .coverage()
+            .require_evidence(evidence, archive.coverage().subject(), query)
+            .map_err(ArchiveIndexError::Coverage)?;
+        self.index_for_signature(evidence.signature(), query)
+            .map_err(ArchiveIndexError::Index)
+    }
+
+    fn index_for_signature<'source, Q>(
+        &'source self,
+        signature: Node,
+        query: &Q,
+    ) -> Result<Index<'source, 'm, 'd, Q::Work>, material::IndexError<Node>>
+    where
+        Q: Query<Id = Node, Document = DocumentId<'m, 'd>, Generation = ()>,
+        'd: 'source,
+    {
+        let mut index = Index::new(ISSUER, signature, &self.open, query)?;
+        certificates(
+            self.prepared.document().message(),
+            None,
+            self.prepared,
+            &mut index,
+            query,
+        )?;
+        for token in self.tokens {
+            query
+                .admit(signature, 1)
+                .map_err(material::IndexError::Scope)?;
+            certificates(
+                token.token.message(),
+                Some(token.ordinal),
+                self.prepared,
+                &mut index,
+                query,
+            )?;
+        }
+        for crl in &self.crls {
+            query
+                .admit(signature, 1)
+                .map_err(material::IndexError::Scope)?;
+            index.insert(
+                ISSUER,
+                ArtifactRef::Crl(&crl.value),
+                revocation_occurrence(self.prepared, crl.node, crl.placement)?,
+                query,
+            )?;
+        }
+        for response in &self.ocsp {
+            query
+                .admit(signature, 1)
+                .map_err(material::IndexError::Scope)?;
+            index.insert(
+                ISSUER,
+                ArtifactRef::Ocsp(&response.value),
+                revocation_occurrence(self.prepared, response.node, response.placement)?,
+                query,
+            )?;
+        }
+        legacy::index(self, &mut index, query)?;
+        Ok(index)
+    }
+
     /// Build the one exact-artifact index from actual root/token locations.
     /// Models remain borrowed; no certificate/CRL/status byte copy or parser
     /// replay occurs. The current query funds all new hashing/probing/storage.
@@ -303,50 +404,7 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
                 signature: signature.node,
             });
         }
-        let mut index = Index::new(ISSUER, signature.node, &self.open, query)?;
-        certificates(
-            self.prepared.document().message(),
-            None,
-            self.prepared,
-            &mut index,
-            query,
-        )?;
-        for token in self.tokens {
-            query
-                .admit(signature.node, 1)
-                .map_err(material::IndexError::Scope)?;
-            certificates(
-                token.token.message(),
-                Some(token.ordinal),
-                self.prepared,
-                &mut index,
-                query,
-            )?;
-        }
-        for crl in &self.crls {
-            query
-                .admit(signature.node, 1)
-                .map_err(material::IndexError::Scope)?;
-            index.insert(
-                ISSUER,
-                ArtifactRef::Crl(&crl.value),
-                revocation_occurrence(self.prepared, crl.node, crl.placement)?,
-                query,
-            )?;
-        }
-        for response in &self.ocsp {
-            query
-                .admit(signature.node, 1)
-                .map_err(material::IndexError::Scope)?;
-            index.insert(
-                ISSUER,
-                ArtifactRef::Ocsp(&response.value),
-                revocation_occurrence(self.prepared, response.node, response.placement)?,
-                query,
-            )?;
-        }
-        legacy::index(self, &mut index, query)?;
-        Ok(index)
+        self.index_for_signature(signature.node, query)
     }
 }
 

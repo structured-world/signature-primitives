@@ -124,6 +124,9 @@ fn read_one<'m, 'd, W: Work>(
             Ok(token) => {
                 let properties =
                     if crate::properties::Properties::has_legacy_values(token.signer(), &reader)? {
+                        // The shared property reader retains AnnexA cardinality
+                        // faults too, before skipping an unreadable value.
+                        // Timestamp signers must not rely on root-only rules.
                         let properties =
                             crate::properties::Properties::read(token.signer(), &reader)?;
                         super::property_findings(document, &properties, &reader, findings)?;

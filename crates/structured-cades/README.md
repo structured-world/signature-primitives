@@ -114,7 +114,14 @@ payload pass, without buffering the document or resolving another provider.
 `Context::check_historical` uses the existing complete CMS/ESS/TSA/key/path/time
 check. A matching old archive is not modern `ATSv3` conformance or a trust verdict.
 `HistoricalChecked::requirements` derives its actual preceding TSA/counter
-obligations; `material::credentials::Scope::before_archive` accepts either modern
+obligations, including archives owned by a counter or parallel root. Its scope
+uses that actual owner and its descendant counters; wholly covered counters
+also retain their nested TSA obligations.
+For a counter or parallel owner's archive, `Pool::index_for_archive` builds the
+same original artifact catalogue under that checked owner's signature identity;
+`Pool::index` retains the selected root's scope. Foreign sources and unproven
+archives refuse before an archive index can be used.
+`material::credentials::Scope::before_archive` accepts either modern
 or historical receipts. Each member-specific input is bound to its exact token,
 including when several token values share an attribute, throughout coverage and
 validation-material joins.

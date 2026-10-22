@@ -348,25 +348,6 @@ impl<'o, 's, W: Work, Q: Work> Output<'o, 's, W, Q> {
         edition: Edition,
     ) -> Result<(), SelectionError> {
         let refusal = |cause| resource(self.at, cause);
-        if let Some((signed, _)) = view.signed() {
-            for entry in prepared.timestamps() {
-                self.work.charge_work(1).map_err(refusal)?;
-                let span = entry.property().span();
-                if entry.owner() == owner
-                    && span.start >= signed.start
-                    && span.end() <= signed.end()
-                {
-                    self.covered
-                        .try_insert(entry.property(), true)
-                        .map_err(refusal)?;
-                    if let Some(value) = entry.value() {
-                        self.covered
-                            .try_insert(Node::of(value.span()), true)
-                            .map_err(refusal)?;
-                    }
-                }
-            }
-        }
         if edition != Edition::Rfc3126 {
             for value in prepared.document().message().certificates() {
                 self.covered
@@ -379,12 +360,53 @@ impl<'o, 's, W: Work, Q: Work> Output<'o, 's, W, Q> {
                     .map_err(refusal)?;
             }
         }
-        for counter in prepared.counters() {
+        for counter in prepared
+            .counters()
+            .iter()
+            .chain(prepared.parallel_counters())
+        {
             self.work.charge_work(1).map_err(refusal)?;
             if covered_container(view, counter.node(), self.covered, self.work).map_err(refusal)? {
                 self.covered
                     .try_insert(counter.node(), true)
                     .map_err(refusal)?;
+            }
+        }
+        // TS101733 V1.5.1 §6.4.1 and RFC5126 §6.4.1 cover complete
+        // countersignature attributes, including every nested timestamp.
+        // Exact coverage lookups cannot infer those descendant obligations
+        // from the counter node alone. The original enclosing attribute must
+        // be wholly covered; partial archive values never gain whole coverage.
+        // https://www.rfc-editor.org/rfc/rfc5126#section-6.4.1
+        for entry in prepared.timestamps() {
+            self.work.charge_work(1).map_err(refusal)?;
+            if entry.owner() == owner {
+                if let Some((signed, _)) = view.signed() {
+                    let span = entry.property().span();
+                    if span.start >= signed.start && span.end() <= signed.end() {
+                        self.covered
+                            .try_insert(entry.property(), true)
+                            .map_err(refusal)?;
+                        if let Some(value) = entry.value() {
+                            self.covered
+                                .try_insert(Node::of(value.span()), true)
+                                .map_err(refusal)?;
+                        }
+                    }
+                }
+                continue;
+            }
+            if covered_container(view, entry.property(), self.covered, self.work)
+                .map_err(refusal)?
+            {
+                self.covered
+                    .try_insert(entry.property(), true)
+                    .map_err(refusal)?;
+                if let Some(value) = entry.value() {
+                    self.covered
+                        .try_insert(Node::of(value.span()), true)
+                        .map_err(refusal)?;
+                }
             }
         }
         Ok(())

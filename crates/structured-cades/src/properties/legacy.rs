@@ -45,10 +45,26 @@ pub(super) fn inspect<'d, W: Work>(
         if attribute.kind() != kind {
             continue;
         }
-        // Cardinality is reported by the common catalogue. Reference timestamps
-        // are inspected with TSTInfo/SourceMap by prepare::tokens, not reparsed
-        // or downgraded to a bare SEQUENCE here.
-        if attribute.values().len() != 1 || matches!(ordinal, 4 | 5) {
+        // AnnexA.1 specifies exactly one value, also when this signer is
+        // inside a timestamp. CMS's open attribute catalogue cannot enforce
+        // these registered schemas. Retain the fault before skipping decoding.
+        // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
+        if attribute.values().len() != 1 {
+            faults
+                .try_push(Fault {
+                    attribute: kind,
+                    field: "cades.legacy.values",
+                    cause: Error::Syntax {
+                        code: structured_cms::ErrorCode::AttributeCardinality,
+                        field: "cades.legacy.values",
+                        at: attribute.span().start,
+                    },
+                })
+                .map_err(|cause| Error::resource(cause, FIELD, attribute.span().start))?;
+            return Ok(());
+        }
+        // Reference timestamps use prepare::tokens' original SourceMap path.
+        if matches!(ordinal, 4 | 5) {
             return Ok(());
         }
         let reading = read_attribute(attribute, ordinal, parent, hints, values, work);

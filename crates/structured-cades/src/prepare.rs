@@ -688,9 +688,19 @@ fn property_findings<'m, 'd, W: Work>(
                 length: 0,
             },
             Severity::Required,
-            Rule::Value {
-                attribute: fault.attribute,
-                field: fault.field,
+            match &fault.cause {
+                Error::Syntax {
+                    code: ErrorCode::AttributeCardinality,
+                    field,
+                    ..
+                } => Rule::Schema {
+                    code: ErrorCode::AttributeCardinality,
+                    field,
+                },
+                _ => Rule::Value {
+                    attribute: fault.attribute,
+                    field: fault.field,
+                },
             },
             findings,
         )?;
@@ -900,22 +910,10 @@ fn legacy_cardinality<'m, 'd, W: Work>(
     parent
         .charge(2)
         .map_err(|cause| Error::encoding(cause, FIELD))?;
-    // AnnexA.1 specifies one value in each of these eight attributes.
-    // Table1 permits repeated reference timestamps (the two timestamp rows),
-    // but the six reference/value rows have baseline cardinality 0 or 1.
+    // Properties::read retains AnnexA.1 value-cardinality faults for EVERY
+    // signer, including timestamp signers. This phase only adds Table1's
+    // attribute-occurrence rule: repeated timestamp rows, other rows 0 or 1.
     // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
-    if attribute.values().len() != 1 {
-        finding(
-            document,
-            attribute.span(),
-            Severity::Required,
-            Rule::Schema {
-                code: ErrorCode::AttributeCardinality,
-                field: "cades.legacy.values",
-            },
-            findings,
-        )?;
-    }
     if root && ordinal != 4 && ordinal != 5 {
         debug_assert!(ordinal < 8);
         let bit = 1u8 << ordinal;

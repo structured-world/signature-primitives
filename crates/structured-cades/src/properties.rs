@@ -90,8 +90,9 @@ pub struct Properties<'a> {
 impl<'a> Properties<'a> {
     /// Read each recognized value under its original attribute reader. Existing
     /// CMS placement/cardinality and signed-DER checks remain the CMS kernel's
-    /// responsibility; this adds the value schemas from EN319122-1 Annex D
-    /// and baseline attribute encoding requirements. A finding does not forbid
+    /// responsibility; registered legacy cardinality and value schemas from
+    /// EN319122-1 Annex A/D are checked here for every signer, including TSAs.
+    /// This also checks baseline attribute encoding. A finding does not forbid
     /// independent CMS decoding or mathematical verification.
     /// Reference timestamp envelopes and carried `TSTInfo` are inspected by
     /// full preparation, retaining mapped diagnostics with the original source.

@@ -23,31 +23,38 @@ pub enum SignerIdentifier<'a> {
 
 impl<'a> SignerIdentifier<'a> {
     fn read(parent: &Reader<'a>, element: &Element<'a>) -> Result<Self> {
-        const FIELD: &str = "signerInfo.sid";
+        Self::read_as(parent, element, "signerInfo.sid")
+    }
+
+    pub(crate) fn read_as(
+        parent: &Reader<'a>,
+        element: &Element<'a>,
+        field: &'static str,
+    ) -> Result<Self> {
         if element.tag() == Tag::context(false, 0) || element.tag() == Tag::context(true, 0) {
-            return Octets::read_identifier(parent, element, FIELD).map(Self::SubjectKeyIdentifier);
+            return Octets::read_identifier(parent, element, field).map(Self::SubjectKeyIdentifier);
         }
         if element.tag() != Tag::constructed(universal::SEQUENCE) {
             return Err(Error::schema(
                 ErrorCode::UnexpectedTag,
-                FIELD,
+                field,
                 element.span().start,
             ));
         }
         let mut inside = parent
             .enter(element)
-            .map_err(|error| Error::encoding(error, FIELD))?;
+            .map_err(|error| Error::encoding(error, field))?;
         let name = inside
             .expect(Tag::constructed(universal::SEQUENCE))
-            .map_err(|error| Error::encoding(error, FIELD))?;
-        let issuer = structured_pkix::name::read(&inside, &name, FIELD).map_err(Error::pkix)?;
+            .map_err(|error| Error::encoding(error, field))?;
+        let issuer = structured_pkix::name::read(&inside, &name, field).map_err(Error::pkix)?;
         let serial = inside
             .read_integer()
-            .map_err(|error| Error::encoding(error, FIELD))?;
+            .map_err(|error| Error::encoding(error, field))?;
         if !inside.is_empty() {
             return Err(Error::schema(
                 ErrorCode::TrailingData,
-                FIELD,
+                field,
                 inside.offset(),
             ));
         }

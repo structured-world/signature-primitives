@@ -305,6 +305,12 @@ pub struct Checked<'r, 'p, 'a, 'c, S> {
     attributes: OwnedVec<AttributeUse>,
 }
 impl<'r, 'p, 'a, 'c, S> Checked<'r, 'p, 'a, 'c, S> {
+    /// Exact original AC whose complete use requirements produced this receipt.
+    /// This does not authorize substitution of another equal-looking AC.
+    #[must_use]
+    pub fn certificate(&self) -> &'r crate::attribute_certificate::AttributeCertificate<'c> {
+        self.authority.facts().certificate()
+    }
     /// Original authenticated issuance and selected trust route.
     #[must_use]
     pub fn authority(&self) -> &Authority<'r, 'p, 'a, 'c> {

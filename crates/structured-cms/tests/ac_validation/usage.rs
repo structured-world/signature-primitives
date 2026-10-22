@@ -1,4 +1,6 @@
 //! Public relying-party composition with real Ed25519 issuance and PKIX paths.
+#[path = "encrypted.rs"]
+mod encrypted;
 use super::*;
 use structured_asn1::memory::Execution;
 use structured_cms::attribute_certificate::validation::{

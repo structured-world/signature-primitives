@@ -1,12 +1,12 @@
 # structured-cms
 
-CMS SignedData and RFC 3161 timestamp mechanisms over borrowed ASN.1 ranges,
+CMS SignedData, digital-envelope and RFC 3161 timestamp mechanisms over borrowed ASN.1 ranges,
 explicit resource accounts and injected cryptographic providers. Applications
 supply content and own trust, policy, acquisition and reporting. The library
 performs no implicit I/O and includes no cryptographic engine.
 
-The implemented surface covers SignedData rather than encrypted CMS content
-types. Use the coordinated ASN.1/PKIX/CMS API family:
+Use the coordinated ASN.1/PKIX/CMS API family. The encrypted-attribute APIs
+described below are new workspace source; registry availability follows release.
 
 The snippets below target the coordinated 0.8 API family; see the
 [current registry version](https://crates.io/crates/structured-cms).
@@ -18,6 +18,30 @@ structured-pkix = "0.8"
 structured-cms = "0.8"
 ```
 
+- `enveloped::EnvelopedData` reads the entire RFC5652 digital-envelope schema:
+  key transport, key agreement, pre-distributed KEK, password and open recipient
+  formats, original originator material and unprotected attributes. Version
+  rules are checked before return; BER ciphertext and key fragments retain
+  original ranges. Detached and attached-empty ciphertext remain distinct.
+  Original algorithm parameter readers and `reader_in` retain source encoding,
+  depth and current/original budgets. Open recipient values, sender bits and
+  optional key metadata expose the same source-bound `EncodedValue::reader_in`.
+  An envelope does not authenticate its
+  originator or select a key, algorithm policy or cryptographic engine.
+- `attribute_certificate::encrypted::Encrypted::read` preflights every original
+  RFC5755 encAttrs ContentInfo before decryption. `decrypt_all` requires the
+  actual AC's `usage::Checked` receipt and invokes the explicitly selected
+  provider with original envelope metadata/current execution. Decrypted output
+  uses that same accounted domain; unsupported, not-recipient, rejected and
+  processing failures remain distinct. No engine fallback or key acquisition
+  occurs. `ClearAttrs::read` enforces DER independently of the outer encoding.
+  The core binds the full serial and semantic issuer DN before exposing a
+  `Bound` plaintext to its scoped visitor, then records the existing AA-control
+  result for every attribute. Duplicate types across plaintext/encrypted sets
+  remain separate, without an implicit merge or authorization grant. Temporary
+  plaintext cannot escape the callback; explicitly retained outputs own their
+  charges. Errors distinguish original encrypted-source coordinates from
+  zero-based plaintext coordinates; encryption supplies no invertible offset map.
 - `ContentInfo` and `SignedData` preserve original BER encodings, signer
   identifiers, certificate/revocation choices and signed attributes.
   `SignerInfo::digest_algorithm()` and `signature_algorithm()` return PKIX

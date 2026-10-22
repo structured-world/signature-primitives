@@ -25,6 +25,7 @@ const INFO: &str = "attributeCertificate.acinfo";
 
 pub mod clearance;
 pub mod controls;
+pub mod encrypted;
 pub mod ietf;
 pub mod proxy;
 pub mod role;

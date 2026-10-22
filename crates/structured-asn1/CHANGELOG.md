@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.10.0...structured-asn1-v0.11.0) - 2026-10-22
+
+### Added
+
+- *(cades)* [**breaking**] verify historical archives ([#211](https://github.com/structured-world/signature-primitives/pull/211))
+- *(cms)* process protected key containers ([#209](https://github.com/structured-world/signature-primitives/pull/209))
+- *(ocsp)* process original request batches ([#207](https://github.com/structured-world/signature-primitives/pull/207))
+- *(cms)* validate attribute-certificate use ([#201](https://github.com/structured-world/signature-primitives/pull/201))
+- *(cms)* authenticate constrained AA paths ([#199](https://github.com/structured-world/signature-primitives/pull/199))
+- *(ocsp)* [**breaking**] support attribute certificate status ([#197](https://github.com/structured-world/signature-primitives/pull/197))
+- *(pkix)* [**breaking**] support AC CRL evidence ([#195](https://github.com/structured-world/signature-primitives/pull/195))
+- *(cms)* authenticate attribute certificates ([#193](https://github.com/structured-world/signature-primitives/pull/193))
+- *(cms)* bind holder object digests ([#190](https://github.com/structured-world/signature-primitives/pull/190))
+- *(tsp)* check complete timestamp responses ([#205](https://github.com/structured-world/signature-primitives/pull/205))
+- *(cms)* process encrypted AC attributes ([#203](https://github.com/structured-world/signature-primitives/pull/203))
+
 ## [0.10.0](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.9.2...structured-asn1-v0.10.0) - 2026-10-21
 
 ### Added

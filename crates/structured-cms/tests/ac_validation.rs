@@ -134,6 +134,69 @@ fn pkc(
 fn read_ac<'a>(parser: &'a Parser, bytes: &'a [u8]) -> AttributeCertificate<'a> {
     AttributeCertificate::read(&mut parser.read(bytes, 700).unwrap()).unwrap()
 }
+
+#[test]
+fn holder_uid_comparison_keeps_ac_source_with_a_third_operation_reader() {
+    // A source transition to a foreign holder PKC must not lose the AC's
+    // original ceiling while scanning its possibly large issuerUID.
+    use structured_asn1::memory::Work;
+    let mut costs = Vec::new();
+    for size in [1, 4096] {
+        let uid = [vec![0], vec![1; size]].concat();
+        let ac_bytes = ac_bytes(&base(b"Root", &[9], &tlv(3, &uid)), &[]);
+        let pkc_bytes = pkc(b"Root", b"Holder", &[9], &tlv(129, &uid), &[]);
+        let ap = Parser::der(memory(1 << 20, 1 << 28));
+        let cp = Parser::der(memory(1 << 20, 1 << 28));
+        let qp = Parser::der(memory(1 << 20, 1 << 28));
+        let ac = read_ac(&ap, &ac_bytes);
+        let certificate = read_pkc(&cp, &pkc_bytes);
+        let source = ap.read(&[], 0).unwrap();
+        let original = source.execution();
+        let query = qp.read(&[], 0).unwrap();
+        let operation = query.execution();
+        let before = original.work_remaining();
+        assert!(matches!(
+            ac.bind_holder(&certificate, HolderMethod::BaseCertificate, &operation)
+                .unwrap(),
+            Check::Accepted(())
+        ));
+        costs.push(before - original.work_remaining());
+    }
+    assert!(costs[1] >= costs[0] + 4095, "AC source costs: {costs:?}");
+}
+
+#[test]
+fn holder_directory_comparison_funds_both_original_sources_under_third_query() {
+    // Different DER spellings require normalization. Its input-sized work
+    // must not disappear from the AC source when the PKC becomes the origin.
+    use structured_asn1::memory::Work;
+    let mut costs = Vec::new();
+    for size in [1, 64] {
+        let lower = vec![b'a'; size];
+        let upper = vec![b'A'; size];
+        let ab = ac_bytes(&entity(164, &name(&lower)), &[]);
+        let cb = pkc(b"Root", &upper, &[9], &[], &[]);
+        let ap = Parser::der(memory(1 << 20, 1 << 28));
+        let cp = Parser::der(memory(1 << 20, 1 << 28));
+        let qp = Parser::der(memory(1 << 20, 1 << 28));
+        let ac = read_ac(&ap, &ab);
+        let certificate = read_pkc(&cp, &cb);
+        let source = ap.read(&[], 0).unwrap();
+        let original = source.execution();
+        let before = original.work_remaining();
+        let query = qp.read(&[], 0).unwrap();
+        assert!(matches!(
+            ac.bind_holder(&certificate, HolderMethod::EntityName, &query.execution())
+                .unwrap(),
+            Check::Accepted(())
+        ));
+        costs.push(before - original.work_remaining());
+    }
+    assert!(
+        costs[1] > costs[0] + 63,
+        "AC normalization costs: {costs:?}"
+    );
+}
 fn read_pkc<'a>(parser: &'a Parser, bytes: &'a [u8]) -> Certificate<'a> {
     Certificate::read(parser, bytes, 2000).unwrap()
 }

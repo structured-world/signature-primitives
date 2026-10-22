@@ -97,6 +97,25 @@ structured-cms = "0.8"
   AA key identify it. Direct AA and explicit configured-responder authority are
   supported; PKC delegation cannot confer AC authority under RFC5755 §4.5.
   Nonce, time, critical demand and `NoRevAvail` outcomes stay distinct.
+- `attribute_certificate::validation::usage` composes authenticated issuance
+  with explicit direct-AA trust or an authenticated constrained AA path,
+  a checked holder PKC path or original object-digest receipt, targeting,
+  complete proxy-set checks and original CRL/OCSP evidence. `HolderPath::validate`
+  reuses the PKIX core; `direct` and `issued` do not repeat path/AC signatures
+  or status identity hashes. The returned `Checked` retains every original
+  input and a complete accounted catalogue of per-attribute AA-control results.
+  Written controls apply on the directly trusted route too. Excluded attributes
+  remain inspectable, while unrelated permitted types stay usable.
+  Status is bound to the same original AC and exact evaluation label; missing
+  evidence, incomplete reason coverage, adverse/unknown OCSP status, unsuitable
+  update windows and nonce failures do not produce a checked result.
+  `NoStatus` completes only an authenticated `NoRevAvail` profile. An OCSP
+  response without `nextUpdate` retains an explicit unqualified window rather
+  than acquiring a default expiry. The caller supplies protocol authentication,
+  proof of possession, trust and revocation of PKC/status authorities, UTC facts
+  and additional recency/recipient policy. Decryption and application permission
+  are separate; `Checked::allows` applies the same controls to decrypted types
+  without claiming their `ACClearAttrs` issuer/serial binding was checked.
 - `AttributeCertificate::bind_holder_digest` checks an explicitly selected whole
   certificate or effective public key against Holder `objectDigestInfo`.
   `validation::digest::ObjectDigestProvider` uses the existing incremental digest

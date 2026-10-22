@@ -1200,21 +1200,18 @@ fn original_ac_and_aa_source_ceiling_cannot_be_reset_by_fresh_work() {
     let aa = read_pkc(&ap, &aa_bytes);
     let p = Parser::der(generous());
     let ac = read_ac(&p, &bytes);
-    // The exhausted AA ceiling applies while comparing the AC issuer name;
-    // the common Name kernel locates that action at its original left operand.
-    let original_name = match &ac.information().issuer.names.as_ref().unwrap()[0] {
-        structured_pkix::general_name::GeneralName::Directory(name) => name.as_bytes(),
-        other => panic!("{other:?}"),
-    };
-    let name_at = 700
-        + bytes
+    // The dual-source Name kernel now identifies the actual exhausted
+    // right operand rather than projecting every refusal onto the left DN.
+    let original_name = aa.tbs().subject().as_bytes();
+    let name_at = 2000
+        + aa_bytes
             .windows(original_name.len())
-            .position(|w| w == original_name)
+            .rposition(|w| w == original_name)
             .unwrap() as u64;
     let result = ac.authenticate(&aa, key_of(&aa), interval(), &v, &generous());
     assert!(
         matches!(&result,Err(AuthenticationError::Processing(e))
-        if e.is_resource() && e.offset()==name_at && e.field()=="attributeCertificate.issuer"),
+        if e.is_resource() && e.offset()==name_at && e.field()=="certificate.tbsCertificate.subject"),
         "{result:?}"
     );
     assert!(v.calls.borrow().is_empty());

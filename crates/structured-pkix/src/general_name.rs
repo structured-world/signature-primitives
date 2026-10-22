@@ -138,6 +138,23 @@ pub fn matches_at(
     equality::matches(left, right, execution, None, at, field)
 }
 
+/// Compare two decoded names with each actual producing Parser and current
+/// Work. The caller supplies the correct source owner for each retained value,
+/// as in [`Name::matches_between`]. Each input's normalization and scratch are
+/// paid under its own source ceiling; no grammar, whole buffer or comparison
+/// is duplicated. Unknown open name forms retain encoded identity only.
+/// The caller's real `at`/`field` locate an execution refusal.
+pub fn matches_between<'a, 'b, L: Work, R: Work>(
+    left: &GeneralName<'a>,
+    right: &GeneralName<'b>,
+    left_source: (&L, &'a structured_asn1::Parser),
+    right_source: (&R, &'b structured_asn1::Parser),
+    at: u64,
+    field: &'static str,
+) -> Result<bool> {
+    equality::matches_between(left, right, left_source, right_source, at, field)
+}
+
 /// Reads a sequence of names.
 pub(crate) fn read_all<'a>(
     parent: &Reader<'a, '_>,

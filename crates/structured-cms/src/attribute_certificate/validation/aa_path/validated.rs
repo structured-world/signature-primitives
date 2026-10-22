@@ -217,11 +217,13 @@ enum RecognitionError<E> {
     Callback(E),
 }
 
-enum VerificationError<E> {
+pub(in crate::attribute_certificate::validation) enum VerificationError<E> {
     Processing(Error),
     Callback(E),
 }
-struct ScopedVerifier<'r, V>(&'r V);
+pub(in crate::attribute_certificate::validation) struct ScopedVerifier<'r, V>(
+    pub(in crate::attribute_certificate::validation) &'r V,
+);
 impl<W: Work, V> Verify<W> for ScopedVerifier<'_, V>
 where
     V: Verify<W>,

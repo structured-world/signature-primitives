@@ -4,7 +4,7 @@ use super::{AttributeValue, Encoding, Error, ErrorCode, Located, OwnedVec, Resul
 use structured_asn1::memory::Work;
 use structured_asn1::{Class, Element, ScopedReader as Reader, Tag, universal};
 
-pub(super) fn implicit<'a>(
+pub(crate) fn implicit<'a>(
     parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,

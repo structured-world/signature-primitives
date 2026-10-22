@@ -19,6 +19,7 @@ alloc = ["structured-asn1/alloc", "structured-pkix/alloc"]
 [dependencies]
 structured-asn1 = { version = "0.10.0", path = "../structured-asn1", default-features = false }
 structured-pkix = { version = "0.10.0", path = "../structured-pkix", default-features = false }
+zeroize = { version = "=1.9.1", default-features = false }
 
 [dev-dependencies]
 # Independent public-vector oracle/adapter only; no engine in the runtime API.
@@ -29,6 +30,8 @@ p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
 aes = { version = "=0.9.3", default-features = false }
 cbc = { version = "=0.2.1", default-features = false, features = ["block-padding"] }
 aes-kw = { version = "=0.3.1", default-features = false }
+hmac = { version = "=0.13.0", default-features = false }
+pbkdf2 = { version = "=0.13.0", default-features = false, features = ["hmac"] }
 
 [lints]
 workspace = true

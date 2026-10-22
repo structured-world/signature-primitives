@@ -28,6 +28,24 @@ pub fn conforms<'a>(parent: &Reader<'a>, element: &Element<'a>, field: &'static 
     crate::name::walk_der(parent, element, field, crate::name::Strings::Checked)
 }
 
+/// Validates the contents of a schema-selected IMPLICIT BIT STRING.
+/// The enclosing schema checks its context tag; this reuses the same iterative
+/// BER fragment/padding kernel as universal BIT STRINGs. DER requires primitive.
+pub fn implicit_bit_string<'a>(
+    parent: &Reader<'a>,
+    element: &Element<'a>,
+    field: &'static str,
+) -> Result<()> {
+    if !crate::name::segments::implicit(parent, element, field, true)? {
+        return Err(Error::new(
+            ErrorCode::MalformedValue,
+            field,
+            element.span().start,
+        ));
+    }
+    Ok(())
+}
+
 /// Whether two members of a set are in the order the distinguished rules put
 /// them in.
 ///

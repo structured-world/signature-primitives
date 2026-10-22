@@ -1,5 +1,30 @@
 # structured-cms
 
+## Personal key containers
+
+`personal::Pfx` reads PKCS#12 v3 over the same borrowed BER/DER readers as CMS.
+`personal::process` first asks the selected `Backend` to authenticate the entire
+original safe, then processes all plaintext, password-encrypted and public-key
+enveloped members. It visits all six standard bag alternatives, unknown open
+bags and nested SafeContents in source order. Public-key integrity uses the
+existing original `SignedData` model; no new signature or cipher engine is added.
+
+The module also reads PKCS#8/RFC 5958 keys and shrouded keys, PBES1/PBES2,
+PBKDF2, PBMAC1 and legacy PKCS#12 protection parameters. Wide iteration/key-length
+integers and written/default provenance remain explicit. RFC 9879's PBMAC1
+key-length requirement and ignored outer legacy fields are handled before
+provider work. `legacy_password` provides the paid BMP conversion only where
+that legacy layer calls for it; PBMAC1/PBES2 use UTF-8 instead.
+
+The backend owns password acquisition, supported algorithms, KDF/cipher costs,
+key selection and trust. A missing MAC needs its explicit acceptance and never
+becomes proof of authentication merely by parsing. Every returned `Plaintext`
+retains its actual capacity charge and wipes initialized bytes before release;
+scoped models cannot borrow a temporary plaintext buffer after the callback.
+Carried fragment maps and decrypted coordinate boundaries remain separate in
+callback sources and retained errors. A refusal yields no completed import;
+callers stage their own visitor side effects until completion.
+
 CMS SignedData, digital-envelope and RFC 3161 timestamp mechanisms over borrowed ASN.1 ranges,
 explicit resource accounts and injected cryptographic providers. Applications
 supply content and own trust, policy, acquisition and reporting. The library

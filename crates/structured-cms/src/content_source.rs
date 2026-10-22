@@ -59,7 +59,11 @@ impl SourceMap {
         })
     }
 
-    fn of(content: &Octets<'_>, parent: &Reader<'_>, field: &'static str) -> Result<Self> {
+    pub(crate) fn of(
+        content: &Octets<'_>,
+        parent: &Reader<'_>,
+        field: &'static str,
+    ) -> Result<Self> {
         let ranges = if let [piece] = content.pieces() {
             Ranges::One(piece.span())
         } else {

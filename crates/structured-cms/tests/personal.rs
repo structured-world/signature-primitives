@@ -856,6 +856,36 @@ fn known_prf_parameters_and_mac_width_are_checked_before_provider() {
 }
 
 #[test]
+fn written_hmac_parameter_absence_is_not_the_null_default() {
+    // RFC8018 Appendix C makes AlgorithmIdentifier.parameters OPTIONAL. The
+    // registered NULL type constrains a present value, not field presence.
+    // Thus an explicit SHA1 identifier without parameters is not the DEFAULT
+    // identifier whose parameters contain NULL (Appendix A.2 / X.690 §11.5).
+    for last in 7..=13 {
+        for encoding in [Encoding::Ber, Encoding::Der] {
+            let bytes = alg(
+                protection::PBKDF2.as_bytes(),
+                &seq(&[
+                    &tlv(4, b"salt"),
+                    &number(2),
+                    &alg(&[42, 134, 72, 134, 247, 13, 2, last], &[]),
+                ]),
+            );
+            let parser = Parser::new(encoding, Limits::default(), generous());
+            let mut reader = parser.read(&bytes, 90).unwrap();
+            let value = reader.next_element().unwrap().unwrap();
+            let identifier = structured_pkix::algorithm::read(&reader, &value, "test").unwrap();
+            let kdf = protection::Pbkdf2::read(identifier, &reader).unwrap();
+            let Prf::Written(prf) = kdf.prf else {
+                panic!("written absence must retain its own identity")
+            };
+            assert!(prf.parameters().is_none());
+            assert!(!prf.has_null_parameter());
+        }
+    }
+}
+
+#[test]
 fn open_bag_values_validate_whole_asn1_framing_before_visitor() {
     // Unknown ANY is not permission to hide a truncated child TLV inside a
     // definite-length SEQUENCE and reach extraction callbacks with it.
@@ -911,6 +941,53 @@ fn secret_scratch_releases_on_invalid_text_and_post_copy_work_refusal() {
         };
         assert_eq!(cause.is_resource(), resource);
         assert_eq!(account.used(), 0);
+    }
+}
+
+#[test]
+fn every_personal_attribute_role_preserves_value_depth() {
+    // attrValues lives two levels below the attribute-list cursor. A BER
+    // definite-length value must not gain those two levels when its nested
+    // syntax is validated. The same helper serves bags, keys and EncryptedData.
+    let attribute = seq(&[&oid(&[42, 3]), &tlv(49, &seq(&[&seq(&[&[5, 0]])]))]);
+    let bag = bag(99, &[5, 0], &tlv(49, &attribute));
+    let key = seq(&[
+        &number(0),
+        &alg(&[43, 101, 112], &[]),
+        &tlv(4, b"secret"),
+        &tlv(160, &attribute),
+    ]);
+    let encrypted = seq(&[
+        &number(2),
+        &seq(&[&oid(DATA), &alg(&[42, 3], &[5, 0]), &[128, 1, 7]]),
+        &tlv(161, &attribute),
+    ]);
+    for (role, bytes) in [bag, key, encrypted].iter().enumerate() {
+        for (ceiling, accepts) in [(5, false), (6, true)] {
+            let parser = Parser::new(
+                Encoding::Ber,
+                Limits {
+                    max_depth: ceiling,
+                    ..Limits::default()
+                },
+                generous(),
+            );
+            let mut reader = parser.read(bytes, 100).unwrap();
+            let element = reader.next_element().unwrap().unwrap();
+            let result = match role {
+                0 => Bag::read(&reader, &element).map(|_| ()),
+                1 => PrivateKey::read(&reader, &element).map(|_| ()),
+                _ => personal::EncryptedData::read(&reader, &element).map(|_| ()),
+            };
+            if accepts {
+                assert!(result.is_ok(), "role {role} at exact original depth");
+            } else {
+                assert!(
+                    matches!(result, Err(ref cause) if cause.is_resource()),
+                    "role {role} must refuse before entering depth six"
+                );
+            }
+        }
     }
 }
 

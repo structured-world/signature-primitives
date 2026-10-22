@@ -85,10 +85,10 @@ impl<'a> Pbkdf2<'a> {
             let written =
                 structured_pkix::algorithm::read(&inside, &element, FIELD).map_err(Error::pkix)?;
             hmac_width(written, &inside)?;
-            if equal_oid(&inside, written.algorithm(), SHA1)? {
-                // hmac_width checked the parser-derived primitive NULL above.
-                // RFC8018 A.2 DEFAULT includes that value; no second parameter
-                // cursor or invented absent-parameter default is needed.
+            if equal_oid(&inside, written.algorithm(), SHA1)? && written.has_null_parameter() {
+                // RFC8018 A.2's DEFAULT contains a present NULL. Appendix C
+                // makes parameters OPTIONAL: a written absent parameter is
+                // a distinct ASN.1 value, not an invented NULL/default.
                 if inside.encoding().is_der() {
                     return Err(invalid(ErrorCode::DefaultWritten, &element));
                 }
@@ -253,9 +253,11 @@ pub(super) fn hmac_width(
         [42, 134, 72, 134, 247, 13, 2, 11] => 64,
         _ => return Ok(None),
     };
-    // RFC8018 Appendix A.2 registers NULL parameters for all these HMACs.
-    // https://www.rfc-editor.org/rfc/rfc8018#appendix-A.2
-    if !identifier.has_null_parameter() {
+    // RFC8018 A.2 registers NULL as the parameter type, while Appendix C's
+    // AlgorithmIdentifier makes the field OPTIONAL. Validate a present value
+    // without fabricating NULL when it is absent.
+    // https://www.rfc-editor.org/rfc/rfc8018#appendix-C
+    if identifier.parameters().is_some() && !identifier.has_null_parameter() {
         return Err(Error::schema(
             ErrorCode::AlgorithmSyntax,
             FIELD,

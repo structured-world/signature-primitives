@@ -503,8 +503,16 @@ fn attributes<'a>(
             previous = Some(value.as_bytes());
         }
         let attribute = Attribute::read(&inside, &value, FIELD)?;
-        for item in attribute.values() {
-            structured_pkix::der::conforms(&inside, item, FIELD).map_err(Error::pkix)?;
+        // DER values were already walked by Attribute::read. BER inspection
+        // must reopen the saved value context: the list cursor is two levels
+        // above attrValues and would grant nested values those levels for free.
+        if !inside.encoding().is_der() {
+            for (ordinal, item) in attribute.values().iter().enumerate() {
+                let reader = attribute
+                    .value_reader_in(ordinal, &inside, FIELD)?
+                    .expect("ordinal comes from this attribute's original values");
+                structured_pkix::der::conforms(&reader, item, FIELD).map_err(Error::pkix)?;
+            }
         }
         out.try_push(attribute)
             .map_err(|e| Error::resource(e, FIELD, value.span().start))?;

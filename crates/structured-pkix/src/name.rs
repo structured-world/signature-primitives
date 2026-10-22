@@ -262,10 +262,13 @@ impl<'a> Name<'a> {
         self.offset
     }
 
-    // Source owners fund preparation, sorting scratch and comparison through
-    // the same current operation. Reuse the per-RDN semantic kernel and
-    // early exit rather than materializing two whole prepared names.
-    pub(crate) fn matches_between<
+    /// Compare two original names with independently supplied source owners.
+    /// Each Parser must be the actual producing parser of its corresponding
+    /// name; retained Name alone deliberately carries no parser ownership.
+    /// Source ceilings and each Work's current operation fund preparation,
+    /// sorting scratch and comparison. The per-RDN semantic kernel is shared
+    /// with retained matching; neither name is re-encoded or normalized twice.
+    pub fn matches_between<
         'b,
         L: structured_asn1::memory::Work,
         R: structured_asn1::memory::Work,
@@ -275,8 +278,10 @@ impl<'a> Name<'a> {
         left_source: (&L, &'a structured_asn1::Parser),
         right_source: (&R, &'b structured_asn1::Parser),
     ) -> Result<bool> {
-        let (left_work, _) = left_source;
-        let (right_work, _) = right_source;
+        let left_work = left_source.0.execution_for(left_source.1);
+        let right_work = right_source.0.execution_for(right_source.1);
+        let left_source = (&left_work, left_source.1);
+        let right_source = (&right_work, right_source.1);
         left_work.charge_work(1).map_err(|e| self.resource(e))?;
         right_work.charge_work(1).map_err(|e| other.resource(e))?;
         if self.parts.len() != other.parts.len() {

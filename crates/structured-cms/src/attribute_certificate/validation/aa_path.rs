@@ -15,7 +15,7 @@ use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Oid, Span};
 use structured_pkix::Certificate;
 
-mod validated;
+pub(super) mod validated;
 pub use validated::{
     Issued, PathCheck, PathError, PathResult, ValidatedPath, validate, validate_with_key,
 };

@@ -7,6 +7,9 @@ use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{Memory, MemoryError, Work};
 use structured_asn1::{Encoding, Limits, Oid, Parser};
 use structured_cms::attribute_certificate::validation::Profile;
+use structured_cms::attribute_certificate::validation::usage::{
+    Evidence as _, Status as UseStatus,
+};
 use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 use structured_pkix::ocsp::*;
 use structured_pkix::path::{self, Verified, Verify, WorkingKey};
@@ -416,6 +419,36 @@ fn scoped<'r>(
     value
 }
 
+fn use_status(
+    change: Change,
+    bound: &BoundEvidence<'_, '_, '_, '_, Profile<'_, '_>>,
+    profile: &Profile<'_, '_>,
+    now: structured_pkix::temporal::Reading,
+    work: &Memory,
+) {
+    let evidence = bound.evidence();
+    assert_eq!(
+        bound.check(profile, now, work).unwrap(),
+        if change == Change::NoNext {
+            UseStatus::Window(UpdateWindow::NoNextUpdate)
+        } else if matches!(change, Change::Unknown | Change::Revoked | Change::Extended) {
+            UseStatus::Ocsp(evidence.status())
+        } else {
+            UseStatus::Good
+        }
+    );
+    let other = structured_pkix::temporal::Instant::new(now.start().seconds() + 1, 0)
+        .unwrap()
+        .into();
+    assert_eq!(bound.check(profile, other, work).unwrap(), UseStatus::Time);
+    assert!(
+        bound
+            .check(profile, now, &memory(0, 0))
+            .unwrap_err()
+            .is_resource()
+    );
+}
+
 fn inspect(
     change: Change,
     check: impl FnOnce(&Profile<'_, '_>, &Certificate<'_>, ScopedResponse<'_, '_>, &Crypto, &Memory),
@@ -504,6 +537,10 @@ fn inspect(
             &raw const response.responses()[0]
         ));
         expect_facts(change, &evidence);
+        // Relying-party composition consumes the original target/time receipt,
+        // with no repeated signature, CertID hash or fallback for adverse facts.
+        use_status(change, &bound, &profile, time.now, &w);
+        assert_eq!(crypto.signatures.get(), signatures);
         assert_eq!(crypto.hashes.get() - hashes, 2);
     }
     if matches!(

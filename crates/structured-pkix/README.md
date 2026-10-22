@@ -290,6 +290,15 @@ unlocated `ErrorCode` because a borrowed GeneralName has no universal source spa
 Resource refusal is never a mismatch. Decode untrusted values successfully before
 comparison; duplicate reporting and malformed recovery belong to the caller.
 
+`Name::matches_between` and `general_name::matches_between` accept each actual
+producing Parser together with its current Work. Use these when a deferred
+comparison reads two original documents under a third operation. Each operand's
+source ceiling funds its preparation, scratch and comparison; Directory and URI
+normalization run once per operand through the same identity kernels. Retained
+names do not acquire parser ownership: callers supply the actual source parser
+of each value. Source/current refusal remains terminal, with no successful
+partial comparison or leaked scratch.
+
 Other, X.400 and EDI values support encoded identity only, rather than their
 type-specific semantic rules. IP addresses/masks compare exactly, without subnet
 containment. Exact CRL distribution-point/issuer comparisons remain exact; semantic

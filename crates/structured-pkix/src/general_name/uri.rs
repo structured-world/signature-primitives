@@ -69,7 +69,26 @@ pub(super) fn matches_in<W: Work>(
     execution
         .charge_work(left.len().max(right.len()) as u64)
         .map_err(|reason| Error::resource(reason, field, at))?;
-    Ok(left == right)
+    Ok(*left == *right)
+}
+
+pub(super) fn matches_between<L: Work, R: Work>(
+    left: &str,
+    right: &str,
+    left_work: &L,
+    right_work: &R,
+    at: u64,
+    field: &'static str,
+) -> Result<bool> {
+    let left = normalize(left, left_work, at, field)?;
+    let right = normalize(right, right_work, at, field)?;
+    left_work
+        .charge_work(left.len() as u64)
+        .map_err(|e| Error::resource(e, field, at))?;
+    right_work
+        .charge_work(right.len() as u64)
+        .map_err(|e| Error::resource(e, field, at))?;
+    Ok(*left == *right)
 }
 
 fn normalize<W: Work>(

@@ -1,4 +1,6 @@
 //! Native signed AA chains, complete constraints and original/caller resource boundaries.
+#[path = "usage.rs"]
+mod usage;
 use super::{
     attrs, control, entity, ext, issuer, memory, name, read_ac, read_pkc, seq, tlv, validity,
 };

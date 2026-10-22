@@ -2,6 +2,9 @@
 use super::{ac_bytes, accepted, alg, entity, ext, memory, name, pkc, read_ac, read_pkc, seq, tlv};
 use structured_asn1::memory::{Memory, Work};
 use structured_asn1::{Oid, Parser};
+use structured_cms::attribute_certificate::validation::usage::{
+    Evidence as _, Status as UseStatus,
+};
 use structured_pkix::crl::*;
 use structured_pkix::path::{Verified, Verify, WorkingKey};
 use structured_pkix::temporal::LeapTable;
@@ -200,6 +203,34 @@ fn ac_complete_facts_preserve_exact_target_scope_time_and_source() {
     );
     assert_eq!(coverage.sources().len(), 1);
     assert!(core::ptr::eq(coverage.target(), &raw const profile));
+    // Shared use consumes already-qualified coverage without rechecking CRLs;
+    // neither another AC nor a later evaluation label may borrow this status.
+    assert_eq!(
+        coverage.check(&profile, time.now, &w).unwrap(),
+        UseStatus::Good
+    );
+    let later = structured_pkix::temporal::Instant::new(now.seconds() + 1, 0)
+        .unwrap()
+        .into();
+    assert_eq!(
+        coverage.check(&profile, later, &w).unwrap(),
+        UseStatus::Time
+    );
+    let other_bytes = ac_bytes(&entity(130, b"other.test"), &[]);
+    let other_ac = read_ac(&p, &other_bytes);
+    let other = accepted(other_ac.profile(&w).unwrap());
+    assert_eq!(
+        coverage.check(&other, time.now, &w).unwrap(),
+        UseStatus::Target
+    );
+    drop(other);
+    let zero = memory(0, 0);
+    assert!(
+        coverage
+            .check(&profile, time.now, &zero)
+            .unwrap_err()
+            .is_resource()
+    );
     assert!(w.used() > 0);
     drop(coverage);
     assert_eq!(w.used(), 0);
@@ -526,11 +557,19 @@ fn ac_reason_coverage_unions_only_same_target_time_and_execution() {
     let mut coverage = Coverage::new(a, &w).unwrap();
     assert!(!coverage.reasons().is_complete());
     assert_eq!(
+        coverage.check(&profile, time.now, &w).unwrap(),
+        UseStatus::Reasons
+    );
+    assert_eq!(
         coverage.add(b, &generous()).unwrap(),
         CoverageAdmission::DifferentExecution
     );
     assert_eq!(coverage.add(b, &w).unwrap(), CoverageAdmission::Added);
     assert!(coverage.reasons().is_complete());
+    assert_eq!(
+        coverage.check(&profile, time.now, &w).unwrap(),
+        UseStatus::Good
+    );
     assert_eq!(coverage.sources().len(), 2);
     let original = coverage.reasons();
     let CompleteEvidence::Facts(other) = first.evaluate(&other_profile, &time).unwrap() else {

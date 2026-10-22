@@ -1,9 +1,9 @@
 //! RFC5755 profile and supplied-certificate checks, without an authorization verdict.
 //!
-//! Signature arithmetic, authenticated certificate paths and holder identity,
-//! explicit AA trust, evaluation time, targeting/proxy effects, and revocation
-//! remain separate obligations (RFC5755 §5). A parsed critical extension is
-//! not, by itself, an enforced critical extension.
+//! The component APIs keep signature, paths, holder identity, AA trust, time,
+//! targeting/proxy and status facts distinct (RFC5755 §5). [`usage`] composes
+//! them relative to explicit caller-authenticated protocol/trust inputs. A
+//! parsed critical extension is not, by itself, an enforced critical extension.
 //! <https://www.rfc-editor.org/rfc/rfc5755#section-5>
 
 use super::{AttributeCertificate, DigestedObject, IssuerForm, proxy, target};
@@ -11,6 +11,7 @@ use crate::{Error, Result};
 use structured_asn1::memory::Work;
 use structured_asn1::{BitString, Span};
 use structured_pkix::general_name::{self, GeneralName};
+use structured_pkix::revocation::RevocationTarget;
 use structured_pkix::{Certificate, Name};
 
 pub mod aa_path;
@@ -18,6 +19,7 @@ pub mod authentication;
 pub mod digest;
 mod profile;
 mod revocation;
+pub mod usage;
 pub use profile::{AUDIT_IDENTITY, NO_REV_AVAILABLE, Profile, Revocation};
 
 const FIELD: &str = "attributeCertificate.validation";
@@ -109,12 +111,23 @@ pub(super) fn charge(work: &impl Work, amount: u64, at: u64) -> Result<()> {
         .map_err(|e| Error::resource(e, FIELD, at))
 }
 
-fn same_bits(left: BitString<'_>, right: BitString<'_>, work: &impl Work, at: u64) -> Result<bool> {
-    charge(work, 1, at)?;
+fn same_bits(
+    left: BitString<'_>,
+    right: BitString<'_>,
+    left_work: &impl Work,
+    right_work: &impl Work,
+    at: u64,
+) -> Result<bool> {
+    // Switching to the PKC source replaces the origin, not the current
+    // operation. Fund both original UID scans explicitly before comparison;
+    // an independent third query must not erase the AC's source ceiling.
+    charge(left_work, 1, at)?;
+    charge(right_work, 1, at)?;
     if left.len() != right.len() {
         return Ok(false);
     }
-    charge(work, left.as_bytes().len() as u64, at)?;
+    charge(left_work, left.as_bytes().len() as u64, at)?;
+    charge(right_work, right.as_bytes().len() as u64, at)?;
     Ok(left.as_bytes() == right.as_bytes())
 }
 
@@ -207,7 +220,11 @@ impl<'a> AttributeCertificate<'a> {
                 // encodings preserve arbitrary-width numeric identity.
                 if left != right
                     || !name
-                        .matches(certificate.tbs().issuer(), &certificate_execution)
+                        .matches_between(
+                            certificate.tbs().issuer(),
+                            (&execution, self.parser),
+                            (&certificate_execution, certificate.source_parser()),
+                        )
                         .map_err(Error::pkix)?
                 {
                     return Ok(refused(Reason::HolderCertificate, at));
@@ -216,7 +233,7 @@ impl<'a> AttributeCertificate<'a> {
                     let Some(other) = certificate.tbs().issuer_unique_id() else {
                         return Ok(refused(Reason::HolderUniqueId, at));
                     };
-                    if !same_bits(uid, other, &certificate_execution, at.start)? {
+                    if !same_bits(uid, other, &execution, &certificate_execution, at.start)? {
                         return Ok(refused(Reason::HolderUniqueId, at));
                     }
                 }
@@ -238,7 +255,11 @@ impl<'a> AttributeCertificate<'a> {
                     if let GeneralName::Directory(name) = name
                         && !name.is_empty()
                         && name
-                            .matches(certificate.tbs().subject(), &certificate_execution)
+                            .matches_between(
+                                certificate.tbs().subject(),
+                                (&execution, self.parser),
+                                (&certificate_execution, certificate.source_parser()),
+                            )
                             .map_err(Error::pkix)?
                     {
                         return Ok(Check::Accepted(()));
@@ -256,10 +277,11 @@ impl<'a> AttributeCertificate<'a> {
                     charge(&execution, 1, at.start)?;
                     for alternative in &sans {
                         charge(&certificate_execution, 1, at.start)?;
-                        if general_name::matches_at(
+                        if general_name::matches_between(
                             name,
                             alternative,
-                            &certificate_execution,
+                            (&execution, self.parser),
+                            (&certificate_execution, certificate.source_parser()),
                             at.start,
                             FIELD,
                         )
@@ -305,7 +327,11 @@ impl<'a> AttributeCertificate<'a> {
             return Ok(refused(Reason::IssuerForm, at));
         };
         if !name
-            .matches(authority.tbs().subject(), &authority_execution)
+            .matches_between(
+                authority.tbs().subject(),
+                (&execution, self.parser),
+                (&authority_execution, authority.source_parser()),
+            )
             .map_err(Error::pkix)?
         {
             return Ok(refused(Reason::AuthorityName, at));
@@ -316,14 +342,7 @@ impl<'a> AttributeCertificate<'a> {
         ) {
             (None, None) => {}
             (Some(left), Some(right)) => {
-                // A foreign operation keeps its own ceiling when switching to
-                // the AA source. Admit the left UID under its AC source too,
-                // before the common comparison scans either original value.
-                charge(&execution, 1, at.start)?;
-                if left.len() == right.len() {
-                    charge(&execution, left.as_bytes().len() as u64, at.start)?;
-                }
-                if !same_bits(left, right, &authority_execution, at.start)? {
+                if !same_bits(left, right, &execution, &authority_execution, at.start)? {
                     return Ok(refused(Reason::AuthorityUniqueId, at));
                 }
             }

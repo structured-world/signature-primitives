@@ -15,6 +15,77 @@ fn parse<'a>(
 }
 
 #[test]
+fn dual_source_queries_share_semantics_and_admit_each_original_operand() {
+    // One current operation must not erase either source's work ceiling.
+    // Retained and dual-source routes share the identity kernel for all forms.
+    use structured_asn1::memory::Work;
+    let dn = |tag, text: &[u8]| {
+        context(
+            4,
+            &[seq(&[set(&[seq(&[
+                oid_of(oid::COMMON_NAME),
+                tlv(tag, text),
+            ])])])],
+        )
+    };
+    for (left, right) in [
+        (implicit(2, b"EXAMPLE.test"), implicit(2, b"example.test")),
+        (
+            implicit(1, b"\"local\"@EXAMPLE.test"),
+            implicit(1, b"local@example.test"),
+        ),
+        (
+            implicit(6, b"http://EXAMPLE.test:80/a/../b"),
+            implicit(6, b"http://example.test/b"),
+        ),
+        (dn(12, b"  signer  "), dn(19, b"SIGNER")),
+        (implicit(7, &[192, 0, 2, 1]), implicit(7, &[192, 0, 2, 1])),
+        (
+            tlv(0x88, oid::OCSP.as_bytes()),
+            tlv(0x88, oid::OCSP.as_bytes()),
+        ),
+    ] {
+        let left = seq(&[left]);
+        let right = seq(&[right]);
+        for exhaust in [None, Some(false), Some(true)] {
+            let lp = Parser::der(crate::fixtures::memory());
+            let rp = Parser::der(crate::fixtures::memory());
+            let qp = Parser::der(crate::fixtures::memory());
+            let l = parse(&lp, &left).unwrap();
+            let r = parse(&rp, &right).unwrap();
+            let reader = qp.read(&[], 425).unwrap();
+            let operation = reader.execution();
+            assert!(super::matches_at(&l[0], &r[0], &operation, 425, "pair").unwrap());
+            if let Some(right) = exhaust {
+                let source = if right { &rp } else { &lp };
+                let cursor = source.read(&[], 0).unwrap();
+                let original = cursor.execution();
+                original
+                    .charge_work(original.work_remaining() as u64)
+                    .unwrap();
+            }
+            let result = super::matches_between(
+                &l[0],
+                &r[0],
+                (&operation, &lp),
+                (&operation, &rp),
+                425,
+                "pair",
+            );
+            if exhaust.is_some() {
+                let error = result.unwrap_err();
+                assert!(error.is_resource());
+                assert_eq!(error.offset(), 425);
+                assert_eq!(error.field(), "pair");
+            } else {
+                assert!(result.unwrap());
+            }
+            assert_eq!(qp.memory().used(), 0);
+        }
+    }
+}
+
+#[test]
 fn each_form_of_name_is_read_as_the_tag_says() {
     let directory = seq(&[set(&[seq(&[oid_of(oid::COMMON_NAME), utf8("Signer")])])]);
     let der = seq(&[

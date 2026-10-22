@@ -1225,8 +1225,8 @@ fn nested_timestamp_inputs_and_cached_token_readers_keep_original_context() {
 #[test]
 fn legacy_reference_timestamps_preserve_mapped_failures_and_original_obligations() {
     // A segmented malformed TSTInfo keeps its logical cause and physical map
-    // after all document/parser/cache owners drop; valid old tokens remain
-    // historical obligations rather than being promoted into modern proofs.
+    // after all document/parser/cache owners drop. Both readable and failed
+    // reference tokens remain mandatory census entries, not successful proofs.
     use structured_cades::prepare::ReadError;
     use structured_cms::{
         content_source::{ContentError, Coordinates},
@@ -1245,7 +1245,12 @@ fn legacy_reference_timestamps_preserve_mapped_failures_and_original_obligations
             let document = Document::new(&data, &parent).unwrap();
             let prepared =
                 Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
-            assert!(prepared.timestamps().is_empty());
+            assert_eq!(prepared.timestamps().len(), 1);
+            assert_eq!(
+                prepared.timestamps()[0].purpose(),
+                structured_ltv::timestamp::Purpose::ValidationData
+            );
+            assert_eq!(prepared.timestamp_requirements().entries().len(), 1);
             let pool = structured_cades::material::Pool::read(&prepared, &parent).unwrap();
             let [
                 (
@@ -1281,7 +1286,12 @@ fn legacy_reference_timestamps_preserve_mapped_failures_and_original_obligations
             Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
         let pool = structured_cades::material::Pool::read(&prepared, &parent).unwrap();
         assert!(pool.token_faults().is_empty());
-        assert!(prepared.timestamps().is_empty());
+        assert_eq!(prepared.timestamps().len(), 1);
+        assert_eq!(
+            prepared.timestamps()[0].purpose(),
+            structured_ltv::timestamp::Purpose::ValidationData
+        );
+        assert_eq!(prepared.timestamp_requirements().entries().len(), 1);
     }
 }
 
@@ -1350,7 +1360,24 @@ fn parallel_legacy_reference_tokens_do_not_change_selected_root_syntax() {
     let document = Document::new(&data, &parent).unwrap();
     let first = Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
     let pool = structured_cades::material::Pool::read(&first, &parent).unwrap();
-    assert!(pool.token_faults().is_empty());
+    // The full actor catalogue must retain the other root's failure; only
+    // the independently selected root's own syntax findings stay separate.
+    assert_eq!(pool.token_faults().len(), 1);
+    assert_eq!(first.timestamps().len(), 1);
+    let property = first.timestamps()[0].property();
+    assert_eq!(pool.token_faults()[0].0, property);
+    assert!(
+        first
+            .findings()
+            .iter()
+            .all(|finding| finding.location.node != property)
+    );
+    assert!(
+        first
+            .preservation_findings()
+            .iter()
+            .any(|finding| finding.location.node == property)
+    );
     assert_eq!(first.preservation().len(), 1);
     let second = Preparation::read(&document, &data.signers()[1], Level::Basic, &parent).unwrap();
     let pool = structured_cades::material::Pool::read(&second, &parent).unwrap();

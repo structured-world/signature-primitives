@@ -1,6 +1,9 @@
 //! Independent normative byte assembly and real SHA256 over historical inputs.
 mod support;
 
+#[path = "historical_inputs/references.rs"]
+mod references;
+
 use p256::ecdsa::SigningKey;
 use sha2::{Digest, Sha256};
 use std::{cell::Cell, convert::Infallible};

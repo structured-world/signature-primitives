@@ -78,7 +78,7 @@ for (const step of [firstLtv, dependents]) {
   assert.equal(step.with.version, release.with.version);
 }
 for (const enabled of ["true", "false"]) {
-  const values = { steps: { bootstrap: { outputs: { enabled } } } };
+  const values = { steps: { bootstrap: { outputs: { enabled, cades: "false" } } } };
   assert.equal(evaluate(firstLtv.if, values), enabled === "true");
   assert.equal(evaluate(dependents.if, values), enabled === "true");
   const expression = release.with.config.slice(3, -2).trim();
@@ -91,14 +91,49 @@ try {
   for (const token of ["", "synthetic-bootstrap-credential"]) {
     const output = join(modeOutput, token ? "present" : "absent");
     execFileSync("bash", ["-eu", "-c", selection.run], {
-      env: { ...process.env, LTV_BOOTSTRAP_TOKEN: token, GITHUB_OUTPUT: output }, stdio: "pipe",
+      env: { ...process.env, LTV_BOOTSTRAP_TOKEN: token, CADES_BOOTSTRAP_TOKEN: "", GITHUB_OUTPUT: output }, stdio: "pipe",
     });
-    assert.equal(readFileSync(output, "utf8"), `enabled=${token ? "true" : "false"}\n`);
+    assert.equal(readFileSync(output, "utf8"), `enabled=${token ? "true" : "false"}\ncades=false\n`);
   }
 } finally {
   rmSync(modeOutput, { recursive: true, force: true });
 }
 console.log("PASS: first LTV publication uses its own token between OIDC steps; absent token selects normal OIDC.");
+
+// CAdES is the sixth coordinated package, not an excuse to hand the new-crate
+// credential to the existing five. Removing the secret restores ordinary OIDC.
+const firstCades = publish.steps.find(step => step.id === "first-cades");
+const cadesResolution = publish.steps.find(step => step.name === "Wait until CAdES dependencies resolve");
+assert.ok(firstCades && cadesResolution);
+assert.ok(publish.steps.indexOf(dependents) < publish.steps.indexOf(cadesResolution));
+assert.ok(publish.steps.indexOf(cadesResolution) < publish.steps.indexOf(firstCades));
+assert.equal(firstCades.env.CARGO_REGISTRY_TOKEN, "${{ secrets.CADES_BOOTSTRAP_TOKEN }}");
+assert.equal(firstCades.with.config, ".github/release-cades.toml");
+assert.equal(firstCades.with.version, release.with.version);
+assert.equal(cadesResolution.run, "bash scripts/wait-registry-resolution.sh structured-ltv");
+for (const cades of ["true", "false"]) {
+  const values = { steps: { bootstrap: { outputs: { enabled: "false", cades } } } };
+  assert.equal(evaluate(firstCades.if, values), cades === "true");
+  assert.equal(evaluate(cadesResolution.if, values), cades === "true");
+  const expression = release.with.config.slice(3, -2).trim();
+  const parsed = new Parser(new Lexer(expression).lex().tokens, ["steps"], []).parse();
+  assert.equal(new Evaluator(parsed, context(values)).evaluate().coerceString(),
+    cades === "true" ? ".github/release-before-cades.toml" : "release-plz.toml");
+}
+const cadesModeOutput = mkdtempSync(join(tmpdir(), "primitives-cades-mode-"));
+try {
+  const output = join(cadesModeOutput, "selected");
+  execFileSync("bash", ["-eu", "-c", selection.run], {
+    env: { ...process.env, LTV_BOOTSTRAP_TOKEN: "", CADES_BOOTSTRAP_TOKEN: "synthetic-new-crate-credential", GITHUB_OUTPUT: output }, stdio: "pipe",
+  });
+  assert.equal(readFileSync(output, "utf8"), "enabled=false\ncades=true\n");
+  assert.throws(() => execFileSync("bash", ["-eu", "-c", selection.run], {
+    env: { ...process.env, LTV_BOOTSTRAP_TOKEN: "synthetic-ltv", CADES_BOOTSTRAP_TOKEN: "synthetic-cades", GITHUB_OUTPUT: join(cadesModeOutput, "conflict") }, stdio: "pipe",
+  }), "conflicting initial-publication credentials refuse before authentication");
+} finally {
+  rmSync(cadesModeOutput, { recursive: true, force: true });
+}
+console.log("PASS: CAdES bootstrap is isolated, dependency-ordered and returns to OIDC without the secret.");
 
 // release-plz's own readiness check can pass before a dependent's cargo publish
 // resolves the new version (release-plz#2946). The dependents step must wait
@@ -171,15 +206,16 @@ assert.equal(publish.steps.find(step => step.id === "release"), release);
 assert.equal(publish.steps.find(step => step.id === "first-ltv"), firstLtv);
 assert.equal(publish.steps.find(step => step.id === "dependents"), dependents);
 const released = publish.outputs.released.slice(3, -2).trim();
-for (const [core, ltv, dependent] of [
-  ["true", "", ""], ["false", "true", ""], ["false", "false", "true"], ["true", "true", "true"],
-  ["false", "false", "false"], ["false", "", ""], ["", "", ""],
+for (const [core, ltv, dependent, cades] of [
+  ["true", "", "", ""], ["false", "true", "", ""], ["false", "false", "true", ""], ["true", "true", "true", "true"],
+  ["false", "false", "false", "true"], ["false", "false", "false", "false"], ["false", "", "", ""], ["", "", "", ""],
 ]) {
-  const created = core === "true" || ltv === "true" || dependent === "true";
+  const created = core === "true" || ltv === "true" || dependent === "true" || cades === "true";
   const steps = {
     release: { outputs: { releases_created: core } },
     "first-ltv": { outputs: { releases_created: ltv } },
     dependents: { outputs: { releases_created: dependent } },
+    "first-cades": { outputs: { releases_created: cades } },
   };
   assert.equal(evaluate(released, { steps }), created);
   assert.equal(evaluate(registry.if, { needs: { publish: { outputs: { released: String(created) } } } }), created);

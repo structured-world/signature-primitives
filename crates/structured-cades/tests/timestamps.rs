@@ -699,6 +699,34 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         } else {
             None
         };
+        let reference = if (11..=13).contains(&mode) {
+            let ordinal = prepared
+                .timestamps()
+                .iter()
+                .position(|entry| {
+                    entry.purpose() == structured_ltv::timestamp::Purpose::ValidationData
+                })
+                .unwrap();
+            let mut input = structured_cades::timestamp::references::ReferenceInput::new(
+                &prepared, ordinal, &parent,
+            )
+            .unwrap();
+            Some(
+                pool.with_token(ordinal, &parent, |selected| {
+                    selected.check_references(
+                        &oracle,
+                        &tsa_path,
+                        &parent,
+                        &time,
+                        &mut input,
+                        |_, _| Ok::<_, Infallible>(true),
+                    )
+                })
+                .unwrap(),
+            )
+        } else {
+            None
+        };
         let query = QueryScope::new(&document, document.snapshot(), &work);
         if mode == 0 || mode >= 3 {
             assert!(
@@ -739,16 +767,41 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 };
                 path
             });
+            let reference_path = reference.as_ref().map(|answer| {
+                let TimestampBinding::Bound(path) = tsa_path
+                    .bind_timestamp(
+                        answer
+                            .timestamp()
+                            .actor()
+                            .expect("actual reference input and complete TSA proof"),
+                        &utc,
+                        &work,
+                    )
+                    .unwrap()
+                else {
+                    panic!("actual reference TSA path")
+                };
+                path
+            });
             let paths: Vec<_> = prepared
                 .timestamps()
                 .iter()
-                .filter(|entry| !(matches!(mode, 6 | 13) && entry.preservation_kind().is_some()))
+                .filter(|entry| {
+                    !(matches!(mode, 6 | 13)
+                        && matches!(
+                            entry.preservation_kind(),
+                            Some(
+                                structured_cades::preservation::Kind::ArchiveV1
+                                    | structured_cades::preservation::Kind::ArchiveV2
+                            )
+                        ))
+                })
                 .map(|entry| match entry.purpose() {
                     structured_ltv::timestamp::Purpose::Signature => &tsa_receipt,
                     structured_ltv::timestamp::Purpose::Content => content_path.as_ref().unwrap(),
                     structured_ltv::timestamp::Purpose::Archive => archive_path.as_ref().unwrap(),
                     structured_ltv::timestamp::Purpose::ValidationData => {
-                        panic!("unexpected fixture role")
+                        reference_path.as_ref().unwrap()
                     }
                 })
                 .collect();
@@ -823,9 +876,9 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             let timed = baseline::timestamped(&basic, &paths, &query).unwrap();
             assert!(timed.all_static_time_requirements_met());
             if (11..=12).contains(&mode) {
-                // AnnexA reference timestamps are advisory at B-T, independently
-                // of their unavailable historical whole-actor proof. A later
-                // actual old archive is independently checked above.
+                // AnnexA reference timestamps remain advisory at B-T, while
+                // their actual TSA proofs now join the complete actor census.
+                // A distinct old archive still needs its OWN proof above.
                 let assessed = baseline::assess(baseline::Evidence::timestamped(&timed), &parent);
                 assert!(assessed.unwrap().all_requirements_met());
             }
@@ -837,12 +890,23 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 &query,
             );
             if (11..=12).contains(&mode) {
+                let required = required.unwrap();
+                assert_eq!(
+                    required.entries().len(),
+                    3,
+                    "actual signer, signature TSA and reference TSA"
+                );
                 assert!(
                     matches!(
-                        required,
-                        Err(structured_cades::participants::Error::Preservation { .. })
+                        prepared
+                            .timestamp_requirements()
+                            .bind_paths(&[&tsa_receipt], &query)
+                            .unwrap(),
+                        TimestampPathBinding::Unproven(
+                            structured_ltv::timestamp::TimestampPathFailure::Count
+                        )
                     ),
-                    "B-T cannot manufacture a complete historical TSA census"
+                    "the signature TSA cannot replace the reference TSA"
                 );
                 continue;
             }

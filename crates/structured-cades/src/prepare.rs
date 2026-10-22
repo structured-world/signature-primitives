@@ -252,7 +252,6 @@ impl<'m, 'd> Preparation<'m, 'd> {
         let mut parsed = tokens::read(
             document,
             &timestamps,
-            &preservation,
             selected.node,
             &counter_index,
             parent,
@@ -1294,7 +1293,7 @@ fn collect_historical_timestamps<'d, W: Work>(
         parent
             .charge(1)
             .map_err(|cause| Error::encoding(cause, FIELD))?;
-        if !entry.kind.is_archive() {
+        if !entry.kind.is_archive() && !entry.kind.is_reference_timestamp() {
             continue;
         }
         timestamps
@@ -1302,7 +1301,11 @@ fn collect_historical_timestamps<'d, W: Work>(
                 owner: entry.signature,
                 property: entry.property,
                 value: entry.value,
-                purpose: Purpose::Archive,
+                purpose: if entry.kind.is_archive() {
+                    Purpose::Archive
+                } else {
+                    Purpose::ValidationData
+                },
                 preservation_kind: Some(entry.kind),
             })
             .map_err(|cause| Error::resource(cause, FIELD, entry.property.span().start))?;
@@ -1394,7 +1397,7 @@ fn history_timestamps<'d, W: Work>(
         execution
             .charge_work(1)
             .map_err(|cause| Error::resource(cause, FIELD, required.property.span().start))?;
-        if required.kind.is_archive() {
+        if required.kind.is_archive() || required.kind.is_reference_timestamp() {
             historical = true;
             break;
         }

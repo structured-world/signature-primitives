@@ -26,4 +26,4 @@ git_tag_name = "structured-xades-v{{ version }}"
 
 [[package]]
 name = "structured-cades"
-release = false
+git_tag_name = "structured-cades-v{{ version }}"

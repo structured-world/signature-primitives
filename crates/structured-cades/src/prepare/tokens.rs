@@ -213,7 +213,6 @@ fn read_one<'m, 'd, W: Work>(
 pub(super) fn read<'m, 'd, W: Work>(
     document: &Document<'m, 'd>,
     timestamps: &[Timestamp<'d>],
-    preservation: &[crate::preservation::Required<'d>],
     root: Node,
     counters: &OwnedMap<Node, usize, impl Work>,
     parent: &Reader<'d>,
@@ -263,15 +262,6 @@ pub(super) fn read<'m, 'd, W: Work>(
         };
         ordinals.try_push(selected).map_err(resource)?;
     }
-    inspect_references(
-        document,
-        preservation,
-        root,
-        counters,
-        parent,
-        findings,
-        &mut faults,
-    )?;
     Ok(Cache {
         models: models.into_owned(),
         ordinals: ordinals.into_owned(),
@@ -280,118 +270,6 @@ pub(super) fn read<'m, 'd, W: Work>(
             .filter(|rows| !rows.is_empty())
             .map(OwnedVec::into_owned),
     })
-}
-
-#[expect(
-    clippy::result_large_err,
-    reason = "retain original carried-information failures and source maps without allocating during refusal"
-)]
-fn inspect_references<'m, 'd>(
-    document: &Document<'m, 'd>,
-    required: &[crate::preservation::Required<'d>],
-    root: Node,
-    counters: &OwnedMap<Node, usize, impl Work>,
-    parent: &Reader<'d>,
-    findings: &mut OwnedVec<Finding<'m, 'd>, impl Work>,
-    faults: &mut OwnedVec<(Node, ReadError), impl Work>,
-) -> Result<(), ReadError> {
-    let work = parent.execution();
-    for requirement in required {
-        let at = requirement.property.span().start;
-        let resource = |cause| Error::resource(cause, "cades.legacy.timestamp", at);
-        work.charge_work(1).map_err(resource)?;
-        if !requirement.kind.is_reference_timestamp() {
-            continue;
-        }
-        // Other parallel roots remain preservation obligations. Their optional
-        // values do not change the selected root's B-B syntax assessment.
-        if requirement.signature != root
-            && counters
-                .get(&requirement.signature, &work)
-                .map_err(resource)?
-                .is_none()
-        {
-            continue;
-        }
-        let entry = Timestamp {
-            owner: requirement.signature,
-            property: requirement.property,
-            value: requirement.value,
-            purpose: structured_ltv::timestamp::Purpose::ValidationData,
-            preservation_kind: Some(requirement.kind),
-        };
-        let Some(source) = entry.value else {
-            finding(
-                document,
-                entry.property.span(),
-                Severity::Required,
-                Rule::Schema {
-                    code: structured_cms::ErrorCode::MissingField,
-                    field: "cades.legacy.timestamp",
-                },
-                findings,
-            )?;
-            faults
-                .try_push((
-                    entry.property,
-                    Error::Syntax {
-                        code: structured_cms::ErrorCode::MissingField,
-                        field: "cades.legacy.timestamp",
-                        at,
-                    }
-                    .into(),
-                ))
-                .map_err(resource)?;
-            continue;
-        };
-        let mut reader = source.reader_in(parent)?;
-        let token = match Token::read_from(&mut reader) {
-            Ok(token) => token,
-            Err(cause) => {
-                if cause.is_terminal() {
-                    return Err(cause.into());
-                }
-                finding(
-                    document,
-                    entry.property.span(),
-                    Severity::Required,
-                    Rule::Schema {
-                        code: cause.code(),
-                        field: cause.field(),
-                    },
-                    findings,
-                )?;
-                faults
-                    .try_push((entry.property, cause.into()))
-                    .map_err(resource)?;
-                continue;
-            }
-        };
-        if let Err(cause) = inspect(document, &entry, &token, &reader, findings) {
-            if cause.is_terminal() {
-                return Err(cause);
-            }
-            let ReadError::Information(source) = cause else {
-                return Err(cause);
-            };
-            finding(
-                document,
-                entry.property.span(),
-                Severity::Required,
-                Rule::Schema {
-                    code: information_cause(&source).code(),
-                    field: information_cause(&source).field(),
-                },
-                findings,
-            )?;
-            faults
-                .try_push((entry.property, ReadError::Information(source)))
-                .map_err(resource)?;
-        }
-        // Syntax only: an AnnexA reference proof needs its own historical
-        // coverage processor. Never mint a modern token/actor from this read.
-    }
-    Ok(())
 }
 
 #[expect(

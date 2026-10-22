@@ -126,11 +126,45 @@ or historical receipts. Each member-specific input is bound to its exact token,
 including when several token values share an attribute, throughout coverage and
 validation-material joins.
 
-Reference timestamps and RFC 4998 long-term evidence remain independent
-mechanisms. Without their qualified processing, complete participant assessment
-reports unavailable preservation; an unimplemented `PoE` mechanism also blocks a
-positive timestamped-or-higher assessment. Reference timestamps remain advisory
-at B-T. A valid modern archive cannot erase another original obligation.
+`timestamp::references::ReferenceInput::new` selects both Annex A.1.5 input
+recipes from the actual root, counter or parallel signer. References-only
+timestamps imprint the original complete-certificate-references and
+complete-revocation-references Attribute contents, in that order. The
+signature-and-references recipe first includes logical signature octets and
+each original signature timestamp Attribute's contents. The current EN edition
+requires those signature timestamps; historical external time-marks are not
+invented as embedded bytes. Missing/ambiguous inputs refuse before hashing.
+
+`Context::check_references` runs the same complete CMS/ESS/TSA/key/path/time
+check and returns `ReferenceChecked`. Its purpose is `ValidationData`, distinct
+from Signature and Archive. Coverage binds the exact token and original value
+ranges; an omitted outer Attribute header never becomes whole-item coverage.
+The timestamp proves existence of the imprinted references, not authentication
+or completeness of the referenced certificates/CRLs/OCSP responses. Whole
+participant assessment requires every reference TSA through the original full
+census, including failed/unreadable and parallel occurrences. Original token
+envelopes share the existing common cache; there is no second reference-specific
+envelope decoder.
+
+RFC 4998 long-term evidence remains an independent mechanism. An unimplemented
+`PoE` mechanism blocks positive timestamped-or-higher assessment. Reference
+timestamps remain advisory at B-T; their successful mathematical checks do not
+waive modern baseline format rules. A valid modern archive cannot erase another
+original obligation.
+
+## Publication
+
+This crate joins the coordinated workspace release through release-plz. Its
+first publication uses only `CADES_BOOTSTRAP_TOKEN` in the isolated `CAdES` step,
+after the existing packages publish through OIDC and their dependencies resolve.
+The bootstrap still requires an approved release commit and successful CI on
+that exact SHA; it cannot publish an ordinary feature commit. After the first
+version exists, configure the crates.io Trusted Publisher for repository
+`structured-world/signature-primitives`, workflow `release-plz.yml`, environment
+`release`, revoke the temporary token and remove that GitHub Actions secret.
+Subsequent coordinated versions use OIDC. Actual registry archives, checksums,
+source revision, packaged tests, MSRV and alloc-only targets are qualified by
+the existing registry job; source availability alone is not a released version.
 
 Optional policy qualifiers and credential formats retain their original open
 values for their actual owners. Policy-store linkage requires a protected,

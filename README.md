@@ -14,7 +14,7 @@ those building blocks as plain Rust libraries: pure Rust, `no_std` friendly, and
 with no hidden network, file or clock access.
 
 They are the foundation for signature validators, document-signing services,
-timestamp and archive checks, and AdES tooling. XAdES and the source-only CAdES
+timestamp and archive checks, and AdES tooling. XAdES and CAdES
 layer share the long-term validation core, which also supports PAdES adapters.
 
 ## Which crate do I need?
@@ -26,14 +26,14 @@ layer share the long-term validation core, which also supports PAdES adapters.
 | [**structured-cms**](crates/structured-cms/README.md) | CMS SignedData, digital envelopes, PKCS#12/PKCS#8 key containers, attribute certificates and RFC 3161 timestamp tokens | [![version](https://img.shields.io/crates/v/structured-cms)](https://crates.io/crates/structured-cms) | [![docs.rs](https://img.shields.io/docsrs/structured-cms)](https://docs.rs/structured-cms) |
 | [**structured-ltv**](crates/structured-ltv/README.md) | Long-term validation shared by every AdES format: who must be validated, which revocation data is needed, timestamp times and archive coverage | [![version](https://img.shields.io/crates/v/structured-ltv)](https://crates.io/crates/structured-ltv) | [![docs.rs](https://img.shields.io/docsrs/structured-ltv)](https://docs.rs/structured-ltv) |
 | [**structured-xades**](crates/structured-xades/README.md) | XAdES signatures, including baseline levels B-B, B-T, B-LT and B-LTA | [![version](https://img.shields.io/crates/v/structured-xades)](https://crates.io/crates/structured-xades) | [![docs.rs](https://img.shields.io/docsrs/structured-xades)](https://docs.rs/structured-xades) |
-| [**structured-cades**](crates/structured-cades/README.md) | Source-bound CAdES baseline composition, original CMS timestamp/archive inputs and validation material | Source only; unpublished | Local crate documentation |
+| [**structured-cades**](crates/structured-cades/README.md) | Source-bound CAdES baseline composition, original CMS timestamp/archive inputs and validation material | [![version](https://img.shields.io/crates/v/structured-cades)](https://crates.io/crates/structured-cades) | [![docs.rs](https://img.shields.io/docsrs/structured-cades)](https://docs.rs/structured-cades) |
 
 Each crate builds on the ones above it:
 
 ```text
 structured-asn1 → structured-pkix → structured-cms → structured-ltv
                                                       ├─ structured-xades
-                                                      ├─ structured-cades (unpublished)
+                                                      ├─ structured-cades
                                                       └─ your PAdES layer
 ```
 
@@ -42,9 +42,10 @@ Use only as much of the stack as you need: certificate parsing alone needs just
 
 ## Install
 
-The five published crates are released together; keep them on the same version.
-`structured-cades` is available in this source tree and is excluded from
-automatic publication pending its initial package release authorization.
+The published crates are released together; keep them on the same version.
+`structured-cades` is enabled for its initial CI publication and joins that
+coordinated release. Check its registry badge for an actually released version;
+its first-publication/OIDC procedure is documented in the crate README.
 
 ```toml
 [dependencies]

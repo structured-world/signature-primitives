@@ -24,7 +24,24 @@ use structured_pkix::{crl::CertificateList, ocsp::BasicResponse};
 
 mod checks;
 pub mod credentials;
+mod legacy;
 pub use checks::{CheckError, Checks, Finding, check_participants};
+
+/// Exact format-defined validation-values placement, without inventing a
+/// root certificate CHOICE or a whole OCSP envelope around a basic body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LegacyLocation {
+    /// Actual signer which carries the attribute (including TSA signers).
+    pub signature: Node,
+    /// Original certificate/revocation-values attribute.
+    pub property: Node,
+    /// Member ordinal within that attribute's applicable SEQUENCE OF.
+    pub member: usize,
+    /// Actual outer timestamp carrier, or root/counter placement.
+    pub token: Option<usize>,
+    /// Observed unsigned placement, never a caller-configurable allowance.
+    pub unsigned: bool,
+}
 
 /// Real original material container; an OCSP envelope and the basic body it
 /// carries are never confused with an invented envelope around supplied bytes.
@@ -48,6 +65,14 @@ pub enum Placement {
         /// Original revocation CHOICE ordinal.
         choice: usize,
     },
+    /// Actual Annex A certificate-values member.
+    CertificateValues(LegacyLocation),
+    /// Actual complete/delta CRL in Annex A revocation-values.
+    CrlValues(LegacyLocation),
+    /// Actual bare `BasicOCSPResponse` in Annex A revocation-values.
+    OcspValues(LegacyLocation),
+    /// Actual OID-owned open values in Annex A revocation-values.
+    OtherRevocationValues(LegacyLocation),
 }
 
 /// Uninterpreted material remains available to its owner. A known syntax
@@ -84,6 +109,8 @@ pub struct Pool<'prepared, 'model, 'document> {
     crls: OwnedVec<Crl<'document>>,
     ocsp: OwnedVec<Ocsp<'document>>,
     open: OwnedVec<Open<'document>>,
+    related: OwnedVec<legacy::Related<'document>>,
+    legacy_slots: Option<legacy::Slots>,
 }
 
 /// Existing exact-artifact core in this original `CAdES` identity domain.
@@ -133,7 +160,9 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
                 &mut open,
             )?;
         }
-        Ok(Self {
+        let related = legacy::read_related(prepared, operation)?;
+        legacy::append_open(prepared, tokens, &related, &mut open, &work)?;
+        let mut out = Self {
             prepared,
             tokens,
             token_index: &prepared.parsed.ordinals,
@@ -141,7 +170,11 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
             crls: crls.into_owned(),
             ocsp: ocsp.into_owned(),
             open: open.into_owned(),
-        })
+            related,
+            legacy_slots: None,
+        };
+        out.legacy_slots = legacy::slots(&out, &work)?;
+        Ok(out)
     }
     /// Same source preparation; the pool cannot be relabelled to another root.
     #[must_use]
@@ -162,6 +195,10 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
     #[must_use]
     pub fn crls(&self) -> usize {
         self.crls.len()
+            + self
+                .legacy_slots
+                .as_ref()
+                .map_or(0, |slots| slots.crls.len())
     }
     /// One original parsed CRL under current metadata admission. Authentication
     /// and status processing reuse this model; they must not reparse its bytes.
@@ -177,15 +214,22 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
                 self.prepared.signer().span().start,
             )
         })?;
-        Ok(self.crls.get(ordinal).map(|entry| &entry.value))
+        if ordinal < self.crls.len() {
+            return Ok(Some(&self.crls[ordinal].value));
+        }
+        legacy::crl(self, ordinal - self.crls.len(), work)
     }
-    /// Number of original readable whole OCSP envelope bodies.
+    /// Number of original readable basic responses in their real wire format.
     #[must_use]
     pub fn ocsp_responses(&self) -> usize {
         self.ocsp.len()
+            + self
+                .legacy_slots
+                .as_ref()
+                .map_or(0, |slots| slots.ocsp.len())
     }
-    /// One parsed basic response from an actual original whole OCSP envelope.
-    /// The index retains its real envelope placement and embedded certificates.
+    /// One first-read basic response, from a whole RFC5940 envelope or actual
+    /// Annex A revocation-values. The index retains its real placement.
     pub fn ocsp<W: Work>(
         &self,
         ordinal: usize,
@@ -198,7 +242,10 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
                 self.prepared.signer().span().start,
             )
         })?;
-        Ok(self.ocsp.get(ordinal).map(|entry| &entry.value))
+        if ordinal < self.ocsp.len() {
+            return Ok(Some(&self.ocsp[ordinal].value));
+        }
+        legacy::ocsp(self, ordinal - self.ocsp.len(), work)
     }
     /// Original timestamp envelopes, indexed by original preparation ordinal.
     /// This paid query reuses the parsed envelope rather than reparsing it.
@@ -298,6 +345,7 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
                 query,
             )?;
         }
+        legacy::index(self, &mut index, query)?;
         Ok(index)
     }
 }
@@ -388,7 +436,12 @@ fn revocation_occurrence<'m, 'd>(
             ArtifactSource::TokenRevocation(CarriedOrigin { token, choice }),
             token_enclosure(prepared, token)?,
         ),
-        Placement::RootCertificate(_) | Placement::TokenCertificate { .. } => {
+        Placement::RootCertificate(_)
+        | Placement::TokenCertificate { .. }
+        | Placement::CertificateValues(_)
+        | Placement::CrlValues(_)
+        | Placement::OcspValues(_)
+        | Placement::OtherRevocationValues(_) => {
             return Err(material::IndexError::Foreign { signature });
         }
     };

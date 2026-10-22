@@ -78,6 +78,28 @@ impl<'a> MessageImprint<'a> {
         covered: &mut S,
     ) -> Result<(ImprintAgreement, RequestAgreement), RequestedContentError<S::Error, P::Error>>
     {
+        self.check_requested_input(
+            requested,
+            provider,
+            parents,
+            &mut super::RawInput::new(covered),
+        )
+    }
+
+    /// Compares the parsed request and executes a computed input using the
+    /// SAME resolved token identity. Request identity/byte agreement remains
+    /// independent of the covered-input result; request bytes are not hashed.
+    pub fn check_requested_input<P, I>(
+        &self,
+        requested: &MessageImprint<'a>,
+        provider: &'a P,
+        parents: (&Reader<'a>, &Reader<'a>),
+        covered: &mut I,
+    ) -> Result<(ImprintAgreement, RequestAgreement), RequestedContentError<I::Error, P::Error>>
+    where
+        P: AsnDigest<'a>,
+        I: super::ComputedInput<P, P::Error>,
+    {
         let (token_parent, requested_parent) = parents;
         preflight(self, requested, token_parent, requested_parent)
             .map_err(RequestedContentError::Request)?;
@@ -105,7 +127,7 @@ impl<'a> MessageImprint<'a> {
         )
         .map_err(RequestedContentError::Request)?;
         let content = self
-            .compute(provider, token_parent, covered, token)
+            .compute_input(provider, token_parent, covered, token)
             .map_err(RequestedContentError::Content)?;
         Ok((content, agreement))
     }

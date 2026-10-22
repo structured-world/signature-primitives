@@ -13,8 +13,8 @@ The default build supports `no_std + alloc`; `std` is optional. Operations
 receive an explicit producing reader and current execution. Original signed
 bytes are never serialized to bridge the layers.
 
-This new package has not yet been published. Source and package verification
-do not establish registry availability or consumer adoption.
+Source and package verification do not establish availability of a particular
+registry version or consumer adoption.
 
 ## Processing
 
@@ -45,8 +45,12 @@ actual format owner. `Complete` exists only after every value authenticated
 with actual authority paths, a direct anchor, or an explicit certificate-free
 mechanism. Reading a credential envelope never authenticates its contents.
 
-`material::Pool` borrows the original token models from preparation and holds
-the parsed revocation models once. Its token visitors use
+`material::Pool` borrows original token models and retains first-read legacy
+certificate/revocation values from root, counter, parallel-root and TSA sources.
+Legacy revocation-values carry bare `BasicOCSPResponse` values; RFC 5940 CMS
+revocation choices carry whole `OCSPResponse` envelopes. Neither route fabricates
+an envelope. Other revocation formats keep their original OID, wrapper and
+source-backed values for their actual format owner. Its token visitors use
 saved encoding, depth and source context, and `timestamp::Context` chooses the
 actual original content, owner signature or `ATSv3` archive input. `CheckTime`
 contains explicit UTC facts and an optional caller-supplied reference; there is
@@ -90,15 +94,36 @@ algorithm longevity and historical trust decisions.
 ## Historical and open-format obligations
 
 `Preparation::preservation` retains older archive/long-term-validation fields
-and reference timestamps from every parallel root and selected counter. These are separate historical
-mechanisms, potentially including RFC 4998 evidence records; they are not
-silently parsed as `ATSv3`. Without their qualified proof/authority processing,
-complete participant assessment returns an explicit unavailable-preservation
-result. Older archive/long-term-validation mechanisms also block a positive
-timestamped-or-higher baseline assessment. Reference timestamps remain advisory
-at B-T and do not activate that archive-preservation blocker. A valid modern
-archive cannot erase an older archive obligation or assert that an older
-protected container was never changed.
+and reference timestamps from every root and counter. Older archive tokens
+enter the complete original TSA census; malformed parallel sources remain
+separate required findings rather than disappearing behind a valid selected root.
+
+`timestamp::historical` implements explicit RFC 3126, TS 101 733 V1.5.1 and
+RFC 5126 input contracts. An OID or claimed time does not choose an edition.
+`HistoricalInput::project` takes exact preceding occurrence ordinals; excluding
+another archive requires a `Later` witness from an actually checked covering
+archive. Projection uses new minimal definite framing around original fields,
+and honestly differs from unavailable original BER. `OriginalSnapshot` instead
+binds the earlier signer fields, global content/material, parent signature and
+non-archive attribute multiset before using its original unsigned wrapper/EOC.
+Changed archive wrappers never acquire whole-item coverage merely because
+their token values stayed unchanged.
+
+Both RFC 5126 unsigned-field interpretations stream together through one
+payload pass, without buffering the document or resolving another provider.
+`Context::check_historical` uses the existing complete CMS/ESS/TSA/key/path/time
+check. A matching old archive is not modern `ATSv3` conformance or a trust verdict.
+`HistoricalChecked::requirements` derives its actual preceding TSA/counter
+obligations; `material::credentials::Scope::before_archive` accepts either modern
+or historical receipts. Each member-specific input is bound to its exact token,
+including when several token values share an attribute, throughout coverage and
+validation-material joins.
+
+Reference timestamps and RFC 4998 long-term evidence remain independent
+mechanisms. Without their qualified processing, complete participant assessment
+reports unavailable preservation; an unimplemented `PoE` mechanism also blocks a
+positive timestamped-or-higher assessment. Reference timestamps remain advisory
+at B-T. A valid modern archive cannot erase another original obligation.
 
 Optional policy qualifiers and credential formats retain their original open
 values for their actual owners. Policy-store linkage requires a protected,

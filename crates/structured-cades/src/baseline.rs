@@ -150,6 +150,11 @@ pub enum LevelError {
         /// Actual historical format.
         kind: crate::preservation::Kind,
     },
+    /// A required historical source/authority census remains unreadable.
+    UnavailablePreservationSource {
+        /// Original source; its full diagnostic remains in preparation.
+        source: Node,
+    },
     /// Supplied deeper/shallower reports cannot promote or downgrade a request.
     Mismatch {
         /// Original preparation level.
@@ -196,11 +201,21 @@ pub fn assess<'a, 'm, 'd, E>(
             // Only old archive/PoE mechanisms select §5.5.3's preservation
             // strategy. Retaining their full actor obligations is separate.
             // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
-            if !required.kind.is_reference_timestamp() {
+            if !required.kind.is_reference_timestamp() && !required.kind.is_archive() {
                 return Err(LevelError::UnavailablePreservation {
                     property: required.property,
                     kind: required.kind,
                 });
+            }
+        }
+        if !prepared.preservation().is_empty() {
+            for finding in prepared.preservation_findings() {
+                work.charge_work(1).map_err(LevelError::Resource)?;
+                if finding.severity == crate::prepare::Severity::Required {
+                    return Err(LevelError::UnavailablePreservationSource {
+                        source: finding.location.node,
+                    });
+                }
             }
         }
     }

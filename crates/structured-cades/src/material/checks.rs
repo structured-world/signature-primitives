@@ -163,12 +163,19 @@ where
                     matches!(copy.placement(), Placement::RootCertificate(_))
                         || (archive_augmentation
                             && (matches!(copy.placement(), Placement::TokenCertificate { .. })
-                                || copy.embedded_certificate().is_some()))
+                                || matches!(copy.placement(), Placement::CertificateValues(location)
+                                    if archived_values(prepared, location))
+                                || (copy.embedded_certificate().is_some()
+                                    && embedded_placement(prepared, copy.placement()))))
                 }
-                ArtifactRef::Crl(_) | ArtifactRef::Ocsp(_) => matches!(
-                    copy.placement(),
-                    Placement::RootRevocation(_) | Placement::TokenRevocation { .. }
-                ),
+                ArtifactRef::Crl(_) | ArtifactRef::Ocsp(_) => {
+                    matches!(
+                        copy.placement(),
+                        Placement::RootRevocation(_) | Placement::TokenRevocation { .. }
+                    ) || (archive_augmentation
+                        && matches!(copy.placement(), Placement::CrlValues(location)
+                            | Placement::OcspValues(location) if archived_values(prepared, location)))
+                }
             };
         }
         if !present {
@@ -189,9 +196,53 @@ where
                 .map_err(resource)?;
         }
     }
+    super::legacy::malformed(
+        pool,
+        |node| {
+            query
+                .admit(node, 1)
+                .map_err(|cause| CheckError::Index(IndexError::Scope(cause)))
+        },
+        |node, fault| {
+            query.execution().charge_work(24).map_err(resource)?;
+            if fault.attribute == crate::properties::legacy::LEGACY[2]
+                || fault.attribute == crate::properties::legacy::LEGACY[3]
+            {
+                findings
+                    .try_push(Finding::Malformed { node })
+                    .map_err(resource)?;
+            }
+            Ok(())
+        },
+    )?;
     Ok(Checks {
         inputs,
         presence,
         findings: findings.into_owned(),
     })
+}
+
+fn archived_values(prepared: &Preparation<'_, '_>, location: super::LegacyLocation) -> bool {
+    // These are immutable, format-produced placement facts. This branch does
+    // NOT waive §6.3(d)'s root certificate-set rule for ordinary B-LT, nor
+    // admit signed legacy values. §5.5.3 permits reusing archive-token material.
+    if !location.unsigned {
+        return false;
+    }
+    let Some(token) = location.token else {
+        return false;
+    };
+    prepared
+        .timestamps()
+        .get(token)
+        .is_some_and(|entry| entry.purpose() == structured_ltv::timestamp::Purpose::Archive)
+}
+
+fn embedded_placement(prepared: &Preparation<'_, '_>, placement: Placement) -> bool {
+    match placement {
+        Placement::CertificateValues(location)
+        | Placement::CrlValues(location)
+        | Placement::OcspValues(location) => archived_values(prepared, location),
+        _ => true,
+    }
 }

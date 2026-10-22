@@ -16,9 +16,19 @@ pub struct Coverage<N: HashWork, D, G, W: Work, I> {
     snapshot: Snapshot<D, G>,
     signature: N,
     timestamp: N,
+    token: Option<N>,
     purpose: Purpose,
     items: OwnedMap<N, bool, W>,
     issuer: PhantomData<I>,
+}
+
+#[derive(Clone, Copy)]
+struct Identity<N, D, G> {
+    snapshot: Snapshot<D, G>,
+    signature: N,
+    property: N,
+    token: N,
+    purpose: Purpose,
 }
 
 /// Source/current admission and foreign evidence are independent of absence.
@@ -33,7 +43,7 @@ pub enum CoverageError<N> {
         /// Original capacity/work refusal.
         cause: MemoryError,
     },
-    /// Input/evidence/current view refer to different signature/property/source.
+    /// Input/evidence/current view refer to different signature/property/token/source.
     Foreign {
         /// Original requested item.
         node: N,
@@ -41,7 +51,11 @@ pub enum CoverageError<N> {
 }
 
 impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, W: Work, I> Coverage<N, D, G, W, I> {
-    /// The coverage of one timestamp's input over `signature`.
+    /// Coverage shared by every checked token of ONE property over `signature`.
+    /// The format issuer must establish that all those token values use the
+    /// SAME original input selection (for example `XAdES` property-defined input).
+    /// Use [`Self::for_token`] when selection depends on a particular member,
+    /// as it does for successive historical `CAdES` archives in one Attribute.
     ///
     /// `items` maps each visited original item to whether it is itself a whole
     /// covered item; a `false` entry records a visited container that carries
@@ -60,9 +74,40 @@ impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, W: Work, I> Coverage<N
             snapshot,
             signature,
             timestamp,
+            token: None,
             purpose,
             items,
             issuer: PhantomData,
+        }
+    }
+
+    /// Exact token-bound selection when sibling tokens of the same property
+    /// have DIFFERENT inputs. Another sibling's valid proof cannot authenticate
+    /// this selection merely because its property, signature and source match.
+    #[must_use]
+    pub fn for_token(
+        issuer: I,
+        snapshot: Snapshot<D, G>,
+        signature: N,
+        property: N,
+        token: N,
+        purpose: Purpose,
+        items: OwnedMap<N, bool, W>,
+    ) -> Self {
+        let mut result = Self::new(issuer, snapshot, signature, property, purpose, items);
+        result.token = Some(token);
+        result
+    }
+
+    /// Original identity of this input selection for material/census joins.
+    /// Member-specific inputs use the TOKEN node, while a property-shared
+    /// selection uses the property. Matching only the enclosing property would
+    /// conflate successive archives carried by one multivalued Attribute.
+    #[must_use]
+    pub fn subject(&self) -> N {
+        match self.token {
+            Some(token) => token,
+            None => self.timestamp,
         }
     }
 
@@ -108,10 +153,13 @@ impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, W: Work, I> Coverage<N
         }
         query.admit(node, 1).map_err(CoverageError::Scope)?;
         self.require_identity(
-            evidence.token().snapshot,
-            evidence.signature(),
-            evidence.property(),
-            evidence.purpose(),
+            Identity {
+                snapshot: evidence.token().snapshot,
+                signature: evidence.signature(),
+                property: evidence.property(),
+                token: evidence.token().node,
+                purpose: evidence.purpose(),
+            },
             node,
             query.execution(),
         )
@@ -119,18 +167,20 @@ impl<N: Copy + Eq + HashWork, D: Copy + Eq, G: Copy + Eq, W: Work, I> Coverage<N
 
     fn require_identity<Q: Work>(
         &self,
-        snapshot: Snapshot<D, G>,
-        signature: N,
-        timestamp: N,
-        purpose: Purpose,
+        identity: Identity<N, D, G>,
         node: N,
         execution: &Q,
     ) -> Result<(), CoverageError<N>> {
         let resource = |cause| CoverageError::Resource { node, cause };
-        if snapshot != self.snapshot
-            || !equal_id(signature, self.signature, execution).map_err(resource)?
-            || !equal_id(timestamp, self.timestamp, execution).map_err(resource)?
-            || purpose != self.purpose
+        if identity.snapshot != self.snapshot
+            || !equal_id(identity.signature, self.signature, execution).map_err(resource)?
+            || !equal_id(identity.property, self.timestamp, execution).map_err(resource)?
+            || identity.purpose != self.purpose
+        {
+            return Err(CoverageError::Foreign { node });
+        }
+        if let Some(token) = self.token
+            && !equal_id(identity.token, token, execution).map_err(resource)?
         {
             return Err(CoverageError::Foreign { node });
         }

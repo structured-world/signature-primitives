@@ -8,6 +8,11 @@ mod imprint;
 pub use imprint::{HashAlgorithmReading, MessageImprint};
 mod imprint_check;
 pub use imprint_check::{ImprintAgreement, ImprintError};
+mod computed;
+pub use computed::{
+    ComputedInput, ImprintContext, ImprintDigest, ImprintProof, ImprintState, InputFailure,
+    RawInput,
+};
 mod requested;
 pub use requested::{ImprintOperand, RequestAgreement, RequestImprintError, RequestedContentError};
 mod extension;

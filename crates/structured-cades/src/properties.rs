@@ -8,6 +8,7 @@ use structured_cms::{ErrorCode, Octets, attribute::Attribute, oid, signer::Signe
 use structured_pkix::algorithm::{self, AlgorithmIdentifier};
 
 pub(crate) mod legacy;
+pub mod values;
 
 /// Complete original value diagnostic. Processing refusals are never retained
 /// here as malformed syntax: they terminate before a partial report escapes.
@@ -83,6 +84,7 @@ pub struct Properties<'a> {
     issuer_hints: OwnedVec<Span>,
     policy: Option<Policy<'a>>,
     store: Option<Store<'a>>,
+    values: Option<values::Values<'a>>,
 }
 
 impl<'a> Properties<'a> {
@@ -98,6 +100,7 @@ impl<'a> Properties<'a> {
         let work = parent.execution();
         let mut policy = None;
         let mut store = None;
+        let mut values = None;
         let mut faults = work.vector();
         let mut open = work.vector();
         let mut issuer_hints = work.vector();
@@ -112,7 +115,14 @@ impl<'a> Properties<'a> {
                     .charge(11 * (1 + attribute.kind().as_bytes().len().min(12) as u64))
                     .map_err(|cause| Error::encoding(cause, "cades.properties"))?;
                 let Some((kind, field)) = known(attribute.kind()) else {
-                    legacy::inspect(attribute, parent, &mut faults, &mut issuer_hints)?;
+                    legacy::inspect(
+                        attribute,
+                        parent,
+                        &mut faults,
+                        &mut issuer_hints,
+                        &mut values,
+                        &work,
+                    )?;
                     continue;
                 };
                 let reading = read_value(
@@ -145,6 +155,7 @@ impl<'a> Properties<'a> {
             issuer_hints: issuer_hints.into_owned(),
             policy,
             store,
+            values: values.map(values::Values::into_owned),
         })
     }
     /// Every located value-schema failure, retaining its original cause.
@@ -169,6 +180,28 @@ impl<'a> Properties<'a> {
     #[must_use]
     pub fn store(&self) -> Option<&Store<'a>> {
         self.store.as_ref()
+    }
+    /// Original legacy validation models, retained once without copying their
+    /// bytes. An empty written value set remains distinct from absence.
+    pub fn legacy_values(&self) -> Option<&values::Values<'a>> {
+        self.values.as_ref()
+    }
+
+    pub(crate) fn has_legacy_values(signer: &SignerInfo<'_>, parent: &Reader<'_>) -> Result<bool> {
+        for set in [signer.signed_attributes(), signer.unsigned_attributes()]
+            .into_iter()
+            .flatten()
+        {
+            for attribute in set.items() {
+                parent
+                    .charge(2 * (1 + attribute.kind().as_bytes().len().min(11) as u64))
+                    .map_err(|cause| Error::encoding(cause, "cades.legacy"))?;
+                if attribute.kind() == legacy::LEGACY[2] || attribute.kind() == legacy::LEGACY[3] {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 }
 

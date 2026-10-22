@@ -21,7 +21,7 @@ pub(super) fn read<'m, 'd>(
     parent: &Reader<'d>,
     findings: &mut OwnedVec<Finding<'m, 'd>, impl Work>,
 ) -> Result<Option<(Resolution<Algorithm>, Span)>> {
-    if entry.purpose != Purpose::Archive {
+    if entry.purpose != Purpose::Archive || entry.preservation_kind().is_some() {
         return Ok(None);
     }
     // EN319122-1 §§5.5.2/5.5.3 define a single unsigned DER index in the

@@ -106,6 +106,41 @@ pub struct ArchiveChecked<'model, 'document, 'path> {
     index: IndexCoverage,
     coverage: Coverage<Node, DocumentId<'model, 'document>, (), Memory, Cades>,
 }
+
+/// Borrowed common facts of an actual modern or historical archive receipt.
+/// Private fields prevent callers from pairing one token with another input's
+/// coverage. Negative checks remain negative; material requires its own actor.
+#[derive(Clone, Copy)]
+pub struct ArchiveView<'view, 'model, 'document, 'path> {
+    timestamp: &'view Checked<'model, 'document, 'path>,
+    coverage: &'view Coverage<Node, DocumentId<'model, 'document>, (), Memory, Cades>,
+}
+impl<'v, 'm, 'd, 'p> From<&'v ArchiveChecked<'m, 'd, 'p>> for ArchiveView<'v, 'm, 'd, 'p> {
+    fn from(value: &'v ArchiveChecked<'m, 'd, 'p>) -> Self {
+        Self {
+            timestamp: value.timestamp(),
+            coverage: value.coverage(),
+        }
+    }
+}
+impl<'v, 'm, 'd, 'p> From<&'v super::historical::HistoricalChecked<'m, 'd, 'p>>
+    for ArchiveView<'v, 'm, 'd, 'p>
+{
+    fn from(value: &'v super::historical::HistoricalChecked<'m, 'd, 'p>) -> Self {
+        Self {
+            timestamp: value.timestamp(),
+            coverage: value.coverage(),
+        }
+    }
+}
+impl<'m, 'd, 'p> ArchiveView<'_, 'm, 'd, 'p> {
+    pub(crate) fn timestamp(&self) -> &Checked<'m, 'd, 'p> {
+        self.timestamp
+    }
+    pub(crate) fn coverage(&self) -> &Coverage<Node, DocumentId<'m, 'd>, (), Memory, Cades> {
+        self.coverage
+    }
+}
 impl<'m, 'd, 'p> ArchiveChecked<'m, 'd, 'p> {
     /// Complete original common timestamp facts, including negative outcomes.
     #[must_use]
@@ -136,137 +171,9 @@ impl<'m, 'd, 'p> ArchiveChecked<'m, 'd, 'p> {
         structured_ltv::timestamp::TimestampRequirements<Node, DocumentId<'m, 'd>, (), Cades>,
         ScopeError,
     > {
-        prepared
-            .document()
-            .message()
-            .require_session(operation, "cades.archive.scope")
-            .map_err(|cause| ScopeError::Processing(Error::Cms(cause)))?;
-        let actor = self.timestamp.actor().ok_or(ScopeError::Unproven)?;
-        let verified = actor.verified();
-        operation.charge(1).map_err(|cause| {
-            ScopeError::Processing(Error::encoding(cause, "cades.archive.scope"))
-        })?;
-        if verified.signature() != Node::of(prepared.signer().span()) {
-            return Err(ScopeError::Foreign);
-        }
-        let source = prepared.document();
-        let work = operation.execution();
-        let query = Scope::new(source, source.snapshot(), &work);
-        self.coverage
-            .require_evidence(verified, verified.property(), &query)
-            .map_err(ScopeError::Coverage)?;
-        let mut tokens = work.vector();
-        for entry in prepared.timestamps() {
-            work.charge_work(1).map_err(|cause| {
-                ScopeError::Processing(Error::resource(
-                    cause,
-                    "cades.archive.scope",
-                    entry.property().span().start,
-                ))
-            })?;
-            if entry.property() == verified.property() {
-                continue;
-            }
-            if self
-                .coverage
-                .covers(verified, entry.property(), &query)
-                .map_err(ScopeError::Coverage)?
-            {
-                let token = entry
-                    .value()
-                    .map_or(entry.property(), |value| Node::of(value.span()));
-                tokens
-                    .try_push(structured_ltv::timestamp::RequiredToken {
-                        signature: entry.owner(),
-                        property: entry.property(),
-                        token,
-                        purpose: entry.purpose(),
-                    })
-                    .map_err(|cause| {
-                        ScopeError::Processing(Error::resource(
-                            cause,
-                            "cades.archive.scope",
-                            entry.property().span().start,
-                        ))
-                    })?;
-            }
-        }
-        let (counters, covered) = self.counter_scope(prepared, verified, &query)?;
-        Ok(
-            structured_ltv::timestamp::TimestampRequirements::with_counters(
-                ISSUER,
-                Node::of(prepared.signer().span()),
-                structured_ltv::timestamp::TimestampScope::BeforeArchive(
-                    source.locate(verified.property().span()),
-                ),
-                tokens.into_owned(),
-                counters,
-                Some(covered),
-            ),
-        )
-    }
-    fn counter_scope<Q>(
-        &self,
-        prepared: &Preparation<'m, 'd>,
-        verified: &structured_ltv::timestamp::Verified<Node, DocumentId<'m, 'd>, (), Cades>,
-        query: &Q,
-    ) -> Result<CounterScope, ScopeError>
-    where
-        Q: Query<Id = Node, Document = DocumentId<'m, 'd>, Generation = ()>,
-    {
-        let work = query.execution();
-        let mut counters = work.vector();
-        let mut covered = work.vector();
-        counters
-            .try_reserve_exact(prepared.counters().len())
-            .map_err(|cause| {
-                ScopeError::Processing(Error::resource(
-                    cause,
-                    "cades.archive.scope",
-                    prepared.signer().span().start,
-                ))
-            })?;
-        covered
-            .try_reserve_exact(prepared.counters().len())
-            .map_err(|cause| {
-                ScopeError::Processing(Error::resource(
-                    cause,
-                    "cades.archive.scope",
-                    prepared.signer().span().start,
-                ))
-            })?;
-        for counter in prepared.counters() {
-            work.charge_work(1).map_err(|cause| {
-                ScopeError::Processing(Error::resource(
-                    cause,
-                    "cades.archive.scope",
-                    counter.node().span().start,
-                ))
-            })?;
-            let selected = self
-                .coverage
-                .covers(verified, counter.node(), query)
-                .map_err(ScopeError::Coverage)?;
-            counters.try_push(counter.node()).map_err(|cause| {
-                ScopeError::Processing(Error::resource(
-                    cause,
-                    "cades.archive.scope",
-                    counter.node().span().start,
-                ))
-            })?;
-            covered.try_push(selected).map_err(|cause| {
-                ScopeError::Processing(Error::resource(
-                    cause,
-                    "cades.archive.scope",
-                    counter.node().span().start,
-                ))
-            })?;
-        }
-        Ok((counters.into_owned(), covered.into_owned()))
+        super::requirements::derive(&self.timestamp, &self.coverage, prepared, operation)
     }
 }
-
-type CounterScope = (OwnedVec<Node>, OwnedVec<bool>);
 
 /// An earlier archive scope requires this exact successful token and source.
 #[derive(Debug)]
@@ -651,11 +558,17 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
                 },
                 structured_ltv::source::ScopeError::Resource { cause, .. } => resource(cause),
             })?;
-        Ok(Coverage::new(
+        Ok(Coverage::for_token(
             ISSUER,
             source.snapshot(),
             Node::of(self.prepared.signer().span()),
             self.entry.property(),
+            Node::of(
+                self.entry
+                    .value()
+                    .expect("archive requires original token")
+                    .span(),
+            ),
             Purpose::Archive,
             items.into_owned(),
         ))
@@ -719,6 +632,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
         // with an AttributePlacement finding, never as conforming obligations
         // whose mathematical actor this root-input operation could establish.
         if self.entry.purpose() != Purpose::Archive
+            || self.entry.preservation_kind().is_some()
             || self.entry.owner() != Node::of(self.prepared.signer().span())
         {
             return Err(Error::Foreign {

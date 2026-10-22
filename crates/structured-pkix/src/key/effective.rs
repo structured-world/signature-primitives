@@ -60,18 +60,12 @@ impl Header {
     fn new(tag: u8, length: u64) -> Self {
         let mut bytes = [0; 11];
         bytes[0] = tag;
-        if length < 128 {
-            bytes[1] = u8::try_from(length).expect("short DER length is below 128");
-            return Self { bytes, len: 2 };
-        }
-        let count = u8::try_from((64 - length.leading_zeros()).div_ceil(8))
-            .expect("a u64 length uses at most eight octets");
-        bytes[1] = 0x80 | count;
-        let count = usize::from(count);
-        bytes[2..2 + count].copy_from_slice(&length.to_be_bytes()[8 - count..]);
+        let encoded = structured_asn1::length::DerLength::new(length);
+        let encoded = encoded.as_bytes();
+        bytes[1..=encoded.len()].copy_from_slice(encoded);
         Self {
             bytes,
-            len: 2 + count,
+            len: 1 + encoded.len(),
         }
     }
     fn bytes(&self) -> &[u8] {

@@ -742,6 +742,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             let paths: Vec<_> = prepared
                 .timestamps()
                 .iter()
+                .filter(|entry| !(matches!(mode, 6 | 13) && entry.preservation_kind().is_some()))
                 .map(|entry| match entry.purpose() {
                     structured_ltv::timestamp::Purpose::Signature => &tsa_receipt,
                     structured_ltv::timestamp::Purpose::Content => content_path.as_ref().unwrap(),
@@ -751,6 +752,67 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                     }
                 })
                 .collect();
+            if matches!(mode, 6 | 13) {
+                // This old value deliberately reuses a signature-timestamp
+                // token: valid TSA math, but the WRONG archive input. A modern
+                // receipt cannot replace its distinct original obligation.
+                let ordinal = prepared
+                    .timestamps()
+                    .iter()
+                    .position(|entry| {
+                        entry.preservation_kind()
+                            == Some(structured_cades::preservation::Kind::ArchiveV2)
+                    })
+                    .unwrap();
+                let later: Vec<_> = archive
+                    .as_ref()
+                    .and_then(structured_cades::timestamp::historical::Later::modern)
+                    .into_iter()
+                    .collect();
+                let mut input = structured_cades::timestamp::historical::HistoricalInput::<
+                    structured_cades::timestamp::NoDetached,
+                >::project(
+                    &prepared,
+                    ordinal,
+                    structured_cades::timestamp::historical::Edition::Rfc5126,
+                    &[],
+                    &later,
+                    &parent,
+                    None,
+                )
+                .unwrap();
+                let historical = pool
+                    .with_token(ordinal, &parent, |context| {
+                        context.check_historical(
+                            &oracle,
+                            &tsa_path,
+                            &parent,
+                            &time,
+                            &mut input,
+                            |_, _| Ok::<_, Infallible>(true),
+                        )
+                    })
+                    .unwrap();
+                assert_eq!(
+                    historical.timestamp().imprint,
+                    structured_cms::timestamp::ImprintAgreement::Differs
+                );
+                assert!(historical.timestamp().actor().is_none());
+                assert_eq!(
+                    paths.len() + 1,
+                    prepared.timestamp_requirements().entries().len()
+                );
+                assert!(matches!(
+                    prepared
+                        .timestamp_requirements()
+                        .bind_paths(&paths, &query)
+                        .unwrap(),
+                    TimestampPathBinding::Unproven(
+                        structured_ltv::timestamp::TimestampPathFailure::Count
+                    )
+                ));
+                continue;
+            }
             let TimestampPathBinding::Bound(paths) = prepared
                 .timestamp_requirements()
                 .bind_paths(&paths, &query)
@@ -760,22 +822,12 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             };
             let timed = baseline::timestamped(&basic, &paths, &query).unwrap();
             assert!(timed.all_static_time_requirements_met());
-            if (11..=13).contains(&mode) {
+            if (11..=12).contains(&mode) {
                 // AnnexA reference timestamps are advisory at B-T, independently
                 // of their unavailable historical whole-actor proof. A later
-                // actual old archive must still activate preservation blocking.
+                // actual old archive is independently checked above.
                 let assessed = baseline::assess(baseline::Evidence::timestamped(&timed), &parent);
-                if mode == 13 {
-                    assert!(matches!(
-                        assessed,
-                        Err(baseline::LevelError::UnavailablePreservation {
-                            kind: structured_cades::preservation::Kind::ArchiveV2,
-                            ..
-                        })
-                    ));
-                } else {
-                    assert!(assessed.unwrap().all_requirements_met());
-                }
+                assert!(assessed.unwrap().all_requirements_met());
             }
             let required = structured_cades::participants::participants(
                 basic.binding(),
@@ -784,26 +836,13 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 &paths,
                 &query,
             );
-            if (11..=13).contains(&mode) {
+            if (11..=12).contains(&mode) {
                 assert!(
                     matches!(
                         required,
                         Err(structured_cades::participants::Error::Preservation { .. })
                     ),
                     "B-T cannot manufacture a complete historical TSA census"
-                );
-                continue;
-            }
-            if mode == 6 {
-                assert!(
-                    matches!(
-                        required,
-                        Err(structured_cades::participants::Error::Preservation {
-                            kind: structured_cades::preservation::Kind::ArchiveV2,
-                            ..
-                        })
-                    ),
-                    "a successful modern prefix cannot prove a complete historical actor census"
                 );
                 continue;
             }

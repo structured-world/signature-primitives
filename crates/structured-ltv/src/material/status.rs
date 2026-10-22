@@ -39,7 +39,7 @@ impl<'closure, 'view, 'certificate, 'document, N, D, G, P>
 
 /// Census every path/status/authority artifact actually required by this input
 /// closure under the SAME original archive input. Reuses `archived_path`, its
-/// source index and complete/delta/whole-OCSP rules. No provider is repeated and
+/// source index and complete/delta/format-container rules. No provider is repeated and
 /// an allocation/work/source refusal drops every partial material report.
 pub fn archived_authorities<'closure, 'view, 'certificate, 'document, N, D, G, P, O, W, Q, C, I>(
     inputs: &'closure AuthorityClosure<'view, 'certificate, 'document>,
@@ -230,7 +230,9 @@ pub enum StatusPart {
     CompleteCrl,
     /// Authenticated whole updating delta CRL; never a replacement for the base.
     DeltaCrl,
-    /// Whole successful OCSP envelope containing the exact basic response.
+    /// Format-issued original OCSP container carrying the exact basic response.
+    /// RFC5940 requires its whole envelope; legacy `CAdES` Annex A.1.4 specifies
+    /// a bare `BasicOCSPResponse`. Neither permits an invented envelope.
     OcspResponse,
     /// Actual CRL/OCSP signer certificate from the same authentication receipt.
     SigningCertificate,
@@ -287,7 +289,9 @@ impl<'view, 'certificate, 'document, N: Copy, D: Copy, G: Copy, P>
 ///
 /// EN319132-1 V1.3.1 §§5.4.3/5.5.2.2/6.3(aa) require the full set used for
 /// validation before each archive. For a delta this includes both whole lists;
-/// RFC5940 §3 requires the whole `OCSPResponse` envelope. Actual source/key
+/// RFC5940 §3 requires the whole `OCSPResponse` envelope in that format;
+/// historical `CAdES` Annex A.1.4 carries the original bare basic response.
+/// The format-issued index retains that boundary. Actual source/key
 /// authentication, applicability and temporal facts come from the shared PKIX
 /// result, never from a count or a fresh private status parser here.
 /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>

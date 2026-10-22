@@ -15,7 +15,7 @@ use structured_asn1::{
     Oid, Reader,
     memory::{OwnedVec, Work},
 };
-use structured_cms::signer::SignerInfo;
+use structured_cms::{attribute::Placement, signer::SignerInfo};
 
 /// Original historical preservation mechanism, without guessing its variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,19 +32,30 @@ pub enum Kind {
     SignatureReferences,
 }
 impl Kind {
-    fn oid(self) -> Oid<'static> {
-        match self {
-            Self::ArchiveV1 => Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 27]),
-            Self::ArchiveV2 => Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 48]),
-            Self::LongTermValidation => Oid::from_bytes(&[4, 0, 0x8d, 0x45, 2, 2]),
-            Self::References => Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 26]),
-            Self::SignatureReferences => {
-                Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 25])
+    pub(crate) fn from_oid(value: Oid<'_>) -> Option<Self> {
+        let bytes = value.as_bytes();
+        if bytes.len() == 11 {
+            if bytes[..10] != [42, 134, 72, 134, 247, 13, 1, 9, 16, 2] {
+                return None;
             }
+            match bytes[10] {
+                27 => Some(Self::ArchiveV1),
+                48 => Some(Self::ArchiveV2),
+                26 => Some(Self::References),
+                25 => Some(Self::SignatureReferences),
+                _ => None,
+            }
+        } else if bytes == [4, 0, 0x8d, 0x45, 2, 2] {
+            Some(Self::LongTermValidation)
+        } else {
+            None
         }
     }
     pub(crate) fn is_reference_timestamp(self) -> bool {
         matches!(self, Self::References | Self::SignatureReferences)
+    }
+    pub(crate) fn is_archive(self) -> bool {
+        matches!(self, Self::ArchiveV1 | Self::ArchiveV2)
     }
 }
 
@@ -57,6 +68,8 @@ pub struct Required<'document> {
     pub property: Node,
     /// Original historical format, not an inferred `ATSv3` instance.
     pub kind: Kind,
+    /// Actual signed/unsigned placement from its original `SignerInfo` field.
+    pub placement: Placement,
     /// Original independent field context; None is an actual empty value set.
     pub value: Option<Value<'document>>,
 }
@@ -82,23 +95,18 @@ pub(crate) fn collect<'d, W: Work>(
     out: &mut OwnedVec<Required<'d>, W>,
 ) -> crate::Result<()> {
     signer.require_session(parent, "cades.preservation")?;
-    for set in [signer.signed_attributes(), signer.unsigned_attributes()]
-        .into_iter()
-        .flatten()
-    {
+    for (placement, set) in [
+        (Placement::Signed, signer.signed_attributes()),
+        (Placement::Unsigned, signer.unsigned_attributes()),
+    ] {
+        let Some(set) = set else {
+            continue;
+        };
         for attribute in set.items() {
             parent
                 .charge(5 * (1 + attribute.kind().as_bytes().len().min(11) as u64))
                 .map_err(|cause| Error::encoding(cause, "cades.preservation"))?;
-            let kind = [
-                Kind::ArchiveV1,
-                Kind::ArchiveV2,
-                Kind::LongTermValidation,
-                Kind::References,
-                Kind::SignatureReferences,
-            ]
-            .into_iter()
-            .find(|kind| attribute.kind() == kind.oid());
+            let kind = Kind::from_oid(attribute.kind());
             let Some(kind) = kind else {
                 continue;
             };
@@ -109,6 +117,7 @@ pub(crate) fn collect<'d, W: Work>(
                     signature: Node::of(signer.span()),
                     property: Node::of(attribute.span()),
                     kind,
+                    placement,
                     value: None,
                 })
                 .map_err(resource)?;
@@ -123,6 +132,7 @@ pub(crate) fn collect<'d, W: Work>(
                     signature: Node::of(signer.span()),
                     property: Node::of(attribute.span()),
                     kind,
+                    placement,
                     value: Some(Value::of(&reader, *value, "cades.preservation")),
                 })
                 .map_err(resource)?;

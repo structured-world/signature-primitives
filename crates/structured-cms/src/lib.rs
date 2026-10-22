@@ -24,6 +24,7 @@ pub mod mime;
 pub mod octets;
 pub mod oid;
 pub mod payload;
+pub mod personal;
 pub mod prepare;
 pub mod provider;
 pub mod signed;

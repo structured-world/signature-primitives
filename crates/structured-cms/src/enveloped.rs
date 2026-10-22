@@ -33,7 +33,7 @@ pub struct EncodedValue<'a> {
     depth: u32,
 }
 impl<'a> EncodedValue<'a> {
-    fn new(parent: &Reader<'a>, element: Element<'a>) -> Self {
+    pub(crate) fn new(parent: &Reader<'a>, element: Element<'a>) -> Self {
         Self {
             element,
             parser: parent.parser(),
@@ -377,7 +377,7 @@ fn originator_info<'a>(
         revocations,
     })
 }
-fn encrypted_content<'a>(
+pub(crate) fn encrypted_content<'a>(
     parent: &Reader<'a>,
     element: &Element<'a>,
 ) -> Result<EncryptedContent<'a>> {

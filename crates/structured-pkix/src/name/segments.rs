@@ -3,8 +3,20 @@
 use super::{AttributeValue, Encoding, Error, ErrorCode, Located, OwnedVec, Result, Strings};
 use structured_asn1::memory::Work;
 use structured_asn1::{Class, Element, ScopedReader as Reader, Tag, universal};
+use zeroize::Zeroize;
 
-pub(super) fn implicit<'a>(
+// Opaque values can be secret bag contents. Erasing only the enclosing
+// plaintext is insufficient if this validator has materialized another copy.
+// Capacity is fixed before copying, so no realloc can abandon an earlier copy;
+// Drop covers validation and current-work refusal as well as successful reads.
+struct Scratch<W: Work>(OwnedVec<u8, W>);
+impl<W: Work> Drop for Scratch<W> {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+pub(crate) fn implicit<'a>(
     parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
@@ -31,16 +43,24 @@ pub(super) fn validate<'a>(
     let time = matches!(number, universal::UTC_TIME | universal::GENERALIZED_TIME);
     if (strings == Strings::Checked && !matches!(number, 3 | 4)) || time {
         let execution = parent.execution();
-        let mut contents = execution.vector();
+        let length = walk_length(parent, element, field, false, None, &execution)?;
+        execution
+            .charge_work(length as u64)
+            .map_err(|reason| Error::resource(reason, field, element.span().start))?;
+        let mut contents = Scratch(execution.vector());
+        contents
+            .0
+            .try_reserve_exact(length)
+            .map_err(|reason| Error::resource(reason, field, element.span().start))?;
         walk_in(
             parent,
             element,
             field,
             false,
-            Some(&mut contents),
+            Some(&mut contents.0),
             &execution,
         )?;
-        let work = (contents.len() as u64).checked_mul(3).ok_or_else(|| {
+        let work = (contents.0.len() as u64).checked_mul(3).ok_or_else(|| {
             Error::resource(
                 structured_asn1::memory::MemoryError::WorkExceeded,
                 field,
@@ -50,13 +70,13 @@ pub(super) fn validate<'a>(
         parent.charge(work).field(field)?;
         let value = AttributeValue {
             tag: Tag::primitive(number),
-            contents: &contents,
+            contents: &contents.0,
             der: element.as_bytes(),
             offset: element.span().start,
             depth: parent.depth(),
         };
         let valid = if time {
-            crate::time::ber_fits(&contents, number == universal::GENERALIZED_TIME)
+            crate::time::ber_fits(&contents.0, number == universal::GENERALIZED_TIME)
         } else {
             matches!(value.encoding(), Encoding::Other | Encoding::Teletex)
                 || value.validated_count(|_| true).is_some()
@@ -100,9 +120,21 @@ pub(crate) fn walk_in<'a, W: Work>(
     element: &Element<'a>,
     field: &'static str,
     bits: bool,
-    mut output: Option<&mut OwnedVec<u8, W>>,
+    output: Option<&mut OwnedVec<u8, W>>,
     execution: &W,
 ) -> Result<()> {
+    walk_length(parent, element, field, bits, output, execution).map(|_| ())
+}
+
+fn walk_length<'a, W: Work>(
+    parent: &Reader<'a, '_>,
+    element: &Element<'a>,
+    field: &'static str,
+    bits: bool,
+    mut output: Option<&mut OwnedVec<u8, W>>,
+    execution: &W,
+) -> Result<usize> {
+    let mut length = 0;
     let mut frames = execution.vector();
     frames
         .try_push(Frame {
@@ -143,7 +175,14 @@ pub(crate) fn walk_in<'a, W: Work>(
         } else if bits {
             frame.reader.bit_string(&child).field(field)?;
             frame.unused = child.contents()[0];
-        } else if let Some(bytes) = output.as_deref_mut() {
+        } else {
+            // Primitive fragments are disjoint subranges of this immutable
+            // element. Their total cannot exceed its original contents size.
+            debug_assert!(child.contents().len() <= element.contents().len() - length);
+            length += child.contents().len();
+            let Some(bytes) = output.as_deref_mut() else {
+                continue;
+            };
             // The caller's Work-backed output admits both copying and growth
             // before either begins. Producing paths pass Execution, so the
             // same charge reaches local and aggregate ceilings once. Retained
@@ -153,5 +192,5 @@ pub(crate) fn walk_in<'a, W: Work>(
                 .map_err(|reason| Error::resource(reason, field, child.span().start))?;
         }
     }
-    Ok(())
+    Ok(length)
 }

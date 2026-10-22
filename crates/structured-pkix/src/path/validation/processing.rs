@@ -75,6 +75,7 @@ struct Processing<'a, E: Work> {
     space: NameSpace<'a, ConstraintSource, E>,
     working: WorkingKey<'a>,
     issuer: &'a Name<'a>,
+    issuer_certificate: Option<&'a Certificate<'a>>,
     allowed: u32,
     path_length_source: Option<(ConstraintSource, u32)>,
     last_constraints: Option<PolicyConstraints>,
@@ -141,6 +142,7 @@ impl<'a, E: Work> Processing<'a, E> {
             space,
             working: effective.key(),
             issuer: anchor.name(),
+            issuer_certificate: anchor.certificate(),
             allowed: length,
             path_length_source: None,
             last_constraints: None,
@@ -166,7 +168,23 @@ impl<'a, E: Work> Processing<'a, E> {
             if !spend_names(driver, certificate.tbs().issuer(), self.issuer)? {
                 return Err(Stop::Incomplete(Truncation::Work));
             }
-            if !certificate.tbs().issuer().matches(self.issuer, execution)? {
+            let issuer_matches = if let Some(issuer) = self.issuer_certificate {
+                // Both original certificates fund name preparation and the
+                // comparison, including a completed mismatch. The operation
+                // account stays current across these independent sources.
+                let left = certificate.execution_in(execution);
+                let right = issuer.execution_in(execution);
+                certificate.tbs().issuer().matches_between(
+                    self.issuer,
+                    (&left, certificate.tbs().signature().source_parser()),
+                    (&right, issuer.tbs().signature().source_parser()),
+                )?
+            } else {
+                // A caller's bare name/key anchor has no certificate source.
+                let source = certificate.execution_in(execution);
+                certificate.tbs().issuer().matches(self.issuer, &source)?
+            };
+            if !issuer_matches {
                 return Err(reject(at, RejectionReason::Issuer));
             }
         }
@@ -212,6 +230,7 @@ impl<'a, E: Work> Processing<'a, E> {
         };
         self.working = working;
         self.issuer = certificate.tbs().subject();
+        self.issuer_certificate = Some(certificate);
         if !self.space.is_open() && (index == 0 || !facts.self_issued) {
             self.names(certificate, at, settings, driver)?;
         }

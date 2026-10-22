@@ -1,8 +1,11 @@
 //! RFC5755 §7.4 restrictions along one explicitly supplied AA certificate path.
 //!
-//! The caller supplies an already authenticated leaf-first path with the AA
-//! issuer first and its explicitly trusted AA CA last. This module does not
-//! discover that trust, verify signatures, or replace PKIX path validation.
+//! [`AaPath::read`] collects restrictions from an already authenticated
+//! leaf-first path. [`validate`] combines that same census with the common
+//! PKIX validator and a separately selected trusted AA CA. Its returned
+//! [`ValidatedPath`] can authenticate AC issuance without repeating path
+//! signatures. Trust selection, revocation and application authorization
+//! remain caller obligations.
 //! <https://www.rfc-editor.org/rfc/rfc5755#section-7.4>
 
 use super::{Check, Reason, charge, refused};
@@ -11,6 +14,11 @@ use crate::{Error, Result};
 use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Oid, Span};
 use structured_pkix::Certificate;
+
+mod validated;
+pub use validated::{
+    Issued, PathCheck, PathError, PathResult, ValidatedPath, validate, validate_with_key,
+};
 
 /// One original control and its position in the supplied leaf-first path.
 #[derive(Debug)]

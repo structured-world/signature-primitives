@@ -21,6 +21,7 @@ structured-asn1 = { version = "0.10.0", path = "../structured-asn1", default-fea
 unicode-normalization = { version = "0.1", default-features = false }
 unicode-bidi = { version = "0.3", default-features = false, features = ["hardcoded-data"] }
 structured-email-address = { version = "0.0.21", default-features = false, features = ["alloc"] }
+zeroize = { version = "=1.9.1", default-features = false }
 
 [dev-dependencies]
 p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }

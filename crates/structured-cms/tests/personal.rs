@@ -867,6 +867,54 @@ fn open_bag_values_validate_whole_asn1_framing_before_visitor() {
 }
 
 #[test]
+fn secret_string_validation_never_grows_a_plaintext_scratch_copy() {
+    // A SecretBag can carry a constructed BER character string. Its validator
+    // must allocate its final scratch capacity BEFORE copying any secret: a
+    // later realloc would abandon an unwiped old allocation. This allowance
+    // fits the exact 11 KiB payload plus traversal metadata, not a grown 20 KiB
+    // allocation. The same shared validator runs inside decrypted SafeContents.
+    let string = tlv(
+        44,
+        &[tlv(4, &[b's'; 10_000]), tlv(4, &[b's'; 1_000])].concat(),
+    );
+    let bytes = bag(5, &seq(&[&oid(&[42, 3]), &tlv(160, &string)]), &[]);
+    let account = memory(16_384, 10_000_000);
+    let parser = Parser::ber(account.clone());
+    let mut reader = parser.read(&bytes, 0).unwrap();
+    let element = reader.next_element().unwrap().unwrap();
+    let value = Bag::read(&reader, &element);
+    assert!(
+        value.is_ok(),
+        "secret scratch must never need post-copy growth"
+    );
+    drop(value);
+    assert_eq!(account.used(), 0);
+}
+
+#[test]
+fn secret_scratch_releases_on_invalid_text_and_post_copy_work_refusal() {
+    // Validation can fail after the whole secret has been copied. Its guard
+    // must cover both malformed text and the subsequent CPU-admission error;
+    // neither path retains capacity or reaches an extraction callback.
+    for (last, work, resource) in [(255, 10_000_000, false), (b's', 40_000, true)] {
+        let string = tlv(
+            44,
+            &[tlv(4, &[b's'; 10_000]), tlv(4, &[last; 1_000])].concat(),
+        );
+        let bytes = bag(5, &seq(&[&oid(&[42, 3]), &tlv(160, &string)]), &[]);
+        let account = memory(16_384, work);
+        let parser = Parser::ber(account.clone());
+        let mut reader = parser.read(&bytes, 0).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let Err(cause) = Bag::read(&reader, &element) else {
+            panic!("unusable secret must refuse before extraction")
+        };
+        assert_eq!(cause.is_resource(), resource);
+        assert_eq!(account.used(), 0);
+    }
+}
+
+#[test]
 fn nested_safe_contents_do_not_reset_explicit_bag_depth() {
     // SafeContents is two ASN.1 levels below the parent loop (SafeBag and
     // EXPLICIT bagValue). Entering it through the loop cursor loses both.

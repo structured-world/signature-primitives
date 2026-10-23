@@ -25,6 +25,72 @@ pub enum CertificateChoice<'a> {
     Other(Element<'a>),
 }
 
+/// A schema-selected original `[0] IMPLICIT CertificateSet`, without a
+/// fabricated `SignedData` envelope. The same field kernel handles `PoE` extras.
+#[derive(Debug)]
+pub struct CertificateSet<'a> {
+    source: crate::signer::FieldsSource<'a>,
+    choices: OwnedVec<CertificateChoice<'a>>,
+    certificates: OwnedVec<Certificate<'a>>,
+}
+impl<'a> CertificateSet<'a> {
+    /// Reads all choices with producing/current admission before growth.
+    pub fn read(parent: &Reader<'a>, element: &Element<'a>, field: &'static str) -> Result<Self> {
+        let mut version = 1;
+        let (choices, certificates) = read_certificates(parent, element, &mut version, field)?;
+        Ok(Self {
+            source: crate::signer::FieldsSource::entered(parent, *element, field),
+            choices,
+            certificates,
+        })
+    }
+    /// Every original choice; X509 indices select this set's certificate pool.
+    #[must_use]
+    pub fn choices(&self) -> &[CertificateChoice<'a>] {
+        &self.choices
+    }
+    /// First-read X509 models, without cloning or reparsing certificate values.
+    #[must_use]
+    pub fn certificates(&self) -> &[Certificate<'a>] {
+        &self.certificates
+    }
+    /// Original choice cursor/depth, reusable under current query Work.
+    #[must_use]
+    pub fn fields_source(&self) -> crate::signer::FieldsSource<'a> {
+        self.source
+    }
+}
+
+/// Original `[1] IMPLICIT RevocationInfoChoices` from a schema-selected field.
+/// Framing/format validation is shared with `SignedData`; authentication and
+/// decoding the real CRL/OCSP wire formats remain separate operations.
+#[derive(Debug)]
+pub struct RevocationSet<'a> {
+    source: crate::signer::FieldsSource<'a>,
+    values: OwnedVec<Element<'a>>,
+}
+impl<'a> RevocationSet<'a> {
+    /// Reads the original complete choices without constructing an envelope.
+    pub fn read(parent: &Reader<'a>, element: &Element<'a>, field: &'static str) -> Result<Self> {
+        let mut version = 1;
+        let values = read_revocations(parent, element, &mut version, field)?;
+        Ok(Self {
+            source: crate::signer::FieldsSource::entered(parent, *element, field),
+            values,
+        })
+    }
+    /// Whole untouched CRL/other-format values in original catalogue order.
+    #[must_use]
+    pub fn values(&self) -> &[Element<'a>] {
+        &self.values
+    }
+    /// Original choice cursor/depth, reusable under current query Work.
+    #[must_use]
+    pub fn fields_source(&self) -> crate::signer::FieldsSource<'a> {
+        self.source
+    }
+}
+
 /// Original CMS other-revocation format and its untouched ANY value. Decoding
 /// a recognized format establishes no signature, authorization or freshness.
 #[derive(Debug)]
@@ -106,6 +172,7 @@ pub struct SignedData<'a> {
     revocations: OwnedVec<Element<'a>>,
     revocation_field: Option<Span>,
     signers: OwnedVec<SignerInfo<'a>>,
+    signer_set: Element<'a>,
     faults: OwnedVec<Error>,
     element: Element<'a>,
 }
@@ -231,6 +298,7 @@ impl<'a> SignedData<'a> {
             revocations,
             revocation_field,
             signers,
+            signer_set: next,
             faults,
             element: *element,
         })
@@ -240,6 +308,19 @@ impl<'a> SignedData<'a> {
     #[must_use]
     pub fn version(&self) -> u64 {
         self.version
+    }
+    /// Original complete `SignedData` fields, with their actual first-read
+    /// depth and source identity. Opening applies current and original Work.
+    #[must_use]
+    pub fn fields_source(&self) -> crate::signer::FieldsSource<'a> {
+        crate::signer::FieldsSource {
+            parser: self.parser,
+            data: self.element.contents(),
+            base: self.element.contents_span().start,
+            encoding: self.encoding,
+            depth: self.outer,
+            field: "signedData",
+        }
     }
     /// Version independently required by the encoded choices.
     #[must_use]
@@ -254,6 +335,12 @@ impl<'a> SignedData<'a> {
     #[must_use]
     pub fn digest_algorithms(&self) -> &[AlgorithmIdentifier<'a>] {
         &self.algorithms
+    }
+    /// First-read original `SignerInfos` SET, preserving BER lengths/EOC for
+    /// complete-object evidence inputs. Its members remain this same model.
+    #[must_use]
+    pub fn signer_set_element(&self) -> Element<'a> {
+        self.signer_set
     }
     /// Original attached or absent content.
     #[must_use]

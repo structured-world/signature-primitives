@@ -118,6 +118,46 @@ where
     Q: Query<Id = Node, Document = DocumentId<'m, 'd>, Generation = ()>,
     W: Work,
 {
+    check_in(prepared, pool, inputs, index, None, query)
+}
+
+/// Same full material/actor closure with sealed historical `PoE` preservation.
+/// EN319122-1 §5.5.3 permits archive augmentation material in a pre-existing
+/// long-term-validation attribute. Its actual source/proof must be closed;
+/// ordinary B-LT root-set requirements are retained.
+pub fn check_participants_preserved<'cl, 'r, 'v, 'c, 'd, 'm, Q, W>(
+    prepared: &Preparation<'m, 'd>,
+    pool: &Pool<'_, 'm, 'd>,
+    inputs: &'cl ParticipantClosure<'r, 'v, 'c, 'd, Node, DocumentId<'m, 'd>, (), Cades>,
+    index: &Index<'_, 'm, 'd, W>,
+    preservation: &crate::evidence::Closure<'_, '_, 'm, 'd, '_>,
+    query: &Q,
+) -> Result<Checks<'cl, 'r, 'v, 'c, 'd, 'm>, CheckError>
+where
+    Q: Query<Id = Node, Document = DocumentId<'m, 'd>, Generation = ()>,
+    W: Work,
+{
+    check_in(prepared, pool, inputs, index, Some(preservation), query)
+}
+fn check_in<'cl, 'r, 'v, 'c, 'd, 'm, Q, W>(
+    prepared: &Preparation<'m, 'd>,
+    pool: &Pool<'_, 'm, 'd>,
+    inputs: &'cl ParticipantClosure<'r, 'v, 'c, 'd, Node, DocumentId<'m, 'd>, (), Cades>,
+    index: &Index<'_, 'm, 'd, W>,
+    preservation: Option<&crate::evidence::Closure<'_, '_, 'm, 'd, '_>>,
+    query: &Q,
+) -> Result<Checks<'cl, 'r, 'v, 'c, 'd, 'm>, CheckError>
+where
+    Q: Query<Id = Node, Document = DocumentId<'m, 'd>, Generation = ()>,
+    W: Work,
+{
+    if let Some(proofs) = preservation
+        && !core::ptr::eq(proofs.prepared(), prepared)
+    {
+        return Err(CheckError::Processing(Error::Foreign {
+            at: prepared.signer().span().start,
+        }));
+    }
     let selected = prepared.document().locate(prepared.signer().span());
     query
         .admit(selected.node, 1)
@@ -155,12 +195,21 @@ where
         let mut allowed = false;
         while let Some(copy) = copies.next().transpose().map_err(CheckError::Index)? {
             present = true;
+            let poe = match copy.placement() {
+                Placement::PoeCertificate(location) | Placement::PoeRevocation(location)
+                    if archive_augmentation =>
+                {
+                    preserved_extra(prepared, preservation, location, query)?
+                }
+                _ => false,
+            };
             allowed |= match artifact {
                 ArtifactRef::Certificate(_) => {
                     // EN319122-1 §6.3(d) names SignedData.certificates for
                     // B-LT. §5.5.3 Note5's reuse of token validation data is
                     // specific to archive augmentation, not a B-LT waiver.
                     matches!(copy.placement(), Placement::RootCertificate(_))
+                        || poe
                         || (archive_augmentation
                             && (matches!(copy.placement(), Placement::TokenCertificate { .. })
                                 || matches!(copy.placement(), Placement::CertificateValues(location)
@@ -172,8 +221,9 @@ where
                     matches!(
                         copy.placement(),
                         Placement::RootRevocation(_) | Placement::TokenRevocation { .. }
-                    ) || (archive_augmentation
-                        && matches!(copy.placement(), Placement::CrlValues(location)
+                    ) || poe
+                        || (archive_augmentation
+                            && matches!(copy.placement(), Placement::CrlValues(location)
                             | Placement::OcspValues(location) if archived_values(prepared, location)))
                 }
             };
@@ -188,6 +238,30 @@ where
                 .map_err(resource)?;
         }
     }
+    retain_malformed(pool, query, selected.node, &mut findings)?;
+    Ok(Checks {
+        inputs,
+        presence,
+        findings: findings.into_owned(),
+    })
+}
+
+fn retain_malformed<'m, 'd, Q, W: Work>(
+    pool: &Pool<'_, 'm, 'd>,
+    query: &Q,
+    selected: Node,
+    findings: &mut OwnedVec<Finding, W>,
+) -> Result<(), CheckError>
+where
+    Q: Query<Id = Node, Document = DocumentId<'m, 'd>, Generation = ()>,
+{
+    let resource = |cause| {
+        CheckError::Processing(Error::resource(
+            cause,
+            "cades.material",
+            selected.span().start,
+        ))
+    };
     for entry in pool.open() {
         query.execution().charge_work(1).map_err(resource)?;
         if entry.cause.is_some() {
@@ -215,11 +289,49 @@ where
             Ok(())
         },
     )?;
-    Ok(Checks {
-        inputs,
-        presence,
-        findings: findings.into_owned(),
-    })
+    Ok(())
+}
+
+fn preserved_extra<'m, 'd, Q>(
+    prepared: &Preparation<'m, 'd>,
+    preservation: Option<&crate::evidence::Closure<'_, '_, 'm, 'd, '_>>,
+    location: super::PoeLocation,
+    query: &Q,
+) -> Result<bool, CheckError>
+where
+    Q: Query<Id = Node, Document = DocumentId<'m, 'd>, Generation = ()>,
+{
+    let resource = |cause| {
+        CheckError::Processing(Error::resource(
+            cause,
+            "cades.material",
+            location.property.span().start,
+        ))
+    };
+    query.execution().charge_work(1).map_err(resource)?;
+    let Some(proofs) = preservation else {
+        return Ok(false);
+    };
+    let entry = prepared
+        .parsed
+        .proofs
+        .entries
+        .get(location.proof)
+        .ok_or_else(|| {
+            CheckError::Processing(Error::Foreign {
+                at: location.property.span().start,
+            })
+        })?;
+    if entry.required.signature != location.signature
+        || entry.required.property != location.property
+    {
+        return Err(CheckError::Processing(Error::Foreign {
+            at: location.property.span().start,
+        }));
+    }
+    proofs
+        .contains(&entry.required, query.execution())
+        .map_err(resource)
 }
 
 fn archived_values(prepared: &Preparation<'_, '_>, location: super::LegacyLocation) -> bool {

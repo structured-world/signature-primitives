@@ -94,7 +94,7 @@ fn visit<'a, 'm, 'd, E>(
 
 fn visit_sources<'a, 'm, 'd, E>(
     prepared: &'a Preparation<'m, 'd>,
-    tokens: &'a [crate::prepare::tokens::Model<'d>],
+    tokens: &'a crate::prepare::tokens::Cache<'m, 'd>,
     related: &'a [Related<'d>],
     mut admit: impl FnMut(Node) -> Result<(), E>,
     mut callback: impl FnMut(&'a Properties<'d>, Owner) -> Result<ControlFlow<()>, E>,
@@ -129,16 +129,19 @@ fn visit_sources<'a, 'm, 'd, E>(
             }
         }
     }
-    for (model, token) in tokens.iter().enumerate() {
+    for ordinal in 0..prepared.timestamps().len() {
+        admit(prepared.timestamps()[ordinal].property())?;
+        let Some(token) = tokens.token(ordinal) else {
+            continue;
+        };
         let signer = token.token.signer();
         let owner = Owner {
             signature: Node::of(signer.span()),
             token: Some(token.ordinal),
             unsigned: signer.unsigned_attributes().map(|set| set.element().span()),
-            source: ModelSource::Token(model),
+            source: ModelSource::Token(ordinal),
         };
-        admit(owner.signature)?;
-        if let Some(properties) = &token.properties
+        if let Some(properties) = token.properties
             && callback(properties, owner)?.is_break()
         {
             return Ok(());
@@ -180,7 +183,7 @@ fn visit_sources<'a, 'm, 'd, E>(
 
 pub(super) fn append_open<'d, W: Work>(
     prepared: &Preparation<'_, 'd>,
-    tokens: &[crate::prepare::tokens::Model<'d>],
+    tokens: &crate::prepare::tokens::Cache<'_, 'd>,
     related: &[Related<'d>],
     open: &mut OwnedVec<super::Open<'d>, W>,
     work: &W,
@@ -284,9 +287,11 @@ fn values<'a, 'd>(pool: &'a Pool<'_, '_, 'd>, source: ModelSource) -> &'a Values
         ModelSource::Parallel(index) => pool.prepared.parallel_counters()[index]
             .properties()
             .expect("recorded properties"),
-        ModelSource::Token(index) => pool.tokens[index]
+        ModelSource::Token(index) => pool
+            .tokens
+            .token(index)
+            .expect("recorded token")
             .properties
-            .as_ref()
             .expect("recorded properties"),
         ModelSource::Related(index) => &pool.related[index].properties,
     }
@@ -341,7 +346,7 @@ pub(super) fn index<'s, 'm, 'd, Q>(
     pool: &'s Pool<'_, 'm, 'd>,
     index: &mut Index<'s, 'm, 'd, Q::Work>,
     query: &Q,
-) -> Result<(), material::IndexError<Node>>
+) -> Result<usize, material::IndexError<Node>>
 where
     Q: Query<Id = Node, Document = super::DocumentId<'m, 'd>, Generation = ()>,
     'd: 's,
@@ -419,7 +424,8 @@ where
             }
             Ok(ControlFlow::Continue(()))
         },
-    )
+    )?;
+    Ok(ordinal)
 }
 
 #[derive(Clone, Copy)]

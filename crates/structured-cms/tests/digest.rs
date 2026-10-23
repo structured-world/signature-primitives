@@ -53,6 +53,124 @@ fn finalized_binding_refuses_a_different_provider_instance_before_callback() {
 }
 use structured_cms::stream::{Receiver, Source, StreamError};
 
+#[test]
+fn derived_inputs_keep_original_request_ordinals_after_sort_and_dedup() {
+    // Distinct identity order differs from request order. The duplicate must
+    // share its original first representative, not request a third preimage.
+    struct Inputs(Vec<usize>);
+    impl<'p, P: structured_asn1::digest::Digest<'p>> structured_cms::digest::RequestSource<'p, P>
+        for Inputs
+    {
+        type Error = &'static str;
+        fn stream_request<W: Work>(
+            &mut self,
+            ordinal: usize,
+            _: &'p P,
+            _: &P::Identity,
+            out: &mut impl Receiver,
+            work: &W,
+        ) -> Result<(), Self::Error> {
+            work.charge_work(1).map_err(|_| "resource")?;
+            self.0.push(ordinal); // fixed trusted fixture log, not product storage
+            out.write(&[10 + u8::try_from(ordinal).unwrap()])
+                .map_err(|_| "receiver")
+        }
+    }
+    let provider = Provider::default();
+    let memory = memory();
+    let batch = DigestBatch::prepare(
+        &provider,
+        identities(&memory, &[(2, 0), (1, 0), (2, 0)]),
+        &memory,
+        "derived",
+        700,
+    )
+    .unwrap();
+    let mut source = Inputs(Vec::new());
+    let memo = batch.run_requests(&mut source, &memory).unwrap();
+    assert_eq!(source.0, [1, 0]);
+    assert_eq!(memo.request_count(), 3);
+    assert_eq!(memo.len(), 2);
+    for (ordinal, expected) in [(0, [2, 10]), (1, [1, 11]), (2, [2, 10])] {
+        assert_eq!(
+            memo.for_request(ordinal, &memory)
+                .unwrap()
+                .unwrap()
+                .as_bytes(),
+            expected
+        );
+    }
+    assert_eq!(provider.starts.get(), 2);
+    assert_eq!(provider.finishes.get(), 2);
+    drop(memo);
+    assert_eq!(memory.used(), 0);
+}
+
+#[test]
+fn derived_input_refusal_is_sticky_and_drops_all_unfinished_states() {
+    // A source cannot erase a failed provider update by ignoring Receiver's
+    // refusal, nor expose a partial output by failing only after a valid chunk.
+    struct Inputs {
+        calls: usize,
+        swallow: bool,
+    }
+    impl<'p, P: structured_asn1::digest::Digest<'p>> structured_cms::digest::RequestSource<'p, P>
+        for Inputs
+    {
+        type Error = &'static str;
+        fn stream_request<W: Work>(
+            &mut self,
+            _: usize,
+            _: &'p P,
+            _: &P::Identity,
+            out: &mut impl Receiver,
+            work: &W,
+        ) -> Result<(), Self::Error> {
+            work.charge_work(1).map_err(|_| "resource")?;
+            self.calls += 1;
+            if self.swallow {
+                let _ = out.write(b"stop");
+                let _ = out.write(b"must not reach provider");
+                Ok(())
+            } else {
+                out.write(b"complete-looking").map_err(|_| "receiver")?;
+                Err("source did not reach EOF")
+            }
+        }
+    }
+    for swallow in [false, true] {
+        let provider = Provider::default();
+        let memory = memory();
+        let batch = DigestBatch::prepare(
+            &provider,
+            identities(&memory, &[(2, 0), (1, 0)]),
+            &memory,
+            "derived",
+            700,
+        )
+        .unwrap();
+        let mut source = Inputs { calls: 0, swallow };
+        let result = batch.run_requests(&mut source, &memory);
+        if swallow {
+            assert!(matches!(
+                result,
+                Err(StreamError::Callback(DigestError::Callback(
+                    CallbackError::Injected
+                )))
+            ));
+        } else {
+            assert!(matches!(
+                result,
+                Err(StreamError::Source("source did not reach EOF"))
+            ));
+        }
+        assert_eq!(source.calls, 1);
+        assert_eq!(provider.updates.get(), 1);
+        assert_eq!(provider.finishes.get(), 0);
+        assert_eq!(memory.used(), 0);
+    }
+}
+
 #[derive(Debug)]
 enum CallbackError {
     Resource(MemoryError),

@@ -60,6 +60,8 @@ pub enum ErrorCode {
     MalformedValue,
     /// The written protocol version has no implemented schema interpretation.
     UnsupportedVersion,
+    /// A readable open encoding needs a schema-specific DER projection codec.
+    UnsupportedEncoding,
     /// A caller supplied a location outside the reader's source window.
     InvalidLocation,
     /// A timestamp token has no signer or conflicting multiple signer values.
@@ -163,6 +165,7 @@ impl Error {
         self.is_resource()
             || self.code() == ErrorCode::Pkix(structured_pkix::ErrorCode::ForeignReader)
             || self.code() == ErrorCode::InvalidLocation
+            || self.code() == ErrorCode::UnsupportedEncoding
     }
 }
 

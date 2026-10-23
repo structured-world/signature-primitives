@@ -178,7 +178,30 @@ pub fn assess<'a, 'm, 'd, E>(
     evidence: Evidence<'a, 'm, 'd, E>,
     operation: &structured_asn1::Reader<'_>,
 ) -> Result<Assessment<'a, 'm, 'd, E>, LevelError> {
+    assess_in(evidence, None, operation)
+}
+
+/// Same complete baseline composition with a sealed whole ERS/PoE closure.
+/// It admits existing preservation only; modern time/material/archive stages
+/// remain independently mandatory and cannot be promoted by a legacy proof.
+pub fn assess_preserved<'a, 'm, 'd, E>(
+    evidence: Evidence<'a, 'm, 'd, E>,
+    preservation: &crate::evidence::Closure<'_, '_, 'm, 'd, '_>,
+    operation: &structured_asn1::Reader<'_>,
+) -> Result<Assessment<'a, 'm, 'd, E>, LevelError> {
+    assess_in(evidence, Some(preservation), operation)
+}
+fn assess_in<'a, 'm, 'd, E>(
+    evidence: Evidence<'a, 'm, 'd, E>,
+    preservation: Option<&crate::evidence::Closure<'_, '_, 'm, 'd, '_>>,
+    operation: &structured_asn1::Reader<'_>,
+) -> Result<Assessment<'a, 'm, 'd, E>, LevelError> {
     let prepared = evidence.prepared();
+    if let Some(proofs) = preservation
+        && !core::ptr::eq(proofs.prepared(), prepared)
+    {
+        return Err(LevelError::Foreign);
+    }
     let requested = prepared.requested();
     let supplied = evidence.level();
     if requested != supplied {
@@ -202,6 +225,15 @@ pub fn assess<'a, 'm, 'd, E>(
             // strategy. Retaining their full actor obligations is separate.
             // https://www.etsi.org/deliver/etsi_en/319100_319199/31912201/01.03.01_60/en_31912201v010301p.pdf
             if !required.kind.is_reference_timestamp() && !required.kind.is_archive() {
+                if let Some(proofs) = preservation
+                    && required.kind.is_evidence()
+                    && proofs
+                        .contains(required, &work)
+                        .map_err(LevelError::Resource)?
+                {
+                    continue;
+                }
+
                 return Err(LevelError::UnavailablePreservation {
                     property: required.property,
                     kind: required.kind,

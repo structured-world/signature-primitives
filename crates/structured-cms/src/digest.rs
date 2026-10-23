@@ -46,6 +46,7 @@ fn started<S, E>(start: Result<Resolution<S>, E>) -> Result<S, DigestError<E>> {
 }
 
 struct Pending<I, S> {
+    ordinal: usize,
     identity: I,
     state: S,
 }
@@ -96,7 +97,15 @@ impl<'a, P: Digest<'a>> DigestBatch<'a, P> {
         }
         ordered
             .try_sort_unstable_by(|left, right| {
-                provider.compare(&left.identity, &right.identity, execution)
+                let order = provider.compare(&left.identity, &right.identity, execution)?;
+                // A distinct identity's derived preimage belongs to its first
+                // original request. An unstable equal run must not choose a
+                // different representative and silently change that source.
+                if order == Ordering::Equal {
+                    Ok(left.ordinal.cmp(&right.ordinal))
+                } else {
+                    Ok(order)
+                }
             })
             .map_err(|error| match error {
                 SortError::Resource(reason) => refusal(reason),
@@ -127,7 +136,11 @@ impl<'a, P: Digest<'a>> DigestBatch<'a, P> {
             pending.try_reserve(1).map_err(refusal)?;
             let state = started(provider.start(&identity, execution))?;
             pending
-                .try_push(Pending { identity, state })
+                .try_push(Pending {
+                    ordinal,
+                    identity,
+                    state,
+                })
                 .map_err(refusal)?;
             mapping[ordinal] = pending.len() - 1;
         }
@@ -168,6 +181,51 @@ impl<'a, P: Digest<'a>> DigestBatch<'a, P> {
             .try_reserve_exact(self.pending.len())
             .map_err(|reason| StreamError::Processing(Error::resource(reason, field, at)))?;
         stream::run(source, &mut BatchSink(&mut self), execution, field, at)?;
+        self.finish(outputs, execution)
+            .map_err(StreamError::Callback)
+    }
+
+    /// Completes algorithm-dependent derived inputs, once per distinct full
+    /// identity. The callback receives the first ORIGINAL request ordinal,
+    /// preserving the prepare mapping after identity sorting/deduplication.
+    ///
+    /// TS101733 §6.5.1's `PoE` preimage is eight hashes under the selected
+    /// algorithm, so different algorithms cannot share one literal byte stream.
+    /// All states, sticky stream errors, output widths and finalization use
+    /// exactly the same kernels as [`Self::run`]. No raw-output constructor or
+    /// unchecked digest/identity pair is exposed.
+    pub fn run_requests<S: RequestSource<'a, P>, W: Work>(
+        mut self,
+        source: &mut S,
+        execution: &W,
+    ) -> PassResult<DigestMemo<'a, P>, S::Error, P::Error> {
+        let mut outputs = execution.vector();
+        outputs
+            .try_reserve_exact(self.pending.len())
+            .map_err(|cause| {
+                StreamError::Processing(Error::resource(cause, self.field, self.at))
+            })?;
+        for pending in &mut self.pending {
+            execution.charge_work(1).map_err(|cause| {
+                StreamError::Processing(Error::resource(cause, self.field, self.at))
+            })?;
+            let mut selected = SelectedSource {
+                source,
+                ordinal: pending.ordinal,
+                provider: self.provider,
+                identity: &pending.identity,
+            };
+            stream::run(
+                &mut selected,
+                &mut RelatedSink {
+                    provider: self.provider,
+                    state: &mut pending.state,
+                },
+                execution,
+                self.field,
+                self.at,
+            )?;
+        }
         self.finish(outputs, execution)
             .map_err(StreamError::Callback)
     }
@@ -229,6 +287,45 @@ impl<'a, P: Digest<'a>> DigestBatch<'a, P> {
 
     pub(crate) fn location(&self) -> (&'static str, u64) {
         (self.field, self.at)
+    }
+}
+
+/// A derived byte stream indexed by the original resolved-digest request.
+/// Source errors remain independent of provider/stream-driver refusals.
+pub trait RequestSource<'provider, P: Digest<'provider>> {
+    /// Original derivation/acquisition refusal.
+    type Error;
+    /// Supplies the complete algorithm-dependent preimage, with current
+    /// transitive work/storage admission before processing each component.
+    fn stream_request<W: Work>(
+        &mut self,
+        ordinal: usize,
+        provider: &'provider P,
+        identity: &P::Identity,
+        receiver: &mut impl crate::stream::Receiver,
+        execution: &W,
+    ) -> Result<(), Self::Error>;
+}
+struct SelectedSource<'s, 'p, P: Digest<'p>, S> {
+    source: &'s mut S,
+    ordinal: usize,
+    provider: &'p P,
+    identity: &'s P::Identity,
+}
+impl<'p, P: Digest<'p>, S: RequestSource<'p, P>> Source for SelectedSource<'_, 'p, P, S> {
+    type Error = S::Error;
+    fn stream<W: Work>(
+        &mut self,
+        receiver: &mut impl crate::stream::Receiver,
+        execution: &W,
+    ) -> Result<(), Self::Error> {
+        self.source.stream_request(
+            self.ordinal,
+            self.provider,
+            self.identity,
+            receiver,
+            execution,
+        )
     }
 }
 

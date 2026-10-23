@@ -30,6 +30,37 @@ pub fn read_generalized(
     element: &Element<'_>,
     field: &'static str,
 ) -> Result<Reading> {
+    with_generalized(parent, element, field, |contents| {
+        Ok(generalized_label(contents, element.span().start, field)?.reading)
+    })
+}
+
+/// Reads the SAME zoned `GeneralizedTime` grammar with its complete decimal
+/// precision retained. Constructed/time-zone/hour/minute forms share the
+/// ordinary reader's field kernel; no second parser or numeric sentinel exists.
+pub fn read_generalized_exact(
+    parent: &Reader<'_>,
+    element: &Element<'_>,
+    field: &'static str,
+) -> Result<super::ExactReading> {
+    with_generalized(parent, element, field, |contents| {
+        let parsed = generalized_label(contents, element.span().start, field)?;
+        super::ExactReading::new(
+            parsed.reading,
+            parsed.fraction,
+            &parent.execution(),
+            field,
+            element.span().start,
+        )
+    })
+}
+
+fn with_generalized<R>(
+    parent: &Reader<'_>,
+    element: &Element<'_>,
+    field: &'static str,
+    consume: impl FnOnce(&[u8]) -> Result<R>,
+) -> Result<R> {
     if element.tag() == Tag::constructed(universal::GENERALIZED_TIME) {
         // X.680 §46.3 defines GeneralizedTime as IMPLICIT VisibleString;
         // X.690 §§8.25, 8.23.3 and 8.23.6 inherit OCTET STRING construction.
@@ -46,7 +77,7 @@ pub fn read_generalized(
             &execution,
         )?;
         admit_label(parent, contents.len(), element.span().start, field)?;
-        return generalized_label(&contents, element.span().start, field);
+        return consume(&contents);
     }
     if element.tag() != Tag::primitive(universal::GENERALIZED_TIME) {
         return Err(Error::new(
@@ -56,7 +87,7 @@ pub fn read_generalized(
         ));
     }
     admit_generalized(parent, element, field)?;
-    generalized(element, field)
+    consume(element.contents())
 }
 
 /// Admit the shared semantic core separately from a caller's DER spelling scan.
@@ -93,10 +124,18 @@ pub(crate) fn generalized(element: &Element<'_>, field: &'static str) -> Result<
             element.span().start,
         ));
     }
-    generalized_label(element.contents(), element.span().start, field)
+    generalized_label(element.contents(), element.span().start, field).map(|parsed| parsed.reading)
 }
 
-fn generalized_label(contents: &[u8], offset: u64, field: &'static str) -> Result<Reading> {
+struct Parsed<'a> {
+    reading: Reading,
+    fraction: Option<(&'a [u8], i128)>,
+}
+fn generalized_label<'a>(
+    contents: &'a [u8],
+    offset: u64,
+    field: &'static str,
+) -> Result<Parsed<'a>> {
     let fail = |code| Error::new(code, field, offset);
     let (year, rest) = split(contents, 4).ok_or_else(|| fail(ErrorCode::MalformedTime))?;
     let year = number(year).ok_or_else(|| fail(ErrorCode::MalformedTime))?;
@@ -112,12 +151,14 @@ fn generalized_label(contents: &[u8], offset: u64, field: &'static str) -> Resul
         }
     }
     let (mut fraction, mut exact) = (0i128, true);
+    let mut original_fraction = None;
     if let Some((b'.' | b',', tail)) = rest.split_first() {
         let count = tail.iter().take_while(|byte| byte.is_ascii_digit()).count();
         if count == 0 {
             return Err(fail(ErrorCode::MalformedTime));
         }
         let (digits, after) = tail.split_at(count);
+        original_fraction = Some((digits, unit));
         // Reverse decimal multiplication gives the exact floor and residual
         // for any number of digits, without a big integer or discarded carry.
         // The carry stays below unit; each temporary is below 10 * unit.
@@ -161,9 +202,12 @@ fn generalized_label(contents: &[u8], offset: u64, field: &'static str) -> Resul
         )
     }
     .ok_or_else(|| fail(ErrorCode::TimeOutOfRange))?;
-    Ok(Reading {
-        start,
-        subnanosecond: !exact,
+    Ok(Parsed {
+        reading: Reading {
+            start,
+            subnanosecond: !exact,
+        },
+        fraction: original_fraction,
     })
 }
 

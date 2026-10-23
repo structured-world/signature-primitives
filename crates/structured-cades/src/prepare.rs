@@ -15,6 +15,7 @@ use structured_ltv::timestamp::{Purpose, RequiredToken, TimestampRequirements, T
 
 const FIELD: &str = "cades";
 pub(crate) mod encoding;
+pub(crate) mod proofs;
 pub(crate) mod tokens;
 pub use tokens::ReadError;
 
@@ -235,7 +236,7 @@ impl<'m, 'd> Preparation<'m, 'd> {
         )?;
         let mut parallel =
             read_parallel(document, signer, parent, &mut signatures, &mut preservation)?;
-        let timestamp_ranges = history_timestamps(
+        let (timestamp_ranges, proofs) = history_timestamps(
             &preservation,
             &mut timestamps,
             &mut parallel,
@@ -255,6 +256,7 @@ impl<'m, 'd> Preparation<'m, 'd> {
             selected.node,
             &counter_index,
             parent,
+            proofs,
             tokens::Findings {
                 rows: &mut findings,
                 work: &execution,
@@ -1384,20 +1386,28 @@ fn timestamp_ranges(
     Ok(ranges.into_owned())
 }
 
+type HistoricalCatalogues<'d> = (
+    Option<OwnedMap<Node, core::ops::Range<usize>>>,
+    proofs::Proofs<'d>,
+);
+
 fn history_timestamps<'d, W: Work>(
     preservation: &[crate::preservation::Required<'d>],
     timestamps: &mut OwnedVec<Timestamp<'d>, W>,
     parallel: &mut Option<Parallel<'d>>,
     parent: &Reader<'d>,
     signer: Node,
-) -> Result<Option<OwnedMap<Node, core::ops::Range<usize>>>> {
+) -> Result<HistoricalCatalogues<'d>> {
     let execution = parent.execution();
     let mut historical = false;
     for required in preservation {
         execution
             .charge_work(1)
             .map_err(|cause| Error::resource(cause, FIELD, required.property.span().start))?;
-        if required.kind.is_archive() || required.kind.is_reference_timestamp() {
+        if required.kind.is_archive()
+            || required.kind.is_reference_timestamp()
+            || required.kind.is_evidence()
+        {
             historical = true;
             break;
         }
@@ -1416,10 +1426,11 @@ fn history_timestamps<'d, W: Work>(
         }
     }
     collect_historical_timestamps(preservation, parent, timestamps)?;
+    let proofs = proofs::Proofs::collect(preservation, parent, timestamps)?;
     if historical {
-        Ok(Some(timestamp_ranges(timestamps, parent)?))
+        Ok((Some(timestamp_ranges(timestamps, parent)?), proofs))
     } else {
-        Ok(None)
+        Ok((None, proofs))
     }
 }
 

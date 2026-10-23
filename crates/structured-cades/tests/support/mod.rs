@@ -1,6 +1,8 @@
 //! Trusted DEV fixture writer and real fixed-curve oracle, reused from the
 //! existing CMS/LTV integration mechanisms. No production cost qualification.
 
+use std::{vec, vec::Vec};
+
 use p256::ecdsa::{
     Signature, SigningKey, VerifyingKey,
     signature::hazmat::{PrehashSigner, PrehashVerifier},

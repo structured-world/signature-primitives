@@ -40,7 +40,7 @@ pub struct CheckTime<'a, 'document> {
 mod archive;
 pub mod historical;
 pub mod references;
-mod requirements;
+pub(crate) mod requirements;
 pub use archive::{
     ArchiveCheckError, ArchiveChecked, ArchiveError, ArchiveStreamError, ArchiveView, NoDetached,
     ScopeError as ArchiveScopeError,
@@ -88,12 +88,12 @@ pub fn with_token<'m, 'd, R, E>(
     let reader = source
         .reader_in(operation)
         .map_err(VisitError::Processing)?;
-    let Some(Some(index)) = prepared.parsed.ordinals.get(ordinal) else {
+    let Some(model) = prepared.parsed.token(ordinal) else {
         return Err(VisitError::Unreadable {
             property: entry.property(),
         });
     };
-    let token = &prepared.parsed.models[*index].token;
+    let token = model.token;
     visitor(Context {
         prepared,
         ordinal,
@@ -272,7 +272,7 @@ impl Source for Pieces<'_, '_> {
     }
 }
 
-enum ContentInput<'s, 'd, S> {
+pub(crate) enum ContentInput<'s, 'd, S> {
     Carried(&'s structured_cms::Octets<'d>),
     Counter(&'s [Piece<'d>]),
     Detached(&'s mut S),
@@ -305,8 +305,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
     /// This does not reparse the timestamp or a material field.
     #[must_use]
     pub fn properties(&self) -> Option<&crate::properties::Properties<'d>> {
-        let index = self.prepared.parsed.ordinals.get(self.ordinal)?.as_ref()?;
-        self.prepared.parsed.models[*index].properties.as_ref()
+        self.prepared.parsed.token(self.ordinal)?.properties
     }
     /// Original envelope for pool selection/inspection without another parse.
     #[must_use]
@@ -600,7 +599,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
             .map_err(CheckError::Check)?;
         Ok(self.checked(checked, restriction.get(), certificate, key))
     }
-    fn checked<'p>(
+    pub(crate) fn checked<'p>(
         &self,
         mut checked: tsp::CheckedTimestamp<'_>,
         restriction: PathRestriction,
@@ -677,7 +676,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
         }
         Ok(())
     }
-    fn profile_rules<'a, P, PE, FE>(
+    pub(crate) fn profile_rules<'a, P, PE, FE>(
         input: &tsp::ProfileInput<'_, 'd, 'a, '_>,
         path: &CheckedPath<'d>,
         provider: &'a P,

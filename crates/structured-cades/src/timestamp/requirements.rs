@@ -16,7 +16,7 @@ use structured_ltv::{
     timestamp::{RequiredToken, TimestampRequirements, TimestampScope},
 };
 
-pub(super) fn derive<'m, 'd>(
+pub(crate) fn derive<'m, 'd>(
     timestamp: &Checked<'m, 'd, '_>,
     coverage: &Coverage<Node, DocumentId<'m, 'd>, (), Memory, Cades>,
     prepared: &Preparation<'m, 'd>,

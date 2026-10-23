@@ -3,7 +3,7 @@
 use crate::source::Location;
 use core::marker::PhantomData;
 use structured_asn1::memory::{MemoryError, Work};
-use structured_cms::timestamp::{BoundUncertainty, Evidence, earliest, latest};
+use structured_cms::timestamp::{BoundUncertainty, Evidence};
 use structured_pkix::temporal::{Instant, LeapTable};
 use structured_pkix::{Certificate, path::WorkingKey};
 
@@ -266,19 +266,19 @@ fn interval<W: Work>(
     utc: &LeapTable<'_>,
     execution: &W,
 ) -> Result<Interval, TemporalError> {
-    // earliest uses one shift; latest uses upper_bound + one shift. Each
-    // shift has three binary partition searches, with at most bit_length(n)+1
-    // predicate calls apiece. 48 also admits fixed per-shift/scalar inspections.
-    // Table construction/validation belongs to its caller, not this lookup.
-    let count = utc.transitions().len();
-    let bits = usize::BITS - count.leading_zeros();
-    let cost = 48 + 9 * (u64::from(bits) + 1);
-    execution
-        .charge_work(cost)
-        .map_err(TemporalError::Resource)?;
-    let earliest = earliest(reading, accuracy, utc).map_err(TemporalError::Uncertain)?;
-    let latest = latest(reading, accuracy, utc).map_err(TemporalError::Uncertain)?;
-    Ok(Interval { earliest, latest })
+    let interval = structured_cms::timestamp::interval_in(reading, accuracy, utc, execution)
+        .map_err(|cause| match cause {
+            structured_cms::timestamp::IntervalError::Resource(cause) => {
+                TemporalError::Resource(cause)
+            }
+            structured_cms::timestamp::IntervalError::Uncertain(cause) => {
+                TemporalError::Uncertain(cause)
+            }
+        })?;
+    Ok(Interval {
+        earliest: interval.earliest,
+        latest: interval.latest,
+    })
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ use structured_cms::{attribute::Attribute, signer::SignerInfo};
 /// Borrowed complete/inner attribute encodings, with no decoded-value clone.
 #[derive(Clone, Copy)]
 pub(crate) struct AttributeEncoding<'d> {
+    pub(crate) element: structured_asn1::Element<'d>,
     pub(crate) kind: Oid<'d>,
     pub(crate) whole: &'d [u8],
     pub(crate) contents: &'d [u8],
@@ -20,6 +21,7 @@ pub(crate) struct AttributeEncoding<'d> {
 impl<'d> AttributeEncoding<'d> {
     fn of(attribute: &Attribute<'d>) -> Self {
         Self {
+            element: *attribute.element(),
             kind: attribute.kind(),
             whole: attribute.as_bytes(),
             contents: attribute.element().contents(),
@@ -36,6 +38,8 @@ impl<'d> AttributeEncoding<'d> {
 
 /// Source-backed encoding, without retaining/cloning the temporary `SignerInfo`.
 pub(crate) struct SignerEncoding<'d> {
+    source: structured_cms::signer::FieldsSource<'d>,
+    elements: structured_cms::signer::Fields<'d>,
     fields: &'d [u8],
     signed: Option<(Span, &'d [u8])>,
     unsigned: Option<(Span, &'d [u8], &'d [u8])>,
@@ -64,6 +68,8 @@ impl<'d> SignerEncoding<'d> {
             None
         };
         Ok(Self {
+            source: signer.fields_source(),
+            elements: signer.fields(),
             fields: signer.signed_fields(),
             signed: signer
                 .signed_attributes()
@@ -87,6 +93,18 @@ pub(crate) enum SignerView<'view, 'd> {
     Counter(&'view SignerEncoding<'d>),
 }
 impl<'d> SignerView<'_, 'd> {
+    pub(crate) fn elements(self) -> structured_cms::signer::Fields<'d> {
+        match self {
+            Self::Root(signer) => signer.fields(),
+            Self::Counter(saved) => saved.elements,
+        }
+    }
+    pub(crate) fn source(self) -> structured_cms::signer::FieldsSource<'d> {
+        match self {
+            Self::Root(signer) => signer.fields_source(),
+            Self::Counter(saved) => saved.source,
+        }
+    }
     pub(crate) fn fields(self) -> &'d [u8] {
         match self {
             Self::Root(signer) => signer.signed_fields(),

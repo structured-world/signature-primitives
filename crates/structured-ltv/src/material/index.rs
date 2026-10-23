@@ -70,6 +70,9 @@ pub struct Occurrence<N, D, G, P> {
     embedded_certificate: Option<usize>,
 }
 
+/// One paid catalogue step: an original occurrence or its source/query refusal.
+type OccurrenceItem<N, D, G, P> = Result<Occurrence<N, D, G, P>, IndexError<N>>;
+
 impl<N: Copy, D: Copy, G: Copy, P: Copy> Occurrence<N, D, G, P> {
     /// A direct occurrence of a certificate, CRL or whole OCSP value.
     #[must_use]
@@ -335,6 +338,42 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
     #[must_use]
     pub fn open(&self) -> &'source [O] {
         self.open
+    }
+
+    /// Every original indexed occurrence in source-catalogue insertion order,
+    /// including duplicate copies. No hashing, lookup, allocation or clone is
+    /// needed. Current query admission precedes each actual entry access;
+    /// the first refusal is returned once and permanently fuses the traversal.
+    /// Format recipes use this to derive coverage from their already parsed
+    /// material index rather than parsing or enumerating material again.
+    pub fn all_occurrences<'view, 'query, Q>(
+        &'view self,
+        query: &'query Q,
+    ) -> Result<
+        impl Iterator<Item = OccurrenceItem<N, D, G, P>>
+        + use<'view, 'query, 'source, N, D, G, P, O, W, Q, I>,
+        IndexError<N>,
+    >
+    where
+        Q: Query<Id = N, Document = D, Generation = G>,
+    {
+        self.admit(query)?;
+        let mut next = if self.entries.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+        Ok(core::iter::from_fn(move || {
+            let ordinal = next.take()?;
+            if let Err(cause) = self.admit(query) {
+                return Some(Err(cause));
+            }
+            let value = self.entries[ordinal].value;
+            if ordinal + 1 < self.entries.len() {
+                next = Some(ordinal + 1);
+            }
+            Some(Ok(value))
+        }))
     }
 
     /// Original selected signature of this index.

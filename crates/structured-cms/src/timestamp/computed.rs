@@ -126,6 +126,9 @@ impl<'reader, 'document, P: AsnDigest<'document>, E> ImprintContext<'reader, 'do
     pub fn identity(&self) -> &P::Identity {
         &self.identity
     }
+    pub(crate) fn provider(&self) -> &'document P {
+        self.provider
+    }
     fn failed(&self) -> bool {
         self.failure.borrow().is_some()
     }
@@ -248,9 +251,20 @@ impl<'reader, 'document, P: AsnDigest<'document>, E> ImprintContext<'reader, 'do
         if !core::ptr::eq(&raw const digest.context.owner, &raw const self.owner) {
             return Err(self.refuse(ImprintError::ForeignInput));
         }
+        self.compare_output(&digest.output)
+    }
+
+    // RFC4998 §4.2(5) permits an explicit tree identity distinct from the
+    // timestamp imprint identity. Only the ERS kernel can supply that finished
+    // provider output; callers still cannot construct a proof from raw bytes.
+    pub(crate) fn compare_output<'context>(
+        &'context self,
+        output: &P::Output,
+    ) -> Result<ImprintProof<'context>, crate::stream::Refused> {
+        self.admit()?;
         let result = crate::binding::matches_digest(
             self.provider,
-            digest.finished(),
+            Finished::new(self.provider, &self.identity, output),
             self.expected.bytes(),
             &self.reader.execution(),
             self.field,
@@ -263,6 +277,30 @@ impl<'reader, 'document, P: AsnDigest<'document>, E> ImprintContext<'reader, 'do
                 DigestBinding::Matches => ImprintAgreement::Matches,
                 DigestBinding::Differs => ImprintAgreement::Differs,
                 DigestBinding::Malformed(_) => ImprintAgreement::MalformedHash,
+            },
+        })
+    }
+
+    // A private format kernel may derive its root under an explicit different
+    // RFC4998 tree identity. Keep its completed-output comparison inside the
+    // operation's sticky refusal boundary; no public byte/proof constructor.
+    pub(crate) fn compare_derived(
+        &self,
+        compare: impl FnOnce(&[u8], &structured_asn1::memory::Execution<'_>) -> Result<bool, E>,
+    ) -> Result<ImprintProof<'_>, crate::stream::Refused> {
+        self.admit()?;
+        let matches =
+            compare(self.expected.bytes(), &self.reader.execution()).map_err(|cause| {
+                self.refuse(ImprintError::Pass(crate::stream::StreamError::Source(
+                    cause,
+                )))
+            })?;
+        Ok(ImprintProof {
+            owner: &self.owner,
+            agreement: if matches {
+                ImprintAgreement::Matches
+            } else {
+                ImprintAgreement::Differs
             },
         })
     }

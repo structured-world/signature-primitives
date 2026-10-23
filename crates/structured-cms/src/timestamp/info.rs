@@ -52,7 +52,7 @@ pub struct TokenInfo<'a> {
     policy: Oid<'a>,
     imprint: MessageImprint<'a>,
     serial: IntegerField<'a>,
-    gen_time: Reading,
+    gen_time: structured_pkix::temporal::ExactReading,
     accuracy: Option<AccuracyReading<'a>>,
     ordering: bool,
     nonce: Option<IntegerField<'a>>,
@@ -192,7 +192,10 @@ impl<'a> TokenInfo<'a> {
     /// Shared UTC label/precision reading; supplied UTC facts remain independent.
     #[must_use]
     pub fn gen_time(&self) -> Reading {
-        self.gen_time
+        self.gen_time.reading()
+    }
+    pub(super) fn precise_gen_time(&self) -> &structured_pkix::temporal::ExactReading {
+        &self.gen_time
     }
     /// Absent complete Accuracy differs from a present empty/invalid reading.
     #[must_use]
@@ -317,7 +320,7 @@ struct Fields<'a> {
     imprint: Option<MessageImprint<'a>>,
     serial: Option<IntegerField<'a>>,
     serial_displaced: bool,
-    gen_time: Option<Reading>,
+    gen_time: Option<structured_pkix::temporal::ExactReading>,
     accuracy: Option<AccuracyReading<'a>>,
     ordering: Option<bool>,
     nonce: Option<IntegerField<'a>>,
@@ -442,8 +445,12 @@ impl<'a> Fields<'a> {
             }
             Slot::GenTime => {
                 self.gen_time = Some(
-                    structured_pkix::temporal::read_generalized(parent, element, "tstInfo.genTime")
-                        .map_err(Error::pkix)?,
+                    structured_pkix::temporal::read_generalized_exact(
+                        parent,
+                        element,
+                        "tstInfo.genTime",
+                    )
+                    .map_err(Error::pkix)?,
                 );
             }
             Slot::Accuracy => self.accuracy = Some(AccuracyReading::read(parent, element)?),

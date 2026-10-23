@@ -121,6 +121,42 @@ pub enum BoundUncertainty {
     Utc(Uncertainty),
 }
 
+/// Exact time-comparison refusal, independent of proof, trust or policy.
+pub use structured_pkix::temporal::CompareError as GenerationOrderError;
+
+/// Complete generation interval from stated accuracy and explicit UTC facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenerationInterval {
+    /// Lower endpoint including source decimal precision.
+    pub earliest: Instant,
+    /// Upper endpoint including source decimal precision.
+    pub latest: Instant,
+}
+/// Failure to compute a generation interval; resource refusal is terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntervalError {
+    /// Actual current/source work refusal.
+    Resource(structured_asn1::memory::MemoryError),
+    /// No stated accuracy or insufficient authenticated UTC coverage.
+    Uncertain(BoundUncertainty),
+}
+/// Computes both endpoints with the common UTC arithmetic, admitting every
+/// binary table lookup before work. No accuracy is inferred from ordering.
+pub fn interval_in<W: structured_asn1::memory::Work>(
+    reading: Reading,
+    accuracy: Option<Accuracy>,
+    utc: &LeapTable<'_>,
+    work: &W,
+) -> core::result::Result<GenerationInterval, IntervalError> {
+    let bits = usize::BITS - utc.transitions().len().leading_zeros();
+    work.charge_work(48 + 9 * (u64::from(bits) + 1))
+        .map_err(IntervalError::Resource)?;
+    Ok(GenerationInterval {
+        earliest: earliest(reading, accuracy, utc).map_err(IntervalError::Uncertain)?,
+        latest: latest(reading, accuracy, utc).map_err(IntervalError::Uncertain)?,
+    })
+}
+
 /// Lower endpoint of the authority's generation-time accuracy interval.
 /// This says nothing about when the imprinted document was signed.
 pub fn earliest(

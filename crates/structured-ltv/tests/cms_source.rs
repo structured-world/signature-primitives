@@ -459,3 +459,77 @@ fn archive_coverage_binds_cms_attribute_selection_to_its_checked_token() {
         }))
     );
 }
+
+#[test]
+fn complete_occurrence_scan_keeps_duplicates_and_fuses_source_or_work_refusal() {
+    // A coverage builder needs the full original pool, including repeated
+    // identical artifacts. It cannot silently truncate on resource refusal or
+    // resume a failed scan after a generation happens to be restored.
+    use std::sync::Arc;
+    use structured_asn1::memory::MemoryAccount;
+    let data = SignedData {
+        document: 1,
+        generation: Cell::new(2),
+    };
+    let memory = memory(1 << 20);
+    let query = Scope::new(&data, data.snapshot(), &memory);
+    let key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
+    let bytes = certificate("Root", "Root", &key, &key);
+    let parser = Parser::der(memory.clone());
+    let certificate = Certificate::read(&parser, &bytes, 400).unwrap();
+    let mut index: Index<'_, Attribute, u8, u8, (), (), Memory, Cades> =
+        Index::new(ISSUER, SIGNATURE, &[], &query).unwrap();
+    for (ordinal, node) in [CERTIFICATES, LATER].into_iter().enumerate() {
+        index
+            .insert(
+                ISSUER,
+                ArtifactRef::Certificate(&certificate),
+                Occurrence::new(ArtifactSource::Material(ordinal), data.location(node), ()),
+                &query,
+            )
+            .unwrap();
+    }
+    let before = memory.used();
+    let all = index
+        .all_occurrences(&query)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].location().node, CERTIFICATES);
+    assert_eq!(all[1].location().node, LATER);
+    assert_eq!(
+        memory.used(),
+        before,
+        "scanning borrows the retained pool without catalogue allocation"
+    );
+    let limited = Memory::new(Arc::new(MemoryAccount::new(0, 4)));
+    let query_limited = Scope::new(&data, data.snapshot(), &limited);
+    let mut scan = index.all_occurrences(&query_limited).unwrap();
+    assert!(scan.next().unwrap().is_ok());
+    assert!(matches!(
+        scan.next().unwrap(),
+        Err(IndexError::Scope(ScopeError::Resource {
+            cause: MemoryError::WorkExceeded,
+            ..
+        }))
+    ));
+    let spent = limited.work_used();
+    assert!(scan.next().is_none());
+    assert!(scan.next().is_none());
+    assert_eq!(limited.work_used(), spent);
+    let mut scan = index.all_occurrences(&query).unwrap();
+    data.generation.set(3);
+    assert!(matches!(
+        scan.next().unwrap(),
+        Err(IndexError::Scope(ScopeError::Changed { .. }))
+    ));
+    data.generation.set(2);
+    assert!(scan.next().is_none());
+    let empty: Index<'_, Attribute, u8, u8, (), (), Memory, Cades> =
+        Index::new(ISSUER, SIGNATURE, &[], &query).unwrap();
+    let mut scan = empty.all_occurrences(&query).unwrap();
+    let spent = memory.work_used();
+    assert!(scan.next().is_none());
+    assert_eq!(memory.work_used(), spent);
+}

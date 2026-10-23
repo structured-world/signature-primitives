@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/structured-world/signature-primitives/compare/v0.12.0...v0.13.0) - 2026-10-23
+
+### Added
+
+- *(cms)* [**breaking**] verify ers and cades preservation ([#216](https://github.com/structured-world/signature-primitives/pull/216))
+
 ## [0.12.0](https://github.com/structured-world/signature-primitives/compare/v0.11.0...v0.12.0) - 2026-10-22
 
 ### Added

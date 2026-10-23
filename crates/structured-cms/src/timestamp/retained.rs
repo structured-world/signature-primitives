@@ -48,7 +48,7 @@ pub struct RetainedFacts {
     policy: OwnedOid,
     serial: OwnedVec<u8>,
     nonce: Option<OwnedVec<u8>>,
-    gen_time: Reading,
+    gen_time: structured_pkix::temporal::ExactReading,
     accuracy: Option<Accuracy>,
     ordering: bool,
     source_span: Span,
@@ -138,6 +138,10 @@ impl TokenInfo<'_> {
                 )
             })
             .transpose()?;
+        let gen_time = self
+            .precise_gen_time()
+            .try_copy_in(&work, "tstInfo.genTime", self.span().start)
+            .map_err(Error::pkix)?;
         Ok(RetainedFacts {
             imprint: RetainedImprint {
                 algorithm: hash_algorithm,
@@ -147,7 +151,7 @@ impl TokenInfo<'_> {
             policy,
             serial,
             nonce,
-            gen_time: self.gen_time(),
+            gen_time,
             accuracy,
             ordering: self.ordering(),
             source_span: self.span(),
@@ -208,6 +212,10 @@ impl RetainedFacts {
             .nonce()
             .map(|bytes| retain(bytes, work, "tstInfo.nonce", self.source_span.start))
             .transpose()?;
+        let gen_time = self
+            .gen_time
+            .try_copy_in(work, "tstInfo.genTime", self.source_span.start)
+            .map_err(Error::pkix)?;
         Ok(Self {
             imprint: RetainedImprint {
                 algorithm,
@@ -217,7 +225,7 @@ impl RetainedFacts {
             policy,
             serial,
             nonce,
-            gen_time: self.gen_time,
+            gen_time,
             accuracy: self.accuracy,
             ordering: self.ordering,
             source_span: self.source_span,
@@ -246,7 +254,19 @@ impl RetainedFacts {
     /// Original common UTC reading, not a fabricated exact instant.
     #[must_use]
     pub fn gen_time(&self) -> Reading {
-        self.gen_time
+        self.gen_time.reading()
+    }
+    /// Exact generation-time order, retaining arbitrary subnanosecond digits.
+    /// This compares authenticated facts only when called on actual evidence;
+    /// a same-TSA ordering assertion or accuracy rule is a separate precondition.
+    /// Both UTC labels and complete comparison work are admitted before lookup.
+    pub fn compare_generation<W: Work>(
+        &self,
+        other: &Self,
+        utc: &super::LeapTable<'_>,
+        work: &W,
+    ) -> core::result::Result<core::cmp::Ordering, super::GenerationOrderError> {
+        self.gen_time.compare(&other.gen_time, utc, work)
     }
     /// Complete Accuracy absence remains distinct from a present zero value.
     #[must_use]

@@ -134,7 +134,16 @@ impl<'v, 'm, 'd> Later<'v, 'm, 'd> {
             coverage: &checked.coverage,
         })
     }
-    fn permits(
+    /// A fully checked ERS/PoE renewal with its exact format-derived coverage.
+    /// Whole-record completion is required by `RecordArchive`'s constructor.
+    #[must_use]
+    pub fn record(checked: &'v crate::evidence::RecordArchive<'_, '_, 'm, 'd, '_>) -> Option<Self> {
+        Some(Self {
+            evidence: checked.timestamp().actor()?.verified(),
+            coverage: checked.coverage(),
+        })
+    }
+    pub(crate) fn permits(
         &self,
         prepared: &Preparation<'m, 'd>,
         later: &crate::prepare::Timestamp<'d>,

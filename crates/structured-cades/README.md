@@ -146,11 +146,52 @@ census, including failed/unreadable and parallel occurrences. Original token
 envelopes share the existing common cache; there is no second reference-specific
 envelope decoder.
 
-RFC 4998 long-term evidence remains an independent mechanism. An unimplemented
-`PoE` mechanism blocks positive timestamped-or-higher assessment. Reference
-timestamps remain advisory at B-T; their successful mathematical checks do not
-waive modern baseline format rules. A valid modern archive cannot erase another
-original obligation.
+## Evidence records and historical `PoE`
+
+`evidence::View` borrows the first-read RFC 4998 record or TS 101 733 V2.2.1
+§6.5.1 long-term-validation value. Every actual TSA joins the original timestamp
+and material census once. `Authorities::select` receives the global timestamp
+ordinal, that same token and current `Work`; it supplies an existing checked path
+and its original certificate reader. Discovery follows structural membership
+preflight. The common CMS/TSA/ESS check supplies the final actor without a
+second signature verification.
+
+`check_internal` protects the original whole `ContentInfo`; `check_external`
+protects it and the actual separate content as an exact two-object group.
+RFC 4998 Appendix A removes self/later evidence-record attributes from the
+first signer and adapts containing lengths, preserving all other coding.
+`CmsSnapshot::capture` and the snapshot variants bind a genuine earlier parsed
+container before replaying its original BER framing. Changed signed fields,
+material, parallel signers or retained attributes refuse before hashing.
+Externally supplied records over a CMS object without embedded ER attributes
+use the common CMS `EvidenceRecord` verifier with the complete original object.
+
+`check_poe` handles both a timestamp and an entire ERS record. Its eight hash
+components share one streaming payload pass across requested algorithms; Hc,
+Hr and Hu retain whole as-stored values and duplicate hashes. Hv and Ht use
+schema-selected DER projection. `poeDate` provides exact ordering metadata,
+including subnanosecond digits, and is never the authenticated proof time.
+A later qualified ATSv3/Annex B record can be passed through
+`check_poe_with_later`; its sealed executed coverage must protect this actual
+earlier `PoE` before the new property is excluded. Dates alone cannot authorize
+that exclusion (EN 319 122-1 §5.5.3).
+
+`close_preservation` requires the entire original ERS/PoE set, source identity,
+protected-input dependencies and authenticated chronology before historical
+callbacks run latest-to-earliest. Historical path/status and algorithm
+suitability are explicit caller obligations. A failed, unknown, foreign or
+missing proof cannot yield a successful partial closure. `VerifiedRecord::archive`
+retains the actual input coverage and preceding actor/material obligations for
+each individual timestamp, including renewals of one record.
+
+`participants_preserved`, `material::check_participants_preserved` and
+`baseline::assess_preserved` compose that sealed closure with the existing
+complete path/status/material and requested-level stages. This does not turn
+legacy `PoE` into modern B-LTA conformance: the modern mandatory format and stage
+requirements still apply. Ordinary B-LT root certificate placement is retained;
+qualified archive augmentation can use original `PoE` extras where the standard
+permits it. Reference timestamps remain advisory at B-T, and a valid modern
+archive cannot erase another original obligation.
 
 ## Publication
 

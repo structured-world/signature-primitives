@@ -25,10 +25,6 @@ const SIGNED: Oid<'static> = Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 7, 
 const ENCRYPTED: Oid<'static> = Oid::from_bytes(&[42, 134, 72, 134, 247, 13, 1, 7, 6]);
 
 /// Original PFX integrity mode. Absence of a MAC is not authenticated data.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one PFX mode lives inline; boxing would add allocation and indirection to every inspected container"
-)]
 pub enum Integrity<'a> {
     /// Password integrity over the exact logical `AuthenticatedSafe` octets.
     Password {

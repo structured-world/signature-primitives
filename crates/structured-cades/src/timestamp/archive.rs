@@ -133,6 +133,16 @@ impl<'v, 'm, 'd, 'p> From<&'v super::historical::HistoricalChecked<'m, 'd, 'p>>
         }
     }
 }
+impl<'v, 'm, 'd, 'p> From<&'v crate::evidence::RecordArchive<'_, '_, 'm, 'd, 'p>>
+    for ArchiveView<'v, 'm, 'd, 'p>
+{
+    fn from(value: &'v crate::evidence::RecordArchive<'_, '_, 'm, 'd, 'p>) -> Self {
+        Self {
+            timestamp: value.timestamp(),
+            coverage: value.coverage(),
+        }
+    }
+}
 impl<'m, 'd, 'p> ArchiveView<'_, 'm, 'd, 'p> {
     pub(crate) fn timestamp(&self) -> &Checked<'m, 'd, 'p> {
         self.timestamp

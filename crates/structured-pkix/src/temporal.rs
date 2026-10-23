@@ -1,14 +1,17 @@
 //! UTC arithmetic with caller-supplied leap-second facts.
 //!
-//! No clock, network, built-in calendar of corrections, or allocation is used.
-//! Applications authenticate and refresh the facts; this module validates
-//! their shape and never extends their declared coverage by assumption.
+//! UTC arithmetic uses no clock, network, built-in correction calendar or
+//! allocation. [`ExactReading`] additionally retains finer decimal precision
+//! in accounted storage. Applications authenticate and refresh correction
+//! facts; their declared coverage is never extended by assumption.
 
 const NANOS: i128 = 1_000_000_000;
 
 mod parse;
-pub use parse::read_generalized;
+mod precision;
 pub(crate) use parse::{admit_generalized, generalized};
+pub use parse::{read_generalized, read_generalized_exact};
+pub use precision::{CompareError, ExactReading};
 
 /// A parsed moment, retaining whether digits finer than a nanosecond remain.
 /// The upper endpoint cannot be rounded without UTC correction facts.

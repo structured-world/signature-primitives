@@ -81,3 +81,17 @@ pub fn set_ordered(
         .map_err(|error| Error::new(ErrorCode::Encoding(error.code()), field, next.span().start))?;
     Ok(crate::name::der_set_ordered(previous, next.as_bytes()))
 }
+
+/// Visits primitive fragments using the SAME iterative BER BIT STRING kernel
+/// as validation. Only final nested padding is permitted (X.690 §8.6.4).
+/// The caller may retain original borrowed bits/spans; no payload is joined.
+/// A later error does not undo side effects of earlier visitor calls.
+/// DER admits only the primitive form. Current/origin work and depth apply.
+pub fn bit_fragments<'a>(
+    parent: &structured_asn1::ScopedReader<'a, '_>,
+    element: &Element<'a>,
+    field: &'static str,
+    visitor: impl FnMut(Element<'a>, structured_asn1::BitString<'a>) -> Result<()>,
+) -> Result<()> {
+    crate::name::segments::bit_fragments(parent, element, field, visitor)
+}

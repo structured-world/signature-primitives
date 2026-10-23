@@ -86,15 +86,41 @@ fn information_cause(cause: &ContentError<InfoError<Infallible>>) -> &structured
     }
 }
 pub(crate) struct Model<'d> {
-    pub(crate) ordinal: usize,
     pub(crate) token: Token<'d>,
     pub(crate) properties: Option<crate::properties::Properties<'d>>,
 }
 pub(crate) struct Cache<'m, 'd> {
     pub(crate) models: OwnedVec<Model<'d>>,
-    pub(crate) ordinals: OwnedVec<Option<usize>>,
+    pub(crate) ordinals: OwnedVec<Option<TokenIndex>>,
+    pub(crate) proofs: super::proofs::Proofs<'d>,
     pub(crate) faults: OwnedVec<(Node, ReadError)>,
     pub(crate) related: Option<OwnedVec<Finding<'m, 'd>>>,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum TokenIndex {
+    Direct(usize),
+    Proof(super::proofs::Reference),
+}
+pub(crate) struct ModelView<'a, 'd> {
+    pub(crate) ordinal: usize,
+    pub(crate) token: &'a Token<'d>,
+    pub(crate) properties: Option<&'a crate::properties::Properties<'d>>,
+}
+impl<'d> Cache<'_, 'd> {
+    pub(crate) fn token(&self, ordinal: usize) -> Option<ModelView<'_, 'd>> {
+        let (token, properties) = match self.ordinals.get(ordinal)?.as_ref()? {
+            TokenIndex::Direct(index) => {
+                let model = &self.models[*index];
+                (&model.token, model.properties.as_ref())
+            }
+            TokenIndex::Proof(reference) => self.proofs.token(*reference)?,
+        };
+        Some(ModelView {
+            ordinal,
+            token,
+            properties,
+        })
+    }
 }
 
 pub(super) struct Findings<'a, 'm, 'd, W: Work> {
@@ -112,7 +138,6 @@ struct Reading<'d> {
 )]
 fn read_one<'m, 'd, W: Work>(
     document: &Document<'m, 'd>,
-    ordinal: usize,
     entry: &Timestamp<'d>,
     parent: &Reader<'d>,
     findings: &mut OwnedVec<Finding<'m, 'd>, W>,
@@ -134,34 +159,9 @@ fn read_one<'m, 'd, W: Work>(
                     } else {
                         None
                     };
-                let fault = if let Err(cause) = inspect(document, entry, &token, &reader, findings)
-                {
-                    if cause.is_terminal() {
-                        return Err(cause);
-                    }
-                    let ReadError::Information(source) = cause else {
-                        return Err(cause);
-                    };
-                    finding(
-                        document,
-                        entry.property.span(),
-                        Severity::Required,
-                        Rule::Schema {
-                            code: information_cause(&source).code(),
-                            field: information_cause(&source).field(),
-                        },
-                        findings,
-                    )?;
-                    Some(ReadError::Information(source))
-                } else {
-                    None
-                };
+                let fault = inspect_cached(document, entry, &token, &reader, findings)?;
                 return Ok(Reading {
-                    model: Some(Model {
-                        ordinal,
-                        token,
-                        properties,
-                    }),
+                    model: Some(Model { token, properties }),
                     fault,
                 });
             }
@@ -216,6 +216,7 @@ pub(super) fn read<'m, 'd, W: Work>(
     root: Node,
     counters: &OwnedMap<Node, usize, impl Work>,
     parent: &Reader<'d>,
+    proofs: super::proofs::Proofs<'d>,
     findings: Findings<'_, 'm, 'd, W>,
 ) -> Result<Cache<'m, 'd>, ReadError> {
     let Findings {
@@ -232,7 +233,7 @@ pub(super) fn read<'m, 'd, W: Work>(
         .map_err(|cause| {
             Error::resource(cause, "cades.timestamp", document.message().span().start)
         })?;
-    for (ordinal, entry) in timestamps.iter().enumerate() {
+    for entry in timestamps {
         let at = entry.property.span().start;
         let resource = |cause| Error::resource(cause, "cades.timestamp", at);
         work.charge_work(1).map_err(resource)?;
@@ -249,14 +250,48 @@ pub(super) fn read<'m, 'd, W: Work>(
         } else {
             related.get_or_insert_with(|| findings_work.vector())
         };
-        let reading = read_one(document, ordinal, entry, parent, entry_findings)?;
+        if let Some(source) = entry.value {
+            let reference = proofs
+                .index
+                .get(&Node::of(source.element().span()), &work)
+                .map_err(resource)?;
+            if let Some(reference) = reference {
+                let selected = if let Some((token, properties)) = proofs.token(*reference) {
+                    let reader = source.reader_in(parent)?;
+                    if let Some(properties) = properties {
+                        super::property_findings(document, properties, &reader, entry_findings)?;
+                    }
+                    if let Some(fault) =
+                        inspect_cached(document, entry, token, &reader, entry_findings)?
+                    {
+                        faults.try_push((entry.property, fault)).map_err(resource)?;
+                    }
+                    Some(TokenIndex::Proof(*reference))
+                } else {
+                    faults
+                        .try_push((
+                            entry.property,
+                            ReadError::Processing(Error::Syntax {
+                                code: structured_cms::ErrorCode::UnexpectedContentType,
+                                field: "cades.evidence.timestamp",
+                                at: source.element().span().start,
+                            }),
+                        ))
+                        .map_err(resource)?;
+                    None
+                };
+                ordinals.try_push(selected).map_err(resource)?;
+                continue;
+            }
+        }
+        let reading = read_one(document, entry, parent, entry_findings)?;
         if let Some(fault) = reading.fault {
             faults.try_push((entry.property, fault)).map_err(resource)?;
         }
         let selected = if let Some(model) = reading.model {
             let index = models.len();
             models.try_push(model).map_err(resource)?;
-            Some(index)
+            Some(TokenIndex::Direct(index))
         } else {
             None
         };
@@ -265,11 +300,45 @@ pub(super) fn read<'m, 'd, W: Work>(
     Ok(Cache {
         models: models.into_owned(),
         ordinals: ordinals.into_owned(),
+        proofs,
         faults: faults.into_owned(),
         related: related
             .filter(|rows| !rows.is_empty())
             .map(OwnedVec::into_owned),
     })
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "Inspection retains original source mapping inline so an exhausted operation does not allocate an error box."
+)]
+fn inspect_cached<'m, 'd>(
+    document: &Document<'m, 'd>,
+    entry: &Timestamp<'d>,
+    token: &Token<'d>,
+    reader: &Reader<'d>,
+    findings: &mut OwnedVec<Finding<'m, 'd>, impl Work>,
+) -> Result<Option<ReadError>, ReadError> {
+    if let Err(cause) = inspect(document, entry, token, reader, findings) {
+        if cause.is_terminal() {
+            return Err(cause);
+        }
+        let ReadError::Information(source) = cause else {
+            return Err(cause);
+        };
+        finding(
+            document,
+            entry.property.span(),
+            Severity::Required,
+            Rule::Schema {
+                code: information_cause(&source).code(),
+                field: information_cause(&source).field(),
+            },
+            findings,
+        )?;
+        return Ok(Some(ReadError::Information(source)));
+    }
+    Ok(None)
 }
 
 #[expect(

@@ -2,11 +2,14 @@
 #![doc = include_str!("../README.md")]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 pub mod baseline;
 pub mod basic;
 pub mod counters;
 pub mod credential;
+pub mod evidence;
 pub mod material;
 pub mod participants;
 pub mod prepare;

@@ -83,6 +83,7 @@ pub struct Parameters<'a> {
     mask: Mask<'a>,
     salt: Number<'a>,
     trailer: Number<'a>,
+    defaults: u8,
 }
 
 impl<'a> Parameters<'a> {
@@ -102,6 +103,36 @@ impl<'a> Parameters<'a> {
     #[must_use]
     pub fn mask(self) -> Mask<'a> {
         self.mask
+    }
+
+    /// Original written fields equal to their ASN.1 DEFAULT values.
+    /// The shared decoder decides this once, including the exact SHA-1 NULL
+    /// default. A DER encoder omits these whole EXPLICIT wrappers (X.690
+    /// §11.5); algorithm-support/default resolution remains independent.
+    pub fn written_defaults(self) -> impl Iterator<Item = Element<'a>> {
+        let hash = self.hash.map(Written::element);
+        let mask = match self.mask {
+            Mask::Mgf1 { function, .. } | Mask::Other(function) => Some(function.element()),
+            Mask::DefaultMgf1Sha1 => None,
+        };
+        let salt = match self.salt {
+            Number::Written(value) => Some(value.element()),
+            Number::Default(_) => None,
+        };
+        let trailer = match self.trailer {
+            Number::Written(value) => Some(value.element()),
+            Number::Default(_) => None,
+        };
+        [hash, mask, salt, trailer]
+            .into_iter()
+            .enumerate()
+            .filter_map(move |(number, element)| {
+                if self.defaults & (1 << number) != 0 {
+                    element
+                } else {
+                    None
+                }
+            })
     }
 
     /// Salt octet length (default 20, independently of the selected hash).
@@ -371,6 +402,7 @@ fn decode<'a>(
         mask: Mask::DefaultMgf1Sha1,
         salt: Number::Default(20),
         trailer: Number::Default(1),
+        defaults: 0,
     };
     let mut previous = None;
     while let Some(element) = fields.next_element().field(FIELD)? {
@@ -448,6 +480,9 @@ fn decode<'a>(
         // X.690 §11.5 restricts DER spelling, independently of RFC4055's
         // requirement that verification recognize explicit default values.
         // https://www.itu.int/rec/T-REC-X.690-202102-I/en
+        if defaulted {
+            parameters.defaults |= 1 << number;
+        }
         if defaulted && fields.encoding().is_der() {
             fault(Error::new(
                 ErrorCode::DefaultWritten,

@@ -12,6 +12,7 @@ use structured_asn1::{Element, Oid, Reader, Span, Tag, universal};
 pub struct ContentInfo<'a> {
     kind: Oid<'a>,
     content: Element<'a>,
+    wrapper: Element<'a>,
     span: Span,
 }
 
@@ -94,6 +95,7 @@ impl<'a> ContentInfo<'a> {
             Self {
                 kind,
                 content,
+                wrapper,
                 span: element.span(),
             },
             explicit,
@@ -104,6 +106,12 @@ impl<'a> ContentInfo<'a> {
     #[must_use]
     pub fn kind(&self) -> Oid<'a> {
         self.kind
+    }
+    /// Original EXPLICIT content enclosure, including original BER framing.
+    /// Whole-object evidence inputs adapt its length without reparsing content.
+    #[must_use]
+    pub fn content_wrapper(&self) -> Element<'a> {
+        self.wrapper
     }
 
     /// The original embedded content element, including its encoding.

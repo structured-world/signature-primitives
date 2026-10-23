@@ -221,6 +221,22 @@ structured-cms = "0.8"
 - `timestamp::Request` reads original TimeStampReq. `timestamp::Token` separates
   readable inspection from complete signature, ESS, TSA, imprint, request and
   time checking. The caller supplies UTC information and request windows.
+- `evidence` reads original RFC 4998 records, flat timestamp chains and reduced
+  hash trees. The verifier checks exact object/group membership, the declared
+  digest union, both timestamp and hash-tree renewals and actual chronology.
+  One selected provider streams each object once across needed digest requests.
+  History validates every TSA at the following proof and algorithm suitability
+  through the next chain, with an explicit current reference for the final TSA.
+  Unprotected CryptoInfos and encryption metadata never supply those facts.
+  Hash-tree renewal follows §5.2's numbered step 4: unsorted
+  `H(dataHash || priorSequenceHash)`. Figure 4 conflicts; reported erratum 7411
+  is not an accepted correction and no alternative-success fallback exists.
+  The prior input is the DER encoding of ALL preceding chains, including its
+  outer sequence. A metadata projection preserves borrowed payloads, uses the
+  shared string/BIT STRING and PSS field kernels, and canonicalizes known schema
+  sets/defaults. An open value needing an unavailable canonical codec yields
+  `UnsupportedEncoding`, distinct from malformed input or resource refusal.
+  Unknown timestamp formats remain inspectable but cannot yield evidence.
 - `archive` reads the CAdES `ats-hash-index-v3` of an `archive-time-stamp-v3`
   (ETSI EN 319 122-1 §5.5). `check_index` matches every index entry against the
   root SignedData certificate and revocation choices and the signer's unsigned

@@ -7,15 +7,10 @@ use crate::{
     source::{DocumentId, Node, Original},
 };
 use structured_asn1::{
-    Reader, Tag,
+    Reader,
     memory::{OwnedVec, Work},
-    universal,
 };
-use structured_cms::{
-    SignedData,
-    signed::{CertificateChoice, OtherRevocationInfo},
-    timestamp::Token,
-};
+use structured_cms::{SignedData, signed::CertificateChoice, timestamp::Token};
 use structured_ltv::{
     material::{self, ArtifactRef, ArtifactSource, CarriedOrigin, Occurrence},
     source::Query,
@@ -25,7 +20,8 @@ use structured_pkix::{crl::CertificateList, ocsp::BasicResponse};
 mod checks;
 pub mod credentials;
 mod legacy;
-pub use checks::{CheckError, Checks, Finding, check_participants};
+mod proof;
+pub use checks::{CheckError, Checks, Finding, check_participants, check_participants_preserved};
 
 /// Refusal to construct material scope for an actual checked archive owner.
 #[derive(Debug)]
@@ -52,6 +48,19 @@ pub struct LegacyLocation {
     pub token: Option<usize>,
     /// Observed unsigned placement, never a caller-configurable allowance.
     pub unsigned: bool,
+}
+
+/// Actual TS101733 long-term-validation member, never a root/TSA CHOICE alias.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoeLocation {
+    /// Original owner signer, including an actual counter when applicable.
+    pub signature: Node,
+    /// Original long-term-validation unsigned attribute.
+    pub property: Node,
+    /// Original preparation proof ordinal.
+    pub proof: usize,
+    /// Original member within the certificate or revocation extra set.
+    pub member: usize,
 }
 
 /// Real original material container; an OCSP envelope and the basic body it
@@ -84,6 +93,10 @@ pub enum Placement {
     OcspValues(LegacyLocation),
     /// Actual OID-owned open values in Annex A revocation-values.
     OtherRevocationValues(LegacyLocation),
+    /// Actual `extraCertificates` member of a `PoE` enclosure.
+    PoeCertificate(PoeLocation),
+    /// Actual `extraRevocation` member of a `PoE` enclosure.
+    PoeRevocation(PoeLocation),
 }
 
 /// Uninterpreted material remains available to its owner. A known syntax
@@ -114,14 +127,14 @@ struct Ocsp<'d> {
 /// once; CRL/OCSP models are parsed once, and index creation never replays them.
 pub struct Pool<'prepared, 'model, 'document> {
     prepared: &'prepared Preparation<'model, 'document>,
-    tokens: &'prepared [crate::prepare::tokens::Model<'document>],
-    token_index: &'prepared [Option<usize>],
+    tokens: &'prepared crate::prepare::tokens::Cache<'model, 'document>,
     token_faults: &'prepared [(Node, crate::prepare::ReadError)],
     crls: OwnedVec<Crl<'document>>,
     ocsp: OwnedVec<Ocsp<'document>>,
     open: OwnedVec<Open<'document>>,
     related: OwnedVec<legacy::Related<'document>>,
     legacy_slots: Option<legacy::Slots>,
+    proof_slots: OwnedVec<proof::Slot>,
 }
 
 /// Existing exact-artifact core in this original `CAdES` identity domain.
@@ -146,7 +159,7 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
             .message()
             .require_session(operation, "cades.material")?;
         let work = operation.execution();
-        let tokens = &*prepared.parsed.models;
+        let tokens = &prepared.parsed;
         let mut crls = work.vector();
         let mut ocsp = work.vector();
         let mut open = work.vector();
@@ -158,10 +171,13 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
             &mut ocsp,
             &mut open,
         )?;
-        for model in tokens {
+        for ordinal in 0..prepared.timestamps().len() {
             work.charge_work(1).map_err(|cause| {
-                Error::resource(cause, "cades.material", model.token.message().span().start)
+                Error::resource(cause, "cades.material", prepared.signer().span().start)
             })?;
+            let Some(model) = tokens.token(ordinal) else {
+                continue;
+            };
             collect(
                 model.token.message(),
                 Some(model.ordinal),
@@ -173,16 +189,17 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
         }
         let related = legacy::read_related(prepared, operation)?;
         legacy::append_open(prepared, tokens, &related, &mut open, &work)?;
+        let proof_slots = proof::collect(prepared, operation, &mut crls, &mut ocsp, &mut open)?;
         let mut out = Self {
             prepared,
             tokens,
-            token_index: &prepared.parsed.ordinals,
             token_faults: &prepared.parsed.faults,
             crls: crls.into_owned(),
             ocsp: ocsp.into_owned(),
             open: open.into_owned(),
             related,
             legacy_slots: None,
+            proof_slots,
         };
         out.legacy_slots = legacy::slots(&out, &work)?;
         Ok(out)
@@ -264,11 +281,7 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
         work.charge_work(1).map_err(|cause| {
             Error::resource(cause, "cades.material", self.prepared.signer().span().start)
         })?;
-        let Some(Some(index)) = self.token_index.get(ordinal) else {
-            return Ok(None);
-        };
-        debug_assert_eq!(self.tokens[*index].ordinal, ordinal);
-        Ok(Some(&self.tokens[*index].token))
+        Ok(self.tokens.token(ordinal).map(|model| model.token))
     }
     /// Visit a previously parsed original token with the current operation.
     /// Uses its saved parser/encoding/depth, with no second envelope parse.
@@ -346,10 +359,13 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
             &mut index,
             query,
         )?;
-        for token in self.tokens {
+        for ordinal in 0..self.prepared.timestamps().len() {
             query
                 .admit(signature, 1)
                 .map_err(material::IndexError::Scope)?;
+            let Some(token) = self.tokens.token(ordinal) else {
+                continue;
+            };
             certificates(
                 token.token.message(),
                 Some(token.ordinal),
@@ -362,6 +378,9 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
             query
                 .admit(signature, 1)
                 .map_err(material::IndexError::Scope)?;
+            if matches!(crl.placement, Placement::PoeRevocation(_)) {
+                continue;
+            }
             index.insert(
                 ISSUER,
                 ArtifactRef::Crl(&crl.value),
@@ -373,6 +392,9 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
             query
                 .admit(signature, 1)
                 .map_err(material::IndexError::Scope)?;
+            if matches!(response.placement, Placement::PoeRevocation(_)) {
+                continue;
+            }
             index.insert(
                 ISSUER,
                 ArtifactRef::Ocsp(&response.value),
@@ -380,7 +402,8 @@ impl<'p, 'm, 'd> Pool<'p, 'm, 'd> {
                 query,
             )?;
         }
-        legacy::index(self, &mut index, query)?;
+        let next = legacy::index(self, &mut index, query)?;
+        proof::index(self, &mut index, query, next)?;
         Ok(index)
     }
 
@@ -499,7 +522,9 @@ fn revocation_occurrence<'m, 'd>(
         | Placement::CertificateValues(_)
         | Placement::CrlValues(_)
         | Placement::OcspValues(_)
-        | Placement::OtherRevocationValues(_) => {
+        | Placement::OtherRevocationValues(_)
+        | Placement::PoeCertificate(_)
+        | Placement::PoeRevocation(_) => {
             return Err(material::IndexError::Foreign { signature });
         }
     };
@@ -542,7 +567,6 @@ fn collect<'d, W: Work>(
         operation
             .charge(1)
             .map_err(|cause| Error::encoding(cause, "cades.material"))?;
-        let node = Node::of(element.span());
         let placement = match token {
             Some(token) => Placement::TokenRevocation { token, choice },
             None => Placement::RootRevocation(choice),
@@ -552,45 +576,7 @@ fn collect<'d, W: Work>(
             .ok_or(Error::Foreign {
                 at: element.span().start,
             })?;
-        let result = if element.tag() == Tag::constructed(universal::SEQUENCE) {
-            CertificateList::read_element(&reader, element)
-                .map_err(Error::Pkix)
-                .and_then(|value| {
-                    crls.try_push(Crl {
-                        value,
-                        node,
-                        placement,
-                    })
-                    .map_err(|cause| Error::resource(cause, "cades.material", element.span().start))
-                })
-        } else {
-            match OtherRevocationInfo::read(&reader, element)
-                .map_err(Error::Cms)
-                .and_then(|other| other.ocsp().map_err(Error::Cms))
-            {
-                Ok(Some(response)) => match response.basic_in(operation).map_err(Error::Pkix) {
-                    Ok(Some(value)) => ocsp
-                        .try_push(Ocsp {
-                            value,
-                            node,
-                            placement,
-                        })
-                        .map_err(|cause| {
-                            Error::resource(cause, "cades.material", element.span().start)
-                        }),
-                    Ok(None) => push_open(open, *element, placement, None),
-                    Err(cause) => Err(cause),
-                },
-                Ok(None) => push_open(open, *element, placement, None),
-                Err(cause) => Err(cause),
-            }
-        };
-        if let Err(cause) = result {
-            if cause.is_terminal() {
-                return Err(cause);
-            }
-            push_open(open, *element, placement, Some(cause))?;
-        }
+        proof::revocation(&reader, element, placement, operation, crls, ocsp, open)?;
     }
     Ok(())
 }

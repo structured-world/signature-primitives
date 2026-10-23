@@ -236,9 +236,14 @@ struct Information {
     unknown: OwnedVec<OwnedOid>,
     evidence: Option<Evidence>,
 }
+#[derive(Clone, Copy)]
+enum CheckPurpose {
+    Ordinary,
+    Historical,
+}
 
 impl Information {
-    fn holds(&self) -> bool {
+    fn holds(&self, purpose: CheckPurpose) -> bool {
         self.accuracy_error.is_none()
             && matches!(self.authority.usage, TsaUsage::TimeStampingOnly)
             && matches!(
@@ -253,10 +258,16 @@ impl Information {
                 .requested_fields
                 .is_none_or(|fields| fields.nonce != Some(false) && fields.policy != Some(false))
             && self.unknown.is_empty()
-            && matches!(
-                self.timeliness,
-                Timeliness::NotRequested | Timeliness::LocalWindow | Timeliness::RequestNonce
-            )
+            && match purpose {
+                CheckPurpose::Ordinary => matches!(
+                    self.timeliness,
+                    Timeliness::NotRequested | Timeliness::LocalWindow | Timeliness::RequestNonce
+                ),
+                // RFC4998 §5.3 qualifies archival TSA/path/algorithm validity
+                // through its explicit historical validator and next token.
+                // This pass asserts no live request/current-clock freshness.
+                CheckPurpose::Historical => self.timeliness == Timeliness::Unverified,
+            }
     }
 }
 
@@ -266,6 +277,7 @@ struct Inspection<'a, 'r, P, S, R> {
     covered: &'r mut S,
     recognizes: &'r mut R,
     common_holds: bool,
+    purpose: CheckPurpose,
 }
 
 impl<P, S, R> Inspection<'_, '_, P, S, R> {
@@ -349,7 +361,7 @@ impl<P, S, R> Inspection<'_, '_, P, S, R> {
             unknown,
             evidence: None,
         };
-        if self.common_holds && !info.has_faults() && information.holds() {
+        if self.common_holds && !info.has_faults() && information.holds(self.purpose) {
             information.evidence = Some(Evidence {
                 facts: info
                     .retain_facts(inside)
@@ -510,7 +522,51 @@ impl<'doc> Token<'doc> {
         self.check_in(
             provider,
             (parent, None),
-            context,
+            (context, CheckPurpose::Ordinary),
+            covered,
+            recognizes,
+            profile,
+        )
+    }
+
+    /// Archival mathematical/profile pass for ERS and historical `CAdES` `PoE`.
+    /// Its evidence establishes the bound mathematical timestamp, not current
+    /// trust/status or a complete archive. The format composition MUST close
+    /// historical authority, algorithm suitability and renewal chronology
+    /// independently before issuing its own complete preservation receipt.
+    /// Current-clock/live-request assertions are forbidden rather than ignored.
+    #[expect(
+        clippy::result_large_err,
+        reason = "historical checking preserves the same original mapped input and profile causes as the complete token check, without allocating on refusal"
+    )]
+    pub fn check_historical_input_with_profile<'a, P, I, PE, RE, FE>(
+        &'a self,
+        provider: &'a P,
+        parent: &Reader<'a>,
+        context: &CheckContext<'a, '_>,
+        covered: &mut I,
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+        profile: impl for<'view, 'scope> FnOnce(
+            ProfileInput<'view, 'doc, 'a, 'scope>,
+        ) -> Result<(), ProfileFailure<FE>>,
+    ) -> Result<CheckedTimestamp<'a>, ProfileCheckError<I::Error, PE, RE, FE>>
+    where
+        'doc: 'a,
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+        I: ComputedInput<P, PE>,
+    {
+        if context.requested.is_some() || context.reference.is_some() || context.window.is_some() {
+            return Err(CheckError::Processing(Error::schema(
+                ErrorCode::InvalidLocation,
+                "tstInfo.historical",
+                self.message().span().start,
+            ))
+            .into());
+        }
+        self.check_in(
+            provider,
+            (parent, None),
+            (context, CheckPurpose::Historical),
             covered,
             recognizes,
             profile,
@@ -607,7 +663,7 @@ impl<'doc> Token<'doc> {
         self.check_in(
             provider,
             (parent, Some(source)),
-            context,
+            (context, CheckPurpose::Ordinary),
             covered,
             recognizes,
             profile,
@@ -623,7 +679,7 @@ impl<'doc> Token<'doc> {
         &'a self,
         provider: &'a P,
         origin: (&Reader<'a>, Option<&SourceMap>),
-        context: &CheckContext<'a, '_>,
+        context: (&CheckContext<'a, '_>, CheckPurpose),
         covered: &mut S,
         mut recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
         profile: impl for<'view, 'scope> FnOnce(
@@ -636,6 +692,7 @@ impl<'doc> Token<'doc> {
         S: ComputedInput<P, PE>,
     {
         let (parent, source) = origin;
+        let (context, purpose) = context;
         preflight(self, parent, context).map_err(CheckError::from)?;
         let certificate = context.certificate;
         let identifier =
@@ -698,6 +755,7 @@ impl<'doc> Token<'doc> {
                 covered,
                 recognizes: &mut recognizes,
                 common_holds,
+                purpose,
             };
             let checked = inspection.inspect(info, inside, information)?;
             Ok((signature, bindings, checked))

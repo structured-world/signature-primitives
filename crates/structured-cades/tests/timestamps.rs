@@ -57,6 +57,29 @@ impl material::credentials::Provider<()> for EmptyCredentials {
     }
 }
 
+struct RecordAuthority<'p, 'd> {
+    path: &'p pki::CheckedPath<'d>,
+    parent: &'p structured_asn1::Reader<'d>,
+}
+impl<'d> structured_cades::evidence::Authorities<'d> for RecordAuthority<'_, 'd> {
+    type Error = Infallible;
+    fn select<'p, W: Work>(
+        &'p self,
+        _: usize,
+        _: &structured_cms::timestamp::Token<'d>,
+        work: &W,
+    ) -> Result<structured_cades::evidence::Authority<'p, 'd>, Infallible>
+    where
+        'd: 'p,
+    {
+        let _ = work;
+        Ok(structured_cades::evidence::Authority {
+            path: self.path,
+            certificate_parent: self.parent,
+        })
+    }
+}
+
 fn token(
     input: &[u8],
     cert: &[u8],
@@ -266,7 +289,7 @@ fn ber_wrapper(original: &[u8], indefinite: bool) -> Vec<u8> {
 fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_accuracy() {
     // This is real ECDSA/SHA-256 on both CMS signatures and certificates.
     // A valid TSA signature alone cannot establish input or full time bounds.
-    for mode in 0..16 {
+    for mode in 0..18 {
         let root_key = SigningKey::from_bytes((&[1; 32]).into()).unwrap();
         let signer_key = SigningKey::from_bytes((&[2; 32]).into()).unwrap();
         let tsa_key = SigningKey::from_bytes((&[3; 32]).into()).unwrap();
@@ -345,12 +368,12 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         }
         // B-LT requires the TSA certificate in the root certificate set.
         // Archive augmentation may reuse its actual copy in the timestamp.
-        let certs = if mode >= 14 {
+        let certs = if matches!(mode, 14 | 15) {
             vec![root_bytes.clone(), leaf_bytes.clone()]
         } else {
             vec![root_bytes.clone(), leaf_bytes.clone(), tsa_bytes.clone()]
         };
-        if matches!(mode, 4 | 6..=8 | 15) {
+        if matches!(mode, 4 | 6..=8 | 15 | 17) {
             let before_signer = signer(
                 Some(oid::DATA.as_bytes()),
                 b"sample",
@@ -368,6 +391,37 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             );
             let archive = archive_token(&before, &tsa_bytes, &root_bytes, &tsa_key, mode == 7);
             unsigned.push(attribute(oid::ARCHIVE_TIMESTAMP_V3.as_bytes(), &archive));
+        }
+        if matches!(mode, 16 | 17) {
+            let before_signer = signer(
+                Some(oid::DATA.as_bytes()),
+                b"sample",
+                &leaf_bytes,
+                &signer_key,
+                &signed,
+                &unsigned,
+            );
+            let before = message(
+                oid::DATA.as_bytes(),
+                Some(b"sample"),
+                &certs,
+                &crls,
+                &[before_signer],
+            );
+            let stamped = token(&before, &tsa_bytes, &root_bytes, &tsa_key, true, None);
+            let record = tlv(
+                0x30,
+                &[
+                    vec![2, 1, 1],
+                    tlv(0x30, &tlv(0x30, &tlv(6, oid::SHA256.as_bytes()))),
+                    tlv(0x30, &tlv(0x30, &tlv(0x30, &stamped))),
+                ]
+                .concat(),
+            );
+            unsigned.push(attribute(
+                &[42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 49],
+                &record,
+            ));
         }
         let signature = signer(
             Some(oid::DATA.as_bytes()),
@@ -398,7 +452,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             .iter()
             .find(|value| value.as_bytes() == leaf_bytes)
             .unwrap();
-        let external_tsa = if mode >= 14 {
+        let external_tsa = if matches!(mode, 14 | 15) {
             Some(structured_pkix::Certificate::read(&parser, &tsa_bytes, 0).unwrap())
         } else {
             None
@@ -461,8 +515,8 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         .unwrap();
         let document = Document::new(&message, &parent).unwrap();
         let level = match mode {
-            3 | 14 => Level::LongTerm,
-            4 | 6..=8 | 15 => Level::Archival,
+            3 | 14 | 16 => Level::LongTerm,
+            4 | 6..=8 | 15 | 17 => Level::Archival,
             _ => Level::Timestamped,
         };
         let started = std::time::Instant::now();
@@ -652,6 +706,44 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             started.elapsed().as_micros(),
             work.memory().used()
         );
+        let record_authority = RecordAuthority {
+            path: &tsa_path,
+            parent: &parent,
+        };
+        let record_checked = if matches!(mode, 16 | 17) {
+            let mut source = parser.read(&bytes, 400).unwrap();
+            let envelope = source.next_element().unwrap().unwrap();
+            let selected = prepared.evidence(0, &parent).unwrap().unwrap();
+            Some(
+                selected
+                    .check_internal(
+                        envelope,
+                        &oracle,
+                        &parent,
+                        &record_authority,
+                        &utc,
+                        interval.to_instant(),
+                        |_, _, _| Ok::<_, Infallible>(true),
+                        |_, _| {
+                            Ok::<_, Infallible>(structured_cms::evidence::verify::Decision::Valid)
+                        },
+                    )
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        let preservation = record_checked.as_ref().map(|record| {
+            structured_cades::evidence::close_preservation(
+                &prepared,
+                &[record],
+                &parent,
+                &utc,
+                interval.to_instant(),
+                |_, _| Ok::<_, Infallible>(structured_cms::evidence::verify::Decision::Valid),
+            )
+            .unwrap()
+        });
         let time = structured_cades::timestamp::CheckTime {
             utc: &utc,
             reference: Some(interval.to_instant()),
@@ -684,7 +776,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         } else {
             None
         };
-        let archive = if matches!(mode, 4 | 6..=8 | 15) {
+        let archive = if matches!(mode, 4 | 6..=8 | 15 | 17) {
             let ordinal = prepared
                 .timestamps()
                 .iter()
@@ -783,6 +875,16 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 };
                 path
             });
+            let record_path = record_checked.as_ref().map(|record| {
+                let check = record.checks().next().unwrap();
+                let TimestampBinding::Bound(path) = tsa_path
+                    .bind_timestamp(check.actor().unwrap(), &utc, &work)
+                    .unwrap()
+                else {
+                    panic!("original ERS TSA path");
+                };
+                path
+            });
             let paths: Vec<_> = prepared
                 .timestamps()
                 .iter()
@@ -799,7 +901,15 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 .map(|entry| match entry.purpose() {
                     structured_ltv::timestamp::Purpose::Signature => &tsa_receipt,
                     structured_ltv::timestamp::Purpose::Content => content_path.as_ref().unwrap(),
-                    structured_ltv::timestamp::Purpose::Archive => archive_path.as_ref().unwrap(),
+                    structured_ltv::timestamp::Purpose::Archive => {
+                        if entry.preservation_kind()
+                            == Some(structured_cades::preservation::Kind::EvidenceRecordInternal)
+                        {
+                            record_path.as_ref().unwrap()
+                        } else {
+                            archive_path.as_ref().unwrap()
+                        }
+                    }
                     structured_ltv::timestamp::Purpose::ValidationData => {
                         reference_path.as_ref().unwrap()
                     }
@@ -882,13 +992,29 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 let assessed = baseline::assess(baseline::Evidence::timestamped(&timed), &parent);
                 assert!(assessed.unwrap().all_requirements_met());
             }
-            let required = structured_cades::participants::participants(
+            let ordinary = structured_cades::participants::participants(
                 basic.binding(),
                 basic.counter_paths(),
                 &credentials,
                 &paths,
                 &query,
             );
+            let required = if let Some(preservation) = &preservation {
+                assert!(
+                    ordinary.is_err(),
+                    "an ordinary successful TSA cannot erase the legacy input obligation"
+                );
+                structured_cades::participants::participants_preserved(
+                    basic.binding(),
+                    basic.counter_paths(),
+                    &credentials,
+                    &paths,
+                    preservation,
+                    &query,
+                )
+            } else {
+                ordinary
+            };
             if (11..=12).contains(&mode) {
                 let required = required.unwrap();
                 assert_eq!(
@@ -998,8 +1124,19 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                     .close_statuses(&status_roots, &supplied, &query)
                     .unwrap();
                 let index = pool.index(&query).unwrap();
-                let x509 = material::check_participants(&prepared, &pool, &inputs, &index, &query)
-                    .unwrap();
+                let x509 = if let Some(preservation) = &preservation {
+                    material::check_participants_preserved(
+                        &prepared,
+                        &pool,
+                        &inputs,
+                        &index,
+                        preservation,
+                        &query,
+                    )
+                    .unwrap()
+                } else {
+                    material::check_participants(&prepared, &pool, &inputs, &index, &query).unwrap()
+                };
                 assert_eq!(
                     x509.all_x509_requirements_met(),
                     mode != 14,
@@ -1067,14 +1204,26 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                     else {
                         panic!("actual covered preceding token");
                     };
-                    let earlier_actors = structured_cades::participants::participants(
-                        basic.binding(),
-                        basic.counter_paths(),
-                        &credentials,
-                        &earlier_paths,
-                        &query,
-                    )
-                    .unwrap();
+                    let earlier_actors = if let Some(preservation) = &preservation {
+                        structured_cades::participants::participants_preserved(
+                            basic.binding(),
+                            basic.counter_paths(),
+                            &credentials,
+                            &earlier_paths,
+                            preservation,
+                            &query,
+                        )
+                        .unwrap()
+                    } else {
+                        structured_cades::participants::participants(
+                            basic.binding(),
+                            basic.counter_paths(),
+                            &credentials,
+                            &earlier_paths,
+                            &query,
+                        )
+                        .unwrap()
+                    };
                     assert_eq!(
                         earlier_actors.entries().len(),
                         if mode == 8 { 3 } else { 2 },
@@ -1106,20 +1255,143 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                     .unwrap();
                     let archive_material =
                         baseline::archive_material(&x509, &archive_credentials, &query).unwrap();
-                    let reports = [&archive_material];
-                    let archives = baseline::archives(&prepared, &reports, &query).unwrap();
-                    let assessment = baseline::assess(
-                        baseline::Evidence::Archival {
-                            long_term: &long,
-                            archives: &archives,
+                    // A later ERS has its OWN archive/material obligation.
+                    // The old modern receipt cannot stand in for that input,
+                    // nor can it erase the later TSA from the full census.
+                    let record_receipt = record_checked
+                        .as_ref()
+                        .and_then(structured_cades::evidence::RecordChecked::verified);
+                    let record_archive = record_receipt.as_ref().map(|receipt| {
+                        receipt
+                            .archive(receipt.timestamps().start, &index, &parent)
+                            .unwrap()
+                    });
+                    let record_earlier = record_archive
+                        .as_ref()
+                        .map(|archive| archive.requirements(&parent).unwrap());
+                    let record_path_refs: Vec<_> = record_earlier
+                        .as_ref()
+                        .map(|earlier| {
+                            earlier
+                                .entries()
+                                .iter()
+                                .map(|entry| match entry.purpose {
+                                    structured_ltv::timestamp::Purpose::Signature => &tsa_receipt,
+                                    structured_ltv::timestamp::Purpose::Archive => {
+                                        archive_path.as_ref().unwrap()
+                                    }
+                                    other => panic!("unexpected preceding ERS role {other:?}"),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let record_bound = record_earlier.as_ref().map(|earlier| {
+                        assert_eq!(
+                            earlier.entries().len(),
+                            2,
+                            "the later ERS covers signature TSA AND actual modern archive TSA"
+                        );
+                        let TimestampPathBinding::Bound(paths) =
+                            earlier.bind_paths(&record_path_refs, &query).unwrap()
+                        else {
+                            panic!("complete ERS preceding TSA census");
+                        };
+                        paths
+                    });
+                    let record_actors = record_bound.as_ref().map(|paths| {
+                        structured_cades::participants::participants_preserved(
+                            basic.binding(),
+                            basic.counter_paths(),
+                            &credentials,
+                            paths,
+                            preservation.as_ref().unwrap(),
+                            &query,
+                        )
+                        .unwrap()
+                    });
+                    let record_roots = record_actors.as_ref().map(|actors| {
+                        let mut roots = vec![&tsa_statuses; actors.entries().len()];
+                        roots[0] = &signer_statuses;
+                        roots
+                    });
+                    let record_inputs =
+                        record_actors
+                            .as_ref()
+                            .zip(record_roots.as_ref())
+                            .map(|(actors, roots)| {
+                                actors.close_statuses(roots, &supplied, &query).unwrap()
+                            });
+                    let record_x509 = record_inputs.as_ref().zip(record_archive.as_ref()).map(
+                        |(inputs, archive)| {
+                            structured_ltv::material::archived_participants(
+                                inputs,
+                                &index,
+                                archive.coverage(),
+                                archive.timestamp().actor().unwrap().verified(),
+                                &query,
+                            )
+                            .unwrap()
                         },
-                        &parent,
-                    )
-                    .unwrap();
+                    );
+                    let record_credentials = record_archive
+                        .as_ref()
+                        .zip(record_earlier.as_ref())
+                        .map(|(archive, earlier)| {
+                            material::credentials::check(
+                                &credentials,
+                                basic.counter_paths(),
+                                earlier,
+                                &index,
+                                &material::credentials::Scope::before_archive(archive),
+                                &handler,
+                                &parent,
+                            )
+                            .unwrap()
+                        });
+                    let record_material = record_x509
+                        .as_ref()
+                        .zip(record_credentials.as_ref())
+                        .map(|(x509, credentials)| {
+                            baseline::archive_material(x509, credentials, &query).unwrap()
+                        });
+                    let mut reports = vec![&archive_material];
+                    if let Some(record) = &record_material {
+                        reports.push(record);
+                    }
+                    let archives = baseline::archives(&prepared, &reports, &query).unwrap();
+                    let evidence = baseline::Evidence::Archival {
+                        long_term: &long,
+                        archives: &archives,
+                    };
+                    let assessment = if let Some(preservation) = &preservation {
+                        baseline::assess_preserved(evidence, preservation, &parent).unwrap()
+                    } else {
+                        baseline::assess(evidence, &parent).unwrap()
+                    };
                     assert!(assessment.all_requirements_met());
                 } else {
-                    let assessment =
-                        baseline::assess(baseline::Evidence::LongTerm(&long), &parent).unwrap();
+                    let ordinary = baseline::assess(baseline::Evidence::LongTerm(&long), &parent);
+                    let assessment = if let Some(preservation) = &preservation {
+                        assert!(
+                            matches!(
+                                ordinary,
+                                Err(baseline::LevelError::UnavailablePreservation {
+                                    kind:
+                                        structured_cades::preservation::Kind::EvidenceRecordInternal,
+                                    ..
+                                })
+                            ),
+                            "math alone cannot close a source preservation obligation"
+                        );
+                        baseline::assess_preserved(
+                            baseline::Evidence::LongTerm(&long),
+                            preservation,
+                            &parent,
+                        )
+                        .unwrap()
+                    } else {
+                        ordinary.unwrap()
+                    };
                     assert!(assessment.all_requirements_met());
                 }
             }

@@ -43,7 +43,9 @@ pub(super) fn validate<'a>(
     let time = matches!(number, universal::UTC_TIME | universal::GENERALIZED_TIME);
     if (strings == Strings::Checked && !matches!(number, 3 | 4)) || time {
         let execution = parent.execution();
-        let length = walk_length(parent, element, field, false, None, &execution)?;
+        let length = walk_length(parent, element, field, false, None, &execution, |_, _| {
+            Ok(())
+        })?;
         execution
             .charge_work(length as u64)
             .map_err(|reason| Error::resource(reason, field, element.span().start))?;
@@ -123,7 +125,10 @@ pub(crate) fn walk_in<'a, W: Work>(
     output: Option<&mut OwnedVec<u8, W>>,
     execution: &W,
 ) -> Result<()> {
-    walk_length(parent, element, field, bits, output, execution).map(|_| ())
+    walk_length(parent, element, field, bits, output, execution, |_, _| {
+        Ok(())
+    })
+    .map(|_| ())
 }
 
 fn walk_length<'a, W: Work>(
@@ -133,6 +138,7 @@ fn walk_length<'a, W: Work>(
     bits: bool,
     mut output: Option<&mut OwnedVec<u8, W>>,
     execution: &W,
+    mut on_bit: impl FnMut(Element<'a>, structured_asn1::BitString<'a>) -> Result<()>,
 ) -> Result<usize> {
     let mut length = 0;
     let mut frames = execution.vector();
@@ -173,8 +179,9 @@ fn walk_length<'a, W: Work>(
                 .try_push(Frame { reader, unused: 0 })
                 .map_err(|reason| Error::resource(reason, field, child.span().start))?;
         } else if bits {
-            frame.reader.bit_string(&child).field(field)?;
-            frame.unused = child.contents()[0];
+            let bits = frame.reader.bit_string(&child).field(field)?;
+            frame.unused = bits.unused_bits();
+            on_bit(child, bits)?;
         } else {
             // Primitive fragments are disjoint subranges of this immutable
             // element. Their total cannot exceed its original contents size.
@@ -193,4 +200,32 @@ fn walk_length<'a, W: Work>(
         }
     }
     Ok(length)
+}
+
+pub(crate) fn bit_fragments<'a>(
+    parent: &Reader<'a, '_>,
+    element: &Element<'a>,
+    field: &'static str,
+    mut visitor: impl FnMut(Element<'a>, structured_asn1::BitString<'a>) -> Result<()>,
+) -> Result<()> {
+    if element.tag() == Tag::primitive(universal::BIT_STRING) {
+        return visitor(*element, parent.bit_string(element).field(field)?);
+    }
+    if element.tag() != Tag::constructed(universal::BIT_STRING) || parent.encoding().is_der() {
+        return Err(Error::new(
+            ErrorCode::Encoding(structured_asn1::ErrorCode::UnexpectedTag),
+            field,
+            element.span().start,
+        ));
+    }
+    walk_length(
+        parent,
+        element,
+        field,
+        true,
+        None,
+        &parent.execution(),
+        visitor,
+    )
+    .map(|_| ())
 }

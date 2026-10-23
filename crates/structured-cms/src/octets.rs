@@ -101,8 +101,24 @@ impl<'a> Octets<'a> {
         Self::read_tagged(parent, element, 0, true, field)
     }
 
+    // Projection reuses BOTH the shared base-string grammar/validation and
+    // this range walker. Restricted strings have OCTET STRING fragments,
+    // rather than recursively repeating their outer string tag (X.6908.23.3).
+    pub(crate) fn projection_string(
+        parent: &structured_asn1::ScopedReader<'a, '_>,
+        element: &Element<'a>,
+        number: u32,
+        context: bool,
+        field: &'static str,
+    ) -> Result<Self> {
+        if !context {
+            structured_pkix::der::conforms(parent, element, field).map_err(Error::pkix)?;
+        }
+        Self::read_tagged(parent, element, number, context, field)
+    }
+
     fn read_tagged(
-        parent: &Reader<'a>,
+        parent: &structured_asn1::ScopedReader<'a, '_>,
         element: &Element<'a>,
         outer_number: u32,
         context: bool,

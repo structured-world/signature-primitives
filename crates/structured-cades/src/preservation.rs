@@ -26,6 +26,10 @@ pub enum Kind {
     ArchiveV2,
     /// TS101733 §6.5.1 `PoE` wrapper, potentially carrying an evidence record.
     LongTermValidation,
+    /// RFC4998 Appendix A internal CMS evidence record (id-aa .49).
+    EvidenceRecordInternal,
+    /// RFC4998 Appendix A record covering CMS and separate content (.50).
+    EvidenceRecordExternal,
     /// AnnexA.1.5.1 timestamp of certificate/revocation references.
     References,
     /// AnnexA.1.5.2 timestamp of the signature and its validation references.
@@ -43,6 +47,8 @@ impl Kind {
                 48 => Some(Self::ArchiveV2),
                 26 => Some(Self::References),
                 25 => Some(Self::SignatureReferences),
+                49 => Some(Self::EvidenceRecordInternal),
+                50 => Some(Self::EvidenceRecordExternal),
                 _ => None,
             }
         } else if bytes == [4, 0, 0x8d, 0x45, 2, 2] {
@@ -56,6 +62,12 @@ impl Kind {
     }
     pub(crate) fn is_archive(self) -> bool {
         matches!(self, Self::ArchiveV1 | Self::ArchiveV2)
+    }
+    pub(crate) fn is_evidence(self) -> bool {
+        matches!(
+            self,
+            Self::EvidenceRecordInternal | Self::EvidenceRecordExternal | Self::LongTermValidation
+        )
     }
 }
 

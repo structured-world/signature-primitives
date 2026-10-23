@@ -71,9 +71,25 @@ impl<'a> SignerIdentifier<'a> {
     }
 }
 
+/// Original fields required by TS101733 §6.5.1's schema-selected DER recipe.
+/// These are the elements already read by the signer kernel, never a new
+/// positional parser or caller-created algorithm identifier.
+#[derive(Debug, Clone, Copy)]
+pub struct Fields<'d> {
+    pub(crate) parser: &'d structured_asn1::Parser,
+    pub(crate) depth: u32,
+    /// Original version, signer identifier and digest algorithm, in that order.
+    pub identity: [Element<'d>; 3],
+    /// Original signature algorithm and signature OCTET STRING.
+    pub signature: [Element<'d>; 2],
+}
+
 /// One parsed CMS signer, retaining original byte identity and diagnostic storage.
 #[derive(Debug)]
 pub struct SignerInfo<'a> {
+    parser: &'a structured_asn1::Parser,
+    depth: u32,
+    fields: Fields<'a>,
     version: u64,
     sid: SignerIdentifier<'a>,
     digest_algorithm: AlgorithmReading<'a>,
@@ -88,6 +104,11 @@ pub struct SignerInfo<'a> {
 }
 
 impl<'a> SignerInfo<'a> {
+    /// Already parsed original component elements, with no traversal/copy.
+    #[must_use]
+    pub fn fields(&self) -> Fields<'a> {
+        self.fields
+    }
     /// Requires the original producing parser, before a protocol layer reads
     /// retained fields. Equal accounts or equal encodings are not session identity.
     pub fn require_session(&self, parent: &Reader<'_>, field: &'static str) -> Result<()> {
@@ -162,6 +183,7 @@ impl<'a> SignerInfo<'a> {
         } else {
             None
         };
+        let signature_algorithm_element = next;
         let signature_algorithm =
             read_algorithm(&inside, &next, "signerInfo.signatureAlgorithm", &mut faults)?;
         let signature_element = required(&mut inside, "signerInfo.signature")?;
@@ -187,6 +209,14 @@ impl<'a> SignerInfo<'a> {
             ));
         }
         Ok(Self {
+            parser: parent.parser(),
+            depth: inside.depth(),
+            fields: Fields {
+                parser: parent.parser(),
+                depth: inside.depth(),
+                identity: [version_element, named, digest],
+                signature: [signature_algorithm_element, signature_element],
+            },
             version,
             sid,
             digest_algorithm,
@@ -272,6 +302,20 @@ impl<'a> SignerInfo<'a> {
     #[must_use]
     pub fn element(&self) -> &Element<'a> {
         &self.element
+    }
+    /// Retains the actual original field cursor context without retaining this
+    /// movable parsed signer. Counter/PoE inputs can later decode fields under
+    /// current Work without a new parser, guessed nesting depth or payload copy.
+    #[must_use]
+    pub fn fields_source(&self) -> FieldsSource<'a> {
+        FieldsSource {
+            parser: self.parser,
+            data: self.element.contents(),
+            base: self.element.contents_span().start,
+            encoding: self.encoding,
+            depth: self.depth,
+            field: "signerInfo",
+        }
     }
     /// Entire original encoding, including non-DER envelope spelling.
     #[must_use]
@@ -390,6 +434,69 @@ impl<'a> SignerInfo<'a> {
         }
         self.signature
             .same_value(&other.signature, parent, field, at)
+    }
+}
+
+/// Original schema-selected CONTENTS with their producing field depth.
+/// This small borrowed context survives a counter-walk frame's parsed model
+/// and is also shared by CMS certificate/revocation field readers.
+#[derive(Debug, Clone, Copy)]
+pub struct FieldsSource<'d> {
+    pub(crate) parser: &'d structured_asn1::Parser,
+    pub(crate) data: &'d [u8],
+    pub(crate) base: u64,
+    pub(crate) encoding: Encoding,
+    pub(crate) depth: u32,
+    pub(crate) field: &'static str,
+}
+impl<'d> FieldsSource<'d> {
+    // Called ONLY after the shared field kernel successfully entered this
+    // actual container. Its checked enter establishes the exact +1 depth and
+    // rules out overflow; this is not a fresh/default parser approximation.
+    pub(crate) fn entered(parent: &Reader<'d>, element: Element<'d>, field: &'static str) -> Self {
+        debug_assert!(element.tag().is_constructed());
+        Self {
+            parser: parent.parser(),
+            data: element.contents(),
+            base: element.contents_span().start,
+            encoding: parent.encoding(),
+            depth: parent.depth() + 1,
+            field,
+        }
+    }
+    /// Opens original fields, not a fabricated outer SEQUENCE. All current
+    /// operation and original session/depth ceilings apply before decoding.
+    pub fn reader_in<'operation, W: Work>(
+        &self,
+        work: &'operation W,
+    ) -> Result<structured_asn1::ScopedReader<'d, 'operation>>
+    where
+        'd: 'operation,
+    {
+        work.read_scoped_source(self.parser, self.data, self.base, self.encoding, self.depth)
+            .map_err(|cause| Error::encoding(cause, self.field))
+    }
+    /// Opens a producing-reader query for models retaining original source
+    /// readers. Unlike a callback-local Work borrow, the query's source budget
+    /// already has the document lifetime. Current operation funding and the
+    /// actual original depth/session remain enforced by the SAME bridge.
+    pub fn query_in<'query>(&self, operation: &Reader<'query>) -> Result<Reader<'query>>
+    where
+        'd: 'query,
+    {
+        self.parser
+            .read_query_in(operation, self.data, self.base, self.encoding, self.depth)
+            .map_err(|cause| Error::encoding(cause, self.field))
+    }
+    /// Original field octets, without a synthesized SEQUENCE header.
+    #[must_use]
+    pub fn as_bytes(self) -> &'d [u8] {
+        self.data
+    }
+    /// Actual original field depth, not an outer-reader approximation.
+    #[must_use]
+    pub fn depth(self) -> u32 {
+        self.depth
     }
 }
 

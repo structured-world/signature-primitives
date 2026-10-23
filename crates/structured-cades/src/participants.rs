@@ -50,7 +50,55 @@ where
     'path: 'view,
     'd: 'path,
 {
+    participants_in(signer, counters, credentials, timestamps, None, query)
+}
+
+/// Same complete actor census after a source-bound ERS/PoE closure. Every
+/// actual contained TSA must STILL occur in the supplied `TimestampPaths`;
+/// historical proofs cannot substitute a successful subset or erase actors.
+pub fn participants_preserved<'view, 'path, 'm, 'd, E, Q>(
+    signer: &'view SignerBinding<'_, 'm, 'd, 'path>,
+    counters: &'view Paths<'_, 'm, 'd, 'path>,
+    credentials: &'view Complete<'_, 'm, 'd, 'path, E>,
+    timestamps: &'view TimestampPaths<'view, '_, 'd, Node, DocumentId<'m, 'd>, (), Cades>,
+    preservation: &crate::evidence::Closure<'_, '_, 'm, 'd, '_>,
+    query: &Q,
+) -> Result<ParticipantRequirements<'view, 'd, Node, DocumentId<'m, 'd>, (), Cades>, Error>
+where
+    Q: Query<Id = Node, Document = DocumentId<'m, 'd>, Generation = ()>,
+    'path: 'view,
+    'd: 'path,
+{
+    participants_in(
+        signer,
+        counters,
+        credentials,
+        timestamps,
+        Some(preservation),
+        query,
+    )
+}
+fn participants_in<'view, 'path, 'm, 'd, E, Q>(
+    signer: &'view SignerBinding<'_, 'm, 'd, 'path>,
+    counters: &'view Paths<'_, 'm, 'd, 'path>,
+    credentials: &'view Complete<'_, 'm, 'd, 'path, E>,
+    timestamps: &'view TimestampPaths<'view, '_, 'd, Node, DocumentId<'m, 'd>, (), Cades>,
+    preservation: Option<&crate::evidence::Closure<'_, '_, 'm, 'd, '_>>,
+    query: &Q,
+) -> Result<ParticipantRequirements<'view, 'd, Node, DocumentId<'m, 'd>, (), Cades>, Error>
+where
+    Q: Query<Id = Node, Document = DocumentId<'m, 'd>, Generation = ()>,
+    'path: 'view,
+    'd: 'path,
+{
     let prepared = signer.prepared();
+    if let Some(proofs) = preservation
+        && !core::ptr::eq(proofs.prepared(), prepared)
+    {
+        return Err(Error::Participants(ParticipantError::Foreign {
+            signature: Node::of(prepared.signer().span()),
+        }));
+    }
     let selected = prepared.document().signer(prepared.signer()).map_err(|_| {
         Error::Participants(ParticipantError::Foreign {
             signature: Node::of(prepared.signer().span()),
@@ -70,8 +118,22 @@ where
             .map_err(|cause| Error::Participants(ParticipantError::Scope(cause)))?;
         // Archives and reference timestamps have distinct format-selected
         // input checks. The SAME complete timestamp census below requires
-        // their actual actors; an unimplemented PoE wrapper remains explicit.
+        // their actual actors; ERS/PoE also requires its sealed input/history.
         if !required.kind.is_archive() && !required.kind.is_reference_timestamp() {
+            if let Some(proofs) = preservation
+                && required.kind.is_evidence()
+                && proofs
+                    .contains(required, query.execution())
+                    .map_err(|cause| {
+                        Error::Participants(ParticipantError::Resource {
+                            node: required.property,
+                            cause,
+                        })
+                    })?
+            {
+                continue;
+            }
+
             return Err(Error::Preservation {
                 property: required.property,
                 kind: required.kind,

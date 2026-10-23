@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/structured-world/signature-primitives/compare/v0.11.0...v0.12.0) - 2026-10-22
+
+### Added
+
+- *(cades)* verify reference timestamps ([#213](https://github.com/structured-world/signature-primitives/pull/213))
+- *(cades)* [**breaking**] verify historical archives ([#211](https://github.com/structured-world/signature-primitives/pull/211))
+- *(cades)* compose baseline levels ([#174](https://github.com/structured-world/signature-primitives/pull/174))
+
+### Other
+
+- release v0.11.0 ([#192](https://github.com/structured-world/signature-primitives/pull/192))
+- release v0.10.0 ([#158](https://github.com/structured-world/signature-primitives/pull/158))
+
 ## [0.11.0](https://github.com/structured-world/signature-primitives/compare/v0.10.0...v0.11.0) - 2026-10-22
 
 ### Added

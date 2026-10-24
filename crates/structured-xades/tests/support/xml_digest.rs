@@ -1,6 +1,10 @@
 //! Test-only SHA256 oracle for stream/identity/error control, not production
 //! XML provider or transitive backend accounting qualification.
 
+#[path = "async_digest.rs"]
+mod asynchronous;
+#[path = "finished_digest.rs"]
+mod finished;
 #[path = "reference_digests.rs"]
 mod reference_digests;
 

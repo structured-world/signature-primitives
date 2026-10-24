@@ -672,67 +672,18 @@ async fn base85<S: RangeSource, W: Work>(
     Ok(())
 }
 
-struct InflateBuffers<W: Work> {
-    inflater: OwnedVec<miniz_oxide::inflate::core::DecompressorOxide, W>,
-    scratch: OwnedVec<u8, W>,
-}
-
-fn inflate_buffers<W: Work>(
-    work: &W,
-    location: crate::source::Location,
-) -> crate::Result<InflateBuffers<W>> {
-    use miniz_oxide::inflate::core::DecompressorOxide;
-    let mut inflater = work.vector();
-    inflater.try_reserve_exact(1).map_err(|cause| Error {
-        kind: ErrorKind::Resource(cause),
-        location,
-    })?;
-    admit(
-        work,
-        location,
-        core::mem::size_of::<DecompressorOxide>() as u64,
-    )?;
-    inflater
-        .try_push(DecompressorOxide::new())
-        .map_err(|cause| Error {
-            kind: ErrorKind::Resource(cause),
-            location,
-        })?;
-    let mut scratch = work.vector();
-    scratch.try_reserve_exact(32768).map_err(|cause| Error {
-        kind: ErrorKind::Resource(cause),
-        location,
-    })?;
-    for _ in 0..8 {
-        scratch
-            .try_extend_from_slice(&[0_u8; 4096])
-            .map_err(|cause| Error {
-                kind: ErrorKind::Resource(cause),
-                location,
-            })?;
-    }
-    Ok(InflateBuffers { inflater, scratch })
-}
-
 async fn flate<S: RangeSource, W: Work>(
     input: &mut Input<'_, '_, S>,
     output: &mut OwnedVec<u8, W>,
 ) -> Result<(), ReadFailure<S::Error>> {
-    use miniz_oxide::inflate::{
-        TINFLStatus,
-        core::{decompress_with_limit, inflate_flags},
-    };
+    use structured_asn1::inflate::{Envelope, Inflater, Progress};
     let work = input.reader.execution();
     let location = input.reader.location(input.at, 0);
-    let InflateBuffers {
-        mut inflater,
-        mut scratch,
-    } = inflate_buffers(&work, location)?;
+    let mut inflater =
+        Inflater::new(Envelope::Zlib, &work).map_err(|cause| inflate_error(cause, location))?;
     let mut chunk = [0_u8; 4096];
     let mut filled = 0;
     let mut consumed = 0;
-    let mut output_at = 0;
-    let mut block = true;
     loop {
         if consumed == filled {
             filled = 0;
@@ -745,67 +696,57 @@ async fn flate<S: RangeSource, W: Work>(
                 filled += 1;
             }
         }
-        // miniz 0.9.1 init_tree has three alphabets (288/32/19), at most
-        // 15 bits per code, 1024 lookup slots and 576 tree slots per table.
-        // STOP_ON_BLOCK_BOUNDARY bounds this setup to ONE block per admission.
-        if block {
-            admit(&work, location, 3 * (1024 + 576 + 288 * 16 + 32))?;
-            block = false;
-        }
-        let allowance = 4096_usize.min(32768 - output_at).min(
-            usize::try_from(input.reader.session().decoded_remaining().min(4096))
-                .expect("bounded output allowance"),
-        );
+        let maximum = usize::try_from(input.reader.session().decoded_remaining().min(4096))
+            .expect("bounded output allowance");
+        let allowance = inflater.output_capacity(maximum);
         output.try_reserve(allowance).map_err(|cause| Error {
             kind: ErrorKind::Resource(cause),
             location,
         })?;
-        admit(
-            &work,
-            location,
-            (filled - consumed) as u64 * 16 + allowance as u64 * 16 + 1,
-        )?;
-        let mut flags = inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER
-            | inflate_flags::TINFL_FLAG_STOP_ON_BLOCK_BOUNDARY;
-        if input.at < input.end {
-            flags |= inflate_flags::TINFL_FLAG_HAS_MORE_INPUT;
-        }
-        let (status, used, written) = decompress_with_limit(
-            &mut inflater[0],
-            &chunk[consumed..filled],
-            &mut scratch,
-            output_at,
-            allowance,
-            flags,
-        );
+        let step = match inflater.step(&chunk[consumed..filled], input.at < input.end, maximum) {
+            Ok(step) => step,
+            Err(cause) => {
+                if let structured_asn1::inflate::Error::Malformed { produced } = cause {
+                    input.reader.session().decode(produced as u64, location)?;
+                    return Err(input.error().into());
+                }
+                return Err(inflate_error(cause, location).into());
+            }
+        };
         // No source/provider callback or await occurs between the allowance
         // check and this commit. The decoder cannot change session counters.
-        input.reader.session().decode(written as u64, location)?;
-        consumed += used;
+        input
+            .reader
+            .session()
+            .decode(step.output.len() as u64, location)?;
+        consumed += step.consumed;
         output
-            .try_extend_from_slice(&scratch[output_at..output_at + written])
+            .try_extend_from_slice(step.output)
             .map_err(|cause| Error {
                 kind: ErrorKind::Resource(cause),
                 location,
             })?;
-        output_at = (output_at + written) % 32768;
-        match status {
-            TINFLStatus::Done => {
+        match step.progress {
+            Progress::Done => {
                 input.at -= (filled - consumed) as u64;
                 input.finish().await?;
                 return Ok(());
             }
-            TINFLStatus::BlockBoundary => block = true,
-            TINFLStatus::NeedsMoreInput if input.at < input.end && consumed == filled => {}
-            TINFLStatus::HasMoreOutput if written != 0 => {}
-            TINFLStatus::HasMoreOutput if allowance == 0 => {
-                return Err(Error {
-                    kind: ErrorKind::Limit(crate::error::Limit::Decoded),
-                    location,
-                }
-                .into());
-            }
-            _ => return Err(input.error().into()),
+            Progress::Input if consumed != filled => return Err(input.error().into()),
+            Progress::Input | Progress::Block | Progress::Output => {}
         }
     }
+}
+
+fn inflate_error(
+    cause: structured_asn1::inflate::Error,
+    location: crate::source::Location,
+) -> Error {
+    use structured_asn1::inflate::Error as InflateError;
+    let kind = match cause {
+        InflateError::Resource(cause) => ErrorKind::Resource(cause),
+        InflateError::OutputLimit => ErrorKind::Limit(crate::error::Limit::Decoded),
+        InflateError::Malformed { .. } | InflateError::State => ErrorKind::Syntax(Syntax::Stream),
+    };
+    Error { kind, location }
 }

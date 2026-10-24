@@ -197,6 +197,8 @@ pub(super) fn role_error<'c, 'd, PE>(
     cause: digest::Error<CertificateRoleError<'c, 'd, PE>, PE>,
 ) -> CertificateRoleError<'c, 'd, PE> {
     match cause {
+        digest::Error::ForeignDigest => CertificateRoleError::Digest(digest::Error::ForeignDigest),
+        digest::Error::Unstreamable => CertificateRoleError::Digest(digest::Error::Unstreamable),
         digest::Error::Source(cause) => cause,
         digest::Error::Provider(cause) => {
             CertificateRoleError::Digest(digest::Error::Provider(cause))

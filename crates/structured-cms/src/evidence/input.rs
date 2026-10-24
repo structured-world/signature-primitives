@@ -1,12 +1,12 @@
 //! Accounted RFC4998 reduced-tree computation; no cryptographic engine here.
 
-use super::objects::Sources;
+use super::objects::{AsyncObjects, Sources};
 use super::{ArchiveTimeStamp, FIELD};
 use crate::{
     Error,
     digest::{DigestBatch, DigestError, DigestMemo},
     stream::{self, Sink, Source, StreamError},
-    timestamp::{ComputedInput, ImprintContext, ImprintProof, InputFailure},
+    timestamp::{AsyncComputedInput, ComputedInput, ImprintContext, ImprintProof, InputFailure},
 };
 use core::cell::{OnceCell, RefCell};
 use core::cmp::Ordering;
@@ -665,25 +665,8 @@ impl<'s, 'p, P: AsnDigest<'p>, S: Sources<'p, P>> LazyMemos<'s, 'p, P, S> {
         let mut memos = work.vector();
         memos.try_reserve_exact(sources.len()).map_err(resource)?;
         for index in 0..sources.len() {
-            let mut identities = work.vector();
-            for algorithm in self.algorithms {
-                work.charge_work(1).map_err(resource)?;
-                let identity = self
-                    .provider
-                    .identity(*algorithm)
-                    .ok_or(InputError::Unsupported)?;
-                identities.try_push(identity).map_err(resource)?;
-            }
-            let batch =
-                DigestBatch::prepare(self.provider, identities.into_owned(), &work, FIELD, at)
-                    .map_err(map_digest)?;
-            let memo = sources
-                .run(index, batch, &work)
-                .map_err(|cause| match cause {
-                    StreamError::Source(cause) => InputError::Source(cause),
-                    StreamError::Callback(cause) => map_digest(cause),
-                    StreamError::Processing(cause) => InputError::Processing(cause),
-                })?;
+            let batch = prepare_batch(self.provider, self.algorithms, &work, at)?;
+            let memo = sources.run(index, batch, &work).map_err(pass_error)?;
             memos.try_push(memo).map_err(resource)?;
         }
         self.initialized
@@ -741,6 +724,194 @@ fn widen<SE, PE>(cause: InputError<core::convert::Infallible, PE>) -> InputError
         InputError::OutputWidth => InputError::OutputWidth,
         InputError::ForeignRenewal => InputError::ForeignRenewal,
         InputError::ForeignDigest => InputError::ForeignDigest,
+    }
+}
+
+// Mutable ownership spans acquisition; completed outputs become immutable
+// before tree computation. No RefCell guard or lock is held over suspension.
+pub(super) struct AsyncMemos<'s, 'p, P: AsnDigest<'p>, S: AsyncObjects<'p, P>> {
+    provider: &'p P,
+    algorithms: &'s [structured_pkix::algorithm::digest::Algorithm],
+    sources: S,
+    initialized: Option<MemoSet<'p, P>>,
+}
+impl<'s, 'p, P: AsnDigest<'p>, S: AsyncObjects<'p, P>> AsyncMemos<'s, 'p, P, S> {
+    pub(super) fn new(
+        provider: &'p P,
+        algorithms: &'s [structured_pkix::algorithm::digest::Algorithm],
+        sources: S,
+    ) -> Self {
+        Self {
+            provider,
+            algorithms,
+            sources,
+            initialized: None,
+        }
+    }
+    async fn ready(
+        &mut self,
+        stamp: &ArchiveTimeStamp<'_>,
+        query: &structured_asn1::Reader<'_>,
+    ) -> Result<(), InputError<S::Error, P::Error>> {
+        if self.initialized.is_some() {
+            return Ok(());
+        }
+        let origin = stamp
+            .original
+            .reader_in(query)
+            .map_err(InputError::Processing)?;
+        let work = origin.execution_query(query);
+        let at = stamp.original.element.span().start;
+        let resource = |cause| InputError::Processing(Error::resource(cause, FIELD, at));
+        let count = self.sources.len();
+        let mut memos = work.vector();
+        memos.try_reserve_exact(count).map_err(resource)?;
+        for index in 0..count {
+            let batch = prepare_batch(self.provider, self.algorithms, &work, at)?;
+            let memo = self
+                .sources
+                .run(index, batch, &work)
+                .await
+                .map_err(pass_error)?;
+            memos.try_push(memo).map_err(resource)?;
+        }
+        self.initialized = Some(MemoSet {
+            provider: self.provider,
+            memos: memos.into_owned(),
+        });
+        Ok(())
+    }
+}
+impl<'p, P: AsnDigest<'p>, S: AsyncObjects<'p, P>> RootComputation<P> for AsyncMemos<'_, 'p, P, S> {
+    type Output = P::Output;
+    type Error = P::Error;
+    type SourceError = S::Error;
+    fn belongs_to_provider(&self, provider: &P) -> bool {
+        core::ptr::eq(self.provider, provider)
+    }
+    fn root<'s>(
+        &'s self,
+        stamp: &'s ArchiveTimeStamp<'_>,
+        ordinal: usize,
+        membership: Membership,
+        previous: Option<&super::PriorSequence<'_, '_>>,
+        query: &structured_asn1::Reader<'_>,
+    ) -> RootResult<'s, Self::Output, Self::SourceError, Self::Error> {
+        self.initialized
+            .as_ref()
+            .ok_or(InputError::ForeignDigest)?
+            .root(stamp, ordinal, membership, previous, query)
+            .map_err(widen)
+    }
+    fn matches<W: Work>(
+        &self,
+        ordinal: usize,
+        output: &Self::Output,
+        expected: &[u8],
+        work: &W,
+    ) -> Result<bool, InputError<Self::SourceError, Self::Error>> {
+        self.initialized
+            .as_ref()
+            .ok_or(InputError::ForeignDigest)?
+            .matches(ordinal, output, expected, work)
+            .map_err(widen)
+    }
+}
+
+trait AsyncRootComputation<P>: RootComputation<P> {
+    fn prepare(
+        &mut self,
+        stamp: &ArchiveTimeStamp<'_>,
+        query: &structured_asn1::Reader<'_>,
+    ) -> impl core::future::Future<Output = Result<(), InputError<Self::SourceError, Self::Error>>>;
+}
+impl<'p, P: AsnDigest<'p>, S: AsyncObjects<'p, P>> AsyncRootComputation<P>
+    for AsyncMemos<'_, 'p, P, S>
+{
+    async fn prepare(
+        &mut self,
+        stamp: &ArchiveTimeStamp<'_>,
+        query: &structured_asn1::Reader<'_>,
+    ) -> Result<(), InputError<Self::SourceError, Self::Error>> {
+        self.ready(stamp, query).await
+    }
+}
+
+pub(super) struct AsyncCachedInput<'s, 'd, F> {
+    pub(super) stamp: &'s ArchiveTimeStamp<'d>,
+    pub(super) memos: &'s mut F,
+    pub(super) ordinal: usize,
+    pub(super) membership: Membership,
+    pub(super) previous: Option<&'s super::PriorSequence<'s, 'd>>,
+}
+impl<P, PE, SE, F: AsyncRootComputation<P, Error = PE, SourceError = SE>> AsyncComputedInput<P, PE>
+    for AsyncCachedInput<'_, '_, F>
+{
+    type Error = InputError<SE, PE>;
+    async fn compute<'context: 'scope, 'reader, 'document, 'scope>(
+        &'scope mut self,
+        context: &'context ImprintContext<'reader, 'document, P, Self::Error>,
+    ) -> Result<ImprintProof<'context>, InputFailure<Self::Error>>
+    where
+        P: AsnDigest<'document, Error = PE>,
+    {
+        if !self.memos.belongs_to_provider(context.provider()) {
+            return Err(InputFailure::Source(InputError::ForeignDigest));
+        }
+        self.memos
+            .prepare(self.stamp, context.reader())
+            .await
+            .map_err(InputFailure::Source)?;
+        CachedInput {
+            stamp: self.stamp,
+            memos: &*self.memos,
+            ordinal: self.ordinal,
+            membership: self.membership,
+            previous: self.previous,
+        }
+        .compute(context)
+    }
+}
+
+// A renewal covers resident original timestamp bytes. The asynchronous driver
+// uses the identical synchronous reduced-tree recipe without copying its input.
+pub(super) struct ResidentInput<I>(pub(super) I);
+impl<P, PE, I: ComputedInput<P, PE>> AsyncComputedInput<P, PE> for ResidentInput<I> {
+    type Error = I::Error;
+    fn compute<'context: 'scope, 'reader, 'document, 'scope>(
+        &'scope mut self,
+        context: &'context ImprintContext<'reader, 'document, P, Self::Error>,
+    ) -> impl core::future::Future<Output = Result<ImprintProof<'context>, InputFailure<Self::Error>>>
+    where
+        P: AsnDigest<'document, Error = PE>,
+    {
+        core::future::ready(self.0.compute(context))
+    }
+}
+
+fn prepare_batch<'p, P: AsnDigest<'p>, W: Work, SE>(
+    provider: &'p P,
+    algorithms: &[structured_pkix::algorithm::digest::Algorithm],
+    work: &W,
+    at: u64,
+) -> Result<DigestBatch<'p, P>, InputError<SE, P::Error>> {
+    let resource = |cause| InputError::Processing(Error::resource(cause, FIELD, at));
+    let mut identities = work.vector();
+    for algorithm in algorithms {
+        work.charge_work(1).map_err(resource)?;
+        let identity = provider
+            .identity(*algorithm)
+            .ok_or(InputError::Unsupported)?;
+        identities.try_push(identity).map_err(resource)?;
+    }
+    DigestBatch::prepare(provider, identities.into_owned(), work, FIELD, at).map_err(map_digest)
+}
+
+fn pass_error<SE, PE>(cause: StreamError<SE, DigestError<PE>>) -> InputError<SE, PE> {
+    match cause {
+        StreamError::Source(cause) => InputError::Source(cause),
+        StreamError::Callback(cause) => map_digest(cause),
+        StreamError::Processing(cause) => InputError::Processing(cause),
     }
 }
 pub(super) struct CachedInput<'s, 'd, F> {

@@ -1,5 +1,8 @@
 //! The original-octet and XML-normalized routes share one MIME grammar.
 
+#[path = "mime/essence.rs"]
+mod essence;
+
 use std::sync::Arc;
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError};
 use structured_cms::mime::Syntax;

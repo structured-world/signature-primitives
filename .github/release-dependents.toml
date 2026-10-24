@@ -31,3 +31,7 @@ git_tag_name = "structured-cades-v{{ version }}"
 [[package]]
 name = "structured-pades"
 release = false
+
+[[package]]
+name = "structured-asic"
+release = false

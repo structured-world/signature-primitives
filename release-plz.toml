@@ -41,3 +41,7 @@ changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "st
 name = "structured-pades"
 # Initial publication requires the crate's own publisher registration.
 release = false
+
+[[package]]
+name = "structured-asic"
+release = false

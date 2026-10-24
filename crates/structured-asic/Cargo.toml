@@ -1,0 +1,35 @@
+[package]
+name = "structured-asic"
+description = "Original-range ASiC containers and source-bound signature profile composition"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["asic", "cades", "xades", "signature", "no-std"]
+categories = ["cryptography", "parser-implementations", "no-std"]
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
+
+[features]
+default = []
+alloc = ["structured-asn1/alloc", "structured-pkix/alloc", "structured-cms/alloc", "structured-ltv/alloc", "structured-cades/alloc", "structured-xades/alloc"]
+std = ["structured-asn1/std", "structured-pkix/std", "structured-cms/std", "structured-ltv/std", "structured-cades/std", "structured-xades/std", "crc32fast/std"]
+interop-tests = ["std"]
+
+[dependencies]
+structured-asn1 = { version = "0.14.0", path = "../structured-asn1", default-features = false }
+structured-pkix = { version = "0.14.0", path = "../structured-pkix", default-features = false }
+structured-cms = { version = "0.14.0", path = "../structured-cms", default-features = false }
+structured-ltv = { version = "0.14.0", path = "../structured-ltv", default-features = false }
+structured-cades = { version = "0.14.0", path = "../structured-cades", default-features = false }
+structured-xades = { version = "0.14.0", path = "../structured-xades", default-features = false }
+crc32fast = { version = "1.5.3", default-features = false }
+
+[dev-dependencies]
+# Fixed-curve native integration oracle, never a runtime provider.
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
+sha2 = { version = "=0.11.1", default-features = false }
+
+[lints]
+workspace = true

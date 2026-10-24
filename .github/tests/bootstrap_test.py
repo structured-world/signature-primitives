@@ -16,7 +16,7 @@ class BootstrapPackages(unittest.TestCase):
         self.assertIs(config["workspace"]["release_always"], False)
         self.assertEqual(config["workspace"]["git_tag_name"], "structured-cades-v{{ version }}")
         disabled = {package["name"] for package in config["package"] if package.get("release") is False}
-        self.assertEqual(disabled, {"structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-pades"})
+        self.assertEqual(disabled, {"structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-pades", "structured-asic"})
 
     def test_pades_awaits_first_publication_authorization(self):
         # Adding a workspace member must not let an older bootstrap credential
@@ -29,6 +29,7 @@ class BootstrapPackages(unittest.TestCase):
                 packages = {package["name"]: package.get("release", True)
                             for package in config["package"]}
                 self.assertIs(packages.get("structured-pades"), False)
+                self.assertIs(packages.get("structured-asic"), False)
 
     def test_coordinated_packages_include_each_others_changes(self):
         # One workspace version also ships sibling-only changes. Each package
@@ -80,7 +81,7 @@ class BootstrapPackages(unittest.TestCase):
         new = {"structured-ltv"}
         cades = {"structured-cades"}
         dependents = {"structured-xades"} | cades
-        pending = {"structured-pades"}
+        pending = {"structured-pades", "structured-asic"}
         self.assertEqual(names, existing | new | dependents | pending)
         for filename, expected in [
             ("release-core.toml", existing),

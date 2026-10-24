@@ -51,10 +51,13 @@ extern crate alloc;
 
 pub mod digest;
 pub mod error;
+pub mod inflate;
 pub mod length;
 pub mod limits;
 pub mod memory;
+pub mod range;
 pub mod reader;
+pub mod source;
 pub mod tag;
 pub mod value;
 

@@ -126,6 +126,38 @@ where
 }
 
 impl<'doc> Token<'doc> {
+    /// Complete historical checking over original asynchronously acquired bytes.
+    /// This makes no live-request/current-clock assertion. The existing
+    /// historical preflight rejects request, reference or window context.
+    #[expect(
+        clippy::result_large_err,
+        reason = "original information and source-map failures must survive resource refusal without a secondary allocation"
+    )]
+    pub async fn check_historical_async<'a, P, S, PE, RE>(
+        &'a self,
+        provider: &'a P,
+        parent: &Reader<'a>,
+        context: &CheckContext<'a, '_>,
+        covered: &mut S,
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+    ) -> Result<CheckedTimestamp<'a>, CheckError<S::Error, PE, RE>>
+    where
+        'doc: 'a,
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+        S: crate::stream::AsyncSource,
+    {
+        self.check_historical_async_with_profile(
+            provider,
+            parent,
+            context,
+            &mut AsyncRawInput::new(covered),
+            recognizes,
+            |_| Ok::<(), ProfileFailure<Infallible>>(()),
+        )
+        .await
+        .map_err(ProfileCheckError::into_common)
+    }
+
     /// Complete common timestamp checking over asynchronously acquired bytes.
     /// The only suspension is bounded source acquisition inside scoped `TSTInfo`;
     /// no joined reader or temporary model escapes, including on cancellation.

@@ -148,6 +148,12 @@ impl<P, I, O> Clone for Finished<'_, P, I, O> {
 impl<P, I, O> Copy for Finished<'_, P, I, O> {}
 
 impl<'v, P, I, O: AsRef<[u8]>> Finished<'v, P, I, O> {
+    /// The actual instance which completed this output. Borrowing it avoids
+    /// accepting a second selected provider or guessing provider provenance.
+    #[must_use]
+    pub fn provider(&self) -> &'v P {
+        self.provider
+    }
     pub(crate) fn new(provider: &'v P, identity: &'v I, output: &'v O) -> Self {
         Self {
             provider,

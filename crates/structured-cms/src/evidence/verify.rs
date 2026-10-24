@@ -1,8 +1,10 @@
 //! Complete ERS sequence execution; historical acceptance is explicitly injected.
 
+mod engine;
+
 use super::{
-    ArchiveTimeStamp, EvidenceRecord, FIELD, Membership, ObjectInput, PriorSequence, TimeStamp,
-    input::{CachedInput, InputError, LazyMemos},
+    ArchiveTimeStamp, EvidenceRecord, FIELD, Membership, PriorSequence, TimeStamp,
+    input::InputError,
 };
 use crate::{
     Error, ErrorCode,
@@ -411,6 +413,60 @@ impl<'r, 'd> InputPlan<'r, 'd> {
     #[must_use]
     pub fn record(&self) -> &'r EvidenceRecord<'d> {
         self.record
+    }
+
+    /// Executes asynchronous original objects with the same admitted plan,
+    /// profile-before-input ordering, renewal recipes and historical closure.
+    /// All chain algorithms share one complete pass over each object. Batch
+    /// owners may inspect those actual outputs without acquiring bytes again.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the asynchronous driver retains distinct original/provider/authority/UTC inputs and scoped format callbacks"
+    )]
+    #[expect(
+        clippy::result_large_err,
+        reason = "suspension preserves the same source-mapped and opaque failures as resident verification"
+    )]
+    pub async fn verify_async_with_profile<'a, P, PE, A, S, RE, HE, FE>(
+        &self,
+        provider: &'a P,
+        operation: &Reader<'a>,
+        authorities: &'a A,
+        utc: &LeapTable<'a>,
+        reference: Instant,
+        objects: S,
+        membership: Membership,
+        mut recognizes: impl FnMut(usize, &TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+        mut historical: impl FnMut(Historical<'_, 'a>, &Execution<'_>) -> Result<Decision, HE>,
+        mut profile: impl for<'view, 'scope> FnMut(
+            usize,
+            timestamp::ProfileInput<'view, 'd, 'a, 'scope>,
+        ) -> Result<(), ProfileFailure<FE>>,
+    ) -> VerificationResult<'a, 'd, S::Error, PE, RE, A::Error, HE, FE>
+    where
+        'r: 'a,
+        'd: 'a,
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+        A: Authorities<'d>,
+        S: super::AsyncObjects<'a, P>,
+    {
+        let record = self.record;
+        let plan = self;
+        engine::execute!(
+            suspending,
+            record,
+            plan,
+            provider,
+            operation,
+            authorities,
+            utc,
+            reference,
+            objects,
+            membership,
+            recognizes,
+            historical,
+            profile
+        )
     }
 
     fn token(&self, index: usize) -> (&'r ArchiveTimeStamp<'d>, &'r timestamp::Token<'d>) {
@@ -876,108 +932,21 @@ impl<'document> EvidenceRecord<'document> {
         A: Authorities<'document>,
         S: super::objects::Sources<'a, P>,
     {
-        let origin = self
-            .original
-            .reader_in(operation)
-            .map_err(VerificationError::Processing)?;
-        let work = origin.execution_query(operation);
-        let at = self.original.element.span().start;
-        let resource = |cause| VerificationError::Processing(Error::resource(cause, FIELD, at));
-        admit_membership(self, objects.len(), membership, &work).map_err(|cause| match cause {
-            GroupError::Processing(cause) => VerificationError::Processing(cause),
-            GroupError::Membership(index) => VerificationError::Membership { index },
-        })?;
-        // Project each earlier chain ONCE; prefix views borrow this flat
-        // catalogue instead of repeating DER validation/storage per renewal.
-        let projected =
-            PriorSequence::all(self, operation).map_err(VerificationError::Processing)?;
-        let prefixes = prior_views(self, &projected, operation, &work)
-            .map_err(VerificationError::Processing)?;
-        let memo_set = LazyMemos::new(provider, &plan.chains, objects);
-        let mut checks: OwnedVec<Checked<'a>, _> = work.vector();
-        checks
-            .try_reserve_exact(self.timestamps.len())
-            .map_err(resource)?;
-        let mut complete = true;
-        for chain_index in (0..self.chains.len()).rev() {
-            let chain = &self.chains[chain_index];
-            let prior = prefixes[chain_index].as_ref();
-            for index in (chain.first..chain.end).rev() {
-                work.charge_work(1).map_err(resource)?;
-                let (stamp, token) = plan.token(index);
-                let reader = stamp
-                    .timestamp
-                    .reader_in(operation)
-                    .map_err(VerificationError::Processing)?;
-                let selection = authorities
-                    .select(index, stamp, &reader.execution())
-                    .map_err(|cause| VerificationError::Selection { index, cause })?;
-                let context = selection.historical_context(utc);
-                let common = if index == chain.first {
-                    let mut input = CachedInput {
-                        stamp,
-                        memos: &memo_set,
-                        ordinal: chain_index,
-                        membership,
-                        previous: prior,
-                    };
-                    token
-                        .check_historical_input_with_profile(
-                            provider,
-                            &reader,
-                            &context,
-                            &mut input,
-                            |extension, execution| recognizes(index, extension, execution),
-                            |input| profile(index, input),
-                        )
-                        .map_err(|cause| VerificationError::Timestamp { index, cause })?
-                } else {
-                    let mut source = [[self.timestamps[index - 1].timestamp.element.as_bytes()]];
-                    let mut input = ObjectInput::new(stamp, &mut source, Membership::Object);
-                    token
-                        .check_historical_input_with_profile(
-                            provider,
-                            &reader,
-                            &context,
-                            &mut input,
-                            |extension, execution| recognizes(index, extension, execution),
-                            |input| profile(index, input),
-                        )
-                        .map_err(|cause| VerificationError::Renewal { index, cause })?
-                };
-                let history = historical(
-                    history_input(
-                        self,
-                        chain_index,
-                        index,
-                        &common,
-                        &selection,
-                        &checks,
-                        reference,
-                    ),
-                    &reader.execution(),
-                )
-                .map_err(|cause| VerificationError::Historical { index, cause })?;
-                complete &= common.evidence().is_some() && history == Decision::Valid;
-                checks
-                    .try_push(Checked {
-                        index,
-                        common,
-                        selection,
-                        history,
-                    })
-                    .map_err(resource)?;
-            }
-        }
-        let ordering = order_findings(&checks, utc, operation, &work, at)
-            .map_err(VerificationError::Processing)?;
-        complete &= ordering.is_empty();
-        Ok(Report {
-            record: self,
-            checks: checks.into_owned(),
-            ordering,
-            complete,
-        })
+        engine::execute!(
+            resident,
+            self,
+            plan,
+            provider,
+            operation,
+            authorities,
+            utc,
+            reference,
+            objects,
+            membership,
+            recognizes,
+            historical,
+            profile
+        )
     }
 }
 

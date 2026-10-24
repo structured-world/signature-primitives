@@ -28,6 +28,7 @@ the long-term validation core.
 | [**structured-xades**](crates/structured-xades/README.md) | XAdES signatures, including baseline levels B-B, B-T, B-LT and B-LTA | [![version](https://img.shields.io/crates/v/structured-xades)](https://crates.io/crates/structured-xades) | [![docs.rs](https://img.shields.io/docsrs/structured-xades)](https://docs.rs/structured-xades) |
 | [**structured-cades**](crates/structured-cades/README.md) | Source-bound CAdES baseline composition, original CMS timestamp/archive inputs and validation material | [![version](https://img.shields.io/crates/v/structured-cades)](https://crates.io/crates/structured-cades) | [![docs.rs](https://img.shields.io/docsrs/structured-cades)](https://docs.rs/structured-cades) |
 | [**structured-pades**](crates/structured-pades/README.md) | Asynchronous original-range PDF signatures, revisions, DSS/VRI, DocMDP/FieldMDP and PAdES baseline composition | Initial publication pending | Source documentation |
+| [**structured-asic**](crates/structured-asic/README.md) | Original-range ZIP/ZIP64 ASiC containers, producing XML/member binding, CAdES/XAdES and time-assertion composition | Initial publication pending | Source documentation |
 
 Each crate builds on the ones above it:
 
@@ -35,7 +36,8 @@ Each crate builds on the ones above it:
 structured-asn1 → structured-pkix → structured-cms → structured-ltv
                                                       ├─ structured-xades
                                                       ├─ structured-cades
-                                                      └─ structured-pades (also uses structured-cades)
+                                                      ├─ structured-pades (also uses structured-cades)
+                                                      └─ structured-asic (also uses structured-cades and structured-xades)
 ```
 
 Use only as much of the stack as you need: certificate parsing alone needs just

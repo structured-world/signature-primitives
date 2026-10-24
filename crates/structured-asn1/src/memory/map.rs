@@ -53,9 +53,21 @@ impl HashWork for u8 {
     }
 }
 
+impl HashWork for u32 {
+    fn hash_work(&self) -> Result<u64, MemoryError> {
+        Ok(1)
+    }
+}
+
 impl HashWork for (usize, usize, usize) {
     fn hash_work(&self) -> Result<u64, MemoryError> {
         Ok(3)
+    }
+}
+
+impl HashWork for (usize, usize) {
+    fn hash_work(&self) -> Result<u64, MemoryError> {
+        Ok(2)
     }
 }
 

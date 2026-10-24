@@ -275,15 +275,25 @@ pub(crate) fn baseline_digest<'p, X: Xml, P: DigestProvider<'p, X>>(
     identity: P::Identity,
     provider: &P,
 ) -> Expected<P::Identity> {
+    match resolved_digest::<true, X, P>(identity, provider) {
+        Ok(identity) => Expected::Ready(FormatDigest(identity)),
+        Err(answer) => Expected::Answer(answer),
+    }
+}
+
+pub(crate) fn resolved_digest<'p, const BASELINE: bool, X: Xml, P: DigestProvider<'p, X>>(
+    identity: P::Identity,
+    provider: &P,
+) -> Result<P::Identity, Agreement> {
     // EN319132-1 V1.3.1 §6.2.1 prohibits the actual MD5 digest. URI aliases
     // cannot change that requirement. XMLDSig1.1 §4.4.3.5 selects a DIGEST
     // algorithm here, not an intrinsic signature suite with no external hash.
     // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
     // https://www.w3.org/TR/2013/REC-xmldsig-core1-20130411/#sec-DigestMethod
     match provider.classify(&identity) {
-        crate::hashes::HashClass::Md5 => Expected::Answer(Agreement::ProhibitedAlgorithm),
-        crate::hashes::HashClass::Intrinsic => Expected::Answer(Agreement::MalformedMethod),
-        crate::hashes::HashClass::OtherKnown => Expected::Ready(FormatDigest(identity)),
+        crate::hashes::HashClass::Md5 if BASELINE => Err(Agreement::ProhibitedAlgorithm),
+        crate::hashes::HashClass::Intrinsic => Err(Agreement::MalformedMethod),
+        crate::hashes::HashClass::Md5 | crate::hashes::HashClass::OtherKnown => Ok(identity),
     }
 }
 

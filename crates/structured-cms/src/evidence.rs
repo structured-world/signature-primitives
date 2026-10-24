@@ -22,6 +22,7 @@ pub use input::{InputError, Membership, ObjectInput};
 mod renewal;
 pub use renewal::PriorSequence;
 mod objects;
+pub use objects::{AsyncObjects, AsyncStreams};
 pub mod verify;
 
 /// Original field context, independent of a movable reader cursor.

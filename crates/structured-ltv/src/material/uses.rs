@@ -1,13 +1,13 @@
 //! Exact artifact uses across all reached actors, independent of path receipts.
 
 use super::ArtifactRef;
-use super::index::ArtifactKey;
+use super::index::Kind;
 use super::status::{ArtifactVisitError, member_source, visit_artifacts};
 use crate::pki::{
     AuthorityClosureError, AuthorityUses, ParticipantAuthority, ParticipantClosure, Uses, UsesError,
 };
 use crate::source::{Query, ScopeError};
-use structured_asn1::memory::{MemoryError, OwnedMap, OwnedVec, Work};
+use structured_asn1::memory::{HashWork, MapExecution, MemoryError, OwnedMap, OwnedVec, Work};
 
 /// An original certificate/status value with ALL its actual actor purposes.
 /// Exact kind and original DER identify an artifact; two checked paths or
@@ -16,6 +16,7 @@ pub struct ArtifactUse<'certificate, 'document> {
     artifact: ArtifactRef<'certificate, 'document>,
     uses: Uses,
     targets: Option<usize>,
+    next_identity: Option<usize>,
 }
 
 impl<'certificate, 'document> ArtifactUse<'certificate, 'document> {
@@ -112,8 +113,19 @@ pub type ArtifactUsesResult<'closure, 'requirements, 'view, 'certificate, 'docum
     UsesError<<Q as Query>::Id>,
 >;
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Bucket {
+    kind: Kind,
+    hash: u64,
+}
+impl HashWork for Bucket {
+    fn hash_work(&self) -> Result<u64, MemoryError> {
+        Ok(2)
+    }
+}
+
 struct Census<'certificate, 'document, W: Work> {
-    index: OwnedMap<ArtifactKey<'document>, usize, W>,
+    index: Option<OwnedMap<Bucket, usize, W>>,
     entries: OwnedVec<ArtifactUse<'certificate, 'document>, W>,
     targets: OwnedVec<StatusTarget, W>,
 }
@@ -125,18 +137,94 @@ impl<'certificate, 'document, W: Work> Census<'certificate, 'document, W> {
         uses: Uses,
         work: &W,
     ) -> Result<usize, MemoryError> {
-        work.charge_work(1)?;
+        let scoped = artifact.execution_in(work);
+        scoped.charge_work(1)?;
         let key = artifact.identity();
-        if let Some(&index) = self.index.get(&key, work)? {
-            self.entries[index].uses.merge(uses);
-            return Ok(index);
+        let hash = self
+            .index
+            .as_ref()
+            .expect("census map restored before every visit")
+            .fingerprint(&key, &scoped)?;
+        self.record_hashed(
+            artifact,
+            uses,
+            work,
+            Bucket {
+                kind: key.kind,
+                hash,
+            },
+        )
+    }
+
+    fn record_hashed(
+        &mut self,
+        artifact: ArtifactRef<'certificate, 'document>,
+        uses: Uses,
+        work: &W,
+        key: Bucket,
+    ) -> Result<usize, MemoryError> {
+        let scoped = artifact.execution_in(work);
+        scoped.charge_work(1)?;
+        let head = self
+            .index
+            .as_ref()
+            .expect("census map restored before every visit")
+            .get(&key, &scoped)?
+            .copied();
+        let mut next = head;
+        while let Some(index) = next {
+            scoped.charge_work(1)?;
+            let stored = self.entries[index].artifact;
+            let original = stored.execution_in(work);
+            original.charge_work(1)?;
+            let first = artifact.identity().bytes;
+            let second = stored.identity().bytes;
+            let equal = if core::ptr::eq(first, second) {
+                true
+            } else if first.len() != second.len() {
+                false
+            } else {
+                // Each actual source admits its byte scan, while the
+                // same root operation funds both operands. Cached bucket
+                // metadata never rehashes another source's borrowed DER.
+                let length = u64::try_from(first.len()).map_err(|_| MemoryError::WorkExceeded)?;
+                scoped.charge_work(length)?;
+                original.charge_work(length)?;
+                first == second
+            };
+            if equal {
+                self.entries[index].uses.merge(uses);
+                return Ok(index);
+            }
+            next = self.entries[index].next_identity;
         }
         let index = self.entries.len();
-        self.index.try_insert(key, index)?;
+        let original = self
+            .index
+            .take()
+            .expect("census map restored before every visit");
+        let (mut table, previous) = match original.rebind(scoped) {
+            MapExecution::Changed { map, previous } => (map, previous),
+            MapExecution::Foreign { map, .. } => {
+                self.index = Some(map);
+                unreachable!(
+                    "one private census is always mutated under its original query account"
+                )
+            }
+        };
+        let inserted = table.try_insert(key, index);
+        self.index = Some(match table.rebind(previous) {
+            MapExecution::Changed { map, .. } => map,
+            MapExecution::Foreign { .. } => {
+                unreachable!("restoration returns the exact previous execution owner")
+            }
+        });
+        inserted?;
         self.entries.try_push(ArtifactUse {
             artifact,
             uses,
             targets: None,
+            next_identity: head,
         })?;
         Ok(index)
     }
@@ -177,7 +265,7 @@ pub fn artifact_uses<'closure, 'requirements, 'view, 'certificate, 'document, Q:
     let work = query.execution();
     let resource = |cause| UsesError::Closure(AuthorityClosureError::Resource(cause));
     let mut census = Census {
-        index: work.map(),
+        index: Some(work.map()),
         entries: work.vector(),
         targets: work.vector(),
     };

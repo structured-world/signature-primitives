@@ -206,6 +206,37 @@ impl<'a> Properties<'a> {
     }
 }
 
+/// Whether an attribute belongs to the `CAdES` schemas recognized by this core.
+/// Profiles which permit only a subset use the same identifier catalogue;
+/// this does not validate placement, cardinality or an attribute value.
+pub fn defines(
+    kind: Oid<'_>,
+    work: &impl Work,
+) -> core::result::Result<bool, structured_asn1::memory::MemoryError> {
+    work.charge_work(11 * (1 + kind.as_bytes().len().min(12) as u64))?;
+    if known(kind).is_some() {
+        return Ok(true);
+    }
+    for expected in legacy::LEGACY.into_iter().chain([
+        oid::CONTENT_TYPE,
+        oid::MESSAGE_DIGEST,
+        oid::SIGNING_TIME,
+        oid::SIGNING_CERTIFICATE,
+        oid::SIGNING_CERTIFICATE_V2,
+        oid::CONTENT_TIMESTAMP,
+        oid::ARCHIVE_TIMESTAMP_V3,
+        oid::ATS_HASH_INDEX_V3,
+        oid::CLAIMED_SAML_ASSERTION,
+    ]) {
+        work.charge_work(1 + kind.as_bytes().len().min(expected.as_bytes().len()) as u64)?;
+        if kind == expected {
+            return Ok(true);
+        }
+    }
+    work.charge_work(1 + kind.as_bytes().len().min(11) as u64)?;
+    Ok(crate::preservation::Kind::from_oid(kind).is_some())
+}
+
 fn known(kind: Oid<'_>) -> Option<(Oid<'static>, &'static str)> {
     for (expected, field) in [
         (oid::COMMITMENT_TYPE_INDICATION, "commitmentTypeIndication"),

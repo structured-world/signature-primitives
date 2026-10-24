@@ -120,7 +120,11 @@ impl<'a> SigningAttributes<'a> {
         certificate: &Certificate<'_>,
         parent: &Reader<'a>,
     ) -> Result<Bindings, BindingError<P::Error>> {
-        let execution = parent.execution();
+        let current = parent.execution();
+        // Hashing revisits the certificate source, even when ESS omits its
+        // optional issuerSerial. Keep its producing ceiling and the current
+        // operation on the entire batch, including provider state/storage.
+        let execution = certificate.execution_in(&current);
         let identifiers = [
             self.v1().map(super::SigningCertificate::signer),
             self.v2().map(super::SigningCertificate::signer),
@@ -225,7 +229,10 @@ impl<'a> super::SigningCertificate<'a> {
         certificate: &Certificate<'_>,
         parent: &Reader<'a>,
     ) -> Result<OwnedVec<Binding>, BindingError<P::Error>> {
-        let execution = parent.execution();
+        let current = parent.execution();
+        // Later validation-set identifiers hash the same original source as
+        // first-signer identifiers and must use the same execution bridge.
+        let execution = certificate.execution_in(&current);
         let field = self.version.field();
         let at = self.element.span().start;
         let refusal = |reason| BindingError::Processing(Error::resource(reason, field, at));

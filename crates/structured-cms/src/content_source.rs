@@ -273,7 +273,123 @@ pub enum ContentError<E> {
     },
 }
 
+/// Scoped carried decoding that can await caller-owned external input without
+/// allowing temporary joined bytes or their reader to escape in the result.
+pub trait AsyncVisitor {
+    /// Independently retained result, not borrowed from a temporary join.
+    type Output;
+    /// Original source-independent callback cause.
+    type Error;
+
+    /// Executes inside the actual nested reader/source-map lifetime.
+    fn visit<'data: 'scope, 'scope>(
+        &'scope mut self,
+        reader: &'scope mut Reader<'data>,
+        context: &'scope SourceMap,
+    ) -> impl core::future::Future<Output = core::result::Result<Self::Output, Self::Error>>;
+}
+
+enum Carried<'a> {
+    Borrowed(&'a [u8]),
+    Joined(OwnedVec<u8>),
+}
+
+struct Prepared<'a> {
+    carried: Carried<'a>,
+    context: SourceMap,
+    base: u64,
+}
+
+impl Prepared<'_> {
+    fn bytes(&self) -> &[u8] {
+        match &self.carried {
+            Carried::Borrowed(bytes) => bytes,
+            Carried::Joined(bytes) => bytes,
+        }
+    }
+}
+
 impl Octets<'_> {
+    /// Awaits a callback while retaining the same accounted join, producing
+    /// source, inherited depth and current operation as resident decoding.
+    #[expect(
+        clippy::result_large_err,
+        reason = "retained source mapping preserves errors after the awaited join is dropped without allocating an error box"
+    )]
+    pub async fn with_nested_reader_async<V: AsyncVisitor>(
+        &self,
+        parent: &Reader<'_>,
+        origin: Option<&SourceMap>,
+        encoding: Encoding,
+        field: &'static str,
+        visitor: &mut V,
+    ) -> core::result::Result<V::Output, ContentError<V::Error>> {
+        let prepared = self
+            .prepare_nested(parent, field, origin)
+            .map_err(ContentError::Processing)?;
+        let reader = self.parser().read_nested_query_in(
+            parent,
+            prepared.bytes(),
+            prepared.base,
+            encoding,
+            self.outer_depth(),
+        );
+        let mut reader = match reader {
+            Ok(reader) => reader,
+            Err(cause) => {
+                return Err(ContentError::Decoding {
+                    source: Error::encoding(cause, field),
+                    context: prepared.context,
+                });
+            }
+        };
+        let result = visitor.visit(&mut reader, &prepared.context).await;
+        match result {
+            Ok(output) => Ok(output),
+            Err(source) => Err(ContentError::Callback {
+                source,
+                context: prepared.context,
+            }),
+        }
+    }
+
+    fn prepare_nested<'a>(
+        &'a self,
+        parent: &Reader<'_>,
+        field: &'static str,
+        origin: Option<&SourceMap>,
+    ) -> Result<Prepared<'a>> {
+        if !core::ptr::eq(self.parser(), parent.parser()) {
+            let at = origin.map_or(self.span().start, |source| source.carrier().start);
+            return Err(Error::pkix(structured_pkix::Error::new(
+                structured_pkix::ErrorCode::ForeignReader,
+                field,
+                at,
+            )));
+        }
+        let context = match origin {
+            Some(origin) => SourceMap::mapped(self, parent, field, origin),
+            None => SourceMap::of(self, parent, field),
+        }?;
+        let (carried, base) = if let [piece] = self.pieces() {
+            let base = if context.coordinates() == Coordinates::Original {
+                piece.span().start
+            } else {
+                0
+            };
+            (Carried::Borrowed(piece.as_bytes()), base)
+        } else {
+            (
+                Carried::Joined(self.copy_in(parent, field, context.carrier().start)?),
+                0,
+            )
+        };
+        Ok(Prepared {
+            carried,
+            context,
+            base,
+        })
+    }
     /// Decodes carried bytes without letting a temporary joined buffer escape.
     ///
     /// One fragment is borrowed; several are explicitly materialized. The
@@ -331,48 +447,31 @@ impl Octets<'_> {
         origin: Option<&SourceMap>,
         callback: impl for<'scope> FnOnce(&mut Reader<'scope>, &SourceMap) -> core::result::Result<R, E>,
     ) -> core::result::Result<R, ContentError<E>> {
-        if !core::ptr::eq(self.parser(), parent.parser()) {
-            // Refuse before traversing the map. A mapped input has an honest
-            // physical enclosure available in O(1), not a physical child offset.
-            let at = origin.map_or(self.span().start, |source| source.carrier().start);
-            return Err(ContentError::Processing(Error::pkix(
-                structured_pkix::Error::new(structured_pkix::ErrorCode::ForeignReader, field, at),
-            )));
-        }
-        let context = match origin {
-            Some(origin) => SourceMap::mapped(self, parent, field, origin),
-            None => SourceMap::of(self, parent, field),
-        }
-        .map_err(ContentError::Processing)?;
-        let joined;
-        let (bytes, base) = if let [piece] = self.pieces() {
-            let base = if context.coordinates() == Coordinates::Original {
-                piece.span().start
-            } else {
-                0
-            };
-            (piece.as_bytes(), base)
-        } else {
-            joined = self
-                .copy_in(parent, field, context.carrier().start)
-                .map_err(ContentError::Processing)?;
-            (&*joined, 0)
-        };
-        let reader =
-            self.parser()
-                .read_nested_query_in(parent, bytes, base, encoding, self.outer_depth());
+        let prepared = self
+            .prepare_nested(parent, field, origin)
+            .map_err(ContentError::Processing)?;
+        let reader = self.parser().read_nested_query_in(
+            parent,
+            prepared.bytes(),
+            prepared.base,
+            encoding,
+            self.outer_depth(),
+        );
         let mut reader = match reader {
             Ok(reader) => reader,
             Err(source) => {
                 return Err(ContentError::Decoding {
                     source: Error::encoding(source, field),
-                    context,
+                    context: prepared.context,
                 });
             }
         };
-        match callback(&mut reader, &context) {
+        match callback(&mut reader, &prepared.context) {
             Ok(output) => Ok(output),
-            Err(source) => Err(ContentError::Callback { source, context }),
+            Err(source) => Err(ContentError::Callback {
+                source,
+                context: prepared.context,
+            }),
         }
     }
 }

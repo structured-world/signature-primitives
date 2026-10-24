@@ -104,7 +104,7 @@ impl<'p, 'd> material::credentials::Provider<Evidence<'p, 'd>> for Owner<'p, 'd>
         &self,
         credential: &credential::Checked<'m, 'doc, '_, Evidence<'p, 'd>>,
         _: &[material::Open<'doc>],
-        operation: &structured_asn1::Reader<'doc>,
+        operation: &structured_asn1::ScopedReader<'doc, '_>,
         mut visitor: impl for<'value, 'source> FnMut(Need<'value, 'source, 'm, 'doc>) -> Result<(), V>,
     ) -> Result<Completeness, VisitError<OwnerError, V>> {
         let ordinal = self.visits.get();

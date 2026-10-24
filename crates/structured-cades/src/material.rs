@@ -576,7 +576,7 @@ fn collect<'d, W: Work>(
             .ok_or(Error::Foreign {
                 at: element.span().start,
             })?;
-        proof::revocation(&reader, element, placement, operation, crls, ocsp, open)?;
+        proof::revocation(&reader, element, placement, crls, ocsp, open)?;
     }
     Ok(())
 }

@@ -116,6 +116,36 @@ impl<'a, P: SignatureProvider<'a>> PayloadBatch<'a, P> {
         let mut answers = execution.vector();
         answers.try_reserve_exact(self.raw.len()).map_err(refusal)?;
         stream::run(source, &mut PayloadSink(&mut self), execution, field, at)?;
+        self.finish(outputs, answers, execution)
+    }
+
+    /// Suspends only acquisition; raw and digest callbacks, output ownership
+    /// and failure classes are shared with the synchronous payload driver.
+    pub async fn run_async<S: stream::AsyncSource, W: Work>(
+        mut self,
+        source: &mut S,
+        execution: &W,
+    ) -> Result<Completed<'a, P>, PassError<S::Error, P::Error>> {
+        let (field, at) = self.digests.location();
+        let refusal = |cause| StreamError::Processing(Error::resource(cause, field, at));
+        let mut outputs = execution.vector();
+        outputs
+            .try_reserve_exact(self.digests.len())
+            .map_err(refusal)?;
+        let mut answers = execution.vector();
+        answers.try_reserve_exact(self.raw.len()).map_err(refusal)?;
+        stream::run_async(source, &mut PayloadSink(&mut self), execution, field, at).await?;
+        self.finish(outputs, answers, execution)
+    }
+
+    fn finish<SE, W: Work>(
+        self,
+        outputs: OwnedVec<DigestOutput<'a, P>, W>,
+        mut answers: OwnedVec<SignatureAnswer, W>,
+        execution: &W,
+    ) -> Result<Completed<'a, P>, PassError<SE, P::Error>> {
+        let (field, at) = self.digests.location();
+        let refusal = |cause| StreamError::Processing(Error::resource(cause, field, at));
         execution
             .charge_work(core::mem::size_of_val(&*self.raw) as u64)
             .map_err(refusal)?;

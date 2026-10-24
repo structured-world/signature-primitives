@@ -1,5 +1,7 @@
 //! Complete common timestamp checks; path/status/policy acceptance stays external.
 
+mod asynchronous;
+
 use super::profile::{
     self, MappedProfileCheckError, ProfileCheckError, ProfileFailure, ProfileInput,
 };
@@ -334,45 +336,86 @@ impl<P, S, R> Inspection<'_, '_, P, S, R> {
                 None,
             ),
         };
-        let (accuracy, accuracy_error) = match info
-            .accuracy()
-            .map(super::AccuracyReading::deviation)
-            .transpose()
-        {
-            Ok(accuracy) => (accuracy, None),
-            Err(error) => (None, Some(error)),
-        };
-        let timeliness = super::timeliness(
-            info.gen_time(),
-            accuracy,
-            self.context.utc,
-            self.context.reference,
-            self.context.requested.is_some(),
-            requested_fields.and_then(|fields| fields.nonce),
-            self.context.window,
-        );
-        let mut information = Information {
-            authority,
-            imprint,
-            requested_imprint,
-            requested_fields,
-            timeliness,
-            accuracy_error,
-            unknown,
-            evidence: None,
-        };
-        if self.common_holds && !info.has_faults() && information.holds(self.purpose) {
-            information.evidence = Some(Evidence {
-                facts: info
-                    .retain_facts(inside)
-                    .map_err(InfoCheckError::Processing)?,
-                source: source
-                    .try_copy_in(&inside.execution())
-                    .map_err(InfoCheckError::Provenance)?,
-            });
-        }
-        Ok(information)
+        finish_information(
+            info,
+            inside,
+            source,
+            self.context,
+            InformationFacts {
+                authority,
+                imprint,
+                requested_imprint,
+                requested_fields,
+                unknown,
+            },
+            self.common_holds,
+            self.purpose,
+        )
     }
+}
+
+struct InformationFacts {
+    authority: AuthorityFacts,
+    imprint: ImprintAgreement,
+    requested_imprint: Option<RequestAgreement>,
+    requested_fields: Option<RequestFields>,
+    unknown: OwnedVec<OwnedOid>,
+}
+
+fn finish_information<SE, PE, RE>(
+    info: &super::TokenInfo<'_>,
+    inside: &Reader<'_>,
+    source: &SourceMap,
+    context: &CheckContext<'_, '_>,
+    facts: InformationFacts,
+    common_holds: bool,
+    purpose: CheckPurpose,
+) -> Result<Information, InfoCheckError<SE, PE, RE>> {
+    let InformationFacts {
+        authority,
+        imprint,
+        requested_imprint,
+        requested_fields,
+        unknown,
+    } = facts;
+    let (accuracy, accuracy_error) = match info
+        .accuracy()
+        .map(super::AccuracyReading::deviation)
+        .transpose()
+    {
+        Ok(accuracy) => (accuracy, None),
+        Err(error) => (None, Some(error)),
+    };
+    let timeliness = super::timeliness(
+        info.gen_time(),
+        accuracy,
+        context.utc,
+        context.reference,
+        context.requested.is_some(),
+        requested_fields.and_then(|fields| fields.nonce),
+        context.window,
+    );
+    let mut information = Information {
+        authority,
+        imprint,
+        requested_imprint,
+        requested_fields,
+        timeliness,
+        accuracy_error,
+        unknown,
+        evidence: None,
+    };
+    if common_holds && !info.has_faults() && information.holds(purpose) {
+        information.evidence = Some(Evidence {
+            facts: info
+                .retain_facts(inside)
+                .map_err(InfoCheckError::Processing)?,
+            source: source
+                .try_copy_in(&inside.execution())
+                .map_err(InfoCheckError::Provenance)?,
+        });
+    }
+    Ok(information)
 }
 
 fn unrecognized<SE, PE, RE>(

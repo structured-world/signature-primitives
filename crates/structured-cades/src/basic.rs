@@ -34,6 +34,13 @@ impl<'r, 'p, 'm, 'd, 'v> Basic<'r, 'p, 'm, 'd, 'v> {
     pub fn counter_paths(&self) -> &crate::counters::Paths<'r, 'm, 'd, 'v> {
         &self.counters
     }
+    /// Transfers the already checked complete counter census without copying.
+    /// A containing format can compose its own root-field requirements while
+    /// preserving the existing original CMS member and path associations.
+    #[must_use]
+    pub fn into_counters(self) -> crate::counters::Paths<'r, 'm, 'd, 'v> {
+        self.counters
+    }
     /// Only mandatory B-B format and original root/counter mathematical binding.
     /// A higher requested profile's missing timestamp cannot erase this fact.
     #[must_use]

@@ -9,7 +9,7 @@ use crate::{
     source::{DocumentId, Node, Original},
 };
 use structured_asn1::{
-    Reader,
+    Reader, ScopedReader,
     memory::{OwnedVec, Work},
 };
 use structured_ltv::source::Snapshot;
@@ -26,7 +26,7 @@ pub struct Context<'scope, 'model, 'document> {
     signature: Node,
     value: OpenValue<'document>,
     signer: &'scope Certificate<'document>,
-    operation: &'scope Reader<'document>,
+    operation: &'scope ScopedReader<'document, 'scope>,
 }
 impl<'m, 'd> Context<'_, 'm, 'd> {
     /// Original protected credential source and immutable document identity.
@@ -52,7 +52,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
     /// Current operation; use the value's saved reader context for ASN.1
     /// inspection, preserving original source/depth and both work ceilings.
     #[must_use]
-    pub fn operation(&self) -> &Reader<'d> {
+    pub fn operation(&self) -> &ScopedReader<'d, '_> {
         self.operation
     }
 }
@@ -110,6 +110,13 @@ impl<'m, 'd, 'p, E> Checked<'m, 'd, 'p, E> {
 pub struct Group<'model, 'document, 'path, E> {
     signature: Node,
     entries: OwnedVec<Checked<'model, 'document, 'path, E>>,
+}
+impl<'m, 'd, 'p, E> Group<'m, 'd, 'p, E> {
+    /// Actual retained authentication results in their original source order.
+    #[must_use]
+    pub fn entries(&self) -> &[Checked<'m, 'd, 'p, E>] {
+        &self.entries
+    }
 }
 impl<'d, 'p, E> CredentialGroup<'p, 'd> for Group<'_, 'd, 'p, E> {
     type Id = Node;
@@ -186,6 +193,28 @@ impl<'m, 'd, 'p, E> Report<'m, 'd, 'p, E> {
 pub struct Complete<'receipt, 'model, 'document, 'path, E> {
     pub(crate) report: &'receipt Report<'model, 'document, 'path, E>,
 }
+impl<'r, 'm, 'd, 'p, E> Complete<'r, 'm, 'd, 'p, E> {
+    /// Borrows the actual retained root group, without tying its lifetime to
+    /// a temporary complete-census descriptor or copying authentication.
+    #[must_use]
+    pub fn root_group(&self) -> Option<&'r Group<'m, 'd, 'p, E>> {
+        if self.report.root.entries.is_empty() {
+            None
+        } else {
+            Some(&self.report.root)
+        }
+    }
+    /// Original counter group after current metadata admission. Absence is
+    /// distinct from refusal; the group remains owned by the source report.
+    pub fn counter_group(
+        &self,
+        ordinal: usize,
+        work: &impl Work,
+    ) -> Result<Option<&'r Group<'m, 'd, 'p, E>>, structured_asn1::memory::MemoryError> {
+        work.charge_work(1)?;
+        Ok(self.report.counters.get(ordinal))
+    }
+}
 impl<'m, 'd, 'p, E> CredentialReceipts<'p, 'd> for Complete<'_, 'm, 'd, 'p, E> {
     type Id = Node;
     type Document = DocumentId<'m, 'd>;
@@ -249,6 +278,35 @@ pub fn check<'m, 'd, 'p, E, P: Provider<'p, 'd, Evidence = E>>(
     provider: &P,
     operation: &Reader<'d>,
 ) -> Result<Report<'m, 'd, 'p, E>, CheckError<P::Error>> {
+    prepared
+        .document()
+        .message()
+        .require_session(operation, "cades.credentials")
+        .map_err(|cause| CheckError::Processing(crate::Error::Cms(cause)))?;
+    operation.charge(1).map_err(|cause| {
+        CheckError::Processing(crate::Error::encoding(cause, "cades.credentials"))
+    })?;
+    if !prepared.basic_format_requirements_met() {
+        return Err(CheckError::Nonconforming {
+            signature: prepared.document().locate(prepared.signer().span()).node,
+        });
+    }
+    check_properties(prepared, signer, counters, provider, operation)
+}
+
+/// Authenticates the complete protected root/counter property set without
+/// imposing `CAdES`-specific root services on a containing format. `PAdES` uses
+/// the same signed properties but forbids `CAdES`'s required signing-time.
+/// Actual CMS placement/cardinality, ESS, source/key binding and every counter
+/// are still checked before any handler. This does not assert `CAdES` B-B.
+/// EN319142-1 §6.3/Table1 and EN319122-1 §5.2.6 define the separate profiles.
+pub fn check_properties<'m, 'd, 'p, E, P: Provider<'p, 'd, Evidence = E>>(
+    prepared: &Preparation<'m, 'd>,
+    signer: &SignerBinding<'_, 'm, 'd, 'p>,
+    counters: &Paths<'_, 'm, 'd, 'p>,
+    provider: &P,
+    operation: &ScopedReader<'d, '_>,
+) -> Result<Report<'m, 'd, 'p, E>, CheckError<P::Error>> {
     let processing = CheckError::Processing;
     prepared
         .document()
@@ -273,25 +331,7 @@ pub fn check<'m, 'd, 'p, E, P: Provider<'p, 'd, Evidence = E>>(
             signature: selected.node,
         });
     }
-    // Both value syntax and signed placement were established by the original
-    // preparation. A partial open-value prefix or an unsigned role value must
-    // never be promoted to a complete PROTECTED credential census.
-    if !prepared.basic_format_requirements_met() {
-        return Err(CheckError::Nonconforming {
-            signature: selected.node,
-        });
-    }
-    // Finish whole-source/counter membership preflight BEFORE the first handler.
-    for (ordinal, expected) in prepared.counters().iter().enumerate() {
-        operation
-            .charge(1)
-            .map_err(|cause| processing(Error::encoding(cause, "cades.credentials")))?;
-        if counters.counter(ordinal).signature != expected.node() {
-            return Err(processing(Error::Foreign {
-                at: expected.node().span().start,
-            }));
-        }
-    }
+    preflight_properties(prepared, counters, operation)?;
     let mut complete = true;
     let root = group(
         prepared,
@@ -344,13 +384,51 @@ pub fn check<'m, 'd, 'p, E, P: Provider<'p, 'd, Evidence = E>>(
     })
 }
 
+fn preflight_properties<E>(
+    prepared: &Preparation<'_, '_>,
+    counters: &Paths<'_, '_, '_, '_>,
+    operation: &ScopedReader<'_, '_>,
+) -> Result<(), CheckError<E>> {
+    // A partial or misplaced open-value prefix cannot become a complete
+    // protected census. Finish every source check before the first handler.
+    if !prepared.signer().faults().is_empty()
+        || !prepared.profile().faults().is_empty()
+        || !prepared.profile().signing().faults().is_empty()
+        || !prepared.properties().faults().is_empty()
+    {
+        return Err(CheckError::Nonconforming {
+            signature: prepared.document().locate(prepared.signer().span()).node,
+        });
+    }
+    for (ordinal, expected) in prepared.counters().iter().enumerate() {
+        operation
+            .charge(1)
+            .map_err(|cause| CheckError::Processing(Error::encoding(cause, "cades.credentials")))?;
+        if counters.counter(ordinal).signature != expected.node() {
+            return Err(CheckError::Processing(Error::Foreign {
+                at: expected.node().span().start,
+            }));
+        }
+        if expected.malformed().is_some()
+            || expected
+                .properties()
+                .is_none_or(|value| !value.faults().is_empty())
+        {
+            return Err(CheckError::Nonconforming {
+                signature: expected.node(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn group<'m, 'd, 'p, E, P: Provider<'p, 'd, Evidence = E>>(
     prepared: &Preparation<'m, 'd>,
     signature: Node,
     properties: &Properties<'d>,
     signer: &Certificate<'d>,
     provider: &P,
-    operation: &Reader<'d>,
+    operation: &ScopedReader<'d, '_>,
     complete: &mut bool,
 ) -> Result<Group<'m, 'd, 'p, E>, CheckError<P::Error>> {
     let work = operation.execution();

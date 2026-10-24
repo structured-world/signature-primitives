@@ -1388,7 +1388,7 @@ impl structured_cades::material::credentials::Provider<()> for NoCredentials {
         &self,
         _: &structured_cades::credential::Checked<'m, 'd, '_, ()>,
         _: &[structured_cades::material::Open<'d>],
-        _: &structured_asn1::Reader<'d>,
+        _: &structured_asn1::ScopedReader<'d, '_>,
         _: impl for<'v, 's> FnMut(
             structured_cades::material::credentials::Need<'v, 's, 'm, 'd>,
         ) -> Result<(), V>,

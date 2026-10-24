@@ -379,3 +379,135 @@ fn hash_issuer_and_unreadable_results_remain_independent_of_profile_faults() {
         assert_eq!(storage.used(), held);
     }
 }
+
+#[test]
+fn certificate_origin_refusal_precedes_every_ess_hash_state_without_issuer_hint() {
+    certificate_origin_refusal(false);
+}
+
+#[test]
+fn certificate_origin_refusal_precedes_validation_set_hash_without_issuer_hint() {
+    certificate_origin_refusal(true);
+}
+
+fn certificate_origin_refusal(validation_set: bool) {
+    // A completed source parse is not credit for a later certificate hash.
+    // Both first-signer and validation-set binding must respect the actual
+    // certificate's original local ceiling even under a wider foreign current
+    // account, and cannot rely on optional issuerSerial to attach provenance.
+    let certificate_bytes = certificate("issuer", 7);
+    let sum = certificate_bytes
+        .iter()
+        .fold(0_u8, |sum, byte| sum.wrapping_add(*byte));
+    let encoded = signer(
+        &[attribute(
+            oid::SIGNING_CERTIFICATE,
+            &[value(&[identity(&[sum; 20]), identity(&[sum; 20])], None)],
+        )],
+        &[],
+    );
+    let certificate_storage = memory(1_000_000, 1_000_000);
+    let certificate_parser = Parser::new(
+        Encoding::Der,
+        structured_asn1::Limits {
+            max_work: 100_000,
+            ..Default::default()
+        },
+        certificate_storage.clone(),
+    );
+    let certificate =
+        structured_pkix::Certificate::read(&certificate_parser, &certificate_bytes, 900).unwrap();
+    let origin = certificate_parser.execution_in(&certificate_storage);
+    origin
+        .charge_work(u64::try_from(origin.work_remaining()).unwrap())
+        .unwrap();
+    assert!(origin.charge_work(1).is_err());
+
+    let current_storage = memory(1_000_000, 1_000_000);
+    let parser = Parser::ber(current_storage.clone());
+    let mut parent = parser.read(&encoded, 400).unwrap();
+    let element = parent.next_element().unwrap().unwrap();
+    let signer = structured_cms::signer::SignerInfo::read(&parent, &element).unwrap();
+    let attributes = SigningAttributes::read(&signer, &parent).unwrap();
+    let provider = Provider::default();
+    let held = current_storage.used();
+    let result = if validation_set {
+        attributes
+            .v1()
+            .unwrap()
+            .bind_validation_certificate(&provider, &certificate, &parent)
+            .map(|_| ())
+    } else {
+        attributes
+            .bind_certificate(&provider, &certificate, &parent)
+            .map(|_| ())
+    };
+    let Err(BindingError::Processing(error)) = result else {
+        panic!("certificate source ceiling bypassed, validation_set={validation_set}: {result:?}");
+    };
+    assert!(error.is_resource());
+    assert_eq!(provider.starts.get(), 0);
+    assert_eq!(provider.updates.get(), 0);
+    assert_eq!(provider.finishes.get(), 0);
+    assert_eq!(current_storage.used(), held);
+}
+
+#[test]
+fn certificate_origin_bridge_also_preserves_current_local_aggregate_and_capacity_limits() {
+    // Attaching an independent certificate's origin must not substitute its
+    // wider account/ceiling for the current operation, on either ESS path.
+    let certificate_bytes = certificate("issuer", 7);
+    let encoded = signer(
+        &[attribute(
+            oid::SIGNING_CERTIFICATE,
+            &[value(&[identity(&[7; 20]), identity(&[7; 20])], None)],
+        )],
+        &[],
+    );
+    let origin = memory(1_000_000, 1_000_000);
+    let parser = Parser::ber(origin.clone());
+    let mut source = parser.read(&encoded, 400).unwrap();
+    let element = source.next_element().unwrap().unwrap();
+    let signer = structured_cms::signer::SignerInfo::read(&source, &element).unwrap();
+    let attributes = SigningAttributes::read(&signer, &source).unwrap();
+    let certificate = structured_pkix::Certificate::read(&parser, &certificate_bytes, 900).unwrap();
+    for (capacity, aggregate, local) in [
+        (1_000_000, 1_000_000, 0),
+        (1_000_000, 0, 1_000_000),
+        (0, 1_000_000, 1_000_000),
+    ] {
+        for validation in [false, true] {
+            let storage = memory(capacity, aggregate);
+            let current = Parser::new(
+                Encoding::Ber,
+                structured_asn1::Limits {
+                    max_work: local,
+                    ..Default::default()
+                },
+                storage.clone(),
+            );
+            let query = current.read(&[], 1400).unwrap();
+            let provider = Provider::default();
+            let before = origin.used();
+            let result = if validation {
+                attributes
+                    .v1()
+                    .unwrap()
+                    .bind_validation_certificate(&provider, &certificate, &query)
+                    .map(|_| ())
+            } else {
+                attributes
+                    .bind_certificate(&provider, &certificate, &query)
+                    .map(|_| ())
+            };
+            assert!(
+                matches!(result, Err(BindingError::Processing(error)) if error.is_resource()),
+                "current limits bypassed: capacity={capacity}, aggregate={aggregate}, local={local}, validation={validation}"
+            );
+            assert_eq!(provider.starts.get(), 0);
+            assert_eq!(provider.updates.get(), 0);
+            assert_eq!(storage.used(), 0);
+            assert_eq!(origin.used(), before);
+        }
+    }
+}

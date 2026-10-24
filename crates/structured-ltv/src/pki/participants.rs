@@ -254,6 +254,13 @@ impl<'path, 'document, N: Copy, D: Copy, G: Copy, I>
         self.origins.credentials.matches(credentials)
     }
 
+    /// Whether this census was derived from this exact complete TSA-path
+    /// receipt. The current caller must admit this metadata query first.
+    #[must_use]
+    pub fn same_timestamps(&self, timestamps: &TimestampPaths<'_, '_, '_, N, D, G, I>) -> bool {
+        self.origins.timestamps.matches(timestamps)
+    }
+
     /// Require the exact live input receipts that produced this complete
     /// participant census. Equivalent IDs, a different valid path/provider
     /// context or independently collected credentials do not establish that
@@ -281,7 +288,7 @@ impl<'path, 'document, N: Copy, D: Copy, G: Copy, I>
         if !self.origins.signer.matches(signer)
             || !self.origins.counters.matches(counters)
             || !self.same_credentials(credentials)
-            || !self.origins.timestamps.matches(timestamps)
+            || !self.same_timestamps(timestamps)
         {
             return Err(ParticipantError::Foreign { signature });
         }

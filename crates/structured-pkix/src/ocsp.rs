@@ -366,6 +366,19 @@ pub struct BasicResponse<'a> {
 }
 
 impl<'a> BasicResponse<'a> {
+    /// Borrows the original response execution for new current-operation work,
+    /// preserving its producing ceiling and actual account without allocation.
+    #[must_use]
+    pub fn execution_in<'operation, W: Work>(
+        &self,
+        work: &'operation W,
+    ) -> structured_asn1::memory::Execution<'operation>
+    where
+        'a: 'operation,
+    {
+        self.algorithm.query_in(work)
+    }
+
     /// Reads an original bare `BasicOCSPResponse`, for example in a `CAdES`
     /// revocation-values attribute. This is not an `OCSPResponse` envelope.
     /// RFC6960 §4.2.1 requires DER; the producing reader's depth, source and

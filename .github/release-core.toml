@@ -20,3 +20,7 @@ release = false
 [[package]]
 name = "structured-cades"
 release = false
+
+[[package]]
+name = "structured-pades"
+release = false

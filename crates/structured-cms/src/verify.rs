@@ -255,32 +255,89 @@ impl<'a, P: SignatureProvider<'a>> Batch<'a, P> {
                 StreamError::Processing(error) => StreamError::Processing(error),
                 StreamError::Callback(error) => StreamError::Callback(payload_error(error)),
             })?;
-        execution
-            .charge_work(core::mem::size_of_val(&*self.pending) as u64)
-            .map_err(refusal)?;
-        for request in self.pending {
-            execution.charge_work(1).map_err(refusal)?;
-            let (content, signature) = check(
-                self.provider,
-                request.signer,
-                request.key,
-                &request.binding,
-                request.challenge,
-                &completed,
-                execution,
-            )
-            .map_err(StreamError::Callback)?;
-            results
-                .try_push(Checked {
-                    signer: request.signer,
-                    key: request.key,
-                    content,
-                    signature,
-                })
-                .map_err(refusal)?;
-        }
-        Ok(results.into_owned())
+        finish(
+            self.provider,
+            self.pending,
+            &completed,
+            results,
+            execution,
+            self.field,
+            self.at,
+        )
     }
+
+    /// Executes the same selected-signer checks over an asynchronous source.
+    /// No-ready batches acquire nothing; signedAttrs still use their original
+    /// independently hashed signature input after payload agreement.
+    pub async fn run_async<S: stream::AsyncSource, W: Work>(
+        self,
+        source: &mut S,
+        execution: &W,
+    ) -> Result<OwnedVec<Checked<'a>>, PassError<S::Error, P::Error>> {
+        let refusal = |cause| StreamError::Processing(Error::resource(cause, self.field, self.at));
+        let mut results = execution.vector();
+        results
+            .try_reserve_exact(self.pending.len())
+            .map_err(refusal)?;
+        if self.pending.is_empty() {
+            return Ok(results.into_owned());
+        }
+        let completed =
+            self.payload
+                .run_async(source, execution)
+                .await
+                .map_err(|error| match error {
+                    StreamError::Source(error) => StreamError::Source(error),
+                    StreamError::Processing(error) => StreamError::Processing(error),
+                    StreamError::Callback(error) => StreamError::Callback(payload_error(error)),
+                })?;
+        finish(
+            self.provider,
+            self.pending,
+            &completed,
+            results,
+            execution,
+            self.field,
+            self.at,
+        )
+    }
+}
+
+fn finish<'a, P: SignatureProvider<'a>, SE, W: Work>(
+    provider: &'a P,
+    pending: OwnedVec<Pending<'a, P>>,
+    completed: &crate::payload::Completed<'a, P>,
+    mut results: OwnedVec<Checked<'a>, W>,
+    execution: &W,
+    field: &'static str,
+    at: u64,
+) -> Result<OwnedVec<Checked<'a>>, PassError<SE, P::Error>> {
+    let refusal = |cause| StreamError::Processing(Error::resource(cause, field, at));
+    execution
+        .charge_work(core::mem::size_of_val(&*pending) as u64)
+        .map_err(refusal)?;
+    for request in pending {
+        execution.charge_work(1).map_err(refusal)?;
+        let (content, signature) = check(
+            provider,
+            request.signer,
+            request.key,
+            &request.binding,
+            request.challenge,
+            completed,
+            execution,
+        )
+        .map_err(StreamError::Callback)?;
+        results
+            .try_push(Checked {
+                signer: request.signer,
+                key: request.key,
+                content,
+                signature,
+            })
+            .map_err(refusal)?;
+    }
+    Ok(results.into_owned())
 }
 
 fn check<'a, P: SignatureProvider<'a>, W: Work>(

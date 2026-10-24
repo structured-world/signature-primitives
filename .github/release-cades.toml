@@ -25,3 +25,7 @@ release = false
 [[package]]
 name = "structured-xades"
 release = false
+
+[[package]]
+name = "structured-pades"
+release = false

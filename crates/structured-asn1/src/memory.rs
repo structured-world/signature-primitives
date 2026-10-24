@@ -20,7 +20,7 @@ mod sort;
 mod string;
 mod text;
 mod work;
-pub use map::{HashWork, OwnedMap, RetainError};
+pub use map::{HashWork, MapExecution, OwnedMap, RetainError};
 pub use shared_string::SharedString;
 pub use sort::SortError;
 pub use string::OwnedString;
@@ -259,6 +259,26 @@ pub struct OwnedVec<T, W: Work = Memory> {
     values: Vec<T, allocator::AccountAllocator<W>>,
 }
 
+/// Ownership-preserving vector execution transfer, including both inputs on
+/// mismatch. Layout, elements, capacity and retained charges are unchanged.
+#[must_use]
+pub enum VecExecution<T, Old: Work, New: Work> {
+    /// Same allocation, now mutated under the requested current execution.
+    Changed {
+        /// Transferred vector.
+        values: OwnedVec<T, New>,
+        /// Previous work, without replaying charges.
+        previous: Old,
+    },
+    /// Different accounts cannot exchange allocation charges.
+    Foreign {
+        /// Unchanged original vector.
+        values: OwnedVec<T, Old>,
+        /// Unused requested work.
+        requested: New,
+    },
+}
+
 impl<T> OwnedVec<T> {
     /// Temporarily attaches the current operation's work ceilings.
     ///
@@ -279,6 +299,22 @@ impl<T> OwnedVec<T> {
 }
 
 impl<T, W: Work> OwnedVec<T, W> {
+    /// Rebinds storage without allocation, element copying or repeated work.
+    /// Borrowed executions transfer their keeper without a refcount increase;
+    /// retaining previous independent Memory additionally owns that account.
+    pub fn rebind<New: Work>(self, execution: New) -> VecExecution<T, W, New> {
+        if !self.memory().same_account(execution.memory()) {
+            return VecExecution::Foreign {
+                values: self,
+                requested: execution,
+            };
+        }
+        let (values, previous) = allocator::rebind(self.values, &execution);
+        VecExecution::Changed {
+            values: OwnedVec { values },
+            previous,
+        }
+    }
     /// Finishes bounded construction as an independently owned result.
     ///
     /// Transfers the existing allocation and its original account without

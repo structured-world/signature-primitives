@@ -35,7 +35,25 @@ pub(super) fn scope<T, W: Work>(
     })
 }
 
-/// Only the two private, infallible keeper-moving closures above call this.
+/// Moves an allocation between same-account executions and returns old work.
+pub(super) fn rebind<T, Old: Work, New: Work>(
+    values: allocator_api2::vec::Vec<T, AccountAllocator<Old>>,
+    execution: &New,
+) -> (allocator_api2::vec::Vec<T, AccountAllocator<New>>, Old) {
+    let mut previous = None;
+    let values = transfer(values, |allocator| {
+        let (old, memory) = allocator.execution.split_storage_owner(allocator.storage);
+        previous = Some(old);
+        let (execution, storage) = execution.with_storage_owner(memory);
+        AccountAllocator::with_storage(execution, storage)
+    });
+    (
+        values,
+        previous.expect("the infallible transfer converts exactly one allocator"),
+    )
+}
+
+/// Only private, infallible keeper-moving closures call this.
 fn transfer<T, W: Work, V: Work>(
     values: allocator_api2::vec::Vec<T, AccountAllocator<W>>,
     convert: impl FnOnce(AccountAllocator<W>) -> AccountAllocator<V>,

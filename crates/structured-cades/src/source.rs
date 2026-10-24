@@ -1,7 +1,7 @@
 //! Immutable original CMS identities shared by every `CAdES` stage.
 
-use structured_asn1::memory::{HashWork, MemoryError};
-use structured_asn1::{Element, Encoding, Parser, Reader, Span};
+use structured_asn1::memory::{HashWork, MemoryError, Work};
+use structured_asn1::{Element, Encoding, Parser, Reader, ScopedReader, Span};
 use structured_cms::{SignedData, signer::SignerInfo};
 use structured_ltv::source::{Location, Snapshot, Source};
 
@@ -93,6 +93,26 @@ impl<'a> Value<'a> {
     #[must_use]
     pub fn element(&self) -> Element<'a> {
         self.element
+    }
+    /// Decodes the original field under a short current operation. Parsed
+    /// values may retain original input borrows without retaining this cursor
+    /// or its operation; original depth and both source/current ceilings apply.
+    pub fn reader_scoped_in<'operation, W: Work>(
+        &self,
+        operation: &'operation W,
+    ) -> crate::Result<ScopedReader<'a, 'operation>>
+    where
+        'a: 'operation,
+    {
+        operation
+            .read_scoped_nested(
+                self.parser,
+                self.element.as_bytes(),
+                self.element.span().start,
+                self.encoding,
+                self.outer,
+            )
+            .map_err(|cause| crate::Error::encoding(cause, self.field))
     }
     /// Opens the original whole field with origin and current query ceilings.
     /// A later source switch never replaces the current operation with a

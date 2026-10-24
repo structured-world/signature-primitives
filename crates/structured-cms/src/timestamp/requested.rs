@@ -65,6 +65,50 @@ pub enum RequestImprintError<E> {
 }
 
 impl<'a> MessageImprint<'a> {
+    /// Asynchronous covered input, retaining both original request/token
+    /// contexts and using one resolved token identity for the complete pass.
+    pub async fn check_requested_input_async<P, I>(
+        &self,
+        requested: &MessageImprint<'a>,
+        provider: &'a P,
+        parents: (&Reader<'a>, &Reader<'a>),
+        covered: &mut I,
+    ) -> Result<(ImprintAgreement, RequestAgreement), RequestedContentError<I::Error, P::Error>>
+    where
+        P: AsnDigest<'a>,
+        I: super::AsyncComputedInput<P, P::Error>,
+    {
+        let (token_parent, requested_parent) = parents;
+        preflight(self, requested, token_parent, requested_parent)
+            .map_err(RequestedContentError::Request)?;
+        let token = match resolve(self, provider, token_parent, ImprintOperand::Token)
+            .map_err(RequestedContentError::Request)?
+        {
+            Resolved::Ready(identity) => identity,
+            Resolved::Unusable(reason) => {
+                return Ok((
+                    reason,
+                    RequestAgreement::Unusable {
+                        operand: ImprintOperand::Token,
+                        reason,
+                    },
+                ));
+            }
+        };
+        let agreement = compare_resolved(
+            self,
+            requested,
+            provider,
+            token_parent,
+            requested_parent,
+            &token,
+        )
+        .map_err(RequestedContentError::Request)?;
+        let content = super::computed::compute_async(self, provider, token_parent, covered, token)
+            .await
+            .map_err(RequestedContentError::Content)?;
+        Ok((content, agreement))
+    }
     /// Compares the full request and hashes covered bytes using one token identity.
     /// Request bytes themselves are never hashed. Semantic request disagreement
     /// remains independent of covered-content agreement; an unusable token

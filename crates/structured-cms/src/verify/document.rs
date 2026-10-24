@@ -120,6 +120,27 @@ impl<'operation, 'a, P: SignatureProvider<'a>> DocumentBatch<'operation, 'a, P> 
             checks,
         })
     }
+
+    /// Detached verification with asynchronous acquisition. The original
+    /// container and checked-member association are identical to the resident
+    /// path; a changed, failed or incomplete source returns no receipt.
+    pub async fn run_detached_async<S: crate::stream::AsyncSource>(
+        self,
+        source: &mut S,
+    ) -> Result<DocumentChecks<'a>, PassError<S::Error, P::Error>> {
+        if self.mode != ContentMode::Detached || !self.message.content().is_detached() {
+            return Err(crate::stream::StreamError::Processing(Error::schema(
+                ErrorCode::InvalidLocation,
+                "signedData.encapContentInfo",
+                self.message.content().span().start,
+            )));
+        }
+        let checks = self.batch.run_async(source, &self.execution).await?;
+        Ok(DocumentChecks {
+            message: self.message,
+            checks,
+        })
+    }
 }
 
 /// Original-container-bound mathematical facts for every selected root signer.

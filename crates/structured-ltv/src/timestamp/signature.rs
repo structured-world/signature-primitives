@@ -5,6 +5,12 @@ use crate::pki::{SignerReceipt, TimestampPath};
 use crate::source::{Query, ScopeError};
 use structured_pkix::temporal::LeapTable;
 
+#[derive(Clone, Copy)]
+enum Input {
+    SignatureValue,
+    Existence,
+}
+
 /// A completed mathematical/static association, still requiring authenticated
 /// TSA path/status and signer revocation/algorithm/policy processing.
 pub struct SignatureTime<'receipt, S, N, D, G, I> {
@@ -112,7 +118,7 @@ where
         >,
     Q: Query,
 {
-    bind(signer, timestamp, query, || {
+    bind(signer, timestamp, query, Input::SignatureValue, || {
         timestamp.interval(utc, query.execution())
     })
 }
@@ -137,15 +143,51 @@ where
         >,
     Q: Query,
 {
-    bind(signer, path.actor().verified(), query, || {
-        Ok(path.generation())
-    })
+    bind(
+        signer,
+        path.actor().verified(),
+        query,
+        Input::SignatureValue,
+        || Ok(path.generation()),
+    )
+}
+
+/// Associates an actual checked signature OR archive input with the selected
+/// signer's static path interval. A format must already have bound that input
+/// to this signature; this does not turn an archive into a signature property.
+/// EN319142-1 §6.3 permits a covering document timestamp to supply `PAdES` B-T.
+/// Other formats retain their independent signature-property requirements.
+/// <https://www.etsi.org/deliver/etsi_EN/319100_319199/31914201/01.02.01_60/en_31914201v010201p.pdf>
+pub fn existence_time_path<'receipt, 'path, 'document, S, Q, I>(
+    signer: &'receipt S,
+    path: &'receipt TimestampPath<'_, '_, '_, Q::Id, Q::Document, Q::Generation, I>,
+    query: &Q,
+) -> SignatureTimeResult<'receipt, S, Q, I>
+where
+    'document: 'path,
+    S: SignerReceipt<
+            'path,
+            'document,
+            Id = Q::Id,
+            Document = Q::Document,
+            Generation = Q::Generation,
+        >,
+    Q: Query,
+{
+    bind(
+        signer,
+        path.actor().verified(),
+        query,
+        Input::Existence,
+        || Ok(path.generation()),
+    )
 }
 
 fn bind<'receipt, 'path, 'document, S, Q, I>(
     signer: &'receipt S,
     timestamp: &'receipt Verified<Q::Id, Q::Document, Q::Generation, I>,
     query: &Q,
+    input: Input,
     interval: impl FnOnce() -> Result<Interval, TemporalError>,
 ) -> SignatureTimeResult<'receipt, S, Q, I>
 where
@@ -178,7 +220,9 @@ where
     query
         .admit(selected.node, 1)
         .map_err(SignatureTimeError::Scope)?;
-    if timestamp.purpose() != Purpose::Signature {
+    if timestamp.purpose() != Purpose::Signature
+        && !(matches!(input, Input::Existence) && timestamp.purpose() == Purpose::Archive)
+    {
         return Err(SignatureTimeError::Purpose { property });
     }
     let Some(path) = signer.path() else {

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/structured-world/signature-primitives/compare/structured-ltv-v0.13.0...structured-ltv-v0.14.0) - 2026-10-24
+
+### Added
+
+- *(pades)* [**breaking**] add PDF signature baselines ([#220](https://github.com/structured-world/signature-primitives/pull/220))
+
 ## [0.13.0](https://github.com/structured-world/signature-primitives/compare/structured-ltv-v0.12.0...structured-ltv-v0.13.0) - 2026-10-23
 
 ### Added

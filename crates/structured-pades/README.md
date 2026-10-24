@@ -56,8 +56,19 @@ inspection retains the occurrence without inventing a successful imprint check.
 The runtime is pure Rust and supports `no_std + alloc`. It injects existing
 CMS/PKIX/LTV operations rather than implementing a cryptographic backend.
 Application trust sources, deployment policy, reports, network/file acquisition
-and UI remain caller-owned. Initial registry publication is a separate release
-step; the source package does not imply registry availability.
+and UI remain caller-owned.
+
+## Install
+
+The crate is available on [crates.io](https://crates.io/crates/structured-pades)
+and follows the coordinated version of the shared primitives:
+
+```toml
+structured-pades = "0.15"
+```
+
+Subsequent releases use GitHub Actions Trusted Publishing through the repository's
+`release-plz.yml` workflow and `release` environment.
 
 ## Verification
 

@@ -1,6 +1,6 @@
 # Signature primitives
 
-**Rust libraries for validating digital signatures: ASN.1, X.509 certificates, CMS, RFC 3161 timestamps, long-term validation, XAdES, CAdES and PAdES.**
+**Rust libraries for validating digital signatures: ASN.1, X.509 certificates, CMS, RFC 3161 timestamps, long-term validation, XAdES, CAdES, PAdES and ASiC.**
 
 [![CI](https://github.com/structured-world/signature-primitives/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/structured-world/signature-primitives/actions/workflows/ci.yml)
 [![Rust 1.92+](https://img.shields.io/badge/Rust-1.92%2B-93450a?logo=rust)](https://github.com/structured-world/signature-primitives/blob/main/Cargo.toml)
@@ -27,8 +27,8 @@ the long-term validation core.
 | [**structured-ltv**](crates/structured-ltv/README.md) | Long-term validation shared by every AdES format: who must be validated, which revocation data is needed, timestamp times and archive coverage | [![version](https://img.shields.io/crates/v/structured-ltv)](https://crates.io/crates/structured-ltv) | [![docs.rs](https://img.shields.io/docsrs/structured-ltv)](https://docs.rs/structured-ltv) |
 | [**structured-xades**](crates/structured-xades/README.md) | XAdES signatures, including baseline levels B-B, B-T, B-LT and B-LTA | [![version](https://img.shields.io/crates/v/structured-xades)](https://crates.io/crates/structured-xades) | [![docs.rs](https://img.shields.io/docsrs/structured-xades)](https://docs.rs/structured-xades) |
 | [**structured-cades**](crates/structured-cades/README.md) | Source-bound CAdES baseline composition, original CMS timestamp/archive inputs and validation material | [![version](https://img.shields.io/crates/v/structured-cades)](https://crates.io/crates/structured-cades) | [![docs.rs](https://img.shields.io/docsrs/structured-cades)](https://docs.rs/structured-cades) |
-| [**structured-pades**](crates/structured-pades/README.md) | Asynchronous original-range PDF signatures, revisions, DSS/VRI, DocMDP/FieldMDP and PAdES baseline composition | Initial publication pending | Source documentation |
-| [**structured-asic**](crates/structured-asic/README.md) | Original-range ZIP/ZIP64 ASiC containers, producing XML/member binding, CAdES/XAdES and time-assertion composition | Initial publication pending | Source documentation |
+| [**structured-pades**](crates/structured-pades/README.md) | Asynchronous original-range PDF signatures, revisions, DSS/VRI, DocMDP/FieldMDP and PAdES baseline composition | [![version](https://img.shields.io/crates/v/structured-pades)](https://crates.io/crates/structured-pades) | [![docs.rs](https://img.shields.io/docsrs/structured-pades)](https://docs.rs/structured-pades) |
+| [**structured-asic**](crates/structured-asic/README.md) | Original-range ZIP/ZIP64 ASiC containers, producing XML/member binding, CAdES/XAdES and time-assertion composition | [![version](https://img.shields.io/crates/v/structured-asic)](https://crates.io/crates/structured-asic) | [![docs.rs](https://img.shields.io/docsrs/structured-asic)](https://docs.rs/structured-asic) |
 
 Each crate builds on the ones above it:
 
@@ -46,17 +46,19 @@ Use only as much of the stack as you need: certificate parsing alone needs just
 ## Install
 
 The published crates are released together; keep them on the same version.
-`structured-cades` is enabled for its initial CI publication and joins that
-coordinated release. Check its registry badge for an actually released version;
-its first-publication/OIDC procedure is documented in the crate README.
+Registry badges link to the available versions. Subsequent coordinated releases
+use GitHub Actions Trusted Publishing rather than stored bootstrap tokens.
 
 ```toml
 [dependencies]
-structured-asn1 = "0.8"
-structured-pkix = "0.8"   # certificates, paths, CRL, OCSP
-structured-cms = "0.8"    # CMS signatures, RFC 3161 timestamps
-structured-ltv = "0.8"    # long-term validation
-structured-xades = "0.8"  # XAdES
+structured-asn1 = "0.15"
+structured-pkix = "0.15"   # certificates, paths, CRL, OCSP
+structured-cms = "0.15"    # CMS signatures, RFC 3161 timestamps
+structured-ltv = "0.15"    # long-term validation
+structured-xades = "0.15"  # XAdES
+structured-cades = "0.15"  # CAdES
+structured-pades = "0.15"  # PDF signatures and PAdES
+structured-asic = "0.15"   # ASiC containers
 ```
 
 Rust 1.92 or newer. Everything works with `no_std + alloc`; enable the `std`

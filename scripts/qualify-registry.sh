@@ -82,6 +82,7 @@ check() {
 # Packages and versions come from REVISION itself, not the working tree.
 git archive "$revision" | tar -x -C "$work/tree"
 cargo metadata --locked --no-deps --format-version 1 --manifest-path "$work/tree/Cargo.toml" > "$work/metadata.json"
+python3 scripts/release-packages.py "$work/metadata.json" "$work/tree/release-plz.toml" > "$work/release-packages.json"
 msrv=$(jq -r '[.packages[].rust_version] | unique | if length == 1 then .[0] else error("rust-version differs") end' "$work/metadata.json")
 # A two-component rust-version names its .0 release; rustup's two-component
 # channel would follow later patch releases instead.
@@ -120,7 +121,7 @@ while read -r name version; do
   compare_sources "$label" "$package" "$commit" "$(jq -r .path_in_vcs "$vcs")"
   printf 'qualify-registry: %s %s sha256:%s\n' "$label" "$commit" "$checksum"
   packages+=("$label")
-done < <(jq -r '.packages[] | select(.publish == null) | "\(.name) \(.version)"' "$work/metadata.json")
+done < <(jq -r '.[] | "\(.name) \(.version)"' "$work/release-packages.json")
 
 for label in "${packages[@]}"; do
   cd -- "$work/packages/$label"

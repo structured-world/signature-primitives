@@ -67,8 +67,19 @@ Unassessed schema-instance, encryption and extension data remain explicit facts.
 
 The runtime supports `no_std + alloc` and has no hidden clock, file or network
 access. Acquisition, path security policy, trusted roots, algorithm acceptance,
-reports and UI belong to the caller. Initial registry publication and publisher
-registration are separate from source/package availability.
+reports and UI belong to the caller.
+
+## Install
+
+The crate is available on [crates.io](https://crates.io/crates/structured-asic)
+and follows the coordinated version of the shared primitives:
+
+```toml
+structured-asic = "0.15"
+```
+
+Subsequent releases use GitHub Actions Trusted Publishing through the repository's
+`release-plz.yml` workflow and `release` environment.
 
 ## Verification
 

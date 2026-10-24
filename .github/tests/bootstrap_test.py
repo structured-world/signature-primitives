@@ -18,9 +18,9 @@ class BootstrapPackages(unittest.TestCase):
         disabled = {package["name"] for package in config["package"] if package.get("release") is False}
         self.assertEqual(disabled, {"structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-pades", "structured-asic"})
 
-    def test_pades_awaits_first_publication_authorization(self):
-        # Adding a workspace member must not let an older bootstrap credential
-        # publish it before its own first-publication authorization.
+    def test_legacy_bootstrap_credentials_exclude_container_crates(self):
+        # Registering new publishers must not broaden the old LTV/CAdES
+        # bootstrap credentials to either container crate.
         for filename in ["release-core.toml", "release-ltv.toml",
                          "release-dependents.toml", "release-before-cades.toml",
                          "release-cades.toml", "../release-plz.toml"]:
@@ -28,15 +28,27 @@ class BootstrapPackages(unittest.TestCase):
                 config = tomllib.loads((ROOT / ".github" / filename).read_text())
                 packages = {package["name"]: package.get("release", True)
                             for package in config["package"]}
-                self.assertIs(packages.get("structured-pades"), False)
-                self.assertIs(packages.get("structured-asic"), False)
+                if filename != "../release-plz.toml":
+                    self.assertIs(packages.get("structured-pades"), False)
+                    self.assertIs(packages.get("structured-asic"), False)
+
+    def test_containers_use_the_coordinated_oidc_publication(self):
+        # Each container's first publication and publisher registration precede
+        # selection; old bootstrap tokens remain unable to publish either one.
+        config = tomllib.loads((ROOT / "release-plz.toml").read_text())
+        for name in ["structured-pades", "structured-asic"]:
+            with self.subTest(package=name):
+                package = next(package for package in config["package"]
+                               if package["name"] == name)
+                self.assertIsNot(package.get("release"), False)
+                self.assertEqual(package["version_group"], "primitives")
+                self.assertEqual(package["git_tag_name"], name + "-v{{ version }}")
 
     def test_coordinated_packages_include_each_others_changes(self):
         # One workspace version also ships sibling-only changes. Each package
         # must explain the commit responsible for that coordinated release.
         normal = tomllib.loads((ROOT / "release-plz.toml").read_text())
-        # CAdES now joins the authorized coordinated publication. Every active
-        # sibling must carry the same final release explanation.
+        # Every active sibling must carry the same release explanation.
         packages = [package for package in normal["package"]
                     if package.get("release") is not False]
         names = {package["name"] for package in packages}
@@ -89,7 +101,7 @@ class BootstrapPackages(unittest.TestCase):
             ("release-dependents.toml", dependents),
             ("release-before-cades.toml", names - cades - pending),
             ("release-cades.toml", cades),
-            ("../release-plz.toml", names - pending),
+            ("../release-plz.toml", names),
         ]:
             config = tomllib.loads((ROOT / ".github" / filename).read_text())
             # Only the explicitly credential-selected first LTV publication

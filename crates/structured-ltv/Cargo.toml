@@ -17,9 +17,9 @@ std = ["structured-asn1/std", "structured-pkix/std", "structured-cms/std"]
 alloc = ["structured-asn1/alloc", "structured-pkix/alloc", "structured-cms/alloc"]
 
 [dependencies]
-structured-asn1 = { version = "0.14.0", path = "../structured-asn1", default-features = false }
-structured-pkix = { version = "0.14.0", path = "../structured-pkix", default-features = false }
-structured-cms = { version = "0.14.0", path = "../structured-cms", default-features = false }
+structured-asn1 = { version = "0.15.0", path = "../structured-asn1", default-features = false }
+structured-pkix = { version = "0.15.0", path = "../structured-pkix", default-features = false }
+structured-cms = { version = "0.15.0", path = "../structured-cms", default-features = false }
 
 [dev-dependencies]
 # Test-only fixed-curve oracles, using the same pinned engines as CMS tests.

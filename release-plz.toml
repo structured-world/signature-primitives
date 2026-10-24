@@ -6,36 +6,36 @@ changelog_update = true
 [[package]]
 name = "structured-asn1"
 version_group = "primitives"
-changelog_include = ["structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-cades"]
+changelog_include = ["structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-cades", "structured-asic"]
 
 [[package]]
 name = "structured-pkix"
 version_group = "primitives"
-changelog_include = ["structured-asn1", "structured-cms", "structured-ltv", "structured-xades", "structured-cades"]
+changelog_include = ["structured-asn1", "structured-cms", "structured-ltv", "structured-xades", "structured-cades", "structured-asic"]
 
 [[package]]
 name = "structured-cms"
 git_tag_name = "v{{ version }}"
 version_group = "primitives"
-changelog_include = ["structured-asn1", "structured-pkix", "structured-ltv", "structured-xades", "structured-cades"]
+changelog_include = ["structured-asn1", "structured-pkix", "structured-ltv", "structured-xades", "structured-cades", "structured-asic"]
 
 [[package]]
 name = "structured-ltv"
 git_tag_name = "structured-ltv-v{{ version }}"
 version_group = "primitives"
-changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-xades", "structured-cades"]
+changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-xades", "structured-cades", "structured-asic"]
 
 [[package]]
 name = "structured-xades"
 git_tag_name = "structured-xades-v{{ version }}"
 version_group = "primitives"
-changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-cades"]
+changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-cades", "structured-asic"]
 
 [[package]]
 name = "structured-cades"
 git_tag_name = "structured-cades-v{{ version }}"
 version_group = "primitives"
-changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades"]
+changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-asic"]
 
 [[package]]
 name = "structured-pades"
@@ -44,4 +44,6 @@ release = false
 
 [[package]]
 name = "structured-asic"
-release = false
+git_tag_name = "structured-asic-v{{ version }}"
+version_group = "primitives"
+changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-cades"]

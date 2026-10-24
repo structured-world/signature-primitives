@@ -29,7 +29,18 @@ class BootstrapPackages(unittest.TestCase):
                 packages = {package["name"]: package.get("release", True)
                             for package in config["package"]}
                 self.assertIs(packages.get("structured-pades"), False)
-                self.assertIs(packages.get("structured-asic"), False)
+                if filename != "../release-plz.toml":
+                    self.assertIs(packages.get("structured-asic"), False)
+
+    def test_asic_uses_the_coordinated_oidc_publication(self):
+        # ASiC's own first publication and publisher registration precede this
+        # selection; old bootstrap tokens remain unable to publish the crate.
+        config = tomllib.loads((ROOT / "release-plz.toml").read_text())
+        asic = next(package for package in config["package"]
+                    if package["name"] == "structured-asic")
+        self.assertIsNot(asic.get("release"), False)
+        self.assertEqual(asic["version_group"], "primitives")
+        self.assertEqual(asic["git_tag_name"], "structured-asic-v{{ version }}")
 
     def test_coordinated_packages_include_each_others_changes(self):
         # One workspace version also ships sibling-only changes. Each package
@@ -89,7 +100,7 @@ class BootstrapPackages(unittest.TestCase):
             ("release-dependents.toml", dependents),
             ("release-before-cades.toml", names - cades - pending),
             ("release-cades.toml", cades),
-            ("../release-plz.toml", names - pending),
+            ("../release-plz.toml", names - {"structured-pades"}),
         ]:
             config = tomllib.loads((ROOT / ".github" / filename).read_text())
             # Only the explicitly credential-selected first LTV publication

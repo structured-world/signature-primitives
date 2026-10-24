@@ -4,6 +4,21 @@ use structured_asn1::memory::{MemoryError, Work};
 
 mod headers;
 pub use headers::media_type_or_headers;
+mod essence;
+pub use essence::Essences;
+
+trait Head {
+    fn cost(&self) -> Result<u64, MemoryError>;
+    fn type_byte(&mut self, byte: u8);
+    fn subtype_byte(&mut self, byte: u8);
+}
+impl Head for () {
+    fn cost(&self) -> Result<u64, MemoryError> {
+        Ok(0)
+    }
+    fn type_byte(&mut self, _: u8) {}
+    fn subtype_byte(&mut self, _: u8) {}
+}
 
 #[derive(Clone, Copy)]
 enum Phase {
@@ -69,7 +84,7 @@ impl<const XML_NORMALIZED: bool> Syntax<XML_NORMALIZED> {
     // grammar, registration lookup or media-type equivalence/normalization.
     // https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1
     // https://www.rfc-editor.org/rfc/rfc822.html#section-3.3
-    fn byte(&mut self, byte: u8) -> bool {
+    fn byte<H: Head>(&mut self, byte: u8, head: &mut H) -> bool {
         if !byte.is_ascii() || (byte == b'\n' && self.folding != 1 && !XML_NORMALIZED) {
             return false;
         }
@@ -136,11 +151,11 @@ impl<const XML_NORMALIZED: bool> Syntax<XML_NORMALIZED> {
                 }
                 true
             }
-            Context::Normal => self.normal(byte),
+            Context::Normal => self.normal(byte, head),
         }
     }
 
-    fn normal(&mut self, byte: u8) -> bool {
+    fn normal<H: Head>(&mut self, byte: u8, head: &mut H) -> bool {
         match byte {
             b' ' | b'\t' => {
                 self.gap();
@@ -184,8 +199,14 @@ impl<const XML_NORMALIZED: bool> Syntax<XML_NORMALIZED> {
             }
             _ if token(byte) => {
                 self.phase = match self.phase {
-                    Phase::TypeStart | Phase::Type => Phase::Type,
-                    Phase::SubtypeStart | Phase::Subtype => Phase::Subtype,
+                    Phase::TypeStart | Phase::Type => {
+                        head.type_byte(byte);
+                        Phase::Type
+                    }
+                    Phase::SubtypeStart | Phase::Subtype => {
+                        head.subtype_byte(byte);
+                        Phase::Subtype
+                    }
                     Phase::AttributeStart | Phase::Attribute => Phase::Attribute,
                     Phase::ValueStart | Phase::Value => Phase::Value,
                     _ => return false,
@@ -214,19 +235,31 @@ impl<const XML_NORMALIZED: bool> Syntax<XML_NORMALIZED> {
         value: impl AsRef<[u8]>,
         execution: &W,
     ) -> Result<bool, MemoryError> {
-        let value = value.as_ref();
+        self.scan(value.as_ref(), execution, &mut ())
+    }
+
+    fn scan<W: Work, H: Head>(
+        &mut self,
+        value: &[u8],
+        execution: &W,
+        head: &mut H,
+    ) -> Result<bool, MemoryError> {
         // Each byte has bounded scalar dispatch only. Comment nesting is an
         // iterative counter, never stack frames, allocations or recursive calls.
+        let per_byte = head
+            .cost()?
+            .checked_add(4)
+            .ok_or(MemoryError::WorkExceeded)?;
         let cost = u64::try_from(value.len())
             .ok()
-            .and_then(|n| n.checked_mul(4))
+            .and_then(|n| n.checked_mul(per_byte))
             .ok_or(MemoryError::WorkExceeded)?;
         execution.charge_work(cost)?;
         if !self.valid {
             return Ok(false);
         }
         for &byte in value {
-            if !self.byte(byte) {
+            if !self.byte(byte, head) {
                 self.valid = false;
                 return Ok(false);
             }

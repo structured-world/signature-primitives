@@ -1,5 +1,7 @@
 //! Real CMS/TSA signatures drive initial ERS and BOTH renewal mechanisms.
 
+#[path = "evidence_records/asynchronous.rs"]
+mod asynchronous;
 #[path = "support/crl.rs"]
 mod crl_fixture;
 mod support;

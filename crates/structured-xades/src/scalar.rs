@@ -143,6 +143,20 @@ pub trait UriXml: Xml {
     ) -> Result<R, crate::reference::VisitError<Self::Error, VE>>;
 }
 
+/// Visits an original anyURI through the same admission/generation fence as
+/// other common XML reads. The visitor may retain owned results, never the
+/// owner's temporary normalized string; its first refusal keeps precedence.
+pub fn with_uri<X: UriXml, W: Work, R, E>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+    source: LexicalSource<'_>,
+    visitor: impl for<'view> FnOnce(UriValue<'view>) -> Result<R, E>,
+) -> crate::xml::VisitResult<R, X, E> {
+    access.query_fallible(node, |xml, snapshot, work| {
+        xml.with_uri(snapshot, node, source, work, visitor)
+    })
+}
+
 /// Exact base datatype requested by an `XAdES` field's normative schema.
 /// This is not an application policy, URI resolver or whole-schema validator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -24,6 +24,8 @@ allocator-api2 = { version = "=0.4.0", default-features = false, features = ["al
 allocator-api2-hashbrown = { package = "allocator-api2", version = "=0.2.21", default-features = false, features = ["alloc"] }
 # The pre-admission bound is audited against this table's control-group layout.
 hashbrown = { version = "=0.17.1", default-features = false, features = ["default-hasher", "inline-more", "allocator-api2", "raw-entry"] }
+# Block/table admission is audited against this exact allocation-free core.
+miniz_oxide = { version = "=0.9.1", default-features = false, features = ["block-boundary"] }
 
 [lints]
 workspace = true

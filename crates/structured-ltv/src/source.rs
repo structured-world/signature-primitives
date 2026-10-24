@@ -2,17 +2,7 @@
 
 use structured_asn1::memory::{HashWork, MemoryError, Work};
 
-/// Original document identity and the exact immutable view generation.
-///
-/// A generation change invalidates earlier selection and reference evidence;
-/// it is a processing failure, never a malformed-property diagnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Snapshot<D, G> {
-    /// Stable identity supplied by the source owner, not a document fingerprint.
-    pub document: D,
-    /// Generation under which all selected nodes and evidence were obtained.
-    pub generation: G,
-}
+pub use structured_asn1::source::Snapshot;
 
 /// One original node in its exact source generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

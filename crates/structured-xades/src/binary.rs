@@ -240,7 +240,9 @@ pub enum Error<E, C, N, D, G> {
 impl<E, C, N, D, G> Error<E, C, N, D, G> {
     // Flatten nested scoped operations without relabelling XML locations or
     // allocating/cloning while already handling an opaque callback refusal.
-    pub(crate) fn map_callback<T>(self, map: impl FnOnce(C) -> T) -> Error<E, T, N, D, G> {
+    /// Maps only the scoped callback cause. Original XML/source locations,
+    /// resource refusals and access/generation classifications remain intact.
+    pub fn map_callback<T>(self, map: impl FnOnce(C) -> T) -> Error<E, T, N, D, G> {
         match self {
             Self::UnknownEncoding { location } => Error::UnknownEncoding { location },
             Self::UnsupportedEncoding { location, encoding } => {

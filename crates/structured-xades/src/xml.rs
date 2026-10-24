@@ -117,6 +117,9 @@ pub enum AccessError<E, N> {
 
 /// Result retaining the selected XML adapter's cause and original node identity.
 pub type AccessResult<T, X> = Result<T, AccessError<<X as Xml>::Error, <X as Xml>::Id>>;
+/// Original XML admission and scoped visitor failures with separate causes.
+pub type VisitResult<T, X, E> =
+    Result<T, AccessError<crate::reference::VisitError<<X as Xml>::Error, E>, <X as Xml>::Id>>;
 
 /// Failure to traverse an element-only property container.
 #[derive(Debug)]

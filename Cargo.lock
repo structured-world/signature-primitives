@@ -129,6 +129,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc32fast"
+version = "1.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "crypto-bigint"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -764,12 +773,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "structured-asic"
+version = "0.14.0"
+dependencies = [
+ "crc32fast",
+ "p256",
+ "sha2",
+ "structured-asn1",
+ "structured-cades",
+ "structured-cms",
+ "structured-ltv",
+ "structured-pkix",
+ "structured-xades",
+]
+
+[[package]]
 name = "structured-asn1"
 version = "0.14.0"
 dependencies = [
  "allocator-api2 0.2.21",
  "allocator-api2 0.4.0",
  "hashbrown",
+ "miniz_oxide",
 ]
 
 [[package]]
@@ -829,7 +854,6 @@ dependencies = [
 name = "structured-pades"
 version = "0.14.0"
 dependencies = [
- "miniz_oxide",
  "p256",
  "sha1",
  "sha2",

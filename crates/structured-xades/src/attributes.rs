@@ -28,6 +28,19 @@ pub trait AttributeXml: Xml + QNameXml {
     ) -> Result<(), VisitError<Self::Error, VE>>;
 }
 
+/// Visits original attribute names with the common snapshot/admission fence.
+/// Format-specific declarations belong to the requesting schema; traversal
+/// and temporary namespace/name storage remain with the XML owner.
+pub fn visit<X: AttributeXml, W: Work, E>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+    visitor: impl for<'view> FnMut(Name<'view>) -> Result<(), E>,
+) -> crate::xml::VisitResult<(), X, E> {
+    access.query_fallible(node, |xml, snapshot, work| {
+        xml.visit_attributes(snapshot, node, work, visitor)
+    })
+}
+
 /// Schema-instance attributes need their own original interpretation; they are
 /// not ordinary undeclared attributes or a request to fetch a schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

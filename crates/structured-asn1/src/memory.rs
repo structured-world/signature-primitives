@@ -299,6 +299,10 @@ impl<T> OwnedVec<T> {
 }
 
 impl<T, W: Work> OwnedVec<T, W> {
+    pub(crate) fn work(&self) -> &W {
+        self.values.allocator().work()
+    }
+
     /// Rebinds storage without allocation, element copying or repeated work.
     /// Borrowed executions transfer their keeper without a refcount increase;
     /// retaining previous independent Memory additionally owns that account.

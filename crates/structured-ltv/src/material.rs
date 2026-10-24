@@ -7,7 +7,12 @@
 //! is never authentication, freshness, placement acceptance or a level.
 
 mod coverage;
+mod dependency;
 pub use coverage::{Coverage, CoverageError};
+pub use dependency::{
+    Completeness, Dependency, DependencyError, DependencyRefused, DependencyReport,
+    DependencyVisit, Finding, Missing, VisitError,
+};
 #[cfg(test)]
 mod fixture;
 mod incorporation;
@@ -16,6 +21,7 @@ mod index;
 pub use index::{
     ArchiveError, Archived, ArchivedCertificate, ArtifactKey, ArtifactRef, ArtifactSource,
     CarriedOrigin, Index, IndexError, Occurrence, Occurrences, PathCertificate, PathCertificates,
+    ProjectionError,
 };
 mod participants;
 pub use participants::{

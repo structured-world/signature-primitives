@@ -26,6 +26,40 @@ pub enum InfoError<E> {
     Callback(E),
 }
 
+/// Asynchronous inspection keeps parsed information, its inherited reader and
+/// source map scoped across awaits. Output and errors cannot borrow a join.
+pub trait AsyncInfoVisitor {
+    /// Independently retained result that cannot borrow the joined information.
+    type Output;
+    /// Original callback failure that cannot borrow the joined information.
+    type Error;
+    /// Uses the one parsed information model and its honest source map.
+    fn visit<'data: 'scope, 'scope>(
+        &'scope mut self,
+        info: &'scope TokenInfo<'data>,
+        reader: &'scope Reader<'data>,
+        source: &'scope SourceMap,
+    ) -> impl core::future::Future<Output = core::result::Result<Self::Output, Self::Error>>;
+}
+
+struct InformationVisitor<'a, V>(&'a mut V);
+
+impl<V: AsyncInfoVisitor> crate::content_source::AsyncVisitor for InformationVisitor<'_, V> {
+    type Output = V::Output;
+    type Error = InfoError<V::Error>;
+    async fn visit<'data: 'scope, 'scope>(
+        &'scope mut self,
+        reader: &'scope mut Reader<'data>,
+        source: &'scope SourceMap,
+    ) -> core::result::Result<Self::Output, Self::Error> {
+        let info = TokenInfo::read_carried(reader).map_err(InfoError::Processing)?;
+        self.0
+            .visit(&info, reader, source)
+            .await
+            .map_err(InfoError::Callback)
+    }
+}
+
 impl<'a> Token<'a> {
     /// Reads the complete timestamp CMS envelope using the original parser.
     /// The attached `TSTInfo` bytes are inspected by [`Self::with_info`].
@@ -171,6 +205,37 @@ impl<'a> Token<'a> {
         ) -> core::result::Result<R, E>,
     ) -> core::result::Result<R, ContentError<InfoError<E>>> {
         self.inspect(parent, None, callback)
+    }
+
+    /// Inspects the same complete original `TSTInfo` while a callback awaits
+    /// bounded external inputs. Joined data and source maps stay alive until
+    /// callback completion and are released on cancellation or refusal.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the original source map accompanies decoding and callback failures after cancellation-safe scoped inspection"
+    )]
+    pub async fn with_info_async<V: AsyncInfoVisitor>(
+        &self,
+        parent: &Reader<'_>,
+        origin: Option<&SourceMap>,
+        visitor: &mut V,
+    ) -> core::result::Result<V::Output, ContentError<InfoError<V::Error>>> {
+        let Some(content) = self.message.content().content() else {
+            return Err(ContentError::Processing(Error::schema(
+                ErrorCode::DetachedContent,
+                "signedData.encapContentInfo.eContent",
+                self.message.content().span().start,
+            )));
+        };
+        content
+            .with_nested_reader_async(
+                parent,
+                origin,
+                Encoding::Ber,
+                "tstInfo",
+                &mut InformationVisitor(visitor),
+            )
+            .await
     }
 
     /// Inspects a token decoded inside another scoped content source.

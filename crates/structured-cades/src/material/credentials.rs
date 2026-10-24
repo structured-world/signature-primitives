@@ -12,51 +12,21 @@ use crate::{
     timestamp::ArchiveView,
 };
 use structured_asn1::{
-    Reader,
+    Reader, ScopedReader,
     memory::{MemoryError, OwnedMap, OwnedVec, Work},
 };
+pub use structured_ltv::material::{Completeness, Finding, Missing, VisitError};
 use structured_ltv::{
     baseline::CredentialMaterial,
-    material::{ArchiveError, Archived, ArtifactRef, IndexError},
+    material::{ArchiveError, Archived, IndexError},
     pki::{CounterReceipts, CredentialReceipts},
     source::{Query, Snapshot},
     timestamp::{ObligationError, TimestampRequirements, TimestampScope},
 };
 
 /// One dependency established by the credential's actual format owner.
-#[derive(Clone, Copy)]
-pub enum Need<'value, 'source, 'model, 'document> {
-    /// Known certificate, complete CRL/delta, or whole carried OCSP artifact.
-    Known(ArtifactRef<'value, 'source>),
-    /// Exact original open catalogue enclosure, interpreted by that owner.
-    Open(Original<'model, 'document>),
-    /// A required dependency has no matching original material.
-    Missing,
-}
-
-/// Completed format interpretation, separate from incorporated availability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Completeness {
-    /// Every actual dependency was visited and its format semantics checked.
-    Complete,
-    /// Selected handler cannot interpret the required format.
-    Unsupported,
-    /// A prefix is not a complete dependency census.
-    Unprocessed,
-    /// Readable material is unusable for this credential.
-    Unusable,
-    /// A required value violates its selected format syntax.
-    Malformed,
-}
-
-/// Original handler refusal versus a visitor's unchanged refusal.
-#[derive(Debug)]
-pub enum VisitError<E, V> {
-    /// Original format/source/resource cause.
-    Processing(E),
-    /// The supplied dependency visitor refused.
-    Visitor(V),
-}
+pub type Need<'value, 'source, 'model, 'document> =
+    structured_ltv::material::Dependency<'value, 'source, Node, DocumentId<'model, 'document>, ()>;
 
 /// Same format owner as authentication, using its actual retained evidence.
 /// It discovers ALL credential-specific validation material, including the
@@ -73,27 +43,9 @@ pub trait Provider<E> {
         &self,
         credential: &Checked<'m, 'd, '_, E>,
         open: &[Open<'d>],
-        operation: &Reader<'d>,
+        operation: &ScopedReader<'d, '_>,
         visitor: impl for<'value, 'source> FnMut(Need<'value, 'source, 'm, 'd>) -> Result<(), V>,
     ) -> Result<Completeness, VisitError<Self::Error, V>>;
-}
-
-/// Missing original copy and present-but-uncovered copy are distinct facts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Missing {
-    /// No exact original copy exists.
-    Absent,
-    /// No exact copy is protected by this archive.
-    Uncovered,
-}
-
-/// One missing dependency in original handler visitation order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Finding {
-    /// Actual zero-based dependency ordinal.
-    pub dependency: usize,
-    /// Original incorporation or coverage cause.
-    pub cause: Missing,
 }
 
 /// Actual authenticated credential, including all negative material facts.
@@ -452,47 +404,28 @@ where
 {
     let work = query.execution();
     let node = credential.source().node;
-    let mut findings = work.vector();
-    let mut ordinal = 0usize;
-    let mut first = None;
+    let mut visit = structured_ltv::material::DependencyVisit::new(node, work, |need| {
+        scope.missing(need, index, open, query)
+    })
+    .map_err(|cause| Error::Resource { node, cause })?;
     let answer = provider.visit(credential, index.open(), operation, |need| {
-        if first.is_some() {
-            return Err(());
-        }
-        let answer = (|| {
-            work.charge_work(1)
-                .map_err(|cause| Error::Resource { node, cause })?;
-            let dependency = ordinal;
-            ordinal = ordinal.checked_add(1).ok_or(Error::Resource {
-                node,
-                cause: MemoryError::WorkExceeded,
-            })?;
-            if let Some(cause) = scope.missing(need, index, open, query)? {
-                findings
-                    .try_push(Finding { dependency, cause })
-                    .map_err(|cause| Error::Resource { node, cause })?;
-            }
-            Ok(())
-        })();
-        match answer {
-            Ok(()) => Ok(()),
-            Err(cause) => {
-                first = Some(cause);
-                Err(())
-            }
-        }
+        visit.observe(need)
     });
-    if let Some(cause) = first {
-        return Err(cause);
-    }
-    let completeness = match answer {
-        Ok(value) => value,
-        Err(VisitError::Processing(cause)) => return Err(Error::Provider { node, cause }),
-        Err(VisitError::Visitor(())) => return Err(Error::CallbackProtocol { node }),
-    };
+    let result = visit.finish(answer).map_err(|cause| match cause {
+        structured_ltv::material::DependencyError::Processing { cause, .. } => cause,
+        structured_ltv::material::DependencyError::Resource { node, cause } => {
+            Error::Resource { node, cause }
+        }
+        structured_ltv::material::DependencyError::Provider { node, cause } => {
+            Error::Provider { node, cause }
+        }
+        structured_ltv::material::DependencyError::CallbackProtocol { node } => {
+            Error::CallbackProtocol { node }
+        }
+    })?;
     Ok(Entry {
         source: credential.source(),
-        completeness,
-        findings: findings.into_owned(),
+        completeness: result.completeness,
+        findings: result.findings,
     })
 }

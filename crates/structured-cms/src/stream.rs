@@ -33,6 +33,21 @@ pub trait Source {
     ) -> core::result::Result<(), Self::Error>;
 }
 
+/// Complete payload acquisition that may suspend between bounded chunks.
+/// The same sticky receiver and cause precedence govern synchronous sources.
+/// No executor, heap allocation, `Send` bound or blocking adapter is required.
+pub trait AsyncSource {
+    /// Original acquisition failure, distinct from callback refusal.
+    type Error;
+
+    /// Feeds every chunk once and returns success only after complete EOF.
+    fn stream<'q, W: Work + 'q, R: Receiver + 'q>(
+        &'q mut self,
+        receiver: &'q mut R,
+        execution: &'q W,
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>> + 'q;
+}
+
 /// Feeds original ranges, including the SET tag and original signedAttrs
 /// remainder returned by [`crate::attribute::Attributes::signed_bytes`].
 /// No concatenation or canonical re-encoding occurs; each metadata step is
@@ -146,6 +161,34 @@ pub fn run<S: Source, C: Sink, W: Work>(
         failure: None,
     };
     let acquired = source.stream(&mut guard, execution);
+    match guard.failure {
+        Some(Failure::Callback(error)) => Err(StreamError::Callback(error)),
+        Some(Failure::Processing(error)) => Err(StreamError::Processing(error)),
+        None => acquired.map_err(StreamError::Source),
+    }
+}
+
+/// Suspends source acquisition while preserving the same sticky callback
+/// refusal, admission order and complete-EOF boundary as [`run`]. Dropping the
+/// future drops the borrowed driver, without producing a partial receipt.
+pub async fn run_async<S: AsyncSource, C: Sink, W: Work>(
+    source: &mut S,
+    sink: &mut C,
+    execution: &W,
+    field: &'static str,
+    at: u64,
+) -> Result<(), StreamError<S::Error, C::Error>> {
+    execution
+        .charge_work(1)
+        .map_err(|cause| StreamError::Processing(Error::resource(cause, field, at)))?;
+    let mut guard = Guard {
+        sink,
+        execution,
+        field,
+        at,
+        failure: None,
+    };
+    let acquired = source.stream(&mut guard, execution).await;
     match guard.failure {
         Some(Failure::Callback(error)) => Err(StreamError::Callback(error)),
         Some(Failure::Processing(error)) => Err(StreamError::Processing(error)),

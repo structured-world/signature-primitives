@@ -52,6 +52,28 @@ pub(super) enum Resolved<I> {
 }
 
 impl<'a> MessageImprint<'a> {
+    /// The same schema/provider/width preflight and closed final comparison
+    /// over an input that may await bounded original-range acquisition.
+    pub async fn check_input_async<P, I>(
+        &self,
+        provider: &'a P,
+        parent: &Reader<'a>,
+        input: &mut I,
+    ) -> Result<ImprintAgreement, ImprintError<I::Error, P::Error>>
+    where
+        P: AsnDigest<'a>,
+        I: super::AsyncComputedInput<P, P::Error>,
+    {
+        match self
+            .resolve(provider, parent)
+            .map_err(ImprintError::Processing)?
+        {
+            Resolved::Ready(identity) => {
+                super::computed::compute_async(self, provider, parent, input, identity).await
+            }
+            Resolved::Unusable(answer) => Ok(answer),
+        }
+    }
     /// Computes the declared imprint over exactly one complete source pass.
     ///
     /// RFC3161 §2.4.1 identifies the hash by its complete written algorithm, not

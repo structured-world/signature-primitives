@@ -26,6 +26,20 @@ pub trait ComputedInput<P, PE> {
         P: AsnDigest<'document, Error = PE>;
 }
 
+/// A computed input with asynchronous source acquisition. It uses the same
+/// closed imprint states/proofs and cannot substitute a caller digest value.
+pub trait AsyncComputedInput<P, PE> {
+    /// Original source/recipe cause, separate from callback refusal.
+    type Error;
+    /// Completes a scoped input with a proof from this exact imprint context.
+    fn compute<'context: 'scope, 'reader, 'document, 'scope>(
+        &'scope mut self,
+        context: &'context ImprintContext<'reader, 'document, P, Self::Error>,
+    ) -> impl core::future::Future<Output = Result<ImprintProof<'context>, InputFailure<Self::Error>>>
+    where
+        P: AsnDigest<'document, Error = PE>;
+}
+
 /// Original recipe failure or a marker whose cause the operation retains.
 #[derive(Debug)]
 pub enum InputFailure<E> {
@@ -187,6 +201,44 @@ impl<'reader, 'document, P: AsnDigest<'document>, E> ImprintContext<'reader, 'do
         states: &mut [&mut ImprintState<'context, 'reader, 'document, P, E>],
     ) -> Result<(), crate::stream::Refused> {
         self.stream_with(source, states, &self.reader.execution())
+    }
+
+    /// Feeds a bounded asynchronous source into these exact unfinished states.
+    /// No `RefCell` borrow crosses the await; all failures stay sticky in this
+    /// same context and cancellation drops every unfinished backend state.
+    pub async fn stream_async<'context, S: crate::stream::AsyncSource<Error = E>>(
+        &'context self,
+        source: &mut S,
+        states: &mut [&mut ImprintState<'context, 'reader, 'document, P, E>],
+    ) -> Result<(), crate::stream::Refused> {
+        self.admit()?;
+        if states.is_empty() {
+            return Err(self.refuse(ImprintError::IncompleteInput));
+        }
+        for state in &*states {
+            self.admit()?;
+            if !core::ptr::eq(&raw const state.context.owner, &raw const self.owner) {
+                return Err(self.refuse(ImprintError::ForeignInput));
+            }
+        }
+        match crate::stream::run_async(
+            source,
+            &mut Fanout { states },
+            &self.reader.execution(),
+            self.field,
+            self.span.start,
+        )
+        .await
+        {
+            Ok(()) => Ok(()),
+            Err(crate::stream::StreamError::Source(cause)) => Err(self.refuse(ImprintError::Pass(
+                crate::stream::StreamError::Source(cause),
+            ))),
+            Err(crate::stream::StreamError::Processing(cause)) => Err(self.refuse(
+                ImprintError::Pass(crate::stream::StreamError::Processing(cause)),
+            )),
+            Err(crate::stream::StreamError::Callback(_)) => Err(crate::stream::Refused),
+        }
     }
 
     /// Streams another original source using ITS producing ceiling and this
@@ -450,6 +502,47 @@ impl<P, PE, S: crate::stream::Source> ComputedInput<P, PE> for RawInput<'_, S> {
     }
 }
 
+/// Ordinary asynchronous covered bytes, without buffering the whole payload.
+pub struct AsyncRawInput<'source, S>(&'source mut S);
+impl<'source, S> AsyncRawInput<'source, S> {
+    /// Borrows the original asynchronous source without buffering or copying.
+    #[must_use]
+    pub fn new(source: &'source mut S) -> Self {
+        Self(source)
+    }
+}
+impl<P, PE, S: crate::stream::AsyncSource> AsyncComputedInput<P, PE> for AsyncRawInput<'_, S> {
+    type Error = S::Error;
+    async fn compute<'context: 'scope, 'reader, 'document, 'scope>(
+        &'scope mut self,
+        context: &'context ImprintContext<'reader, 'document, P, Self::Error>,
+    ) -> Result<ImprintProof<'context>, InputFailure<Self::Error>>
+    where
+        P: AsnDigest<'document, Error = PE>,
+    {
+        let mut state = context.start()?;
+        context.stream_async(self.0, &mut [&mut state]).await?;
+        let output = state.finish()?;
+        context.compare(&output).map_err(InputFailure::Refused)
+    }
+}
+
+pub(super) async fn compute_async<'a, P, I>(
+    imprint: &MessageImprint<'a>,
+    provider: &'a P,
+    parent: &Reader<'a>,
+    input: &mut I,
+    identity: P::Identity,
+) -> Result<ImprintAgreement, ImprintError<I::Error, P::Error>>
+where
+    P: AsnDigest<'a>,
+    I: AsyncComputedInput<P, P::Error>,
+{
+    let context = make_context(imprint, provider, parent, identity)?;
+    let result = input.compute(&context).await;
+    finish_input(&context, result)
+}
+
 pub(super) fn compute<'a, P, I>(
     imprint: &MessageImprint<'a>,
     provider: &'a P,
@@ -461,6 +554,17 @@ where
     P: AsnDigest<'a>,
     I: ComputedInput<P, P::Error>,
 {
+    let context = make_context(imprint, provider, parent, identity)?;
+    let result = input.compute(&context);
+    finish_input(&context, result)
+}
+
+fn make_context<'reader, 'a, P: AsnDigest<'a>, E>(
+    imprint: &MessageImprint<'a>,
+    provider: &'a P,
+    parent: &'reader Reader<'a>,
+    identity: P::Identity,
+) -> Result<ImprintContext<'reader, 'a, P, E>, ImprintError<E, P::Error>> {
     let field = imprint.fields().hashed;
     let span = imprint.hashed().span();
     // Complete declared-hash materialization precedes state/provider effects.
@@ -473,7 +577,7 @@ where
                 .map_err(ImprintError::Processing)?,
         ),
     };
-    let context = ImprintContext {
+    Ok(ImprintContext {
         provider,
         identity,
         reader: parent,
@@ -484,8 +588,13 @@ where
         active: Cell::new(0),
         abandoned: Cell::new(false),
         failure: RefCell::new(None),
-    };
-    let result = input.compute(&context);
+    })
+}
+
+fn finish_input<'context, 'reader, 'document, P: AsnDigest<'document>, E>(
+    context: &'context ImprintContext<'reader, 'document, P, E>,
+    result: Result<ImprintProof<'context>, InputFailure<E>>,
+) -> Result<ImprintAgreement, ImprintError<E, P::Error>> {
     if let Some(cause) = context.failure.borrow_mut().take() {
         return Err(cause);
     }

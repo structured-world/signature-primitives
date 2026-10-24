@@ -32,6 +32,23 @@ pub struct AlgorithmIdentifier<'a> {
     indefinite: bool,
 }
 
+/// Borrowed producing execution, without retaining an algorithm, parser
+/// input buffer or account owner. This is not a document/value identity.
+#[derive(Debug, Clone, Copy)]
+pub struct Producer<'a> {
+    parser: &'a Parser,
+}
+impl<'a> Producer<'a> {
+    /// Funds new work against this producer and the current operation.
+    #[must_use]
+    pub fn execution_in<'q, W: Work>(&self, work: &'q W) -> structured_asn1::memory::Execution<'q>
+    where
+        'a: 'q,
+    {
+        work.execution_for(self.parser)
+    }
+}
+
 /// Original bytes nested one level inside an identifier's reader, carrying
 /// only what reading them in place needs: a key that inherits parameters
 /// keeps this rather than the authority's whole identifier.
@@ -526,6 +543,15 @@ impl<'a> AlgorithmIdentifier<'a> {
 
     pub(crate) fn source_parser(self) -> &'a Parser {
         self.parser
+    }
+
+    /// Retains only the original parser-session funding capability. No
+    /// bytes are parsed, copied, hashed or interpreted by this projection.
+    #[must_use]
+    pub fn execution_origin(self) -> Producer<'a> {
+        Producer {
+            parser: self.parser,
+        }
     }
 
     /// The written parameters, readable in place.

@@ -21,7 +21,9 @@ pub use archive::{
     archive_material, archives,
 };
 pub use material::{LongTerm, MaterialResult, long_term};
-pub use timed::{SignatureTimeFact, TimeError, TimeResult, Timed, timestamped};
+pub use timed::{
+    SignatureTimeFact, TimeError, TimeResult, Timed, timestamped, timestamped_existence,
+};
 
 /// A format's basic stage: the signer and countersignature receipts it was
 /// built from, and whether every requirement of the format's basic level holds.

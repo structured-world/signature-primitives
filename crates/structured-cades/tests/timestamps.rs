@@ -47,7 +47,7 @@ impl material::credentials::Provider<()> for EmptyCredentials {
         &self,
         _: &credential::Checked<'m, 'd, '_, ()>,
         _: &[material::Open<'d>],
-        _: &structured_asn1::Reader<'d>,
+        _: &structured_asn1::ScopedReader<'d, '_>,
         _: impl for<'value, 'source> FnMut(
             material::credentials::Need<'value, 'source, 'm, 'd>,
         ) -> Result<(), V>,

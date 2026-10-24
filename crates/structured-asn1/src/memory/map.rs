@@ -150,7 +150,61 @@ impl<K: HashWork + fmt::Debug, V: fmt::Debug, W: Work> fmt::Debug for OwnedMap<K
     }
 }
 
+/// Owning execution transfer, preserving both inputs on account mismatch.
+/// No table allocation, key traversal or account-owner clone is performed.
+#[must_use]
+pub enum MapExecution<K: HashWork, V, Old: Work, New: Work> {
+    /// Same allocation and account under the requested execution.
+    Changed {
+        /// Existing table, now using the requested execution.
+        map: OwnedMap<K, V, New>,
+        /// Previous execution, moved without cloning.
+        previous: Old,
+    },
+    /// Different accounts cannot exchange retained allocation charges.
+    Foreign {
+        /// Original unchanged table and execution.
+        map: OwnedMap<K, V, Old>,
+        /// Requested execution, returned unchanged.
+        requested: New,
+    },
+}
+
 impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
+    /// Hashes a value once using this table's existing non-cryptographic seed.
+    /// The result remains stable across rebind/growth, not across new tables.
+    /// This is a bucket hint, never an identity proof: callers retaining only
+    /// this fingerprint must still compare actual values on collisions.
+    pub fn fingerprint<Q: HashWork + ?Sized>(
+        &self,
+        value: &Q,
+        execution: &impl Work,
+    ) -> Result<u64, MemoryError> {
+        self.hash_key(value, execution)
+    }
+
+    /// Moves a temporary execution into this table and returns its previous
+    /// owner for restoration. Rebinding back transfers that same owner rather
+    /// than cloning its account on each scoped mutation. No prior work or
+    /// retained capacity charge is reset, and mismatch preserves both inputs.
+    pub fn rebind<New: Work>(self, execution: New) -> MapExecution<K, V, W, New> {
+        if !self.memory().same_account(execution.memory()) {
+            return MapExecution::Foreign {
+                map: self,
+                requested: execution,
+            };
+        }
+        MapExecution::Changed {
+            map: OwnedMap {
+                values: self.values,
+                execution,
+                key_work: self.key_work,
+                maximum_capacity: self.maximum_capacity,
+            },
+            previous: self.execution,
+        }
+    }
+
     pub(super) fn new(execution: W) -> Self {
         Self {
             values: HashMap::with_hasher_in(

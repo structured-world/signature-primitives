@@ -1,0 +1,34 @@
+[package]
+name = "structured-pades"
+description = "Original-source PDF signatures and provider-neutral PAdES baseline validation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["pades", "pdf", "signature", "timestamp", "no-std"]
+categories = ["cryptography", "parser-implementations", "no-std"]
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
+
+[features]
+default = []
+std = ["structured-asn1/std", "structured-pkix/std", "structured-cms/std", "structured-ltv/std", "structured-cades/std"]
+alloc = ["structured-asn1/alloc", "structured-pkix/alloc", "structured-cms/alloc", "structured-ltv/alloc", "structured-cades/alloc"]
+interop-tests = ["std"]
+
+[dependencies]
+structured-asn1 = { version = "0.13.0", path = "../structured-asn1", default-features = false }
+structured-pkix = { version = "0.13.0", path = "../structured-pkix", default-features = false }
+structured-cms = { version = "0.13.0", path = "../structured-cms", default-features = false }
+structured-ltv = { version = "0.13.0", path = "../structured-ltv", default-features = false }
+structured-cades = { version = "0.13.0", path = "../structured-cades", default-features = false }
+miniz_oxide = { version = "0.9.1", default-features = false, features = ["block-boundary"] }
+
+[dev-dependencies]
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
+sha1 = { version = "0.11", default-features = false }
+sha2 = { version = "=0.11.1", default-features = false }
+
+[lints]
+workspace = true

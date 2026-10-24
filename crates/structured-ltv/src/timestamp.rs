@@ -15,7 +15,7 @@ pub use obligation::{
 mod signature;
 pub use signature::{
     SignatureTime, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure,
-    SignatureTimeResult, signature_time, signature_time_path,
+    SignatureTimeResult, existence_time_path, signature_time, signature_time_path,
 };
 
 /// What a timestamp proves the existence of.

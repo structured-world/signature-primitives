@@ -36,3 +36,8 @@ name = "structured-cades"
 git_tag_name = "structured-cades-v{{ version }}"
 version_group = "primitives"
 changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades"]
+
+[[package]]
+name = "structured-pades"
+# Initial publication requires the crate's own publisher registration.
+release = false

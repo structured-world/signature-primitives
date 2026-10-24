@@ -26,6 +26,11 @@ pub trait Work: Clone + private::Sealed {
     /// The sealed implementations preserve the account without cloning it.
     fn into_storage_owner(self, retained: Self::Retained) -> Memory;
 
+    /// Separates previous work from its storage keeper for a scoped transfer.
+    /// Borrowed execution moves the existing keeper; independent Memory must
+    /// retain an additional owner when both returned values own the account.
+    fn split_storage_owner(self, retained: Self::Retained) -> (Self, Memory);
+
     /// Attaches current work while moving an existing same-account owner.
     /// The caller verifies account identity before transferring storage.
     fn with_storage_owner(&self, memory: Memory) -> (Self, Self::Retained);
@@ -245,6 +250,10 @@ impl Work for Memory {
         self
     }
 
+    fn split_storage_owner(self, (): ()) -> (Self, Memory) {
+        (self.clone(), self)
+    }
+
     fn with_storage_owner(&self, memory: Memory) -> (Self, ()) {
         (memory, ())
     }
@@ -358,6 +367,10 @@ impl Work for Execution<'_> {
 
     fn into_storage_owner(self, retained: Memory) -> Memory {
         retained
+    }
+
+    fn split_storage_owner(self, retained: Memory) -> (Self, Memory) {
+        (self, retained)
     }
 
     fn with_storage_owner(&self, memory: Memory) -> (Self, Memory) {

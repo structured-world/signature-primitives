@@ -6,8 +6,12 @@ use crate::source::{Location, Query, ScopeError, Snapshot};
 use crate::timestamp::{Purpose, Verified};
 use core::hash::Hash;
 use core::marker::PhantomData;
-use structured_asn1::memory::{HashWork, MemoryError, OwnedMap, OwnedVec, Work};
+use structured_asn1::memory::{HashWork, MapExecution, MemoryError, OwnedMap, OwnedVec, Work};
 use structured_pkix::{Certificate, crl::CertificateList, ocsp::BasicResponse};
+mod storage;
+#[cfg(test)]
+mod tests;
+use storage::Storage;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Kind {
@@ -113,6 +117,24 @@ struct Entry<N, D, G, P> {
     next: Option<usize>,
 }
 
+#[derive(Hash, PartialEq, Eq)]
+struct Bucket {
+    kind: Kind,
+    hash: u64,
+}
+impl HashWork for Bucket {
+    fn hash_work(&self) -> Result<u64, MemoryError> {
+        Ok(2)
+    }
+}
+struct Class<'source> {
+    key: ArtifactKey<'source>,
+    producer: structured_pkix::algorithm::Producer<'source>,
+    head: usize,
+    tail: usize,
+    next: Option<usize>,
+}
+
 /// Accounted scoped index of every original occurrence. Keys borrow original
 /// DER, not copied/normalized certificate names or unqualified fingerprints.
 /// The same artifact in several containers keeps ALL locations, so later
@@ -125,10 +147,12 @@ struct Entry<N, D, G, P> {
 pub struct Index<'source, N, D, G, P, O, W: Work, I> {
     snapshot: Snapshot<D, G>,
     signature: N,
-    keys: OwnedMap<ArtifactKey<'source>, (usize, usize), W>,
-    entries: OwnedVec<Entry<N, D, G, P>, W>,
+    keys: Option<OwnedMap<Bucket, usize, W>>,
+    classes: Storage<Class<'source>, W>,
+    entries: Storage<Entry<N, D, G, P>, W>,
     open: &'source [O],
     issuer: PhantomData<I>,
+    refused: Option<IndexError<N>>,
 }
 
 /// Original source refusal is independent of index capacity/work refusal.
@@ -150,6 +174,19 @@ pub enum IndexError<N> {
     },
 }
 
+/// Refusal to transfer an existing format index to its enclosing source.
+#[derive(Debug)]
+pub enum ProjectionError<N, E> {
+    /// Original/current source or storage refusal.
+    Index(IndexError<N>),
+    /// The format's unchanged source-projection cause.
+    Projection(E),
+}
+
+/// A transferred exact-artifact index and its independent projection cause.
+pub type Projection<'s, N, D, G, P, O, W, I, E> =
+    Result<Index<'s, N, D, G, P, O, W, I>, ProjectionError<N, E>>;
+
 /// One original parsed artifact to locate. This is a source reference, not a
 /// receipt of authentication, applicability, freshness or actor membership.
 #[derive(Debug, Clone, Copy)]
@@ -166,6 +203,31 @@ pub enum ArtifactRef<'view, 'source> {
 }
 
 impl<'source> ArtifactRef<'_, 'source> {
+    fn producer(self) -> structured_pkix::algorithm::Producer<'source> {
+        match self {
+            Self::Certificate(value) => value.signature_algorithm().execution_origin(),
+            Self::Crl(value) => value.signature_algorithm().execution_origin(),
+            Self::Ocsp(value) => value.signature_algorithm().execution_origin(),
+        }
+    }
+    /// Original artifact and current-operation funding for a new hash,
+    /// comparison or retained query result. Equal accounts do not waive the
+    /// producing local ceiling, and no wire input is reparsed.
+    #[must_use]
+    pub fn execution_in<'operation, W: Work>(
+        &self,
+        work: &'operation W,
+    ) -> structured_asn1::memory::Execution<'operation>
+    where
+        'source: 'operation,
+    {
+        match self {
+            Self::Certificate(value) => value.execution_in(work),
+            Self::Crl(value) => value.execution_in(work),
+            Self::Ocsp(value) => value.execution_in(work),
+        }
+    }
+
     /// Exact identity of the referenced artifact, borrowing its original DER.
     #[must_use]
     pub fn identity(self) -> ArtifactKey<'source> {
@@ -286,10 +348,12 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
         Ok(Self {
             snapshot: query.snapshot(),
             signature,
-            keys: execution.map(),
-            entries: execution.vector(),
+            keys: Some(execution.map()),
+            classes: Storage::new(execution.vector()),
+            entries: Storage::new(execution.vector()),
             open,
             issuer: PhantomData,
+            refused: None,
         })
     }
 
@@ -314,7 +378,21 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
                 signature: self.signature,
             });
         }
-        self.insert_key(artifact.identity(), occurrence, query)?;
+        let result = self.insert_artifact(artifact, occurrence, query);
+        if let Err(cause) = result {
+            self.refused = Some(cause);
+        }
+        result
+    }
+
+    fn insert_artifact<Q: Query<Id = N, Document = D, Generation = G, Work = W>>(
+        &mut self,
+        artifact: ArtifactRef<'_, 'source>,
+        occurrence: Occurrence<N, D, G, P>,
+        query: &Q,
+    ) -> Result<(), IndexError<N>> {
+        self.admit(query)?;
+        self.insert_key(artifact.identity(), artifact.producer(), occurrence, query)?;
         if let ArtifactRef::Ocsp(response) = artifact {
             for certificate in 0..response.certificates().len() {
                 self.admit(query)?;
@@ -323,6 +401,9 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
                         kind: Kind::Certificate,
                         bytes: response.certificates()[certificate].as_bytes(),
                     },
+                    response.certificates()[certificate]
+                        .signature_algorithm()
+                        .execution_origin(),
                     Occurrence {
                         embedded_certificate: Some(certificate),
                         ..occurrence
@@ -338,6 +419,105 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
     #[must_use]
     pub fn open(&self) -> &'source [O] {
         self.open
+    }
+
+    /// Projects a complete inner-format pool into its actual enclosing source.
+    /// Exact artifact keys and their allocation are transferred unchanged;
+    /// models are neither reparsed nor rehashed. Only occurrence metadata gets
+    /// a new funded buffer. The enclosing format must possess its private
+    /// issuer and verify the original source association in `project`.
+    /// Failure drops both partial destination and original index, never returns
+    /// a successful prefix, and does not roll back a visitor's external effects.
+    ///
+    /// # Panics
+    /// Panics if the internal invariant that a non-refused index owns its
+    /// restored artifact map is violated.
+    pub fn into_projected<N2, D2, G2, P2, I2, Q, E>(
+        self,
+        _issuer: I2,
+        signature: N2,
+        query: &Q,
+        mut project: impl FnMut(
+            Occurrence<N, D, G, P>,
+        ) -> Result<(ArtifactSource, Location<N2, D2, G2>, P2), E>,
+    ) -> Projection<'source, N2, D2, G2, P2, O, Q::Work, I2, E>
+    where
+        N2: Copy + Eq,
+        D2: Copy + Eq,
+        G2: Copy + Eq,
+        P2: Copy,
+        Q: Query<Id = N2, Document = D2, Generation = G2>,
+    {
+        query
+            .admit(signature, 1)
+            .map_err(|cause| ProjectionError::Index(IndexError::Scope(cause)))?;
+        let execution = query.execution();
+        let Index {
+            keys,
+            classes,
+            entries,
+            open,
+            refused,
+            ..
+        } = self;
+        if refused.is_some() {
+            return Err(ProjectionError::Index(IndexError::Foreign { signature }));
+        }
+        let keys = keys
+            .expect("restored artifact map")
+            .into_owned()
+            .with_execution(execution)
+            .map_err(|_| ProjectionError::Index(IndexError::Foreign { signature }))?;
+        let classes = classes
+            .into_inner()
+            .into_owned()
+            .with_execution(execution)
+            .map_err(|_| ProjectionError::Index(IndexError::Foreign { signature }))?;
+        let mut projected = execution.vector();
+        projected
+            .try_reserve_exact(entries.len())
+            .map_err(|cause| ProjectionError::Index(IndexError::Resource { signature, cause }))?;
+        query
+            .admit(
+                signature,
+                u64::try_from(entries.len()).map_err(|_| {
+                    ProjectionError::Index(IndexError::Resource {
+                        signature,
+                        cause: MemoryError::WorkExceeded,
+                    })
+                })?,
+            )
+            .map_err(|cause| ProjectionError::Index(IndexError::Scope(cause)))?;
+        for entry in entries.into_inner() {
+            let (source, location, placement) =
+                project(entry.value).map_err(ProjectionError::Projection)?;
+            if location.snapshot != query.snapshot() {
+                return Err(ProjectionError::Index(IndexError::Foreign { signature }));
+            }
+            projected
+                .try_push(Entry {
+                    value: Occurrence {
+                        source,
+                        location,
+                        placement,
+                        embedded_certificate: entry.value.embedded_certificate,
+                    },
+                    next: entry.next,
+                })
+                .map_err(|cause| {
+                    ProjectionError::Index(IndexError::Resource { signature, cause })
+                })?;
+        }
+        Ok(Index {
+            snapshot: query.snapshot(),
+            signature,
+            keys: Some(keys),
+            classes: Storage::new(classes),
+            entries: Storage::new(projected),
+            open,
+            issuer: PhantomData,
+            refused: None,
+        })
     }
 
     /// Every original indexed occurrence in source-catalogue insertion order,
@@ -395,7 +575,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
         value: &Certificate<'_>,
         query: &'query Q,
     ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> {
-        self.find(Kind::Certificate, value.as_bytes(), query)
+        self.find(ArtifactRef::Certificate(value), query)
     }
     /// Finds all whole CRL copies. An authenticated delta still needs its
     /// authenticated/bound complete source; finding either alone proves no pair.
@@ -404,7 +584,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
         value: &CertificateList<'_>,
         query: &'query Q,
     ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> {
-        self.find(Kind::Crl, value.as_bytes(), query)
+        self.find(ArtifactRef::Crl(value), query)
     }
     /// Finds the exact basic response in format-issued retained occurrences.
     /// Good-looking status or a successful wire code does not mint evidence.
@@ -413,7 +593,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
         value: &BasicResponse<'_>,
         query: &'query Q,
     ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> {
-        self.find(Kind::Basic, value.as_bytes(), query)
+        self.find(ArtifactRef::Ocsp(value), query)
     }
 
     /// Finds all copies of this exact artifact, in source catalogue order.
@@ -422,8 +602,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
         artifact: ArtifactRef<'_, '_>,
         query: &'query Q,
     ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> {
-        let key = artifact.identity();
-        self.find(key.kind, key.bytes, query)
+        self.find(artifact, query)
     }
 
     /// Requires that this index was built for `signature`.
@@ -483,10 +662,7 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
         coverage
             .require_evidence(evidence, evidence.property(), query)
             .map_err(ArchiveError::Coverage)?;
-        let key = artifact.identity();
-        let copies = self
-            .find(key.kind, key.bytes, query)
-            .map_err(ArchiveError::Index)?;
+        let copies = self.find(artifact, query).map_err(ArchiveError::Index)?;
         let mut found = false;
         for copy in copies {
             let copy = copy.map_err(ArchiveError::Index)?;
@@ -572,6 +748,9 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
         &self,
         query: &Q,
     ) -> Result<(), IndexError<N>> {
+        if let Some(cause) = self.refused {
+            return Err(cause);
+        }
         if self.snapshot != query.snapshot() {
             return Err(IndexError::Foreign {
                 signature: self.signature,
@@ -583,47 +762,150 @@ impl<'source, N: Copy + Eq, D: Copy + Eq, G: Copy + Eq, P: Copy, O, W: Work, I>
     fn insert_key<Q: Query<Id = N, Document = D, Generation = G, Work = W>>(
         &mut self,
         key: ArtifactKey<'source>,
+        producer: structured_pkix::algorithm::Producer<'source>,
         value: Occurrence<N, D, G, P>,
         query: &Q,
     ) -> Result<(), IndexError<N>> {
-        query.admit(self.signature, 1).map_err(IndexError::Scope)?;
-        let resource = |cause| IndexError::Resource {
-            signature: self.signature,
-            cause,
+        self.admit(query)?;
+        let signature = self.signature;
+        let resource = |cause| IndexError::Resource { signature, cause };
+        let storage = |cause| match cause {
+            storage::Error::Resource(cause) => resource(cause),
+            storage::Error::Foreign => IndexError::Foreign { signature },
         };
-        let previous = self
-            .keys
-            .get(&key, query.execution())
-            .map(Option::<&(usize, usize)>::copied)
-            .map_err(resource)?;
+        let work = producer.execution_in(query.execution());
+        work.charge_work(1).map_err(resource)?;
+        let bucket = Bucket {
+            kind: key.kind,
+            hash: self
+                .keys
+                .as_ref()
+                .expect("restored artifact map")
+                .fingerprint(&key, &work)
+                .map_err(resource)?,
+        };
+        let previous = self.class(&bucket, key, producer, query)?;
+        // Linking a duplicate changes two retained metadata slots. Admit
+        // both writes before appending the new occurrence or mutating links.
+        if previous.is_some() {
+            work.charge_work(2).map_err(resource)?;
+        }
         let next = self.entries.len();
         self.entries
-            .try_push(Entry { value, next: None })
-            .map_err(resource)?;
-        let head = previous.map_or(next, |(head, _)| head);
-        self.keys.try_insert(key, (head, next)).map_err(resource)?;
-        if let Some((_, tail)) = previous {
+            .scoped(work, |entries| {
+                entries.try_push(Entry { value, next: None })
+            })
+            .map_err(storage)?;
+        if let Some(ordinal) = previous {
+            let tail = self.classes[ordinal].tail;
             self.entries[tail].next = Some(next);
+            self.classes[ordinal].tail = next;
+        } else {
+            let table = self.keys.as_ref().expect("restored artifact map");
+            let head = table.get(&bucket, &work).map_err(resource)?.copied();
+            let ordinal = self.classes.len();
+            self.classes
+                .scoped(work, |classes| {
+                    classes.try_push(Class {
+                        key,
+                        producer,
+                        head: next,
+                        tail: next,
+                        next: head,
+                    })
+                })
+                .map_err(storage)?;
+            let original = self.keys.take().expect("restored artifact map");
+            let (mut table, previous) = match original.rebind(work) {
+                MapExecution::Changed { map, previous } => (map, previous),
+                MapExecution::Foreign { map, .. } => {
+                    self.keys = Some(map);
+                    return Err(IndexError::Foreign { signature });
+                }
+            };
+            let result = table.try_insert(bucket, ordinal);
+            self.keys = Some(match table.rebind(previous) {
+                MapExecution::Changed { map, .. } => map,
+                MapExecution::Foreign { .. } => {
+                    unreachable!("restore uses the original table account")
+                }
+            });
+            result.map_err(resource)?;
         }
         Ok(())
     }
 
+    fn class<Q: Query<Id = N, Document = D, Generation = G>>(
+        &self,
+        bucket: &Bucket,
+        key: ArtifactKey<'_>,
+        producer: structured_pkix::algorithm::Producer<'_>,
+        query: &Q,
+    ) -> Result<Option<usize>, IndexError<N>> {
+        let resource = |cause| IndexError::Resource {
+            signature: self.signature,
+            cause,
+        };
+        let work = producer.execution_in(query.execution());
+        let mut next = self
+            .keys
+            .as_ref()
+            .expect("restored artifact map")
+            .get(bucket, &work)
+            .map_err(resource)?
+            .copied();
+        while let Some(ordinal) = next {
+            self.admit(query)?;
+            let class = &self.classes[ordinal];
+            let original = class.producer.execution_in(query.execution());
+            original.charge_work(1).map_err(resource)?;
+            if key.kind == class.key.kind && key.bytes.len() == class.key.bytes.len() {
+                if core::ptr::eq(key.bytes, class.key.bytes) {
+                    return Ok(Some(ordinal));
+                }
+                let length = u64::try_from(key.bytes.len())
+                    .map_err(|_| resource(MemoryError::WorkExceeded))?;
+                work.charge_work(length).map_err(resource)?;
+                original.charge_work(length).map_err(resource)?;
+                if key.bytes == class.key.bytes {
+                    return Ok(Some(ordinal));
+                }
+            }
+            next = class.next;
+        }
+        Ok(None)
+    }
+
     fn find<'view, 'query, Q: Query<Id = N, Document = D, Generation = G>>(
         &'view self,
-        kind: Kind,
-        bytes: &[u8],
+        artifact: ArtifactRef<'_, '_>,
         query: &'query Q,
     ) -> Lookup<'view, 'query, 'source, N, D, G, P, O, W, Q, I> {
         self.admit(query)?;
         query.admit(self.signature, 1).map_err(IndexError::Scope)?;
+        let work = artifact.execution_in(query.execution());
+        // Even an empty index observes this external artifact. Its producing
+        // local ceiling is not a credit supplied by a wider current query.
+        work.charge_work(1).map_err(|cause| IndexError::Resource {
+            signature: self.signature,
+            cause,
+        })?;
+        let key = artifact.identity();
+        let bucket = Bucket {
+            kind: key.kind,
+            hash: self
+                .keys
+                .as_ref()
+                .expect("restored artifact map")
+                .fingerprint(&key, &work)
+                .map_err(|cause| IndexError::Resource {
+                    signature: self.signature,
+                    cause,
+                })?,
+        };
         let next = self
-            .keys
-            .get(&ArtifactKey { kind, bytes }, query.execution())
-            .map(|value| value.map(|&(head, _)| head))
-            .map_err(|cause| IndexError::Resource {
-                signature: self.signature,
-                cause,
-            })?;
+            .class(&bucket, key, artifact.producer(), query)?
+            .map(|ordinal| self.classes[ordinal].head);
         Ok(Occurrences {
             index: self,
             query,

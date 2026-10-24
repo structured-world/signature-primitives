@@ -16,7 +16,19 @@ class BootstrapPackages(unittest.TestCase):
         self.assertIs(config["workspace"]["release_always"], False)
         self.assertEqual(config["workspace"]["git_tag_name"], "structured-cades-v{{ version }}")
         disabled = {package["name"] for package in config["package"] if package.get("release") is False}
-        self.assertEqual(disabled, {"structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades"})
+        self.assertEqual(disabled, {"structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-pades"})
+
+    def test_pades_awaits_first_publication_authorization(self):
+        # Adding a workspace member must not let an older bootstrap credential
+        # publish it before its own first-publication authorization.
+        for filename in ["release-core.toml", "release-ltv.toml",
+                         "release-dependents.toml", "release-before-cades.toml",
+                         "release-cades.toml", "../release-plz.toml"]:
+            with self.subTest(config=filename):
+                config = tomllib.loads((ROOT / ".github" / filename).read_text())
+                packages = {package["name"]: package.get("release", True)
+                            for package in config["package"]}
+                self.assertIs(packages.get("structured-pades"), False)
 
     def test_coordinated_packages_include_each_others_changes(self):
         # One workspace version also ships sibling-only changes. Each package
@@ -68,14 +80,15 @@ class BootstrapPackages(unittest.TestCase):
         new = {"structured-ltv"}
         cades = {"structured-cades"}
         dependents = {"structured-xades"} | cades
-        self.assertEqual(names, existing | new | dependents)
+        pending = {"structured-pades"}
+        self.assertEqual(names, existing | new | dependents | pending)
         for filename, expected in [
             ("release-core.toml", existing),
             ("release-ltv.toml", new),
             ("release-dependents.toml", dependents),
-            ("release-before-cades.toml", names - cades),
+            ("release-before-cades.toml", names - cades - pending),
             ("release-cades.toml", cades),
-            ("../release-plz.toml", names),
+            ("../release-plz.toml", names - pending),
         ]:
             config = tomllib.loads((ROOT / ".github" / filename).read_text())
             # Only the explicitly credential-selected first LTV publication

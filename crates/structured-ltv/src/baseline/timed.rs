@@ -5,7 +5,7 @@ use crate::pki::SignerReceipt;
 use crate::source::{Query, ScopeError};
 use crate::timestamp::{
     Purpose, SignatureTime, SignatureTimeBinding, SignatureTimeError, SignatureTimeFailure,
-    TimestampPaths, TimestampScope, signature_time_path,
+    TimestampPaths, TimestampScope, existence_time_path, signature_time_path,
 };
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 
@@ -50,7 +50,7 @@ impl<'a, 'c, 'd, B, S, N, D, G, I> Timed<'a, 'c, 'd, B, S, N, D, G, I> {
     pub fn signatures(&self) -> &[SignatureTimeFact<'a, S, N, D, G, I>] {
         &self.signatures
     }
-    /// At least one root signature timestamp exists and every such timestamp's
+    /// At least one authorized root existence timestamp exists and every required timestamp's
     /// complete accuracy interval is covered by the actual static signer path.
     /// Counter/data/archive timestamps cannot substitute for this condition.
     #[must_use]
@@ -104,6 +104,41 @@ where
     B: BasicStage<'path, 'document, Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
     Q: Query,
 {
+    timed(basic, paths, None, query)
+}
+
+/// Same complete TSA/static core with one format-authorized archive input as
+/// the fallback existence time when no root signature timestamp is written.
+/// The format issuer supplies the original archive property, not the caller.
+/// EN319142-1 §6.3 allows `PAdES` document timestamps for this purpose; default
+/// XAdES/CAdES composition continues to require its signature timestamp kind.
+/// <https://www.etsi.org/deliver/etsi_EN/319100_319199/31914201/01.02.01_60/en_31914201v010201p.pdf>
+pub fn timestamped_existence<'a, 'c, 'd, 'path, 'document, B, Q, I>(
+    _issuer: I,
+    basic: &'a B,
+    paths: &'a TimestampPaths<'a, 'c, 'd, Q::Id, Q::Document, Q::Generation, I>,
+    archive: Option<Q::Id>,
+    query: &Q,
+) -> TimeResult<'a, 'c, 'd, B, B::Signer, Q, I>
+where
+    'document: 'path,
+    B: BasicStage<'path, 'document, Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
+    Q: Query,
+{
+    timed(basic, paths, archive, query)
+}
+
+fn timed<'a, 'c, 'd, 'path, 'document, B, Q, I>(
+    basic: &'a B,
+    paths: &'a TimestampPaths<'a, 'c, 'd, Q::Id, Q::Document, Q::Generation, I>,
+    archive: Option<Q::Id>,
+    query: &Q,
+) -> TimeResult<'a, 'c, 'd, B, B::Signer, Q, I>
+where
+    'document: 'path,
+    B: BasicStage<'path, 'document, Id = Q::Id, Document = Q::Document, Generation = Q::Generation>,
+    Q: Query,
+{
     let selected = basic.signer().signature();
     let signature = selected.node;
     let required = paths.required();
@@ -124,30 +159,68 @@ where
         return Err(TimeError::Foreign { signature });
     }
     query.admit(signature, 1).map_err(TimeError::Scope)?;
+    let mut signature_written = false;
+    if let Some(archive) = archive {
+        let mut archive_written = false;
+        for entry in required.entries() {
+            query.admit(entry.property, 1).map_err(TimeError::Scope)?;
+            if !query.equal(entry.signature, signature).map_err(resource)? {
+                continue;
+            }
+            if entry.purpose == Purpose::Signature {
+                signature_written = true;
+            }
+            if entry.purpose == Purpose::Archive
+                && query.equal(entry.property, archive).map_err(resource)?
+            {
+                archive_written = true;
+            }
+        }
+        if !archive_written {
+            return Err(TimeError::Foreign { signature });
+        }
+    }
     let mut signatures = query.execution().vector();
     let mut static_complete = basic.all_requirements_met();
     for path in paths.paths() {
         query.execution().charge_work(1).map_err(resource)?;
         let verified = path.actor().verified();
-        if verified.purpose() != Purpose::Signature
-            || !query
-                .equal(verified.signature(), signature)
-                .map_err(resource)?
+        if verified.purpose() != Purpose::Signature && archive.is_none() {
+            continue;
+        }
+        if !query
+            .equal(verified.signature(), signature)
+            .map_err(resource)?
         {
             continue;
         }
-        signatures.try_reserve(1).map_err(resource)?;
-        let fact =
-            match signature_time_path(basic.signer(), path, query).map_err(TimeError::Signature)? {
-                SignatureTimeBinding::Bound(value) => SignatureTimeFact::Bound(value),
-                SignatureTimeBinding::Unproven(cause) => {
-                    static_complete = false;
-                    SignatureTimeFact::Unproven {
-                        property: verified.property(),
-                        cause,
-                    }
-                }
+        let fallback = !signature_written
+            && verified.purpose() == Purpose::Archive
+            && match archive {
+                Some(archive) => query
+                    .equal(verified.property(), archive)
+                    .map_err(resource)?,
+                None => false,
             };
+        if verified.purpose() != Purpose::Signature && !fallback {
+            continue;
+        }
+        signatures.try_reserve(1).map_err(resource)?;
+        let association = if fallback {
+            existence_time_path(basic.signer(), path, query)
+        } else {
+            signature_time_path(basic.signer(), path, query)
+        };
+        let fact = match association.map_err(TimeError::Signature)? {
+            SignatureTimeBinding::Bound(value) => SignatureTimeFact::Bound(value),
+            SignatureTimeBinding::Unproven(cause) => {
+                static_complete = false;
+                SignatureTimeFact::Unproven {
+                    property: verified.property(),
+                    cause,
+                }
+            }
+        };
         signatures.try_push(fact).map_err(resource)?;
     }
     if signatures.is_empty() {

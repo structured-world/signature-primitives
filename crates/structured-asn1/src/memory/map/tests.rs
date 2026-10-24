@@ -3,12 +3,133 @@ use core::cell::Cell;
 use core::hash::{Hash, Hasher};
 use core::sync::atomic::Ordering;
 
-use super::{HashWork, OwnedMap, RetainError};
+use super::{HashWork, MapExecution, OwnedMap, RetainError};
 use crate::memory::{Execution, Memory, MemoryAccount, MemoryError, Work};
 use crate::{Encoding, Limits, Parser};
 
 fn memory(storage: usize, work: usize) -> Memory {
     Memory::new(Arc::new(MemoryAccount::new(storage, work)))
+}
+
+#[test]
+fn rebind_moves_execution_without_copying_or_account_owner_increment() {
+    // Repeated foreign-source census updates must not add an atomic owner
+    // increment per artifact. Transfer back preserves the same value address,
+    // capacity charge and old execution, including after scoped refusal.
+    let account = Arc::new(MemoryAccount::new(4096, 100_000));
+    let memory = Memory::new(account.clone());
+    let mut map = memory.map();
+    map.try_insert(7usize, 42usize).unwrap();
+    let address = core::ptr::from_ref(map.get(&7, &memory).unwrap().unwrap());
+    let parser = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 0,
+            ..Limits::default()
+        },
+        memory.clone(),
+    );
+    let execution = parser.execution_in(&memory);
+    let owners = Arc::strong_count(&account);
+    let charged = memory.used();
+    let used_work = memory.work_used();
+    let MapExecution::Changed { mut map, previous } = map.rebind(execution) else {
+        panic!("same account");
+    };
+    assert_eq!(Arc::strong_count(&account), owners);
+    assert_eq!(memory.used(), charged);
+    assert_eq!(memory.work_used(), used_work);
+    assert_eq!(map.try_insert(8, 43), Err(MemoryError::WorkExceeded));
+    let MapExecution::Changed { map, .. } = map.rebind(previous) else {
+        panic!("original account");
+    };
+    assert_eq!(Arc::strong_count(&account), owners);
+    assert_eq!(memory.used(), charged);
+    assert_eq!(
+        core::ptr::from_ref(map.get(&7, &memory).unwrap().unwrap()),
+        address
+    );
+    assert_eq!(map.get(&8, &memory).unwrap(), None);
+    drop(map);
+    assert_eq!(memory.used(), 0);
+}
+
+#[test]
+fn rebind_mismatch_returns_both_original_owners_without_work() {
+    // An account mismatch cannot lose either owned execution or move a table
+    // charge to a different allocator. Both unchanged inputs remain usable.
+    let original = memory(4096, 100_000);
+    let other = memory(0, 0);
+    let mut map = original.map();
+    map.try_insert(7usize, 42usize).unwrap();
+    let charged = original.used();
+    let used_work = original.work_used();
+    let MapExecution::Foreign { map, requested } = map.rebind(other) else {
+        panic!("different accounts");
+    };
+    assert_eq!(original.used(), charged);
+    assert_eq!(original.work_used(), used_work);
+    assert_eq!(requested.used(), 0);
+    assert_eq!(requested.work_used(), 0);
+    assert!(!requested.same_account(map.memory()));
+    assert_eq!(map.get(&7, &original).unwrap(), Some(&42));
+    drop(map);
+    assert_eq!(original.used(), 0);
+}
+
+#[test]
+fn rebind_drops_each_retained_value_once() {
+    // Execution ownership changes do not duplicate or prematurely drop values.
+    struct Value<'a>(&'a Cell<usize>);
+    impl Drop for Value<'_> {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    let dropped = Cell::new(0);
+    let memory = memory(4096, 100_000);
+    let parser = Parser::der(memory.clone());
+    let mut map = memory.map();
+    map.try_insert(0usize, Value(&dropped)).unwrap();
+    let MapExecution::Changed { map, previous } = map.rebind(parser.execution_in(&memory)) else {
+        panic!("same account");
+    };
+    assert_eq!(dropped.get(), 0);
+    let MapExecution::Changed { map, .. } = map.rebind(previous) else {
+        panic!("original account");
+    };
+    assert_eq!(dropped.get(), 0);
+    drop(map);
+    assert_eq!(dropped.get(), 1);
+    assert_eq!(memory.used(), 0);
+}
+
+#[test]
+fn fingerprint_retains_its_table_seed_through_growth_and_rebinding() {
+    // Retained source fingerprints remain bucket hints for this table even
+    // after a resize or execution transfer. Computing one needs current Work.
+    let memory = memory(65536, 1_000_000);
+    let mut map = memory.map();
+    map.try_insert(0usize, 0usize).unwrap();
+    let first = map.fingerprint(&999usize, &memory).unwrap();
+    for value in 1..100 {
+        map.try_insert(value, value).unwrap();
+    }
+    assert_eq!(map.fingerprint(&999usize, &memory).unwrap(), first);
+    let refused = super::tests::memory(0, 0);
+    assert_eq!(
+        map.fingerprint(&999usize, &refused),
+        Err(MemoryError::WorkExceeded)
+    );
+    let parser = Parser::der(memory.clone());
+    let MapExecution::Changed { map, previous } = map.rebind(parser.execution_in(&memory)) else {
+        panic!("same account");
+    };
+    assert_eq!(map.fingerprint(&999usize, &memory).unwrap(), first);
+    let MapExecution::Changed { map, .. } = map.rebind(previous) else {
+        panic!("original account");
+    };
+    assert_eq!(map.fingerprint(&999usize, &memory).unwrap(), first);
 }
 
 #[derive(Default)]

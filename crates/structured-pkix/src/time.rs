@@ -154,6 +154,50 @@ pub struct Calendar {
     pub nanos: u32,
 }
 
+impl Calendar {
+    /// Validates a four-digit Gregorian calendar label and projects its signed
+    /// minute offset into UTC. This is a scalar bridge, not a wire parser or
+    /// proof that an indicated leap second occurred. It shares the certificate
+    /// time calendar kernel and permits offsets wider than XSD's fourteen hours.
+    /// Years outside 0000..9999 and invalid calendar components return None;
+    /// resource refusal remains a separate error before arithmetic.
+    pub fn instant_at_minutes<W: structured_asn1::memory::Work>(
+        self,
+        minutes: i16,
+        execution: &W,
+    ) -> core::result::Result<Option<Instant>, structured_asn1::memory::MemoryError> {
+        execution.charge_work(128)?;
+        let Ok(year) = u32::try_from(self.year) else {
+            return Ok(None);
+        };
+        if year > 9999
+            || self.month == 0
+            || self.month > 12
+            || self.day == 0
+            || self.hour > 23
+            || self.minute > 59
+            || self.second > 60
+            || self.nanos >= 1_000_000_000
+        {
+            return Ok(None);
+        }
+        if u32::from(self.day) > days_in_month(year, u32::from(self.month)) {
+            return Ok(None);
+        }
+        let seconds = days_from_civil(self.year, u32::from(self.month), u32::from(self.day))
+            * 86_400
+            + i64::from(self.hour) * 3600
+            + i64::from(self.minute) * 60
+            + i64::from(self.second)
+            - i64::from(minutes) * 60;
+        Ok(if self.second == 60 {
+            Instant::leap_after(seconds - 1, self.nanos)
+        } else {
+            Instant::new(seconds, self.nanos)
+        })
+    }
+}
+
 /// The moment `99991231235959Z` names, which the profile uses to say that a
 /// certificate has no well defined expiry rather than that it expires then.
 pub const NO_WELL_DEFINED_EXPIRY: i64 = 253_402_300_799;

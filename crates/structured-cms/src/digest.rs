@@ -185,6 +185,24 @@ impl<'a, P: Digest<'a>> DigestBatch<'a, P> {
             .map_err(StreamError::Callback)
     }
 
+    /// Completes an asynchronous bounded source through the same digest
+    /// states, request mapping, width checks and consuming finalization.
+    pub async fn run_async<S: stream::AsyncSource, W: Work>(
+        mut self,
+        source: &mut S,
+        execution: &W,
+    ) -> Result<DigestMemo<'a, P>, PassError<S::Error, P::Error>> {
+        let field = self.field;
+        let at = self.at;
+        let mut outputs = execution.vector();
+        outputs
+            .try_reserve_exact(self.pending.len())
+            .map_err(|cause| StreamError::Processing(Error::resource(cause, field, at)))?;
+        stream::run_async(source, &mut BatchSink(&mut self), execution, field, at).await?;
+        self.finish(outputs, execution)
+            .map_err(StreamError::Callback)
+    }
+
     /// Completes algorithm-dependent derived inputs, once per distinct full
     /// identity. The callback receives the first ORIGINAL request ordinal,
     /// preserving the prepare mapping after identity sorting/deduplication.

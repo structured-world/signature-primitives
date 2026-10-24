@@ -6,6 +6,7 @@ use crate::{Error, ErrorCode, Result, oid};
 use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Element, Encoding, Oid, Parser, Reader, Span, Tag, universal};
 use structured_pkix::{AlgorithmIdentifier, Certificate};
+pub mod revocation;
 
 /// One original certificate CHOICE (RFC5652 §10.2.2).
 ///

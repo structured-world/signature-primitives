@@ -8,13 +8,11 @@ use crate::{
     prepare::{Preparation, proofs::Body},
 };
 use structured_asn1::{
-    Element, Reader, Tag,
+    Element, Reader,
     memory::{OwnedVec, Work},
-    universal,
 };
-use structured_cms::signed::{CertificateChoice, OtherRevocationInfo};
+use structured_cms::signed::{CertificateChoice, revocation as shared_revocation};
 use structured_ltv::{material, source::Query};
-use structured_pkix::crl::CertificateList;
 const FIELD: &str = "cades.material.poe";
 
 pub(super) enum Kind {
@@ -98,7 +96,6 @@ pub(super) fn collect<'d, W: Work>(
                     &origin,
                     element,
                     Placement::PoeRevocation(location),
-                    operation,
                     crls,
                     ocsp,
                     open,
@@ -122,44 +119,34 @@ pub(super) fn revocation<'d, W: Work>(
     parent: &Reader<'d>,
     element: &Element<'d>,
     placement: Placement,
-    operation: &Reader<'d>,
     crls: &mut OwnedVec<Crl<'d>, W>,
     ocsp: &mut OwnedVec<Ocsp<'d>, W>,
     open: &mut OwnedVec<Open<'d>, W>,
 ) -> crate::Result<Kind> {
-    let result = if element.tag() == Tag::constructed(universal::SEQUENCE) {
-        CertificateList::read_element(parent, element)
-            .map_err(Error::Pkix)
-            .and_then(|value| {
-                let index = crls.len();
-                crls.try_push(Crl {
-                    value,
-                    node: Node::of(element.span()),
-                    placement,
-                })
-                .map_err(|cause| Error::resource(cause, FIELD, element.span().start))?;
-                Ok(Kind::Crl(index))
+    let result = match shared_revocation::read(parent, element) {
+        Ok(shared_revocation::Reading::Crl(value)) => {
+            let index = crls.len();
+            crls.try_push(Crl {
+                value,
+                node: Node::of(element.span()),
+                placement,
             })
-    } else {
-        OtherRevocationInfo::read(parent, element)
-            .map_err(Error::Cms)
-            .and_then(|other| other.ocsp().map_err(Error::Cms))
-            .and_then(|response| {
-                let Some(response) = response else {
-                    return Ok(Kind::Open);
-                };
-                let Some(value) = response.basic_in(operation).map_err(Error::Pkix)? else {
-                    return Ok(Kind::Open);
-                };
-                let index = ocsp.len();
-                ocsp.try_push(Ocsp {
-                    value,
-                    node: Node::of(element.span()),
-                    placement,
-                })
-                .map_err(|cause| Error::resource(cause, FIELD, element.span().start))?;
-                Ok(Kind::Ocsp(index))
+            .map_err(|cause| Error::resource(cause, FIELD, element.span().start))?;
+            Ok(Kind::Crl(index))
+        }
+        Ok(shared_revocation::Reading::Ocsp(value)) => {
+            let index = ocsp.len();
+            ocsp.try_push(Ocsp {
+                value,
+                node: Node::of(element.span()),
+                placement,
             })
+            .map_err(|cause| Error::resource(cause, FIELD, element.span().start))?;
+            Ok(Kind::Ocsp(index))
+        }
+        Ok(shared_revocation::Reading::Open { .. }) => Ok(Kind::Open),
+        Err(shared_revocation::Error::Cms(cause)) => Err(Error::Cms(cause)),
+        Err(shared_revocation::Error::Pkix(cause)) => Err(Error::Pkix(cause)),
     };
     match result {
         Ok(Kind::Open) => {

@@ -228,6 +228,19 @@ pub struct CertificateList<'a> {
 }
 
 impl<'a> CertificateList<'a> {
+    /// Borrows the original CRL execution under the current operation without
+    /// reading parameters, cloning storage or resetting the producing ceiling.
+    #[must_use]
+    pub fn execution_in<'operation, W: Work>(
+        &self,
+        work: &'operation W,
+    ) -> structured_asn1::memory::Execution<'operation>
+    where
+        'a: 'operation,
+    {
+        self.signature_algorithm.query_in(work)
+    }
+
     /// Authenticate with an already authenticated issuer and its effective
     /// working key. The caller establishes the issuer path and its trust-anchor
     /// provenance; this operation binds that certificate to the actual key and

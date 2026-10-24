@@ -228,6 +228,16 @@ const msrvInstall = steps => steps.find(step => /^rustup toolchain install \d+\.
 assert.ok(msrvInstall(ci.jobs.msrv.steps));
 assert.equal(msrvInstall(registry.steps), msrvInstall(ci.jobs.msrv.steps));
 console.log("PASS: registry qualification installs the pull-request MSRV compiler.");
+// Published PAdES tests invoke both independent tools on stable and MSRV.
+// Keep their installation unconditional and before any registry test execution.
+const registryQualification = registry.steps.findIndex(step => step.run === "bash scripts/qualify-registry.sh");
+const registryOracles = registry.steps.findIndex(step => step.name === "PDF interoperability tools");
+assert.ok(registryOracles >= 0 && registryOracles < registryQualification,
+  "registry qualification must install the PDF test oracles before running tests");
+assert.equal(registry.steps[registryOracles].if, undefined);
+assert.equal(registry.steps[registryOracles].run,
+  "sudo apt-get update && sudo apt-get install --yes qpdf openssl");
+console.log("PASS: registry qualification installs qpdf and OpenSSL before published-package tests.");
 function ciGroup(event, sha, ref = "refs/heads/main") {
   return ci.concurrency.group.replace(/\$\{\{(.*?)\}\}/g, (_, expression) => {
     const tokens = new Lexer(expression.trim()).lex().tokens;

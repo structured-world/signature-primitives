@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.14.0...structured-pkix-v0.15.0) - 2026-10-24
+
+### Added
+
+- *(asic)* [**breaking**] add source-bound ASiC validation ([#223](https://github.com/structured-world/signature-primitives/pull/223))
+
 ## [0.14.0](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.13.0...structured-pkix-v0.14.0) - 2026-10-24
 
 ### Added

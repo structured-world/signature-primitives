@@ -28,6 +28,7 @@ mod policy;
 mod validation;
 
 pub use error::{BuildError, BuildResult};
+pub use validation::hybrid;
 pub use validation::{
     ConstraintSource, EffectiveAnchor, NameConstraintFailure, Rejection, RejectionReason,
     Validation, ValidationBounds, ValidationContext, ValidationFacts, validate, validate_effective,

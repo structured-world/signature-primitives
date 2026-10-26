@@ -12,6 +12,7 @@ use crate::{Certificate, ErrorCode, Name, oid};
 use structured_asn1::Oid;
 use structured_asn1::memory::{Memory, MemoryError, OwnedVec, Work};
 
+pub mod hybrid;
 mod processing;
 
 /// Explicit local trust anchor with an effective, possibly inherited key.
@@ -627,58 +628,15 @@ pub fn validate_effective<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>
     if chain.len() > context.bounds.depth {
         return Ok(Validation::Incomplete(Truncation::Depth));
     }
-    let length = u32::try_from(chain.len()).map_err(|_| {
-        target
-            .tbs()
-            .subject()
-            .resource(MemoryError::CapacityOverflow)
-    })?;
-    length.checked_add(1).ok_or_else(|| {
-        target
-            .tbs()
-            .subject()
-            .resource(MemoryError::CapacityOverflow)
-    })?;
     let mut driver = Supplied {
         context,
         origin: target,
         spent: 0,
         halted: None,
     };
-    let mut seen = context.execution.map();
-    for (index, certificate) in chain.iter().enumerate() {
-        if let Some(halted) =
-            driver.admit(cost::ENTRY + certificate.as_bytes().len() as u64 / cost::HASHED)?
-        {
-            return Ok(Validation::Incomplete(halted));
-        }
-        if let Some(earlier) = seen
-            .try_insert(certificate.as_bytes(), index)
-            .map_err(|reason| certificate.tbs().subject().resource(reason))?
-        {
-            return Ok(rejection(
-                ConstraintSource::Certificate(index),
-                RejectionReason::DuplicateCertificate { earlier },
-            ));
-        }
-        if let Some(published) = anchor.certificate() {
-            let bytes = certificate.as_bytes().len().min(published.as_bytes().len()) as u64;
-            if let Some(halted) = driver.admit(bytes / cost::COMPARED)? {
-                return Ok(Validation::Incomplete(halted));
-            }
-            context
-                .execution
-                .charge_work(bytes)
-                .map_err(|reason| certificate.tbs().subject().resource(reason))?;
-            if super::same(certificate, published) {
-                return Ok(rejection(
-                    ConstraintSource::Certificate(index),
-                    RejectionReason::AnchorIncluded,
-                ));
-            }
-        }
+    if let Some(outcome) = supplied_inputs(chain, anchor, &mut driver)? {
+        return Ok(outcome);
     }
-    drop(seen);
     let settings = Settings {
         execution: context.execution,
         interval: context.interval,
@@ -691,6 +649,62 @@ pub fn validate_effective<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>
         return Ok(Validation::Incomplete(halted));
     }
     Ok(outcome)
+}
+
+fn supplied_inputs<'a, N: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>(
+    chain: &[&'a Certificate<'a>],
+    anchor: Anchor<'a>,
+    driver: &mut Supplied<'a, '_, N, W, R, E>,
+) -> crate::Result<Option<Validation<'a>>> {
+    let length = u32::try_from(chain.len()).map_err(|_| {
+        driver
+            .origin
+            .tbs()
+            .subject()
+            .resource(MemoryError::CapacityOverflow)
+    })?;
+    length.checked_add(1).ok_or_else(|| {
+        driver
+            .origin
+            .tbs()
+            .subject()
+            .resource(MemoryError::CapacityOverflow)
+    })?;
+    let mut seen = driver.context.execution.map();
+    for (index, certificate) in chain.iter().enumerate() {
+        if let Some(halted) =
+            driver.admit(cost::ENTRY + certificate.as_bytes().len() as u64 / cost::HASHED)?
+        {
+            return Ok(Some(Validation::Incomplete(halted)));
+        }
+        if let Some(earlier) = seen
+            .try_insert(certificate.as_bytes(), index)
+            .map_err(|reason| certificate.tbs().subject().resource(reason))?
+        {
+            return Ok(Some(rejection(
+                ConstraintSource::Certificate(index),
+                RejectionReason::DuplicateCertificate { earlier },
+            )));
+        }
+        if let Some(published) = anchor.certificate() {
+            let bytes = certificate.as_bytes().len().min(published.as_bytes().len()) as u64;
+            if let Some(halted) = driver.admit(bytes / cost::COMPARED)? {
+                return Ok(Some(Validation::Incomplete(halted)));
+            }
+            driver
+                .context
+                .execution
+                .charge_work(bytes)
+                .map_err(|reason| certificate.tbs().subject().resource(reason))?;
+            if super::same(certificate, published) {
+                return Ok(Some(rejection(
+                    ConstraintSource::Certificate(index),
+                    RejectionReason::AnchorIncluded,
+                )));
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

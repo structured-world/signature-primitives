@@ -9,7 +9,7 @@
 //! than a product can defend.
 
 use crate::error::{Error, ErrorCode, Result};
-use structured_asn1::{Element, Reader};
+use structured_asn1::{Element, ScopedReader as Reader};
 
 /// Whether a range and everything under it is DER.
 ///
@@ -24,7 +24,11 @@ use structured_asn1::{Element, Reader};
 /// # Errors
 ///
 /// Reports which rule was broken and where.
-pub fn conforms<'a>(parent: &Reader<'a>, element: &Element<'a>, field: &'static str) -> Result<()> {
+pub fn conforms<'a>(
+    parent: &Reader<'a, '_>,
+    element: &Element<'a>,
+    field: &'static str,
+) -> Result<()> {
     crate::name::walk_der(parent, element, field, crate::name::Strings::Checked)
 }
 
@@ -32,7 +36,7 @@ pub fn conforms<'a>(parent: &Reader<'a>, element: &Element<'a>, field: &'static 
 /// The enclosing schema checks its context tag; this reuses the same iterative
 /// BER fragment/padding kernel as universal BIT STRINGs. DER requires primitive.
 pub fn implicit_bit_string<'a>(
-    parent: &Reader<'a>,
+    parent: &Reader<'a, '_>,
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<()> {
@@ -70,7 +74,7 @@ pub fn implicit_bit_string<'a>(
 /// Returns a resource refusal at `next`'s original offset before comparing
 /// bytes. `Ok(false)` means incorrect order, independently of resource errors.
 pub fn set_ordered(
-    parent: &Reader<'_>,
+    parent: &Reader<'_, '_>,
     previous: &[u8],
     next: &Element<'_>,
     field: &'static str,

@@ -72,6 +72,37 @@ Applications own trust decisions, external data acquisition and the accounting
 of work inside their injected verification and recognizer callbacks. Merely
 passing an execution account does not bound arbitrary external callback code.
 
+### Alternative signatures and two-key requests
+
+`hybrid` reads the X.509 alternative-key, alternative-algorithm and
+alternative-signature extensions, preserving criticality, original bytes and
+located missing/malformed components. `prepare_certificate` and `prepare_crl`
+stream the X.509 (2019) preTBS input, excluding both the inner native signature
+algorithm and the alternative-value extension. Retained extensions keep their
+original order and bytes; only enclosing DER lengths are regenerated.
+
+`hybrid::request::Request` reads DER PKCS#10 and its original attributes.
+Its alternative proof covers the request info without the complete
+alternative-value attribute; the native proof covers the final request info.
+This is the Bouncy Castle alternative-attribute convention, not a claim that
+RFC2986 itself specifies hybrid proofs. Duplicate attributes, noncanonical
+SET ordering and nonsingleton alternative values cannot become valid proofs.
+
+Implement `hybrid::AlternativeVerifier` for the selected provider. ML-DSA uses
+the existing shared algorithm/key/signature framing, pure mode and empty
+context. There is no production crypto dependency or hidden prehash. The
+preimage visitor streams borrowed source ranges and distinguishes generated
+DER headers; current and producing work limits remain binding during replay.
+
+`path::hybrid::validate` reuses the ordinary constraints processor with an
+explicit alternative trust-anchor key and a requirement selected before
+verification: `Alternative` or `Both`. Reports retain native and alternative
+results separately, including unchecked positions. A failed native mathematical
+check does not block a required alternative check; missing or invalid required
+alternative evidence never falls back to native success. Direct certificate,
+CRL and request checks likewise return independent results. CRL issuer usage,
+scope, freshness and revocation decisions remain separate from its mathematics.
+
 ### Signature algorithm structure
 
 `algorithm::signature::with_algorithm(identifier, &work, visitor)` recognizes SHA-family RSA

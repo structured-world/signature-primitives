@@ -8,7 +8,7 @@
 use crate::algorithm::{self, AlgorithmIdentifier};
 use crate::error::{Error, ErrorCode, Located, Result};
 use structured_asn1::memory::Work;
-use structured_asn1::{BitString, Element, Oid, Reader, Tag, universal};
+use structured_asn1::{BitString, Element, Oid, ScopedReader, Tag, universal};
 
 pub mod dsa;
 pub mod ec;
@@ -91,7 +91,7 @@ impl<'a> PublicKeyInfo<'a> {
     ///
     /// Reports malformed structure, trailing fields or an exhausted parent budget.
     pub fn read_element(
-        parent: &Reader<'a>,
+        parent: &ScopedReader<'a, '_>,
         element: &Element<'a>,
         field: &'static str,
     ) -> Result<PublicKeyInfo<'a>> {

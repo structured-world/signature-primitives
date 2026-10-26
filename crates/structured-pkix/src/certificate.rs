@@ -84,6 +84,7 @@ pub struct Certificate<'a> {
 /// The signed part of a certificate: everything the issuer put its name to.
 #[derive(Debug)]
 pub struct TbsCertificate<'a> {
+    source_depth: u32,
     version: Version,
     serial: Integer<'a>,
     signature: AlgorithmIdentifier<'a>,
@@ -255,6 +256,23 @@ impl<'a> Certificate<'a> {
 }
 
 impl<'a> TbsCertificate<'a> {
+    pub(crate) fn reader_scoped<'q, W: structured_asn1::memory::Work>(
+        &self,
+        work: &'q W,
+    ) -> Result<structured_asn1::ScopedReader<'a, 'q>>
+    where
+        'a: 'q,
+    {
+        work.read_scoped_source(
+            self.signature.source_parser(),
+            self.der,
+            self.span.start,
+            structured_asn1::Encoding::Der,
+            self.source_depth,
+        )
+        .field(TBS)
+    }
+
     /// Which version this was written to.
     #[must_use]
     pub fn version(&self) -> Version {
@@ -470,6 +488,7 @@ fn read_tbs<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<TbsCertifi
     }
 
     Ok(TbsCertificate {
+        source_depth: parent.depth(),
         version,
         serial,
         signature,

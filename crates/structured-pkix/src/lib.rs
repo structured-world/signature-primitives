@@ -38,6 +38,7 @@ pub mod der;
 pub mod error;
 pub mod extension;
 pub mod general_name;
+pub mod hybrid;
 pub mod identifier;
 pub mod key;
 pub mod name;

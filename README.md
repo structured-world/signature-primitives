@@ -97,6 +97,12 @@ Next steps: [parse a certificate](crates/structured-pkix/README.md#quick-start),
 
 ## Why these libraries
 
+X.509 alternative signatures are available through `structured_pkix::hybrid`
+for certificates, CRLs and two-key PKCS#10 requests. They retain independent
+native/alternative results and stream the exact transformed DER input to an
+injected verifier, including pure ML-DSA. Explicit hybrid path validation
+reuses the ordinary constraints processor and caller-selected trust anchors.
+
 - **The signed bytes stay exact.** ASN.1 values (certificates, CRLs, OCSP, CMS,
   timestamps) borrow the original input, so their signatures are checked over
   the bytes that were actually signed, never over a re-encoding. For XAdES, the

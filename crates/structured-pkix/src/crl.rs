@@ -157,6 +157,7 @@ impl<'a> RevokedCertificate<'a> {
 /// identifiers, names and extension values remain borrowed.
 #[derive(Debug)]
 pub struct TbsCertList<'a> {
+    source_depth: u32,
     version: Version,
     signature: AlgorithmIdentifier<'a>,
     issuer: Name<'a>,
@@ -169,6 +170,23 @@ pub struct TbsCertList<'a> {
 }
 
 impl<'a> TbsCertList<'a> {
+    pub(crate) fn reader_scoped<'q, W: Work>(
+        &self,
+        work: &'q W,
+    ) -> Result<structured_asn1::ScopedReader<'a, 'q>>
+    where
+        'a: 'q,
+    {
+        work.read_scoped_source(
+            self.signature.source_parser(),
+            self.bytes,
+            self.span.start,
+            structured_asn1::Encoding::Der,
+            self.source_depth,
+        )
+        .field(TBS)
+    }
+
     /// Which CRL schema was used.
     #[must_use]
     pub fn version(&self) -> Version {
@@ -511,6 +529,7 @@ fn read_tbs<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<TbsCertLis
     }
     end(&inside, TBS, element.span().start)?;
     Ok(TbsCertList {
+        source_depth: parent.depth(),
         version,
         signature,
         issuer,

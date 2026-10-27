@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/structured-world/signature-primitives/compare/v0.15.2...v0.16.0) - 2026-10-27
+
+### Other
+
+- *(cms)* [**breaking**] transfer decrypted key ownership ([#236](https://github.com/structured-world/signature-primitives/pull/236))
+
 ## [0.15.2](https://github.com/structured-world/signature-primitives/compare/v0.15.1...v0.15.2) - 2026-10-26
 
 ### Added

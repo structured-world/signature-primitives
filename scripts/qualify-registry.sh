@@ -81,16 +81,9 @@ check() {
 
 # Packages and versions come from REVISION itself, not the working tree.
 git archive "$revision" | tar -x -C "$work/tree"
-cargo metadata --locked --no-deps --format-version 1 --manifest-path "$work/tree/Cargo.toml" > "$work/metadata.json"
+cargo +stable metadata --locked --no-deps --format-version 1 --manifest-path "$work/tree/Cargo.toml" > "$work/metadata.json"
 python3 scripts/release-packages.py "$work/metadata.json" "$work/tree/release-plz.toml" > "$work/release-packages.json"
-msrv=$(jq -r '[.packages[].rust_version] | unique | if length == 1 then .[0] else error("rust-version differs") end' "$work/metadata.json")
-# A two-component rust-version names its .0 release; rustup's two-component
-# channel would follow later patch releases instead.
-case $msrv in
-  *.*.*) ;;
-  *.*) msrv="$msrv.0" ;;
-  *) printf 'qualify-registry: unsupported rust-version %s\n' "$msrv" >&2; exit 1 ;;
-esac
+jq -e '[.packages[].rust_version] | unique | if length == 1 then true else error("rust-version differs") end' "$work/metadata.json" >/dev/null
 packages=()
 while read -r name version; do
   label="$name-$version"
@@ -127,7 +120,6 @@ for label in "${packages[@]}"; do
   cd -- "$work/packages/$label"
   check "$label" cargo +stable nextest run --locked --all-features --no-tests=pass
   check "$label" cargo +stable test --locked --doc --all-features
-  check "$label" cargo "+$msrv" nextest run --locked --all-features --no-tests=pass
   for target in wasm32-unknown-unknown thumbv7em-none-eabihf; do
     check "$label" cargo +stable check --locked --no-default-features --features alloc --target "$target"
   done

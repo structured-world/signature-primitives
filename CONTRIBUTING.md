@@ -18,6 +18,9 @@ above explains when.
 
 ## Development
 
+Builds and CI use the latest stable Rust compiler through the unversioned
+`stable` channel. Package `rust-version` metadata does not select a compiler.
+
 Run `cargo nextest run --workspace`, `cargo test --workspace --doc`, and
 `cargo clippy --workspace --all-targets -- -D warnings`.
 Check alloc-only builds using `cargo check --workspace --no-default-features`

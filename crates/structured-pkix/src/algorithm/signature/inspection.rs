@@ -77,15 +77,15 @@ impl<'a> Inspection<'a, '_> {
 /// let source = Parser::der(work.clone());
 /// // ecdsa-with-SHA256 with a readable but forbidden NULL parameter.
 /// let bytes = b"\x30\x0c\x06\x08\x2a\x86\x48\xce\x3d\x04\x03\x02\x05\x00";
-/// let mut reader = source.read(bytes, 400)?;
-/// let element = reader.next_element()?.unwrap();
+/// let mut reader = source.read(bytes, 400).unwrap();
+/// let element = reader.next_element().unwrap().unwrap();
 /// let identifier = algorithm::read(&reader, &element, "signatureAlgorithm")?;
 /// signature::with_inspection(identifier, &work, |reading| {
 ///     assert_eq!(reading.scheme(), Some(signature::Scheme::Ecdsa(digest::Algorithm::Sha256)));
 ///     assert_eq!(reading.faults()[0].offset(), 412);
 /// })?;
 /// assert!(signature::with_algorithm(identifier, &work, |_| ()).is_err());
-/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// # Ok::<(), structured_pkix::Error>(())
 /// ```
 /// A reference to a temporary diagnostic or PSS descriptor cannot escape:
 /// ```compile_fail

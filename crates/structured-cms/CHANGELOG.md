@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1](https://github.com/structured-world/signature-primitives/compare/v0.16.0...v0.16.1) - 2026-10-27
+
+### Added
+
+- *(pkix)* expose signature profile inspection ([#241](https://github.com/structured-world/signature-primitives/pull/241))
+
 ## [0.16.0](https://github.com/structured-world/signature-primitives/compare/v0.15.2...v0.16.0) - 2026-10-27
 
 ### Other

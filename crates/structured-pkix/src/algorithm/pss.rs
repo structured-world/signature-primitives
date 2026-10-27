@@ -305,6 +305,14 @@ pub fn inspect<'a, W: Work>(
     execution: &W,
 ) -> Result<Option<Reading<'a>>> {
     require_algorithm(identifier, execution)?;
+    inspect_known(identifier, execution)
+}
+
+// The signature classifier has already admitted and recognized the OID.
+pub(super) fn inspect_known<'a, W: Work>(
+    identifier: AlgorithmIdentifier<'a>,
+    execution: &W,
+) -> Result<Option<Reading<'a>>> {
     let Some((reader, element)) = open_parameters(identifier, execution)? else {
         return Ok(None);
     };

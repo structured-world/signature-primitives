@@ -7,6 +7,8 @@ use structured_pkix::algorithm::signature::{self, Algorithm};
 use structured_pkix::algorithm::{self, AlgorithmIdentifier, digest::Algorithm as Hash, pss};
 use structured_pkix::{Certificate, ErrorCode};
 
+mod inspection;
+
 fn memory(storage: usize, work: usize) -> Memory {
     Memory::new(Arc::new(MemoryAccount::new(storage, work)))
 }

@@ -223,12 +223,29 @@ for (const [core, ltv, dependent, cades] of [
 console.log("PASS: registry qualification follows a publication of this revision and is skipped otherwise.");
 
 const ci = parse(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"));
-// Registry and pull-request MSRV checks run the same exact compiler release.
-const msrvInstall = steps => steps.find(step => /^rustup toolchain install \d+\.\d+\.\d+ /.test(step.run ?? ""))?.run.split(" ")[3];
-assert.ok(msrvInstall(ci.jobs.msrv.steps));
-assert.equal(msrvInstall(registry.steps), msrvInstall(ci.jobs.msrv.steps));
-console.log("PASS: registry qualification installs the pull-request MSRV compiler.");
-// Published PAdES tests invoke both independent tools on stable and MSRV.
+// Every ordinary validation path selects the unversioned stable compiler.
+for (const configuration of [ci, workflow]) {
+  for (const job of Object.values(configuration.jobs)) {
+    for (const step of job.steps ?? []) {
+      for (const match of (step.run ?? "").matchAll(/rustup toolchain install (\S+)/g)) {
+        assert.equal(match[1], "stable");
+      }
+      for (const match of (step.run ?? "").matchAll(/cargo \+(\S+)/g)) {
+        assert.equal(match[1], "stable");
+      }
+    }
+  }
+}
+assert.ok(ci.jobs.msrv.steps.some(step =>
+  step.run === "cargo +stable check --locked --workspace --all-targets"));
+const toolchain = readFileSync(new URL("../../rust-toolchain.toml", import.meta.url), "utf8");
+assert.match(toolchain, /^channel = "stable"$/m);
+const qualification = readFileSync(new URL("../../scripts/qualify-registry.sh", import.meta.url), "utf8");
+assert.doesNotMatch(qualification, /\bmsrv\b/);
+assert.deepEqual([...qualification.matchAll(/cargo \+(\S+)/g)].map(match => match[1]),
+  ["stable", "stable", "stable", "stable"]);
+console.log("PASS: workspace, CI and registry qualification select stable Rust.");
+// Published PAdES tests invoke both independent tools on stable.
 // Keep their installation unconditional and before any registry test execution.
 const registryQualification = registry.steps.findIndex(step => step.run === "bash scripts/qualify-registry.sh");
 const registryOracles = registry.steps.findIndex(step => step.name === "PDF interoperability tools");

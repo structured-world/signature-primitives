@@ -33,7 +33,7 @@ fn every_fixed_profile_retains_identity_fault_location_and_exact_cost() {
                     if let Err(error) = &strict {
                         assert_eq!(reading.faults(), std::slice::from_ref(error));
                     } else {
-                        assert!(reading.faults().is_empty());
+                        assert_eq!(reading.faults(), []);
                     }
                 })
                 .unwrap();
@@ -212,7 +212,7 @@ fn unknown_oid_callback_errors_and_original_views_survive_unchanged() {
     let result = signature::with_inspection(id, &memory(0, 1000), |reading| {
         assert_eq!(reading.scheme(), None);
         assert!(reading.parameters().is_none());
-        assert!(reading.faults().is_empty());
+        assert_eq!(reading.faults(), []);
         Err::<(), _>(Cause)
     })
     .unwrap();

@@ -9,6 +9,30 @@ use super::{AlgorithmIdentifier, digest, ml_dsa, pss};
 use crate::{Error, ErrorCode, Result};
 use structured_asn1::memory::Work;
 
+mod inspection;
+pub use inspection::{Inspection, with_inspection};
+
+/// The scheme named by an OID, independently of parameter conformance.
+/// Recognition does not establish provider support or usable signature inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Scheme {
+    /// RSA PKCS#1 v1.5 with an OID-implied digest.
+    RsaPkcs1v15(digest::Algorithm),
+    /// RSASSA-PSS; actual parameters must be read separately.
+    RsaPss,
+    /// DSA with an OID-implied digest.
+    Dsa(digest::Algorithm),
+    /// ECDSA with an OID-implied digest.
+    Ecdsa(digest::Algorithm),
+    /// Pure Ed25519.
+    Ed25519,
+    /// Pure Ed448.
+    Ed448,
+    /// Pure ML-DSA with an empty PKIX context.
+    MlDsa(ml_dsa::ParameterSet),
+}
+
 /// A recognized signature structure, not backend support or authorization.
 ///
 /// Fixed digests are implied by the signature OID; no encoded digest identifier
@@ -39,6 +63,7 @@ enum Parameters {
     Absent,
     Null,
     NullOrAbsent,
+    Pss,
 }
 
 /// Visits a retained signature structure under original and current work.
@@ -108,6 +133,39 @@ pub fn with_algorithm<'a, W: Work, R>(
     execution: &W,
     visitor: impl for<'parameters> FnOnce(Option<Algorithm<'a, 'parameters>>) -> R,
 ) -> Result<R> {
+    let Some((scheme, parameters)) = classify(identifier, execution)? else {
+        return Ok(visitor(None));
+    };
+    if scheme == Scheme::RsaPss {
+        let value = pss::read_known(identifier, execution)?.ok_or_else(|| {
+            Error::new(
+                ErrorCode::MissingField,
+                identifier.field,
+                identifier.offset(),
+            )
+        })?;
+        return Ok(visitor(Some(Algorithm::RsaPss(&value))));
+    }
+    check_parameters(identifier, parameters)?;
+    Ok(visitor(fixed_algorithm(scheme)))
+}
+
+fn fixed_algorithm(scheme: Scheme) -> Option<Algorithm<'static, 'static>> {
+    Some(match scheme {
+        Scheme::RsaPkcs1v15(hash) => Algorithm::RsaPkcs1v15(hash),
+        Scheme::Dsa(hash) => Algorithm::Dsa(hash),
+        Scheme::Ecdsa(hash) => Algorithm::Ecdsa(hash),
+        Scheme::Ed25519 => Algorithm::Ed25519,
+        Scheme::Ed448 => Algorithm::Ed448,
+        Scheme::MlDsa(set) => Algorithm::MlDsa(set),
+        Scheme::RsaPss => return None,
+    })
+}
+
+fn classify<W: Work>(
+    identifier: AlgorithmIdentifier<'_>,
+    execution: &W,
+) -> Result<Option<(Scheme, Parameters)>> {
     use digest::Algorithm as Hash;
     let bytes = identifier.algorithm().as_bytes();
     identifier
@@ -126,38 +184,29 @@ pub fn with_algorithm<'a, W: Work, R>(
                 14 => (Hash::Sha224, Parameters::NullOrAbsent),
                 15 => (Hash::Sha512_224, Parameters::Null),
                 16 => (Hash::Sha512_256, Parameters::Null),
-                10 => {
-                    let value = pss::read_known(identifier, execution)?.ok_or_else(|| {
-                        Error::new(
-                            ErrorCode::MissingField,
-                            identifier.field,
-                            identifier.offset(),
-                        )
-                    })?;
-                    return Ok(visitor(Some(Algorithm::RsaPss(&value))));
-                }
-                _ => return Ok(visitor(None)),
+                10 => return Ok(Some((Scheme::RsaPss, Parameters::Pss))),
+                _ => return Ok(None),
             };
-            (Algorithm::RsaPkcs1v15(hash), parameters)
+            (Scheme::RsaPkcs1v15(hash), parameters)
         }
-        [0x2a, 0x86, 0x48, 0xce, 0x38, 4, 3] => (Algorithm::Dsa(Hash::Sha1), Parameters::Absent),
-        [0x2a, 0x86, 0x48, 0xce, 0x3d, 4, 1] => (Algorithm::Ecdsa(Hash::Sha1), Parameters::Absent),
+        [0x2a, 0x86, 0x48, 0xce, 0x38, 4, 3] => (Scheme::Dsa(Hash::Sha1), Parameters::Absent),
+        [0x2a, 0x86, 0x48, 0xce, 0x3d, 4, 1] => (Scheme::Ecdsa(Hash::Sha1), Parameters::Absent),
         [0x2a, 0x86, 0x48, 0xce, 0x3d, 4, 3, last] => {
             let hash = match last {
                 1 => Hash::Sha224,
                 2 => Hash::Sha256,
                 3 => Hash::Sha384,
                 4 => Hash::Sha512,
-                _ => return Ok(visitor(None)),
+                _ => return Ok(None),
             };
-            (Algorithm::Ecdsa(hash), Parameters::Absent)
+            (Scheme::Ecdsa(hash), Parameters::Absent)
         }
         [0x60, 0x86, 0x48, 1, 0x65, 3, 4, 3, last] => {
             // SHA3 digest and signature parameter rules differ by role.
             // https://www.rfc-editor.org/rfc/rfc9688#section-3
             match last {
-                1 => (Algorithm::Dsa(Hash::Sha224), Parameters::Absent),
-                2 => (Algorithm::Dsa(Hash::Sha256), Parameters::Absent),
+                1 => (Scheme::Dsa(Hash::Sha224), Parameters::Absent),
+                2 => (Scheme::Dsa(Hash::Sha256), Parameters::Absent),
                 9..=16 => {
                     let hash = match last {
                         9 | 13 => Hash::Sha3_224,
@@ -166,28 +215,26 @@ pub fn with_algorithm<'a, W: Work, R>(
                         _ => Hash::Sha3_512,
                     };
                     if *last <= 12 {
-                        (Algorithm::Ecdsa(hash), Parameters::Absent)
+                        (Scheme::Ecdsa(hash), Parameters::Absent)
                     } else {
-                        (Algorithm::RsaPkcs1v15(hash), Parameters::Null)
+                        (Scheme::RsaPkcs1v15(hash), Parameters::Null)
                     }
                 }
                 _ => {
                     // The prefix was already paid and matched. Share the final
                     // arc and parameter kernel without another OID scan.
                     if let Some(set) = ml_dsa::from_arc(*last) {
-                        ml_dsa::require_absent(identifier)?;
-                        return Ok(visitor(Some(Algorithm::MlDsa(set))));
+                        return Ok(Some((Scheme::MlDsa(set), Parameters::Absent)));
                     }
-                    return Ok(visitor(None));
+                    return Ok(None);
                 }
             }
         }
-        [0x2b, 0x65, 112] => (Algorithm::Ed25519, Parameters::Absent),
-        [0x2b, 0x65, 113] => (Algorithm::Ed448, Parameters::Absent),
-        _ => return Ok(visitor(None)),
+        [0x2b, 0x65, 112] => (Scheme::Ed25519, Parameters::Absent),
+        [0x2b, 0x65, 113] => (Scheme::Ed448, Parameters::Absent),
+        _ => return Ok(None),
     };
-    check_parameters(identifier, parameters)?;
-    Ok(visitor(Some(algorithm)))
+    Ok(Some((algorithm, parameters)))
 }
 
 fn check_parameters(identifier: AlgorithmIdentifier<'_>, parameters: Parameters) -> Result<()> {
@@ -203,6 +250,7 @@ fn check_parameters(identifier: AlgorithmIdentifier<'_>, parameters: Parameters)
         // RFC4055 §5 explicitly requires both forms on reception.
         // https://www.rfc-editor.org/rfc/rfc4055#section-5
         Parameters::NullOrAbsent => present.is_none() || identifier.has_null_parameter(),
+        Parameters::Pss => unreachable!("PSS uses its schema kernel"),
     };
     if !valid {
         let at = present.map_or(identifier.offset(), super::Nested::offset);

@@ -171,6 +171,10 @@ impl<'a> Reading<'a> {
     pub fn faults(&self) -> &[Error] {
         &self.faults
     }
+
+    pub(super) const fn parameters_ref(&self) -> &Parameters<'a> {
+        &self.parameters
+    }
 }
 
 /// Reads present PSS parameters in the producing session; preserves absence.
@@ -305,6 +309,14 @@ pub fn inspect<'a, W: Work>(
     execution: &W,
 ) -> Result<Option<Reading<'a>>> {
     require_algorithm(identifier, execution)?;
+    inspect_known(identifier, execution)
+}
+
+// The signature classifier has already admitted and recognized the OID.
+pub(super) fn inspect_known<'a, W: Work>(
+    identifier: AlgorithmIdentifier<'a>,
+    execution: &W,
+) -> Result<Option<Reading<'a>>> {
     let Some((reader, element)) = open_parameters(identifier, execution)? else {
         return Ok(None);
     };

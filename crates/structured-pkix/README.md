@@ -119,6 +119,18 @@ PSS descriptors are borrowed only during the visit, avoiding a large fixed-case
 result or heap wrapper. The visitor may return original-source views or its own
 owned result/error, but cannot retain a reference to the temporary descriptor.
 
+`algorithm::signature::with_inspection(identifier, &work, visitor)` separates
+recognition from parameter conformance. Its scoped `Inspection` exposes the
+original identifier, `Option<Scheme>`, actual borrowed PSS parameters and located
+faults. Readable NULL/absence violations retain the recognized scheme; missing
+PSS signature parameters retain `Scheme::RsaPss` with `MissingField`, without
+inventing defaults. Unknown OIDs have no assigned parameter rules. Fixed cases
+allocate nothing; PSS shares the existing inspection decoder and accounted
+diagnostics. Malformed PSS grammar and resource failures prevent the callback.
+Inspection is not provider authorization or a strict algorithm result: callers
+keep conformance, mathematical verification and policy decisions independent.
+The strict resolver and optional PSS key-restriction reader remain unchanged.
+
 ### ML-DSA public structure
 
 `algorithm::ml_dsa::resolve(identifier, &work)` recognizes the three pure

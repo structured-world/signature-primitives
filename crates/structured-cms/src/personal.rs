@@ -268,6 +268,8 @@ impl<'a> EncryptedData<'a> {
 
 /// RFC5958 `OneAsymmetricKey` / PKCS#8 `PrivateKeyInfo`.
 pub struct PrivateKey<'a> {
+    /// Complete original key container and producing reader context.
+    pub original: EncodedValue<'a>,
     /// Zero is v1; one is v2. Validated against public-key presence.
     pub version: u64,
     /// Original algorithm, not a key/backend selection.
@@ -312,6 +314,7 @@ impl<'a> PrivateKey<'a> {
             return Err(invalid(ErrorCode::VersionMismatch, element));
         }
         Ok(Self {
+            original: EncodedValue::new(parent, *element),
             version,
             algorithm,
             secret,
@@ -348,10 +351,6 @@ impl<'a> ShroudedKey<'a> {
 }
 
 /// A typed original bag value, including open types and nested bags.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one bag is decoded/visited at a time; inline protection facts avoid an extra heap owner per shrouded key"
-)]
 pub enum BagValue<'a> {
     /// Plain PKCS#8 key.
     Key(PrivateKey<'a>),

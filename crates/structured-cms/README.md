@@ -21,6 +21,10 @@ key selection and trust. A missing MAC needs its explicit acceptance and never
 becomes proof of authentication merely by parsing. Every returned `Plaintext`
 retains its actual capacity charge and wipes initialized bytes before release;
 scoped models cannot borrow a temporary plaintext buffer after the callback.
+After a successful `Backend::key` inspection, `Backend::retain_key` receives
+the original unpadded wiping buffer by value. A backend can retain that allocation
+beyond `process` without copying or duplicating its capacity charge; one that
+does not retain it drops it explicitly. Unencrypted KeyBag values stay borrowed.
 Carried fragment maps and decrypted coordinate boundaries remain separate in
 callback sources and retained errors. A refusal yields no completed import;
 callers stage their own visitor side effects until completion.

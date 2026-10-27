@@ -7,6 +7,7 @@ use structured_pkix::algorithm::signature::{self, Algorithm};
 use structured_pkix::algorithm::{self, AlgorithmIdentifier, digest::Algorithm as Hash, pss};
 use structured_pkix::{Certificate, ErrorCode};
 
+#[path = "signature_algorithm/inspection.rs"]
 mod inspection;
 
 fn memory(storage: usize, work: usize) -> Memory {

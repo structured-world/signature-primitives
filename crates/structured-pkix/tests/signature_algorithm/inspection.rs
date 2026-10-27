@@ -279,3 +279,40 @@ fn pss_depth_refusal_is_located_and_terminal() {
     assert!(!visited.get());
     assert_eq!(current.used(), 0);
 }
+
+#[test]
+fn readable_profile_fault_and_actual_signature_math_are_independent() {
+    // An independent test oracle verifies the original message while inspection
+    // still reports forbidden ECDSA NULL. This does not qualify backend costs.
+    use p256::ecdsa::{
+        Signature, SigningKey,
+        signature::{Signer, Verifier},
+    };
+    let key = SigningKey::from_slice(&[3; 32]).unwrap();
+    let message = b"original signed input";
+    let signed: Signature = key.sign(message);
+    let bytes = encoded(&[42, 134, 72, 206, 61, 4, 3, 2], Some(&[5, 0]));
+    let source = Parser::der(memory(4096, 100_000));
+    let id = identifier(&source, &bytes);
+    let current = memory(0, 1000);
+    signature::with_inspection(id, &current, |reading| {
+        assert_eq!(reading.scheme(), Some(Scheme::Ecdsa(Hash::Sha256)));
+        assert_eq!(reading.faults()[0].code(), ErrorCode::MalformedValue);
+        assert_eq!(reading.identifier().parameters(), Some(&[5, 0][..]));
+        assert!(key.verifying_key().verify(message, &signed).is_ok());
+        assert!(
+            key.verifying_key()
+                .verify(b"changed input", &signed)
+                .is_err()
+        );
+    })
+    .unwrap();
+    let visited = std::cell::Cell::new(false);
+    assert_eq!(
+        signature::with_algorithm(id, &current, |_| visited.set(true))
+            .unwrap_err()
+            .code(),
+        ErrorCode::MalformedValue
+    );
+    assert!(!visited.get());
+}

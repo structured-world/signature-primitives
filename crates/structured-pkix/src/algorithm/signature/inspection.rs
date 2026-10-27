@@ -108,7 +108,7 @@ pub fn with_inspection<'a, W: Work, R>(
             Some(reading) => visitor(Inspection {
                 identifier,
                 scheme,
-                parameters: Some(reading.parameters()),
+                parameters: Some(reading.parameters_ref()),
                 faults: reading.faults(),
             }),
             None => visitor(Inspection {

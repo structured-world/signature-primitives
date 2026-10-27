@@ -171,6 +171,10 @@ impl<'a> Reading<'a> {
     pub fn faults(&self) -> &[Error] {
         &self.faults
     }
+
+    pub(super) const fn parameters_ref(&self) -> &Parameters<'a> {
+        &self.parameters
+    }
 }
 
 /// Reads present PSS parameters in the producing session; preserves absence.

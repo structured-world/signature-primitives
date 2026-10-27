@@ -1,4 +1,4 @@
-//! Scoped import orchestration; no temporary plaintext or model can escape.
+//! Scoped import orchestration with explicit transfer of decrypted key storage.
 
 use super::{
     Bag, BagValue, DATA, FIELD, Integrity, Pfx, PrivateKey, Safe, ShroudedKey, encoding, end,
@@ -306,12 +306,19 @@ pub trait Backend {
     ) -> core::result::Result<(), Self::Error>;
     /// Consume the clear key obtained from a shrouded bag, under its new honest
     /// plaintext coordinates. The enclosing bag is not replayed to `bag`.
+    /// On success, `retain_key` receives this exact buffer after these scoped
+    /// views end. Inspect/retain metadata here without copying the key bytes.
     fn key(
         &mut self,
         key: &PrivateKey<'_>,
         query: &Reader<'_>,
         source: &Source<'_>,
     ) -> core::result::Result<(), Self::Error>;
+    /// Take the original unpadded key buffer after successful `key` inspection.
+    /// Moving it retains its existing capacity charge and prepaid wiping;
+    /// dropping it releases storage. No temporary Reader/model survives here.
+    /// A refusal terminates processing with the same plaintext source chain.
+    fn retain_key(&mut self, plaintext: Plaintext) -> core::result::Result<(), Self::Error>;
 }
 
 /// Authenticate, then process every original safe and nested bag once.
@@ -473,6 +480,9 @@ fn bags<B: Backend>(
                     .map_err(encoding)
                     .map_err(Failure::processing)?;
                 backend.key(&key, reader, source).map_err(Failure::callback)
+            })?;
+            backend.retain_key(plain).map_err(|error| {
+                Failure::callback(error).enclosed(Origin::Plaintext(key.encrypted.span()))
             })?;
         }
     }

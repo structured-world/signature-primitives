@@ -134,6 +134,10 @@ struct Native {
     accept: Decision,
     fail_bag: bool,
     failure_at: Option<u64>,
+    retained: Vec<Plaintext>,
+    decrypted_pointer: Option<usize>,
+    fail_key: bool,
+    fail_retain: bool,
 }
 impl Native {
     fn new() -> Self {
@@ -142,6 +146,10 @@ impl Native {
             accept: Decision::Accept,
             fail_bag: false,
             failure_at: None,
+            retained: vec![],
+            decrypted_pointer: None,
+            fail_key: false,
+            fail_retain: false,
         }
     }
 }
@@ -208,7 +216,9 @@ impl Backend for Native {
         _: &Source<'_>,
     ) -> Result<Plaintext, Self::Error> {
         self.events.push("decrypt-key");
-        Self::decrypt(&key.encrypted, reader)
+        let plain = Self::decrypt(&key.encrypted, reader)?;
+        self.decrypted_pointer = Some(plain.as_bytes().as_ptr() as usize);
+        Ok(plain)
     }
     fn bag(&mut self, bag: &Bag<'_>, _: &Reader<'_>, _: &Source<'_>) -> Result<(), Self::Error> {
         if self.fail_bag {
@@ -236,6 +246,20 @@ impl Backend for Native {
         assert_eq!(key.secret.as_one(), Some(&b"original secret"[..]));
         assert!(matches!(source, Source::Plaintext { .. }));
         self.events.push("clear-key");
+        if self.fail_key {
+            return Err("key-inspection");
+        }
+        Ok(())
+    }
+    fn retain_key(&mut self, plaintext: Plaintext) -> Result<(), Self::Error> {
+        if self.fail_retain {
+            return Err("key-retention");
+        }
+        assert_eq!(
+            Some(plaintext.as_bytes().as_ptr() as usize),
+            self.decrypted_pointer
+        );
+        self.retained.push(plaintext);
         Ok(())
     }
 }
@@ -642,6 +666,9 @@ fn public_key_integrity_checks_actual_carried_safe_before_extraction() {
         ) -> Result<(), Self::Error> {
             self.inner.key(key, query, source)
         }
+        fn retain_key(&mut self, plaintext: Plaintext) -> Result<(), Self::Error> {
+            self.inner.retain_key(plaintext)
+        }
     }
     let safe = seq(&[&data(&seq(&[&bag(1, &private(0, &[]), &[])]))]);
     let key = SigningKey::from_bytes(&[7; 32]);
@@ -769,6 +796,123 @@ fn wiping_plaintext_capacity_lifetime_and_prepaid_work() {
     );
     let reader = parser.read(&[], 0).unwrap();
     assert!(Plaintext::copy_from(b"x", &reader).is_err());
+}
+
+#[test]
+fn retained_shrouded_key_moves_the_unpadded_allocation_and_account() {
+    // The exact decrypted allocation survives every temporary view and Parser;
+    // only dropping its new owner releases the original capacity charge.
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<Plaintext>();
+    let key = private(0, &[]);
+    let shrouded = bag(2, &seq(&[&pbes(), &tlv(4, &encrypt(&key))]), &[]);
+    let bytes = pfx(&seq(&[&data(&seq(&[&shrouded]))]), &[]);
+    let account = generous();
+    let mut backend = Native::new();
+    {
+        let parser = Parser::ber(account.clone());
+        let mut reader = parser.read(&bytes, 100).unwrap();
+        let pfx = Pfx::read(&mut reader).unwrap();
+        assert_eq!(
+            personal::process(&pfx, &reader, &mut backend).unwrap(),
+            Decision::Accept
+        );
+    }
+    assert_eq!(backend.retained.len(), 1);
+    assert_eq!(backend.retained[0].as_bytes(), key);
+    assert_eq!(
+        Some(backend.retained[0].as_bytes().as_ptr() as usize),
+        backend.decrypted_pointer
+    );
+    assert_eq!(account.used(), encrypt(&key).len());
+    backend.retained.clear();
+    assert_eq!(account.used(), 0);
+}
+
+#[test]
+fn failed_key_inspection_or_retention_preserves_cause_and_releases_storage() {
+    // A callback refusal never becomes successful extraction or loses its
+    // decrypted coordinate boundary, and no key owner leaks on either phase.
+    let key = private(0, &[]);
+    let shrouded = bag(2, &seq(&[&pbes(), &tlv(4, &encrypt(&key))]), &[]);
+    let bytes = pfx(&seq(&[&data(&seq(&[&shrouded]))]), &[]);
+    for inspection in [true, false] {
+        let account = generous();
+        let mut backend = Native::new();
+        backend.fail_key = inspection;
+        backend.fail_retain = !inspection;
+        let error = {
+            let parser = Parser::ber(account.clone());
+            let mut reader = parser.read(&bytes, 0).unwrap();
+            let pfx = Pfx::read(&mut reader).unwrap();
+            personal::process(&pfx, &reader, &mut backend).unwrap_err()
+        };
+        let Cause::Callback(cause) = error.cause else {
+            panic!("original callback cause")
+        };
+        assert_eq!(
+            cause,
+            if inspection {
+                "key-inspection"
+            } else {
+                "key-retention"
+            }
+        );
+        assert!(matches!(
+            error.origins[0],
+            Some(personal::Origin::Plaintext(_))
+        ));
+        assert!(backend.retained.is_empty());
+        drop(error);
+        assert_eq!(account.used(), 0);
+    }
+}
+
+#[test]
+fn malformed_decrypted_key_never_reaches_inspection_or_retention() {
+    // Successful decryption alone cannot transfer an unreadable key as a
+    // validated result, and the temporary allocation must still be released.
+    let shrouded = bag(2, &seq(&[&pbes(), &tlv(4, &encrypt(&[48, 0]))]), &[]);
+    let bytes = pfx(&seq(&[&data(&seq(&[&shrouded]))]), &[]);
+    let account = generous();
+    let mut backend = Native::new();
+    let error = {
+        let parser = Parser::ber(account.clone());
+        let mut reader = parser.read(&bytes, 0).unwrap();
+        let pfx = Pfx::read(&mut reader).unwrap();
+        personal::process(&pfx, &reader, &mut backend).unwrap_err()
+    };
+    assert!(matches!(error.cause, Cause::Processing(_)));
+    assert_eq!(backend.events, ["integrity", "shrouded", "decrypt-key"]);
+    assert!(backend.retained.is_empty());
+    drop(error);
+    assert_eq!(account.used(), 0);
+}
+
+#[test]
+fn key_original_supports_der_inspection_without_a_new_parser() {
+    // Original field framing is needed to select retain-versus-rewrite while
+    // the scoped key is alive. BER readability must not imply DER conformance.
+    let canonical = private(0, &[]);
+    let mut ber = vec![48, 0x81, canonical[1]];
+    ber.extend_from_slice(&canonical[2..]);
+    for (bytes, conforms) in [(&canonical, true), (&ber, false)] {
+        let parser = Parser::ber(generous());
+        let mut reader = parser.read(bytes, 777).unwrap();
+        let element = reader.next_element().unwrap().unwrap();
+        let key = PrivateKey::read(&reader, &element).unwrap();
+        assert_eq!(key.original.element().span(), element.span());
+        assert_eq!(key.original.element().as_bytes().as_ptr(), bytes.as_ptr());
+        let original = key.original.reader_in(&reader).unwrap();
+        let mut strict = original
+            .reread(key.original.element(), Encoding::Der)
+            .unwrap();
+        let valid = match strict.next_element() {
+            Ok(Some(element)) => structured_pkix::der::conforms(&strict, &element, "key").is_ok(),
+            _ => false,
+        };
+        assert_eq!(valid, conforms);
+    }
 }
 
 #[test]

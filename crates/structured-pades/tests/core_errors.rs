@@ -16,7 +16,10 @@ fn pdf_error_preserves_resource_and_original_location() {
         location: Location::new(Source::File, 73, 2).unwrap(),
     };
     let erased: &dyn Error = &error;
-    assert!(core::ptr::eq(erased.downcast_ref().unwrap(), &error));
+    assert!(core::ptr::eq(
+        erased.downcast_ref().unwrap(),
+        core::ptr::from_ref(&error)
+    ));
     assert!(erased.source().is_none());
     assert!(error.is_terminal());
     assert_eq!(error.location.span().start, 73);

@@ -20,13 +20,19 @@ fn leaf_errors_keep_original_classification() {
     // Adding the core trait must not alter resource or nonce diagnostics.
     let error = processing();
     let erased: &dyn Error = &error;
-    assert!(core::ptr::eq(erased.downcast_ref().unwrap(), &error));
+    assert!(core::ptr::eq(
+        erased.downcast_ref().unwrap(),
+        core::ptr::from_ref(&error)
+    ));
     assert!(erased.source().is_none());
     assert!(error.is_resource());
     assert_eq!(error.offset(), 73);
     let nonce = structured_pkix::ocsp::RequestNonce::from_sent(&[]).unwrap_err();
     let erased: &dyn Error = &nonce;
-    assert!(core::ptr::eq(erased.downcast_ref().unwrap(), &nonce));
+    assert!(core::ptr::eq(
+        erased.downcast_ref().unwrap(),
+        core::ptr::from_ref(&nonce)
+    ));
     assert!(erased.source().is_none());
     assert_eq!(nonce.length, 0);
 }

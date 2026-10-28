@@ -10,7 +10,10 @@ fn core_errors_preserve_resource_identity_and_location() {
     let cause = MemoryError::WorkExceeded;
     let error = structured_asn1::Error::resource(cause, 73);
     let erased: &dyn Error = &error;
-    assert!(core::ptr::eq(erased.downcast_ref().unwrap(), &error));
+    assert!(core::ptr::eq(
+        erased.downcast_ref().unwrap(),
+        core::ptr::from_ref(&error)
+    ));
     assert_eq!(error.offset(), 73);
     assert!(error.is_resource());
     assert!(erased.source().is_none());

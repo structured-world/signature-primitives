@@ -9,6 +9,9 @@ use structured_pkix::{Certificate, ErrorCode, PublicKeyInfo, oid};
 
 const PRIME256V1: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 
+#[path = "public_keys/parameter_execution.rs"]
+mod parameter_execution;
+
 fn memory(work: usize) -> Memory {
     Memory::new(Arc::new(MemoryAccount::new(1 << 16, work)))
 }

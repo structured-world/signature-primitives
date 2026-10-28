@@ -190,6 +190,15 @@ authority wrote them, and the SEC1 point split into its coordinates.
 `implicitCurve` and `specifiedCurve` are reported, not refused; the point at
 infinity and the hybrid form are refused.
 
+For deferred curve/parameter queries, use
+`ec_key.parameters_execution_in(&current_work)` and charge before scanning.
+It preserves the actual parameter producer's cumulative ceiling, including an
+issuer's inherited parameters, together with the current operation's ceiling
+and account. Construction performs no parsing, copy, allocation or account
+clone. Locate refusals with `ec_key.parameters().span().start`. Point work
+continues to use the subject SPKI's execution. The EC view borrows its producing
+parser session and therefore is not `Send` or `Sync`.
+
 Both readers decode the original bytes in their parser session under the
 current execution. Key bytes and returned components remain borrowed; generic
 nested-reader metadata uses existing accounted scratch. They establish structure

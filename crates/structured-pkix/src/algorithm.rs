@@ -62,6 +62,12 @@ pub(crate) struct Nested<'a> {
 }
 
 impl<'a> Nested<'a> {
+    pub(crate) fn execution_origin(self) -> Producer<'a> {
+        Producer {
+            parser: self.parser,
+        }
+    }
+
     pub(crate) fn encoding(self) -> Encoding {
         self.encoding
     }

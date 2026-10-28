@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1](https://github.com/structured-world/signature-primitives/compare/structured-asic-v0.17.0...structured-asic-v0.17.1) - 2026-10-28
+
+### Fixed
+
+- expose core error traits without std ([#247](https://github.com/structured-world/signature-primitives/pull/247))
+
 ## [0.17.0](https://github.com/structured-world/signature-primitives/compare/structured-asic-v0.16.1...structured-asic-v0.17.0) - 2026-10-28
 
 ### Fixed

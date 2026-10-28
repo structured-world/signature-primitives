@@ -29,9 +29,8 @@ impl<E: fmt::Display> fmt::Display for CallbackError<E> {
     }
 }
 
-#[cfg(feature = "std")]
-impl<E: std::error::Error + 'static> std::error::Error for CallbackError<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl<E: core::error::Error + 'static> core::error::Error for CallbackError<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Processing(error) => Some(error),
             Self::Callback(error) => Some(error),

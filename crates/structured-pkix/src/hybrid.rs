@@ -140,11 +140,10 @@ impl<N: core::fmt::Display, A: core::fmt::Display> core::fmt::Display for CheckE
         }
     }
 }
-#[cfg(feature = "std")]
-impl<N: std::error::Error + 'static, A: std::error::Error + 'static> std::error::Error
+impl<N: core::error::Error + 'static, A: core::error::Error + 'static> core::error::Error
     for CheckError<N, A>
 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Processing(error) => Some(error),
             Self::Native(error) => Some(error),

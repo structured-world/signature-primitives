@@ -21,8 +21,7 @@ impl core::fmt::Display for NonceSizeError {
         write!(formatter, "nonce length {} is outside 1..128", self.length)
     }
 }
-#[cfg(feature = "std")]
-impl std::error::Error for NonceSizeError {}
+impl core::error::Error for NonceSizeError {}
 
 impl<'a> RequestNonce<'a> {
     /// Retain an actual sent wire nonce for comparison, including legacy short

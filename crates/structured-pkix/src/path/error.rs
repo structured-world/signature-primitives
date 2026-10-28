@@ -47,11 +47,10 @@ impl<V: fmt::Display, R: fmt::Display> fmt::Display for BuildError<V, R> {
     }
 }
 
-#[cfg(feature = "std")]
-impl<V: std::error::Error + 'static, R: std::error::Error + 'static> std::error::Error
+impl<V: core::error::Error + 'static, R: core::error::Error + 'static> core::error::Error
     for BuildError<V, R>
 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Processing(error) => Some(error),
             Self::Verification(error) => Some(error),

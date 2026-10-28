@@ -51,8 +51,7 @@ impl fmt::Display for MemoryError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for MemoryError {}
+impl core::error::Error for MemoryError {}
 
 /// Caller-owned accounting state, constructed without allocating memory.
 ///

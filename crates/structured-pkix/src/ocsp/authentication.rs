@@ -35,11 +35,10 @@ impl<V: fmt::Display, D: fmt::Display> fmt::Display for SignatureError<V, D> {
     }
 }
 
-#[cfg(feature = "std")]
-impl<V: std::error::Error + 'static, D: std::error::Error + 'static> std::error::Error
+impl<V: core::error::Error + 'static, D: core::error::Error + 'static> core::error::Error
     for SignatureError<V, D>
 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Processing(error) => Some(error),
             Self::Verification(error) => Some(error),

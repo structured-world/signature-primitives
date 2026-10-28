@@ -27,6 +27,10 @@ Enable the optional `std` feature for a standard-library integration, or name
 `alloc` explicitly for an alloc-only feature graph. See the
 [API reference](https://docs.rs/structured-asn1) for parser limits and value types.
 
+`Error` and `memory::MemoryError` implement `core::error::Error` in every feature
+configuration. Alloc-only consumers can use them as typed error sources without
+enabling `std`; the same implementations also satisfy `std::error::Error`.
+
 ## Quick start
 
 ```rust

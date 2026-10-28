@@ -128,7 +128,8 @@ fn direct_implicit_and_specified_parameters_keep_their_source_and_bytes() {
             position(&bytes, &parameters)
         );
         let current = Memory::new(Arc::new(MemoryAccount::new(0, 1000)));
-        let before = source.memory().work_used();
+        let origin = source.execution_in(source.memory());
+        let before = origin.work_remaining();
         {
             // Temporary views need not remain alive to admit a query.
             let transient = view;
@@ -136,7 +137,7 @@ fn direct_implicit_and_specified_parameters_keep_their_source_and_bytes() {
             execution.charge_work(1).unwrap();
         }
         assert_eq!(current.work_used(), 1);
-        assert_eq!(source.memory().work_used(), before + 1);
+        assert_eq!(origin.work_remaining(), before - 1);
         exhaust_source(&source);
         assert_eq!(
             view.parameters_execution_in(&current).charge_work(1),
@@ -214,7 +215,8 @@ fn query_keeps_current_root_when_switching_from_another_foreign_source() {
         current.clone(),
     );
     let query = operation.read(&[], 80000).unwrap();
-    let foreign = query.execution().execution_for(&other);
+    let root = query.execution();
+    let foreign = root.execution_for(&other);
     assert!(classify(&view, &foreign).unwrap_err().is_resource());
     assert_eq!(current.work_used(), 0);
 }

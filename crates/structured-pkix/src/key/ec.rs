@@ -10,9 +10,10 @@
 //! <https://www.rfc-editor.org/rfc/rfc5480#section-2.1.1>
 
 use super::same_oid;
+use crate::algorithm::Producer;
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::path::WorkingKey;
-use structured_asn1::memory::Work;
+use structured_asn1::memory::{Execution, Work};
 use structured_asn1::{Element, Oid, Tag, universal};
 
 const FIELD: &str = "subjectPublicKey.ec";
@@ -64,6 +65,7 @@ impl Point<'_> {
 pub struct PublicKey<'a> {
     curve: Curve<'a>,
     parameters: Element<'a>,
+    parameter_producer: Producer<'a>,
     inherited: bool,
     point: Point<'a>,
     octets: &'a [u8],
@@ -81,6 +83,26 @@ impl<'a> PublicKey<'a> {
     #[must_use]
     pub fn parameters(self) -> Element<'a> {
         self.parameters
+    }
+
+    /// Funds deferred parameter queries against their source and current Work.
+    ///
+    /// The source may be an issuer rather than this key's subject SPKI.
+    /// Construction performs no scan, parsing, allocation or account clone;
+    /// the caller charges its actual work before classifying a named curve or
+    /// inspecting explicit parameters. Errors can be located at
+    /// `self.parameters().span().start`. The original source and current root
+    /// operation ceilings remain cumulative, including after foreign queries.
+    /// Point/key work still uses the subject SPKI's execution, independently.
+    ///
+    /// The returned execution borrows current Work and the original source,
+    /// not this temporary view or the operation that originally decoded it.
+    #[must_use]
+    pub fn parameters_execution_in<'query, W: Work>(&self, work: &'query W) -> Execution<'query>
+    where
+        'a: 'query,
+    {
+        self.parameter_producer.execution_in(work)
     }
 
     /// Whether the parameters were written by an authority above this key
@@ -217,6 +239,7 @@ pub fn read<'a, W: Work>(key: WorkingKey<'a>, execution: &W) -> Result<PublicKey
     Ok(PublicKey {
         curve,
         parameters,
+        parameter_producer: source.execution_origin(),
         inherited,
         point,
         octets,

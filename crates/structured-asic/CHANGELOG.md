@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0](https://github.com/structured-world/signature-primitives/compare/structured-asic-v0.16.1...structured-asic-v0.17.0) - 2026-10-28
+
+### Fixed
+
+- *(pkix)* [**breaking**] retain EC parameter execution source ([#244](https://github.com/structured-world/signature-primitives/pull/244))
+
 ## [0.16.1](https://github.com/structured-world/signature-primitives/compare/structured-asic-v0.16.0...structured-asic-v0.16.1) - 2026-10-27
 
 ### Added

@@ -14,7 +14,16 @@ fn memory(work: usize) -> Memory {
     Memory::new(Arc::new(MemoryAccount::new(100_000, work)))
 }
 fn source() -> Parser {
-    Parser::der(memory(2_000_000))
+    // Keep the local parser ceiling below the aggregate account, so `leave`
+    // exhausts the producing session rather than only its previous account.
+    Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 100_000,
+            ..Limits::default()
+        },
+        memory(2_000_000),
+    )
 }
 fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut out = vec![tag];
@@ -527,6 +536,19 @@ fn retained_parameters_keep_their_origin_after_current_query_drop() {
         value
     };
     assert_eq!(source.memory().used(), held);
+    let current = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 1,
+            ..Limits::default()
+        },
+        memory(100_000),
+    );
+    let query = current.read(&[], 9000).unwrap();
+    let work = query.execution();
+    let bound = parameters.execution_in(&work);
+    bound.charge_work(1).unwrap();
+    assert!(bound.charge_work(1).is_err());
     leave(&source, 0);
     assert!(
         parameters

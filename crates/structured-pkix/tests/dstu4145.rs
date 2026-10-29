@@ -127,12 +127,14 @@ fn exact_profiles_are_shared_by_strict_and_inspection() {
                     (expected, expected_basis, order)
                 );
                 signature::with_algorithm(id, source.memory(), |value| {
-                    assert!(matches!(value,Some(signature::Algorithm::Dstu4145(p)) if p == profile))
+                    assert!(
+                        matches!(value,Some(signature::Algorithm::Dstu4145(p)) if p == profile)
+                    );
                 })
                 .unwrap();
                 signature::with_inspection(id, source.memory(), |reading| {
                     assert_eq!(reading.scheme(), Some(signature::Scheme::Dstu4145(profile)));
-                    assert!(reading.faults().is_empty());
+                    assert_eq!(reading.faults(), []);
                 })
                 .unwrap();
             }

@@ -29,7 +29,7 @@ fn window_products_match_bitwise_oracle() {
     }
 }
 
-fn axioms<F: Arithmetic>(field: F) {
+fn axioms<F: Arithmetic>(field: &F) {
     let mut a = Words::hex("1234567890ABCDEFFEDCBA09876543211234567890ABCDEF");
     let mut b = Words::hex("9876543210FEDCBA0123456789ABCDEF");
     a.clear_above(field.degree());
@@ -59,7 +59,7 @@ fn axioms<F: Arithmetic>(field: F) {
 fn all_standard_polynomial_fields() {
     for row in domains::POLYNOMIALS {
         let count = if row[2] == 0 { 1 } else { 3 };
-        axioms(Polynomial::new(row[0], &row[1..=count]).unwrap());
+        axioms(&Polynomial::new(row[0], &row[1..=count]).unwrap());
     }
 }
 
@@ -69,18 +69,18 @@ fn all_standard_normal_fields() {
     for degree in [
         173, 179, 191, 233, 239, 251, 281, 293, 359, 419, 431, 443, 491, 509,
     ] {
-        axioms(Normal::new(degree).unwrap());
+        axioms(&Normal::new(degree).unwrap());
     }
     assert!(matches!(Normal::new(163), Err(Error::UnsupportedDomain)));
 }
 
-fn points<F: Arithmetic>(curve: crate::curve::Curve<F>, spec: &domains::Spec) {
+fn points<F: Arithmetic>(curve: &crate::curve::Curve<F>, spec: &domains::Spec) {
     let base = crate::curve::Point {
         x: curve.field.import(spec.x),
         y: curve.field.import(spec.y),
     };
     assert!(curve.contains(base), "domain {} point", spec.m);
-    assert_eq!(curve.decompress(compressed(&curve, base)).unwrap(), base);
+    assert_eq!(curve.decompress(compressed(curve, base)).unwrap(), base);
     assert!(
         curve.multiply(base, spec.order).is_none(),
         "domain {} order",
@@ -102,7 +102,7 @@ fn points<F: Arithmetic>(curve: crate::curve::Curve<F>, spec: &domains::Spec) {
         )
     );
     let encoded = encoded(
-        compressed(&curve, base),
+        compressed(curve, base),
         spec.m.div_ceil(8),
         ByteOrder::LittleEndian,
     );
@@ -126,10 +126,10 @@ fn points<F: Arithmetic>(curve: crate::curve::Curve<F>, spec: &domains::Spec) {
 #[test]
 fn all_recommended_domain_points_and_subgroups() {
     for spec in &domains::PB {
-        points(polynomial(spec), spec);
+        points(&polynomial(spec), spec);
     }
     for spec in &domains::ONB {
-        points(normal(spec), spec);
+        points(&normal(spec), spec);
     }
 }
 

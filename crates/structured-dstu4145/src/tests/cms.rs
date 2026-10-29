@@ -295,7 +295,7 @@ impl structured_cms::stream::Source for Source {
 
 /// One selected provider resolves the same GOST OID with two actual key DKEs,
 /// fans out one payload pass, and deduplicates only the third equal identity.
-/// The receipt is forwarded through ProviderSession without rehashing.
+/// The receipt is forwarded through `ProviderSession` without rehashing.
 #[test]
 fn mixed_key_dke_signers_share_one_source_pass() {
     let memory = memory();

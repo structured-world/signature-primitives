@@ -162,9 +162,12 @@ fn explicit_domains_validate_base_and_order() {
 /// A different prime-order curve must take the full probabilistic validation
 /// path, rather than being accepted by the named-domain catalogue. Constants
 /// are from Standards for Efficient Cryptography2, version2, section3.2.1.
-/// https://www.secg.org/sec2-v2.pdf
+/// <https://www.secg.org/sec2-v2.pdf>
 #[test]
 fn custom_curve_validation_succeeds_with_caller_entropy() {
+    use super::accounting::{SIGNATURE_OID, memory, parser, read, tlv};
+    use structured_asn1::memory::Work;
+
     let field = crate::field::Polynomial::new(163, &[3, 6, 7]).unwrap();
     let curve = crate::curve::Curve::new(field, true, Words::ONE).unwrap();
     let base = Point {
@@ -193,8 +196,6 @@ fn custom_curve_validation_succeeds_with_caller_entropy() {
     assert!(domain.public_key(&base, ByteOrder::BigEndian).is_ok());
     // The original ASN route must reach the same custom-domain validation,
     // preserving both actual entropy failures and the producing work ceiling.
-    use super::accounting::{SIGNATURE_OID, memory, parser, read, tlv};
-    use structured_asn1::memory::Work;
     let mut exponents = tlv(2, &[3]);
     exponents.extend(tlv(2, &[6]));
     exponents.extend(tlv(2, &[7]));

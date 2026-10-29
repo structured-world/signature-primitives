@@ -9,26 +9,31 @@ use crate::{
 };
 use structured_pkix::algorithm::dstu4145::Reduction;
 
+struct SignatureExample<'a> {
+    digest: &'a str,
+    r: &'a str,
+    s: &'a str,
+}
+
 fn example<F: Arithmetic>(
-    curve: crate::curve::Curve<F>,
+    curve: &crate::curve::Curve<F>,
     base: Point,
     public: Point,
     spec: &domains::Spec,
     reduction: Reduction,
-    digest: &str,
-    r: &str,
-    s: &str,
+    signature: &SignatureExample<'_>,
     width: usize,
 ) {
+    let SignatureExample { digest, r, s } = *signature;
     let m = spec.m.div_ceil(8);
     let b = encoded(curve.field.export(curve.b), m, ByteOrder::BigEndian);
-    let base_bytes = encoded(compressed(&curve, base), m, ByteOrder::BigEndian);
+    let base_bytes = encoded(compressed(curve, base), m, ByteOrder::BigEndian);
     let order = encoded(
         spec.order,
         spec.order.bits().div_ceil(8),
         ByteOrder::BigEndian,
     );
-    let public_bytes = encoded(compressed(&curve, public), m, ByteOrder::BigEndian);
+    let public_bytes = encoded(compressed(curve, public), m, ByteOrder::BigEndian);
     let input = Explicit {
         degree: u32::try_from(spec.m).unwrap(),
         reduction,
@@ -75,14 +80,16 @@ fn normative_polynomial_verification_example() {
         y: Words::hex("3E85444324BCF06AD85ABF6AD7B5F34770532B9AA"),
     };
     example(
-        polynomial(spec),
+        &polynomial(spec),
         base,
         public,
         spec,
         Reduction::Pentanomial { k: 3, j: 6, l: 7 },
-        "09C9C44277910C9AAEE486883A2EB95B7180166DDF73532EEB76EDAEF52247FF",
-        "274EA2C0CAA014A0D80A424F59ADE7A93068D08A7",
-        "2100D86957331832B8E8C230F5BD6A332B3615ACA",
+        &SignatureExample {
+            digest: "09C9C44277910C9AAEE486883A2EB95B7180166DDF73532EEB76EDAEF52247FF",
+            r: "274EA2C0CAA014A0D80A424F59ADE7A93068D08A7",
+            s: "2100D86957331832B8E8C230F5BD6A332B3615ACA",
+        },
         32,
     );
 }
@@ -109,14 +116,16 @@ fn normative_normal_verification_example() {
             .import(Words::hex("1F253334197826B6ADAE44EDEAA7EA281D1C5E597A37")),
     };
     example(
-        curve,
+        &curve,
         base,
         public,
         spec,
         Reduction::OptimalNormal,
-        "2A681ECE118389B27A108137187EA862117EF1484289470ECAC802C5A651FDA8",
-        "477ECC260F390FB6D0AE4AE3B7A78120F8EC458EF9A",
-        "472EA56AE478F95F1EC9F628FF43857E168B50FB819",
+        &SignatureExample {
+            digest: "2A681ECE118389B27A108137187EA862117EF1484289470ECAC802C5A651FDA8",
+            r: "477ECC260F390FB6D0AE4AE3B7A78120F8EC458EF9A",
+            s: "472EA56AE478F95F1EC9F628FF43857E168B50FB819",
+        },
         22,
     );
 }

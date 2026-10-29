@@ -20,7 +20,7 @@ impl gost94::params::Gost94Params for Alternate {
     const NAME: &'static str = "ExplicitAlternateDke";
 }
 
-/// The runtime-DKE compression agrees with RustCrypto's independently selected
+/// The runtime-DKE compression agrees with `RustCrypto`'s independently selected
 /// Ukrainian parameter implementation at every padding and chunk boundary.
 #[test]
 fn gost_streaming_matches_rustcrypto() {
@@ -72,7 +72,7 @@ fn dke_identity_and_validation() {
     assert!(matches!(Dke::new(&alternate), Err(Error::InvalidDke)));
 }
 
-/// Fixed widths and both variable-output cores preserve RustCrypto results;
+/// Fixed widths and both variable-output cores preserve `RustCrypto` results;
 /// caller-owned output is exact-width and gets no implicit truncation.
 #[test]
 fn kupyna_streaming_and_caller_output() {
@@ -103,9 +103,9 @@ fn kupyna_streaming_and_caller_output() {
             .is_err()
     );
     for (width, expected) in [
-        (32, kupyna::Kupyna256::digest(&message).to_vec()),
-        (48, kupyna::Kupyna384::digest(&message).to_vec()),
-        (64, kupyna::Kupyna512::digest(&message).to_vec()),
+        (32, kupyna::Kupyna256::digest(message.as_slice()).to_vec()),
+        (48, kupyna::Kupyna384::digest(message.as_slice()).to_vec()),
+        (64, kupyna::Kupyna512::digest(message.as_slice()).to_vec()),
     ] {
         let mut state = State::new(Hash::Kupyna(width)).unwrap();
         state.update(&message).unwrap();

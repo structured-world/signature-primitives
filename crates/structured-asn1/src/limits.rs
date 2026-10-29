@@ -134,10 +134,10 @@ impl<'a> BudgetView<'a> {
             if core::ptr::eq(extra, self.origin) {
                 continue;
             }
-            if let Some(operation) = self.operation {
-                if core::ptr::eq(extra, operation) {
-                    continue;
-                }
+            if let Some(operation) = self.operation
+                && core::ptr::eq(extra, operation)
+            {
+                continue;
             }
             if i == 1 && core::ptr::eq(extra, sources[0]) {
                 continue;

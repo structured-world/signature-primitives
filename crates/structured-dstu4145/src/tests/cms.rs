@@ -244,7 +244,9 @@ fn signer(protected: bool, malformed_signature: bool) -> Vec<u8> {
     let digest = tlv(48, &tlv(6, structured_pkix::oid::GOST34311.as_bytes()));
     let mut signature_algorithm = tlv(6, SIGNATURE_OID);
     if malformed_signature {
-        signature_algorithm.extend([5, 0]);
+        // Two parameters violate AlgorithmIdentifier before any provider
+        // interprets its one optional ANY as a particular signature profile.
+        signature_algorithm.extend([5, 0, 5, 0]);
     }
     let signature_algorithm = tlv(48, &signature_algorithm);
     let mut body = std::vec![2, 1, 3, 0x80, 1, 7];

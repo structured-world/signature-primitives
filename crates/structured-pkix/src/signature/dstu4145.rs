@@ -60,7 +60,7 @@ impl<'a> Value<'a> {
     /// the signing key's subgroup order bit length, never inferring either
     /// from byte length or substituting the field degree m for L(n).
     /// DSTU4145 §§5.7, 5.10–11 defines binary D=S||R. Encoding the whole D
-    /// little-endian gives r_LE||s_LE; big-endian gives s_BE||r_BE. The pinned
+    /// little-endian gives `r_LE||s_LE`; big-endian gives `s_BE||r_BE`. The pinned
     /// certificate profile §§3.11.1.6 and 3.14.2 requires the minimum width,
     /// an OCTET wrapper and DER. DSTU §5.7 says LD >= 2 L(n), multiple of 16:
     /// each half therefore has ceil(L(n)/8) octets. A BER parent does not

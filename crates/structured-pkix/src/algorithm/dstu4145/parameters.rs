@@ -1,4 +1,4 @@
-//! Original DSTU4145Params, read without group arithmetic or inheritance.
+//! Original `DSTU4145Params`, read without group arithmetic or inheritance.
 
 use super::{Basis, ByteOrder, Octets, Profile, identify};
 use crate::algorithm::{AlgorithmIdentifier, Producer};
@@ -92,12 +92,12 @@ pub struct ExplicitCurve<'a> {
 }
 
 impl<'a> ExplicitCurve<'a> {
-    /// Whole original ECBinary SEQUENCE.
+    /// Whole original `ECBinary` SEQUENCE.
     #[must_use]
     pub const fn element(self) -> Element<'a> {
         self.element
     }
-    /// Original complete BinaryField range, including reduction exponents.
+    /// Original complete `BinaryField` range, including reduction exponents.
     #[must_use]
     pub const fn field_span(self) -> Span {
         self.field
@@ -162,7 +162,7 @@ impl Curve<'_> {
     }
 }
 
-/// Borrowed original DSTU4145Params. Storage and arithmetic belong to callers.
+/// Borrowed original `DSTU4145Params`. Storage and arithmetic belong to callers.
 #[derive(Debug, Clone, Copy)]
 pub struct Parameters<'a> {
     element: Element<'a>,
@@ -432,8 +432,8 @@ pub(crate) fn field_octets<'a>(
 
 fn named(identifier: Oid<'_>) -> Option<(Basis, u32)> {
     let (basis, index) = match identifier.as_bytes() {
-        [0x2a, 0x86, 0x24, 2, 1, 1, 1, 1, 3, 1, basis, 2, index] => (*basis, *index),
-        [
+        [0x2a, 0x86, 0x24, 2, 1, 1, 1, 1, 3, 1, basis, 2, index]
+        | [
             0x2a,
             0x86,
             0x24,

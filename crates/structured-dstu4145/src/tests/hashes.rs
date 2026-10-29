@@ -5,6 +5,21 @@ use crate::{
 };
 use gost94::{Digest, Gost94UA};
 
+struct Alternate;
+impl gost94::params::Gost94Params for Alternate {
+    const S_BOX: [[u8; 16]; 8] = {
+        let original = <gost94::params::GOST28147UAParam as gost94::params::Gost94Params>::S_BOX;
+        let mut modified = original;
+        modified[0][0] = original[0][2];
+        modified[0][1] = original[0][3];
+        modified[0][2] = original[0][0];
+        modified[0][3] = original[0][1];
+        modified
+    };
+    const H0: [u8; 32] = [0; 32];
+    const NAME: &'static str = "ExplicitAlternateDke";
+}
+
 /// The runtime-DKE compression agrees with RustCrypto's independently selected
 /// Ukrainian parameter implementation at every padding and chunk boundary.
 #[test]
@@ -49,7 +64,10 @@ fn dke_identity_and_validation() {
     let expected = state.finalize();
     let mut state = State::new(Hash::Gost34311(&c)).unwrap();
     state.update(b"sample").unwrap();
-    assert_ne!(state.finalize().as_ref(), expected.as_ref());
+    let actual = state.finalize();
+    assert_ne!(actual.as_ref(), expected.as_ref());
+    let oracle = gost94::Gost94::<Alternate>::digest(b"sample");
+    assert_eq!(actual.as_ref(), &oracle[..]);
     alternate[0] = 0;
     assert!(matches!(Dke::new(&alternate), Err(Error::InvalidDke)));
 }

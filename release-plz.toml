@@ -48,3 +48,9 @@ name = "structured-asic"
 git_tag_name = "structured-asic-v{{ version }}"
 version_group = "primitives"
 changelog_include = ["structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-cades", "structured-pades"]
+
+[[package]]
+name = "structured-dstu4145"
+git_tag_name = "structured-dstu4145-v{{ version }}"
+version_group = "primitives"
+changelog_include = ["structured-asn1", "structured-pkix", "structured-cms"]

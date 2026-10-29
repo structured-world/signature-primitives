@@ -249,13 +249,16 @@ impl<'a> Digest<'a> for Hashes {
         bytes: &[u8],
         work: &W,
     ) -> Result<(), Failure> {
-        let cost = state
-            .state
-            .update_work(bytes.len())
-            .map_err(|reason| Failure::Backend {
-                reason,
-                at: state.identity.at,
-            })?;
+        let cost = match state.state.update_work(bytes.len()) {
+            Ok(cost) => cost,
+            Err(reason) => {
+                state.identity.charge(work, 1)?;
+                return Err(Failure::Backend {
+                    reason,
+                    at: state.identity.at,
+                });
+            }
+        };
         state.identity.charge(work, cost)?;
         state
             .state
@@ -293,6 +296,7 @@ pub struct Key<'a> {
     source: Producer<'a>,
     at: u64,
     dke: DkeBinding<'a>,
+    verification_cost: u64,
 }
 
 impl<'a> Key<'a> {
@@ -317,6 +321,13 @@ impl<'a> Key<'a> {
         factors: &[Factor<'_>],
         random: &mut R,
     ) -> Result<Self, Failure<R::Error>> {
+        info.algorithm()
+            .execution_origin()
+            .charge_work_in(work, 1)
+            .map_err(|reason| Failure::Resource {
+                reason,
+                at: info.algorithm().offset(),
+            })?;
         if factors.len() > crate::MAX_DEGREE {
             return Err(Failure::Backend {
                 reason: Error::UnsupportedDomain,
@@ -325,7 +336,8 @@ impl<'a> Key<'a> {
         }
         // At most512-bit exponents/integers,50 primality rounds,128 bounded
         // samples and one field exponent per factor, including32-bit targets.
-        let extra = (factors.len() as u64 + 1) * (50 * 512 * 2048 + 2 * 509 * 6000 + 50 * 128 * 64);
+        let extra =
+            (factors.len() as u64 + 1) * (50 * 512 * 2048 + 2 * 509 * 25_000 + 50 * 128 * 64);
         Self::prepare_using(info, dke, work, extra, |input| {
             Domain::explicit_with_evidence(input, factors, random)
         })
@@ -339,6 +351,13 @@ impl<'a> Key<'a> {
         domain_of: impl FnOnce(Explicit<'_>) -> Result<Domain, ValidationError<E>>,
     ) -> Result<Self, Failure<E>> {
         let parsed = structured_pkix::key::dstu4145::read(info, work).map_err(Failure::Encoding)?;
+        info.algorithm()
+            .execution_origin()
+            .charge_work_in(work, 1)
+            .map_err(|reason| Failure::Resource {
+                reason,
+                at: info.algorithm().offset(),
+            })?;
         let profile = parsed.profile();
         let parameters = parsed.parameters().ok_or(Failure::Backend {
             reason: Error::UnsupportedDomain,
@@ -349,16 +368,17 @@ impl<'a> Key<'a> {
             reason: Error::UnsupportedDomain,
             at,
         })?;
-        if degree > crate::MAX_DEGREE as u32 {
+        if degree < 163 || degree > 509 || degree % 2 == 0 {
             return Err(Failure::Backend {
                 reason: Error::UnsupportedDomain,
                 at,
             });
         }
         let execution = parsed.execution_in(work);
+        let field_cost = field_cost(degree, parameters.curve());
         let cost = match parameters.curve() {
-            Curve::Named(_) => curve_cost(degree, 20),
-            Curve::Explicit(_) => curve_cost(degree, 40) + extra,
+            Curve::Named(_) => curve_cost(degree, 20, field_cost),
+            Curve::Explicit(_) => curve_cost(degree, 40, field_cost) + extra,
         };
         execution
             .charge_work(cost)
@@ -398,6 +418,7 @@ impl<'a> Key<'a> {
             source: info.algorithm().execution_origin(),
             at,
             dke,
+            verification_cost: curve_cost(degree, 32, field_cost),
         })
     }
 
@@ -420,17 +441,39 @@ impl<'a> Key<'a> {
                 at: self.at,
             });
         }
-        let mut identity = match signature.digest() {
+        self.identity_of(signature.digest())?
+            .ok_or(Failure::Backend {
+                reason: Error::UnsupportedDomain,
+                at: self.at,
+            })
+    }
+
+    /// Resolves an already decoded digest declaration for this actual key.
+    /// This is the key-bound signature operation, not an ESS/TSP default.
+    pub fn resolve_digest<W: Work>(
+        &self,
+        algorithm: Algorithm,
+        work: &W,
+    ) -> Result<Resolution<Identity<'a>>, Failure> {
+        self.source
+            .charge_work_in(work, 1)
+            .map_err(|reason| Failure::Resource {
+                reason,
+                at: self.at,
+            })?;
+        Ok(match self.identity_of(algorithm)? {
+            Some(identity) => Resolution::Supported(identity),
+            None => Resolution::Unsupported,
+        })
+    }
+
+    fn identity_of(&self, algorithm: Algorithm) -> Result<Option<Identity<'a>>, Failure> {
+        let mut identity = match algorithm {
             Algorithm::Gost34311 => Ok(Identity::gost(self.dke)),
             Algorithm::Kupyna256 => Identity::trusted(Hash::Kupyna(32)),
             Algorithm::Kupyna384 => Identity::trusted(Hash::Kupyna(48)),
             Algorithm::Kupyna512 => Identity::trusted(Hash::Kupyna(64)),
-            _ => {
-                return Err(Failure::Backend {
-                    reason: Error::UnsupportedDomain,
-                    at: self.at,
-                });
-            }
+            _ => return Ok(None),
         };
         // Kupyna also retains the original key-context selection, although
         // its digest has no DKE parameter.
@@ -438,7 +481,7 @@ impl<'a> Key<'a> {
             value.origin = Some(self.source);
             value.at = self.at;
         }
-        identity.map_err(|reason| Failure::Backend {
+        identity.map(Some).map_err(|reason| Failure::Backend {
             reason,
             at: self.at,
         })
@@ -501,7 +544,7 @@ impl<'a> Key<'a> {
                 at: self.at,
             });
         }
-        let cost = curve_cost(self.key.degree() as u32, 32);
+        let cost = self.verification_cost;
         let admitted = match origin {
             Some(origin) => self.source.charge_work_with(origin, work, cost),
             None => self.source.charge_work_in(work, cost),
@@ -553,11 +596,27 @@ fn widen<E>(failure: Failure) -> Failure<E> {
     }
 }
 
-fn curve_cost(degree: u32, factor: u64) -> u64 {
+fn field_cost(degree: u32, curve: Curve<'_>) -> u64 {
     // At most8 limbs. Includes both ONB products, all reduction alternatives,
     // normal-basis conversions, inversion chains and the ladder's recovery.
     let degree = u64::from(degree);
     let words = (degree + 1).div_ceil(64);
-    let field = 32 * words * words + 256 * words + 2 * degree + 128;
-    (factor * degree + 128) * field
+    let mut reduction = 2 * degree;
+    if let Curve::Explicit(value) = curve {
+        let top = match value.reduction() {
+            dstu4145::Reduction::Trinomial(k) => Some(k),
+            dstu4145::Reduction::Pentanomial { l, .. } => Some(l),
+            dstu4145::Reduction::OptimalNormal => None,
+        };
+        if let Some(top) = top {
+            if u64::from(top) > degree - 64 {
+                reduction = 32 * degree;
+            }
+        }
+    }
+    32 * words * words + 256 * words + reduction + 128
+}
+
+fn curve_cost(degree: u32, factor: u64, field_cost: u64) -> u64 {
+    (factor * u64::from(degree) + 128) * field_cost
 }

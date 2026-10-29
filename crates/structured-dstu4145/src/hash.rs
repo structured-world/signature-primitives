@@ -1,6 +1,9 @@
 //! Explicit streaming hash identities, fixed states and inline outputs.
 
 use crate::Error;
+
+#[cfg(test)]
+mod tests;
 use crate::gost::{Dke, Gost34311};
 use core::cmp::Ordering;
 use kupyna::block_api::{KupynaLongVarCore, KupynaShortVarCore};

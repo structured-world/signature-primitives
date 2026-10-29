@@ -29,6 +29,7 @@ the long-term validation core.
 | [**structured-cades**](crates/structured-cades/README.md) | Source-bound CAdES baseline composition, original CMS timestamp/archive inputs and validation material | [![version](https://img.shields.io/crates/v/structured-cades)](https://crates.io/crates/structured-cades) | [![docs.rs](https://img.shields.io/docsrs/structured-cades)](https://docs.rs/structured-cades) |
 | [**structured-pades**](crates/structured-pades/README.md) | Asynchronous original-range PDF signatures, revisions, DSS/VRI, DocMDP/FieldMDP and PAdES baseline composition | [![version](https://img.shields.io/crates/v/structured-pades)](https://crates.io/crates/structured-pades) | [![docs.rs](https://img.shields.io/docsrs/structured-pades)](https://docs.rs/structured-pades) |
 | [**structured-asic**](crates/structured-asic/README.md) | Original-range ZIP/ZIP64 ASiC containers, producing XML/member binding, CAdES/XAdES and time-assertion composition | [![version](https://img.shields.io/crates/v/structured-asic)](https://crates.io/crates/structured-asic) | [![docs.rs](https://img.shields.io/docsrs/structured-asic)](https://docs.rs/structured-asic) |
+| [**structured-dstu4145**](crates/structured-dstu4145/README.md) | Fixed-storage DSTU 4145 verification, explicit-DKE GOST 34.311 and streaming Kupyna | Initial publication pending | [Source documentation](crates/structured-dstu4145/README.md) |
 
 Each crate builds on the ones above it:
 
@@ -42,6 +43,8 @@ structured-asn1 → structured-pkix → structured-cms → structured-ltv
 
 Use only as much of the stack as you need: certificate parsing alone needs just
 `structured-asn1` and `structured-pkix`.
+The optional DSTU backend also builds on those two crates and implements their
+digest/work contracts; it introduces no format-specific provider dispatcher.
 
 ## Install
 

@@ -40,6 +40,41 @@ fn joint_admission_keeps_three_sources_and_one_account_bill() {
 }
 
 #[test]
+fn joint_admission_deduplicates_all_four_source_aliases() {
+    // Two existing current ceilings plus two key/hash origins can coincide in
+    // any combination. No alias authorizes a reset or a duplicate account bill.
+    for left in 0..4 {
+        for right in 0..4 {
+            let account = Memory::new(Arc::new(MemoryAccount::new(0, 100)));
+            let parsers: [Parser; 4] = core::array::from_fn(|_| {
+                Parser::new(
+                    Encoding::Der,
+                    Limits {
+                        max_work: 10,
+                        ..Limits::default()
+                    },
+                    account.clone(),
+                )
+            });
+            let root = parsers[0].execution_in(&account);
+            let current = root.execution_for(&parsers[1]);
+            current
+                .charge_work_from([&parsers[left], &parsers[right]], 5)
+                .unwrap();
+            assert_eq!(account.work_used(), 5);
+            for (index, parser) in parsers.iter().enumerate() {
+                let expected = if index < 2 || index == left || index == right {
+                    5
+                } else {
+                    10
+                };
+                assert_eq!(parser.execution_in(&account).work_remaining(), expected);
+            }
+        }
+    }
+}
+
+#[test]
 fn scratch_growth_refuses_local_work_before_allocator_or_move() {
     // Spare aggregate allowance cannot authorize a replacement allocation
     // after the original parser's cumulative ceiling has been spent.

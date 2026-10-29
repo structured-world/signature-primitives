@@ -1,7 +1,10 @@
 //! Deterministic arithmetic, normative vectors and streaming boundary coverage.
 
+mod accounting;
+mod cms;
 mod fields;
 mod hashes;
+mod real;
 mod signatures;
 mod validation;
 

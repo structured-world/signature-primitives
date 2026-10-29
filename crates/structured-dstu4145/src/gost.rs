@@ -1,8 +1,8 @@
 //! Runtime-DKE GOST 34.311 with fixed state and borrowed prepared tables.
 //!
-//! Compression follows RFC5831 sections5-6 and the RustCrypto gost94
-//! implementation. Ukrainian parameter selection is explicit, not CryptoPro.
-//! https://www.rfc-editor.org/rfc/rfc5831.html#section-5
+//! Compression follows RFC5831 sections5-6 and the `RustCrypto` gost94
+//! implementation. Ukrainian parameter selection is explicit, not `CryptoPro`.
+//! <https://www.rfc-editor.org/rfc/rfc5831.html#section-5>
 
 use crate::Error;
 
@@ -102,18 +102,16 @@ impl<'a> Gost34311<'a> {
     /// Length overflow refuses before mutating the state or consuming input.
     pub fn update(&mut self, mut input: &[u8]) -> Result<(), Error> {
         let length_bits = (input.len() as u128 * 8).to_le_bytes();
+        let chunks = length_bits.as_chunks::<8>().0;
+        let increments = [
+            u64::from_le_bytes(chunks[0]),
+            u64::from_le_bytes(chunks[1]),
+            0,
+            0,
+        ];
         let mut length = self.length;
         let mut carry = false;
-        for (i, part) in length.iter_mut().enumerate() {
-            let increment = if i < 2 {
-                u64::from_le_bytes(
-                    length_bits[i * 8..i * 8 + 8]
-                        .try_into()
-                        .expect("eight bytes"),
-                )
-            } else {
-                0
-            };
+        for (part, increment) in length.iter_mut().zip(increments) {
             let (sum, first) = part.overflowing_add(increment);
             let (sum, second) = sum.overflowing_add(u64::from(carry));
             *part = sum;
@@ -135,11 +133,10 @@ impl<'a> Gost34311<'a> {
             self.compress(&block);
             self.used = 0;
         }
-        let mut blocks = input.chunks_exact(32);
-        for block in &mut blocks {
-            self.compress(block.try_into().expect("complete block"));
+        let (blocks, tail) = input.as_chunks::<32>();
+        for block in blocks {
+            self.compress(block);
         }
-        let tail = blocks.remainder();
         self.buffer[..tail.len()].copy_from_slice(tail);
         self.used = tail.len();
         Ok(())
@@ -163,8 +160,8 @@ impl<'a> Gost34311<'a> {
     fn compress(&mut self, block: &[u8; 32]) {
         self.transform(block);
         let mut carry = false;
-        for (part, bytes) in self.sum.iter_mut().zip(block.chunks_exact(8)) {
-            let word = u64::from_le_bytes(bytes.try_into().expect("eight bytes"));
+        for (part, bytes) in self.sum.iter_mut().zip(block.as_chunks::<8>().0) {
+            let word = u64::from_le_bytes(*bytes);
             let (sum, first) = part.overflowing_add(word);
             let (sum, second) = sum.overflowing_add(u64::from(carry));
             *part = sum;
@@ -209,7 +206,7 @@ impl<'a> Gost34311<'a> {
 
 fn encode(words: [u64; 4]) -> [u8; 32] {
     let mut bytes = [0; 32];
-    for (chunk, word) in bytes.chunks_exact_mut(8).zip(words) {
+    for (chunk, word) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(words) {
         chunk.copy_from_slice(&word.to_le_bytes());
     }
     bytes
@@ -259,7 +256,7 @@ fn psi(block: &mut [u8; 32], steps: usize) {
         words[head] = feedback;
         head = (head + 1) & 15;
     }
-    for (i, chunk) in block.chunks_exact_mut(2).enumerate() {
+    for (i, chunk) in block.as_chunks_mut::<2>().0.iter_mut().enumerate() {
         chunk.copy_from_slice(&words[(head + i) & 15].to_le_bytes());
     }
 }

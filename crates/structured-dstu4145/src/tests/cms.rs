@@ -10,7 +10,7 @@ use crate::{
 use core::{cell::Cell, cmp::Ordering, convert::Infallible};
 use std::vec::Vec;
 use structured_asn1::{
-    Encoding, Oid, Reader,
+    Encoding, Oid, Parser, Reader,
     digest::{Digest, Resolution},
     memory::{MemoryError, Work},
 };
@@ -244,9 +244,9 @@ fn signer(protected: bool, malformed_signature: bool) -> Vec<u8> {
     let digest = tlv(48, &tlv(6, structured_pkix::oid::GOST34311.as_bytes()));
     let mut signature_algorithm = tlv(6, SIGNATURE_OID);
     if malformed_signature {
-        // Two parameters violate AlgorithmIdentifier before any provider
-        // interprets its one optional ANY as a particular signature profile.
-        signature_algorithm.extend([5, 0, 5, 0]);
+        // Constructed NULL is a unique malformed parameter, allowing
+        // inspection recovery while preventing all provider callbacks.
+        signature_algorithm.extend([0x25, 0]);
     }
     let signature_algorithm = tlv(48, &signature_algorithm);
     let mut body = std::vec![2, 1, 3, 0x80, 1, 7];
@@ -375,6 +375,7 @@ fn protected_digest_hook_and_preflight_gates() {
         starts: Cell::new(0),
         refuse_on: Cell::new(0),
     });
+    let signer_parser = Parser::ber(memory.clone());
     for (protected, malformed, refusal) in [
         (true, false, 0),
         (true, false, 2),
@@ -384,7 +385,7 @@ fn protected_digest_hook_and_preflight_gates() {
         provider.calls.set(0);
         provider.refuse_on.set(refusal);
         let raw = signer(protected, malformed);
-        let mut reader = parser.read(&raw, 2400).unwrap();
+        let mut reader = signer_parser.read(&raw, 2400).unwrap();
         let element = reader.next_element().unwrap().unwrap();
         let signer = SignerInfo::read(&reader, &element).unwrap();
         let result = prepare::resolve(

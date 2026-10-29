@@ -33,6 +33,44 @@ impl rand_core::TryRng for NoEntropy {
 }
 impl rand_core::TryCryptoRng for NoEntropy {}
 
+struct ZeroEntropy {
+    draws: usize,
+}
+impl rand_core::TryRng for ZeroEntropy {
+    type Error = Unavailable;
+    fn try_next_u32(&mut self) -> Result<u32, Unavailable> {
+        self.draws += 1;
+        Ok(0)
+    }
+    fn try_next_u64(&mut self) -> Result<u64, Unavailable> {
+        self.draws += 1;
+        Ok(0)
+    }
+    fn try_fill_bytes(&mut self, bytes: &mut [u8]) -> Result<(), Unavailable> {
+        self.draws += 1;
+        bytes.fill(0);
+        Ok(())
+    }
+}
+impl rand_core::TryCryptoRng for ZeroEntropy {}
+
+/// An entropy source yielding only rejected bases must terminate at the
+/// fixed sampling ceiling, without a deterministic substitute or a hang.
+#[test]
+fn rejected_random_bases_have_a_fixed_call_bound() {
+    let mut random = ZeroEntropy { draws: 0 };
+    let mut custom = Custom {
+        factors: &[],
+        random: &mut random,
+    };
+    let candidate = Words::hex("7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");
+    assert!(matches!(
+        custom.order(candidate, 163),
+        Err(ValidationError::Input(Error::RandomSampleRefused))
+    ));
+    assert_eq!(random.draws, 128);
+}
+
 /// Standard facts consume no entropy, while unknown orders require evidence.
 /// Original RNG failures survive before any assertion of primality or MOV.
 #[test]

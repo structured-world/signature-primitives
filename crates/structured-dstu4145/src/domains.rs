@@ -1,10 +1,10 @@
 //! Mathematical domain data, not runtime parsers or mutable caches.
 //!
 //! Coefficients/orders: DSTU4145-2002 annex D (original Cyrillic G).
-//! Polynomial base points agree with Bouncy Castle DSTU4145NamedCurves.
+//! Polynomial base points agree with Bouncy Castle `DSTU4145NamedCurves`.
 //! Normal-basis coefficients and base points agree with UAPKI's published
 //! ec-default-params.c. Isomorphic Frobenius images are not substituted.
-//! https://github.com/specinfo-ua/UAPKI/blob/a407504f670a4a2f3055c7c7773852fe4ab2cf4c/library/uapkic/src/ec-default-params.c
+//! <https://github.com/specinfo-ua/UAPKI/blob/a407504f670a4a2f3055c7c7773852fe4ab2cf4c/library/uapkic/src/ec-default-params.c>
 
 use crate::{Basis, words::Words};
 

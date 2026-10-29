@@ -187,7 +187,7 @@ impl<R: TryCryptoRng> Validator for Custom<'_, R> {
 
 pub(crate) fn integer(value: Words) -> U512 {
     let mut bytes = [0; 64];
-    for (chunk, limb) in bytes.chunks_exact_mut(8).zip(value.0) {
+    for (chunk, limb) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(value.0) {
         chunk.copy_from_slice(&limb.to_le_bytes());
     }
     U512::from_le_slice(&bytes)
@@ -243,7 +243,7 @@ fn probable_prime<R: TryCryptoRng>(
             random
                 .try_fill_bytes(&mut sample[..bytes])
                 .map_err(ValidationError::Entropy)?;
-            if bits % 8 != 0 {
+            if !bits.is_multiple_of(8) {
                 sample[bytes - 1] &= (1 << (bits % 8)) - 1;
             }
             let base = U512::from_le_slice(&sample);

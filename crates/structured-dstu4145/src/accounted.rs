@@ -160,9 +160,7 @@ impl<'a> Identity<'a> {
     /// Fixed width of the validated selected hash identity.
     #[must_use]
     pub fn width(self) -> usize {
-        self.hash
-            .width()
-            .expect("identity constructors validate width")
+        self.hash.output_width()
     }
 
     /// The exact selected backend hash, without a new algorithm resolution.
@@ -221,7 +219,7 @@ impl<'a> Digest<'a> for Hashes {
                     .map_err(|reason| Failure::Resource {
                         reason,
                         at: right.at,
-                    })?
+                    })?;
             }
             (None, Some(_)) => right.charge(work, cost)?,
             _ => left.charge(work, cost)?,
@@ -291,7 +289,7 @@ impl<'a> Digest<'a> for Hashes {
 /// Prepared key carrying the original source ceiling for later verification.
 #[derive(Debug)]
 pub struct Key<'a> {
-    key: crate::domain::PublicKey,
+    public: crate::domain::PublicKey,
     profile: Profile,
     source: Producer<'a>,
     at: u64,
@@ -368,14 +366,14 @@ impl<'a> Key<'a> {
             reason: Error::UnsupportedDomain,
             at,
         })?;
-        if degree < 163 || degree > 509 || degree % 2 == 0 {
+        if !(163..=509).contains(&degree) || degree.is_multiple_of(2) {
             return Err(Failure::Backend {
                 reason: Error::UnsupportedDomain,
                 at,
             });
         }
         let execution = parsed.execution_in(work);
-        let field_cost = field_cost(degree, parameters.curve());
+        let field_cost = field_cost(degree, &parameters.curve());
         let cost = match parameters.curve() {
             Curve::Named(_) => curve_cost(degree, 20, field_cost),
             Curve::Explicit(_) => curve_cost(degree, 40, field_cost) + extra,
@@ -399,7 +397,7 @@ impl<'a> Key<'a> {
                 Domain::named(basis, m as usize).map_err(ValidationError::Input)
             }
             Curve::Explicit(explicit) => {
-                domain_of(explicit_input(explicit, profile).map_err(widen)?)
+                domain_of(explicit_input(&explicit, profile).map_err(widen)?)
             }
         }
         .map_err(|error| match error {
@@ -413,7 +411,7 @@ impl<'a> Key<'a> {
                 at: parsed.point().offset(),
             })?;
         Ok(Self {
-            key,
+            public: key,
             profile,
             source: info.algorithm().execution_origin(),
             at,
@@ -511,8 +509,10 @@ impl<'a> Key<'a> {
         signature: structured_pkix::signature::SignatureValue<'a>,
         work: &W,
     ) -> Result<bool, Failure> {
-        let bits =
-            u32::try_from(self.key.order_bits()).expect("validated order is at most510 bits");
+        let bits = u32::try_from(self.public.order_bits()).map_err(|_| Failure::Backend {
+            reason: Error::UnsupportedDomain,
+            at: self.at,
+        })?;
         let framed = signature
             .dstu4145_in(work, profile.byte_order(), bits)
             .map_err(Failure::Encoding)?;
@@ -553,7 +553,7 @@ impl<'a> Key<'a> {
             reason,
             at: self.at,
         })?;
-        self.key
+        self.public
             .verify_prehash(hash, signature, profile.byte_order())
             .map_err(|reason| Failure::Backend {
                 reason,
@@ -563,7 +563,7 @@ impl<'a> Key<'a> {
 }
 
 fn explicit_input<'a>(
-    value: dstu4145::ExplicitCurve<'a>,
+    value: &dstu4145::ExplicitCurve<'a>,
     profile: Profile,
 ) -> Result<Explicit<'a>, Failure> {
     let a = match value.a().value().as_u64() {
@@ -596,7 +596,7 @@ fn widen<E>(failure: Failure) -> Failure<E> {
     }
 }
 
-fn field_cost(degree: u32, curve: Curve<'_>) -> u64 {
+fn field_cost(degree: u32, curve: &Curve<'_>) -> u64 {
     // At most8 limbs. Includes both ONB products, all reduction alternatives,
     // normal-basis conversions, inversion chains and the ladder's recovery.
     let degree = u64::from(degree);
@@ -608,10 +608,10 @@ fn field_cost(degree: u32, curve: Curve<'_>) -> u64 {
             dstu4145::Reduction::Pentanomial { l, .. } => Some(l),
             dstu4145::Reduction::OptimalNormal => None,
         };
-        if let Some(top) = top {
-            if u64::from(top) > degree - 64 {
-                reduction = 32 * degree;
-            }
+        if let Some(top) = top
+            && u64::from(top) > degree - 64
+        {
+            reduction = 32 * degree;
         }
     }
     32 * words * words + 256 * words + reduction + 128

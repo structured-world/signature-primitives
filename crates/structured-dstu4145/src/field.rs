@@ -62,7 +62,7 @@ impl Polynomial {
     // This checks representation, not primitivity. Domain preparation owns
     // the independent validation mandated by DSTU4145 section8.1.
     pub(crate) fn new(degree: usize, exponents: &[usize]) -> Result<Self, Error> {
-        if degree < 163 || degree > MAX_DEGREE || degree % 2 == 0 {
+        if !(163..=MAX_DEGREE).contains(&degree) || degree.is_multiple_of(2) {
             return Err(Error::UnsupportedDomain);
         }
         if exponents.len() != 1 && exponents.len() != 3 {
@@ -182,17 +182,17 @@ impl Normal {
         Ok(Self { degree })
     }
 
-    fn count(&self) -> usize {
+    fn count(self) -> usize {
         (self.degree + 1).div_ceil(64)
     }
 
-    fn trim(&self, mut value: Words) -> Words {
+    fn trim(self, mut value: Words) -> Words {
         value.0[0] &= !1;
         value.clear_above(self.degree + 1);
         value
     }
 
-    fn reflect(&self, value: Words) -> Words {
+    fn reflect(self, value: Words) -> Words {
         let count = self.count();
         let reversed = Words(core::array::from_fn(|i| {
             if i < count {

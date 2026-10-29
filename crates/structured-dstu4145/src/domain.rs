@@ -164,7 +164,10 @@ impl PublicKey {
         let width = signature.len() / 2;
         // The raw standard permits wider zero-padded components (AnnexB.1).
         // Certificate-profile minimum-width enforcement belongs to its reader.
-        if signature.len() % 2 != 0 || width < self.domain.order_bits().div_ceil(8) || width > 64 {
+        if !signature.len().is_multiple_of(2)
+            || width < self.domain.order_bits().div_ceil(8)
+            || width > 64
+        {
             return Err(Error::InvalidEncoding);
         }
         let first = Words::read(&signature[..width], byte_order)?;

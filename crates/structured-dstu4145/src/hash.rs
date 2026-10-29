@@ -21,10 +21,17 @@ pub enum Hash<'a> {
 impl Hash<'_> {
     /// Validated fixed output width; zero is never an implicit default.
     pub fn width(self) -> Result<usize, Error> {
+        let width = self.output_width();
+        if width == 0 || width > 64 {
+            return Err(Error::InvalidOutputSize);
+        }
+        Ok(width)
+    }
+
+    pub(crate) fn output_width(self) -> usize {
         match self {
-            Self::Gost34311(_) => Ok(32),
-            Self::Kupyna(bytes) if bytes != 0 && bytes <= 64 => Ok(usize::from(bytes)),
-            Self::Kupyna(_) => Err(Error::InvalidOutputSize),
+            Self::Gost34311(_) => 32,
+            Self::Kupyna(bytes) => usize::from(bytes),
         }
     }
 
@@ -138,17 +145,17 @@ impl<'a> State<'a> {
     }
 
     /// Processes one borrowed chunk. No whole-message buffering or prehashing.
-    /// The supported interface bounds cumulative input to u64::MAX bytes.
+    /// The supported interface bounds cumulative input to `u64::MAX` bytes.
     pub fn update(&mut self, bytes: &[u8]) -> Result<(), Error> {
         let added = u64::try_from(bytes.len()).map_err(|_| Error::InputTooLong)?;
         let total = self.bytes.checked_add(added).ok_or(Error::InputTooLong)?;
         match &mut self.inner {
             Inner::Gost(state) => state.update(bytes)?,
             Inner::Short { core, buffer } => {
-                buffer.digest_blocks(bytes, |blocks| core.update_blocks(blocks))
+                buffer.digest_blocks(bytes, |blocks| core.update_blocks(blocks));
             }
             Inner::Long { core, buffer } => {
-                buffer.digest_blocks(bytes, |blocks| core.update_blocks(blocks))
+                buffer.digest_blocks(bytes, |blocks| core.update_blocks(blocks));
             }
         }
         self.bytes = total;

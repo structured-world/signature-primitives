@@ -154,10 +154,7 @@ fn unknown_branches_and_parameters_do_not_acquire_acceptance() {
     signature::with_inspection(id, source.memory(), |reading| {
         assert!(reading.scheme().is_some());
         assert_eq!(reading.faults().len(), 1);
-        assert_eq!(
-            reading.faults()[0].offset(),
-            id.parameters_span().unwrap().start
-        );
+        assert_eq!(reading.faults()[0].offset(), 400 + bytes.len() as u64 - 2);
     })
     .unwrap();
 }

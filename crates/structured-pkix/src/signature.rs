@@ -19,6 +19,8 @@ use structured_asn1::{
     BitString, Element, Encoding, Integer, Parser, ScopedReader, Span, Tag, universal,
 };
 
+pub mod dstu4145;
+
 /// An original signature BIT STRING and the context needed to decode its payload.
 ///
 /// Raw algorithms use [`Self::octets`] without opening a reader. A selected
@@ -37,6 +39,18 @@ pub struct SignatureValue<'a> {
 }
 
 impl<'a> SignatureValue<'a> {
+    /// Reads DSTU's carried OCTET STRING with original/current source limits.
+    /// Representation and order bit length come from the independently selected
+    /// signature profile and signing key, never from payload length.
+    pub fn dstu4145_in<W: Work>(
+        &self,
+        current: &W,
+        byte_order: crate::algorithm::dstu4145::ByteOrder,
+        order_bits: u32,
+    ) -> Result<dstu4145::Value<'a>> {
+        let mut reader = self.reader_in(current)?;
+        dstu4145::Value::read(&mut reader, byte_order, order_bits, self.field)
+    }
     /// Attach the original signed source to a current raw-verification query.
     /// Construction scans and allocates nothing; subsequent provider work must
     /// use this execution before touching the signature or signed input. This

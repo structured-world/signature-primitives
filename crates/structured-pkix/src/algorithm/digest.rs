@@ -19,6 +19,15 @@ use structured_asn1::memory::Work;
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Algorithm {
+    /// Ukrainian GOST 34.311-95 with zero initial hash vector. The provider
+    /// must bind the DKE appropriate to the operation, not infer it from OID.
+    Gost34311,
+    /// DSTU 7564 Kupyna-256.
+    Kupyna256,
+    /// DSTU 7564 Kupyna-384.
+    Kupyna384,
+    /// DSTU 7564 Kupyna-512.
+    Kupyna512,
     /// SHA-1, FIPS 180-4.
     Sha1,
     /// SHA-224, FIPS 180-4.
@@ -50,9 +59,13 @@ impl Algorithm {
         match self {
             Self::Sha1 => 20,
             Self::Sha224 | Self::Sha512_224 | Self::Sha3_224 => 28,
-            Self::Sha256 | Self::Sha512_256 | Self::Sha3_256 => 32,
-            Self::Sha384 | Self::Sha3_384 => 48,
-            Self::Sha512 | Self::Sha3_512 => 64,
+            Self::Sha256
+            | Self::Sha512_256
+            | Self::Sha3_256
+            | Self::Gost34311
+            | Self::Kupyna256 => 32,
+            Self::Sha384 | Self::Sha3_384 | Self::Kupyna384 => 48,
+            Self::Sha512 | Self::Sha3_512 | Self::Kupyna512 => 64,
         }
     }
 
@@ -60,6 +73,10 @@ impl Algorithm {
     #[must_use]
     pub const fn identifier(self) -> Oid<'static> {
         match self {
+            Self::Gost34311 => oid::GOST34311,
+            Self::Kupyna256 => oid::KUPYNA256,
+            Self::Kupyna384 => oid::KUPYNA384,
+            Self::Kupyna512 => oid::KUPYNA512,
             Self::Sha1 => oid::SHA1,
             Self::Sha224 => oid::SHA224,
             Self::Sha256 => oid::SHA256,
@@ -133,6 +150,10 @@ pub fn algorithm<W: Work>(
         .charge_work(written.len() as u64 + 1)
         .map_err(|reason| Error::resource(reason, identifier.field, identifier.offset))?;
     let algorithm = match written {
+        [0x2a, 0x86, 0x24, 2, 1, 1, 1, 1, 2, 1] => Algorithm::Gost34311,
+        [0x2a, 0x86, 0x24, 2, 1, 1, 1, 1, 2, 2, 1] => Algorithm::Kupyna256,
+        [0x2a, 0x86, 0x24, 2, 1, 1, 1, 1, 2, 2, 2] => Algorithm::Kupyna384,
+        [0x2a, 0x86, 0x24, 2, 1, 1, 1, 1, 2, 2, 3] => Algorithm::Kupyna512,
         [0x2b, 0x0e, 0x03, 0x02, 0x1a] => Algorithm::Sha1,
         [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, last] => match last {
             0x01 => Algorithm::Sha256,
@@ -154,7 +175,14 @@ pub fn algorithm<W: Work>(
         // https://www.rfc-editor.org/rfc/rfc9688.html#section-2
         if matches!(
             algorithm,
-            Algorithm::Sha3_224 | Algorithm::Sha3_256 | Algorithm::Sha3_384 | Algorithm::Sha3_512
+            Algorithm::Sha3_224
+                | Algorithm::Sha3_256
+                | Algorithm::Sha3_384
+                | Algorithm::Sha3_512
+                | Algorithm::Gost34311
+                | Algorithm::Kupyna256
+                | Algorithm::Kupyna384
+                | Algorithm::Kupyna512
         ) || !identifier.has_null_parameter()
         {
             return Ok(Resolution::Malformed);

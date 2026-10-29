@@ -11,6 +11,7 @@ use structured_asn1::memory::{Memory, Work};
 use structured_asn1::{Element, Encoding, Oid, Parser, Reader, ScopedReader, Span, Tag, universal};
 
 pub mod digest;
+pub mod dstu4145;
 pub mod ml_dsa;
 pub mod pss;
 pub mod signature;

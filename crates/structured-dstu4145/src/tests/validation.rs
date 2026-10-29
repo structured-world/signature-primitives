@@ -232,7 +232,7 @@ fn primitive_polynomial_requires_complete_factor_evidence() {
     };
     assert!(matches!(
         partial.polynomial(&field, &[156, 157, 160]),
-        Err(ValidationError::Input(Error::InvalidField))
+        Err(ValidationError::Input(Error::ValidationEvidenceRequired))
     ));
     let mut no_proof = Custom {
         factors: &[],

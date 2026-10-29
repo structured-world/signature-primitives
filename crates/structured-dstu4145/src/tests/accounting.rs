@@ -32,6 +32,8 @@ pub(super) fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut bytes = std::vec![tag];
     if body.len() < 128 {
         bytes.push(u8::try_from(body.len()).unwrap());
+    } else if body.len() < 256 {
+        bytes.extend([0x81, u8::try_from(body.len()).unwrap()]);
     } else {
         bytes.push(0x82);
         bytes.extend(u16::try_from(body.len()).unwrap().to_be_bytes());
@@ -214,4 +216,49 @@ fn signature_origin_admits_complete_arithmetic_before_execution() {
         })
     ));
     assert!(current.work_used() < 1000);
+}
+
+/// Semantic reuse keeps the first actual hash producer. An exhausted first
+/// origin cannot be replaced by a broader duplicate merely because its DKE
+/// compares equal, and no second hash state/source pass is introduced.
+#[test]
+fn deduplicated_hash_preserves_first_actual_parameter_source() {
+    let a = parser(memory());
+    let b = parser(memory());
+    let raw = fixture(&DEFAULT_DKE);
+    let left = read(&a, &raw, 1200);
+    let right = read(&b, &raw, 2400);
+    let da = Dke::new(&DEFAULT_DKE).unwrap();
+    let db = Dke::new(&DEFAULT_DKE).unwrap();
+    let ka = structured_pkix::key::dstu4145::read(left, a.memory()).unwrap();
+    let kb = structured_pkix::key::dstu4145::read(right, b.memory()).unwrap();
+    let pa = ka.parameters().unwrap();
+    let pb = kb.parameters().unwrap();
+    let ia = Identity::gost(DkeBinding::new(pa, &da, a.memory()).unwrap());
+    let ib = Identity::gost(DkeBinding::new(pb, &db, b.memory()).unwrap());
+    let current = memory();
+    let mut ids = current.vector();
+    ids.try_push(ia).unwrap();
+    ids.try_push(ib).unwrap();
+    let provider = structured_cms::provider::ProviderSession::new(Hashes);
+    let batch = structured_cms::digest::DigestBatch::prepare(
+        &provider,
+        ids.into_owned(),
+        &current,
+        "content",
+        400,
+    )
+    .unwrap();
+    assert_eq!(batch.len(), 1);
+    leave(&a, 0);
+    let result = batch.run(&mut [&b"content"[..]], &current);
+    assert!(matches!(
+        result,
+        Err(structured_cms::stream::StreamError::Callback(
+            structured_cms::digest::DigestError::Callback(Failure::Resource {
+                reason: MemoryError::WorkExceeded,
+                ..
+            })
+        ))
+    ));
 }

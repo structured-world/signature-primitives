@@ -121,6 +121,38 @@ impl<'a> BudgetView<'a> {
         }
         Ok(())
     }
+    /// Admit a joint operation without replacing either existing source and
+    /// without billing the account or an aliased parser twice.
+    pub(crate) fn work_with(
+        self,
+        sources: [&Budget; 2],
+        amount: u64,
+        execution: &Memory,
+    ) -> Result<(), Limit> {
+        let mut extras = [None; 2];
+        for (i, extra) in sources.into_iter().enumerate() {
+            if core::ptr::eq(extra, self.origin) {
+                continue;
+            }
+            if let Some(operation) = self.operation {
+                if core::ptr::eq(extra, operation) {
+                    continue;
+                }
+            }
+            if i == 1 && core::ptr::eq(extra, sources[0]) {
+                continue;
+            }
+            if amount > extra.limits.max_work - extra.work.get() {
+                return Err(Limit::Work);
+            }
+            extras[i] = Some(extra);
+        }
+        self.work_in(amount, execution)?;
+        for extra in extras.into_iter().flatten() {
+            extra.work.set(extra.work.get() + amount);
+        }
+        Ok(())
+    }
     /// The largest amount both local ceilings of [`Self::work_in`] admit now.
     pub(crate) fn work_remaining(self) -> u64 {
         let origin = self.origin.limits.max_work - self.origin.work.get();

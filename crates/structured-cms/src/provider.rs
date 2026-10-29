@@ -109,6 +109,33 @@ pub enum SignatureMode<T> {
     Prehashed(T),
 }
 
+/// Refusal while resolving a signature's effective digest context.
+#[derive(Debug)]
+pub enum SignatureDigestError<E> {
+    /// Original ASN.1 algorithm/source resource or encoding failure.
+    Encoding(structured_pkix::Error),
+    /// Original provider failure, including key-context resource refusal.
+    Callback(E),
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for SignatureDigestError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Encoding(error) => error.fmt(f),
+            Self::Callback(error) => error.fmt(f),
+        }
+    }
+}
+
+impl<E: core::error::Error + 'static> core::error::Error for SignatureDigestError<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(match self {
+            Self::Encoding(error) => error,
+            Self::Callback(error) => error,
+        })
+    }
+}
+
 /// A finalized output and its complete algorithm identity, without a cloneable state.
 #[derive(Debug)]
 pub struct Finalized<'p, P, I, O> {
@@ -263,6 +290,24 @@ pub trait SignatureProvider<'a>: AsnDigest<'a> + Sized {
     type SignatureIdentity;
     /// Raw verification state, initialized with original signature/key first.
     type RawState;
+
+    /// Resolves the original digest against this signature's effective key.
+    ///
+    /// Key-dependent hashes, such as GOST with the signing key's actual DKE,
+    /// must return that complete immutable identity before digest execution.
+    /// Both outer and protected declarations use the same hook and key. Different
+    /// identities may share this provider and one content fan-out pass.
+    /// The default preserves key-independent ASN digest resolution; it does
+    /// not select any key-dependent parameter or substitute an unknown DKE.
+    fn resolve_signature_digest(
+        &'a self,
+        identifier: AlgorithmIdentifier<'a>,
+        _key: WorkingKey<'a>,
+        parent: &Reader<'a>,
+    ) -> core::result::Result<Resolution<Self::Identity>, SignatureDigestError<Self::Error>> {
+        asn_digest::resolve(self, &identifier, &parent.execution())
+            .map_err(SignatureDigestError::Encoding)
+    }
 
     /// Chooses raw versus prehashed only after complete algorithm/key resolution.
     fn resolve_signature(

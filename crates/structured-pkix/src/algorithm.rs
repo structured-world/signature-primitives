@@ -40,6 +40,30 @@ pub struct Producer<'a> {
     parser: &'a Parser,
 }
 impl<'a> Producer<'a> {
+    pub(crate) const fn from_parser(parser: &'a Parser) -> Self {
+        Self { parser }
+    }
+    /// Admits one joint operation without replacing a source already carried
+    /// by current work. Distinct source ceilings and the account are paid once.
+    pub fn charge_work_in<W: Work>(
+        &self,
+        work: &W,
+        amount: u64,
+    ) -> core::result::Result<(), structured_asn1::memory::MemoryError> {
+        work.charge_work_from([self.parser, self.parser], amount)
+    }
+
+    /// Admits a comparison or operation jointly derived from two producers,
+    /// preserving every existing current ceiling with one aggregate bill.
+    pub fn charge_work_with<W: Work>(
+        &self,
+        other: Self,
+        work: &W,
+        amount: u64,
+    ) -> core::result::Result<(), structured_asn1::memory::MemoryError> {
+        work.charge_work_from([self.parser, other.parser], amount)
+    }
+
     /// Funds new work against this producer and the current operation.
     #[must_use]
     pub fn execution_in<'q, W: Work>(&self, work: &'q W) -> structured_asn1::memory::Execution<'q>

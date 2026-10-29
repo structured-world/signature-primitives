@@ -29,6 +29,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocation-counter"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beb9e990c0a33699f1984d85a6abead615ccc72dd8130bf3e15dcabe2ca149c9"
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -324,6 +330,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gost94"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd90a0cc9be7048dc09512f9a07e1fc59622e68dc804e455915072d8fe79cc88"
+dependencies = [
+ "digest",
+]
+
+[[package]]
 name = "group"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -487,6 +502,15 @@ checksum = "d8f198d1db720e4940b5a493201d199d9f24f568f8f746bd13706243a2f71598"
 dependencies = [
  "cfg-if",
  "cpufeatures",
+]
+
+[[package]]
+name = "kupyna"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8552d0116a202b5a4760c8bdb345db2121eefeb2730f7db04114167cae68a07"
+dependencies = [
+ "digest",
 ]
 
 [[package]]
@@ -862,6 +886,19 @@ dependencies = [
  "structured-asn1",
  "structured-pkix",
  "zeroize",
+]
+
+[[package]]
+name = "structured-dstu4145"
+version = "0.17.1"
+dependencies = [
+ "allocation-counter",
+ "crypto-bigint",
+ "gost94",
+ "kupyna",
+ "rand_core",
+ "structured-asn1",
+ "structured-pkix",
 ]
 
 [[package]]

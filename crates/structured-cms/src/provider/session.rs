@@ -1,6 +1,6 @@
 //! Stable selection ownership, including zero-sized backend adapters.
 
-use super::{Prehash, SignatureAnswer, SignatureMode, SignatureProvider};
+use super::{Prehash, SignatureAnswer, SignatureDigestError, SignatureMode, SignatureProvider};
 use crate::Octets;
 use core::cmp::Ordering;
 use structured_asn1::digest::{Digest, Resolution};
@@ -103,6 +103,15 @@ impl<'a, P: AsnDigest<'a>> AsnDigest<'a> for ProviderSession<P> {
 impl<'a, P: SignatureProvider<'a>> SignatureProvider<'a> for ProviderSession<P> {
     type SignatureIdentity = P::SignatureIdentity;
     type RawState = P::RawState;
+    fn resolve_signature_digest(
+        &'a self,
+        identifier: AlgorithmIdentifier<'a>,
+        key: WorkingKey<'a>,
+        parent: &Reader<'a>,
+    ) -> Result<Resolution<Self::Identity>, SignatureDigestError<Self::Error>> {
+        self.backend
+            .resolve_signature_digest(identifier, key, parent)
+    }
     fn resolve_signature(
         &'a self,
         algorithm: AlgorithmIdentifier<'a>,

@@ -172,6 +172,12 @@ pub struct Parameters<'a> {
 }
 
 impl<'a> Parameters<'a> {
+    /// Retains the borrowed producer for deferred, explicitly funded backends.
+    /// This is a resource origin, not a parameter or document identity.
+    #[must_use]
+    pub const fn execution_origin(self) -> Producer<'a> {
+        self.producer
+    }
     /// Whole original parameter SEQUENCE, without canonicalization.
     #[must_use]
     pub const fn element(self) -> Element<'a> {

@@ -131,6 +131,40 @@ Inspection is not provider authorization or a strict algorithm result: callers
 keep conformance, mathematical verification and policy decisions independent.
 The strict resolver and optional PSS key-restriction reader remain unchanged.
 
+### DSTU 4145 public structure
+
+`algorithm::dstu4145::identify` recognizes the exact GOST 34.311 and
+Kupyna-256/384/512 polynomial/optimal-normal-basis, little/big-endian profiles.
+The signature registry uses this same classifier and requires absent signature
+parameters. Recognition is separate from provider support and permission.
+The shared digest registry recognizes their corresponding digest identifiers
+with absent parameters. A GOST provider must bind the operation's required
+DKE and zero initial hash vector; an OID alone does not select a DKE.
+
+`algorithm::dstu4145::read_parameters` preserves original named or explicit
+curves, field representation, A/B/order/base point and optional packed 64-octet
+DKE. Missing parameters stay missing, without EC-style inheritance; unknown
+curve names retain their OID without a guessed degree. ONB is represented
+structurally, without conversion or arithmetic. An omitted DKE means the
+profile's default DKE number one, not an issuer's written DKE.
+
+`key::dstu4145::read` reads the DER OCTET STRING inside SPKI's BIT STRING and
+checks compressed-point width when the degree is known. A key's OID does not
+constrain a later signature digest: older GOST/DSTU SPKI identifiers occur with
+Kupyna signatures. `SignatureValue::dstu4145_in` and
+`signature::dstu4145::Value::read_element` read the actual OCTET signature
+wrapper with independently selected byte order and subgroup-order bit length
+L(n). The scalar half-width is ceil(L(n)/8), not ceil(m/8). Original r/s octets,
+locations and allocation-free big-endian iterators remain available; range
+checks, decompression, field validation and signature mathematics are separate.
+
+The implementation pins the historical Ukrainian ASN.1 encoding profile
+([sections 3.6 and 3.11–3.14](https://zakon.rada.gov.ua/laws/show/z1398-12))
+and its [OID table](https://zakon.rada.gov.ua/laws/show/z1399-12), not current
+legal acceptance. That regulatory act was repealed in 2020. Source and current
+work ceilings, offsets, encoding and nested depth remain binding; a new account
+does not reset them. No cryptographic engine is added.
+
 ### ML-DSA public structure
 
 `algorithm::ml_dsa::resolve(identifier, &work)` recognizes the three pure

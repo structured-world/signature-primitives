@@ -5,7 +5,7 @@
 //! signature size or separately written CMS digest. Unknown OIDs, including
 //! legacy OIW aliases, MD2/MD5, additional DSA profiles and other PQ, remain unknown.
 
-use super::{AlgorithmIdentifier, digest, ml_dsa, pss};
+use super::{AlgorithmIdentifier, digest, dstu4145, ml_dsa, pss};
 use crate::{Error, ErrorCode, Result};
 use structured_asn1::memory::Work;
 
@@ -17,6 +17,8 @@ pub use inspection::{Inspection, with_inspection};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Scheme {
+    /// DSTU 4145 with the exact digest, basis and byte representation.
+    Dstu4145(dstu4145::Profile),
     /// RSA PKCS#1 v1.5 with an OID-implied digest.
     RsaPkcs1v15(digest::Algorithm),
     /// RSASSA-PSS; actual parameters must be read separately.
@@ -41,6 +43,8 @@ pub enum Scheme {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum Algorithm<'a, 'parameters> {
+    /// DSTU 4145 profile; key parameters and compressed values remain separate.
+    Dstu4145(dstu4145::Profile),
     /// RSA PKCS#1 v1.5 with the indicated digest.
     RsaPkcs1v15(digest::Algorithm),
     /// Original PSS parameters, without narrowing integers or choosing a backend.
@@ -152,6 +156,7 @@ pub fn with_algorithm<'a, W: Work, R>(
 
 fn fixed_algorithm(scheme: Scheme) -> Option<Algorithm<'static, 'static>> {
     Some(match scheme {
+        Scheme::Dstu4145(profile) => Algorithm::Dstu4145(profile),
         Scheme::RsaPkcs1v15(hash) => Algorithm::RsaPkcs1v15(hash),
         Scheme::Dsa(hash) => Algorithm::Dsa(hash),
         Scheme::Ecdsa(hash) => Algorithm::Ecdsa(hash),
@@ -172,6 +177,12 @@ fn classify<W: Work>(
         .query_in(execution)
         .charge_work(bytes.len() as u64 + 1)
         .map_err(|reason| Error::resource(reason, identifier.field, identifier.offset()))?;
+    // The Ukrainian certificate profile §3.6 requires absent signature
+    // parameters; key-role DSTU4145Params use a separate structural reader.
+    // https://zakon.rada.gov.ua/laws/show/z1398-12
+    if let Some(profile) = dstu4145::from_octets(bytes) {
+        return Ok(Some((Scheme::Dstu4145(profile), Parameters::Absent)));
+    }
     let (algorithm, parameters) = match bytes {
         // RFC8017 A.2.4 assigns distinct signature OIDs, not digest OIDs.
         // https://www.rfc-editor.org/rfc/rfc8017#appendix-A.2.4

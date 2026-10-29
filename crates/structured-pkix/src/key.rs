@@ -11,6 +11,7 @@ use structured_asn1::memory::Work;
 use structured_asn1::{BitString, Element, Oid, ScopedReader, Tag, universal};
 
 pub mod dsa;
+pub mod dstu4145;
 pub mod ec;
 pub mod effective;
 pub mod ml_dsa;

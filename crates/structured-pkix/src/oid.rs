@@ -297,6 +297,15 @@ pub const ED448: Oid<'static> = Oid::from_bytes(&[0x2b, 0x65, 0x71]);
 
 // Digest algorithms, the identifiers `algorithm::digest` resolves.
 
+/// `1.2.804.2.1.1.1.1.2.1`, Ukrainian GOST 34.311-95.
+pub const GOST34311: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x24, 2, 1, 1, 1, 1, 2, 1]);
+/// `1.2.804.2.1.1.1.1.2.2.1`, DSTU 7564 Kupyna-256.
+pub const KUPYNA256: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x24, 2, 1, 1, 1, 1, 2, 2, 1]);
+/// `1.2.804.2.1.1.1.1.2.2.2`, DSTU 7564 Kupyna-384.
+pub const KUPYNA384: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x24, 2, 1, 1, 1, 1, 2, 2, 2]);
+/// `1.2.804.2.1.1.1.1.2.2.3`, DSTU 7564 Kupyna-512.
+pub const KUPYNA512: Oid<'static> = Oid::from_bytes(&[0x2a, 0x86, 0x24, 2, 1, 1, 1, 1, 2, 2, 3]);
+
 /// `1.3.14.3.2.26`, SHA-1.
 pub const SHA1: Oid<'static> = Oid::from_bytes(&[0x2b, 0x0e, 0x03, 0x02, 0x1a]);
 

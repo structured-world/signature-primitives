@@ -3,7 +3,8 @@
 //!
 //! The identifier is matched exactly. Parameters are read under the encoding
 //! of the document they came from. SHA-1 and SHA-2 accept absent or primitive
-//! NULL parameters, including BER NULL lengths; SHA3 requires absence. Other
+//! NULL parameters, including BER NULL lengths; SHA3 and Ukrainian
+//! GOST/Kupyna digest identifiers require absence. Other
 //! parameters of a known identifier are malformed. An identifier this table
 //! does not know is unsupported. Execution
 //! then goes through the provider's [`Digest`] implementation.
@@ -106,6 +107,11 @@ pub trait AsnDigest<'a>: Digest<'a> {
 /// NULL under the document's encoding, including BER long-form lengths.
 /// SHA3-224/256/384/512 require absent parameters, even in BER
 /// ([RFC 9688 §2](https://www.rfc-editor.org/rfc/rfc9688.html#section-2)).
+/// Ukrainian GOST34.311 and Kupyna identifiers likewise require absence
+/// (pinned CMS encoding profile §§1.10–1.11). GOST's zero initial hash vector
+/// and operation-specific DKE must be bound by the provider; the identifier
+/// alone cannot select a key's written DKE or an independently selected default.
+/// <https://zakon.rada.gov.ua/laws/show/z1401-12>
 ///
 /// # Errors
 ///
@@ -171,8 +177,10 @@ pub fn algorithm<W: Work>(
         _ => return Ok(Resolution::Unsupported),
     };
     if identifier.parameters().is_some() {
-        // RFC 9688 §2: SHA3 digest parameters MUST be absent, not NULL.
+        // RFC9688 §2 and the Ukrainian CMS profile §§1.10–1.11 require
+        // absence for SHA3 and GOST/Kupyna respectively, not NULL.
         // https://www.rfc-editor.org/rfc/rfc9688.html#section-2
+        // https://zakon.rada.gov.ua/laws/show/z1401-12
         if matches!(
             algorithm,
             Algorithm::Sha3_224

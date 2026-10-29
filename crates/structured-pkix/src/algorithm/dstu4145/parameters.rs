@@ -5,14 +5,14 @@ use crate::algorithm::{AlgorithmIdentifier, Producer};
 use crate::error::Located;
 use crate::{Error, ErrorCode, Result};
 use structured_asn1::memory::{Execution, Work};
-use structured_asn1::{Element, Encoding, Integer, Oid, ScopedReader, Tag, universal};
+use structured_asn1::{Element, Encoding, Integer, Oid, ScopedReader, Span, Tag, universal};
 
 const FIELD: &str = "dstu4145.parameters";
 
 /// Original nonnegative ASN.1 INTEGER with its complete encoded range.
 #[derive(Debug, Clone, Copy)]
 pub struct IntegerField<'a> {
-    element: Element<'a>,
+    span: Span,
     value: Integer<'a>,
 }
 
@@ -23,10 +23,10 @@ impl<'a> IntegerField<'a> {
         self.value
     }
 
-    /// Original tag, header, payload and source range.
+    /// Original complete INTEGER range, including its tag and header.
     #[must_use]
-    pub const fn element(self) -> Element<'a> {
-        self.element
+    pub const fn span(self) -> Span {
+        self.span
     }
 }
 
@@ -36,7 +36,14 @@ pub enum Reduction {
     /// Polynomial x^m + x^k + 1.
     Trinomial(u32),
     /// Polynomial x^m + x^k + x^j + x^l + 1, with k < j < l.
-    Pentanomial { k: u32, j: u32, l: u32 },
+    Pentanomial {
+        /// Smallest nonzero reduction exponent.
+        k: u32,
+        /// Middle reduction exponent.
+        j: u32,
+        /// Largest reduction exponent, strictly below m.
+        l: u32,
+    },
     /// Omitted reduction polynomial for an optimal normal basis.
     OptimalNormal,
 }
@@ -76,7 +83,7 @@ pub struct ExplicitCurve<'a> {
     element: Element<'a>,
     degree: IntegerField<'a>,
     degree_value: u32,
-    field: Element<'a>,
+    field: Span,
     reduction: Reduction,
     a: IntegerField<'a>,
     b: Octets<'a>,
@@ -90,9 +97,9 @@ impl<'a> ExplicitCurve<'a> {
     pub const fn element(self) -> Element<'a> {
         self.element
     }
-    /// The original BinaryField element, including reduction exponents.
+    /// Original complete BinaryField range, including reduction exponents.
     #[must_use]
-    pub const fn field(self) -> Element<'a> {
+    pub const fn field_span(self) -> Span {
         self.field
     }
     /// Original degree INTEGER.
@@ -316,7 +323,7 @@ fn explicit<'a>(
         return Err(Error::new(
             ErrorCode::MalformedValue,
             FIELD,
-            degree.element.span().start,
+            degree.span.start,
         ));
     }
     let reduction = if profile.basis() == Basis::OptimalNormal {
@@ -359,11 +366,7 @@ fn explicit<'a>(
     };
     let a = integer(&mut inside)?;
     if number(&inside, a)? > 1 {
-        return Err(Error::new(
-            ErrorCode::MalformedValue,
-            FIELD,
-            a.element.span().start,
-        ));
+        return Err(Error::new(ErrorCode::MalformedValue, FIELD, a.span.start));
     }
     let b_element = next(&mut inside)?;
     let b = field_octets(&inside, b_element, degree_value, profile.byte_order())?;
@@ -373,18 +376,17 @@ fn explicit<'a>(
         return Err(Error::new(
             ErrorCode::MalformedValue,
             FIELD,
-            order.element.span().start,
+            order.span.start,
         ));
     }
     let point_element = next(&mut inside)?;
     let base_point = field_octets(&inside, point_element, degree_value, profile.byte_order())?;
     exhausted(&inside)?;
-    // `field` remains the original BinaryField element.
     Ok(ExplicitCurve {
         element,
         degree,
         degree_value,
-        field,
+        field: field.span(),
         reduction,
         a,
         b,
@@ -504,7 +506,10 @@ fn integer_element<'a>(
             element.span().start,
         ));
     }
-    Ok(IntegerField { element, value })
+    Ok(IntegerField {
+        span: element.span(),
+        value,
+    })
 }
 fn number(reader: &ScopedReader<'_, '_>, value: IntegerField<'_>) -> Result<u32> {
     reader
@@ -513,5 +518,5 @@ fn number(reader: &ScopedReader<'_, '_>, value: IntegerField<'_>) -> Result<u32>
     value
         .value
         .as_u32()
-        .ok_or_else(|| Error::new(ErrorCode::ValueTooLarge, FIELD, value.element.span().start))
+        .ok_or_else(|| Error::new(ErrorCode::ValueTooLarge, FIELD, value.span.start))
 }

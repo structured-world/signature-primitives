@@ -254,7 +254,7 @@ fn explicit_polynomial_and_normal_fields_preserve_components() {
         assert_eq!(curve.a().value().as_u64(), Some(1));
         assert_eq!(curve.b().as_bytes().len(), 21);
         assert_eq!(curve.base_point().big_endian().next(), Some(1));
-        assert!(curve.field().span().start > value.element().span().start);
+        assert!(curve.field_span().start > value.element().span().start);
     }
 }
 
@@ -489,6 +489,53 @@ fn original_and_current_resource_refusals_precede_decoding() {
             .dstu4145_in(&memory(100_000), ByteOrder::LittleEndian, 163)
             .unwrap_err()
             .is_resource()
+    );
+}
+
+#[test]
+fn carried_octets_cannot_reset_the_carriers_depth() {
+    // The original BIT STRING contributes a level, even though the inner
+    // primitive OCTET STRING needs no container traversal or payload scan.
+    let source = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_depth: 0,
+            ..Limits::default()
+        },
+        memory(100_000),
+    );
+    let bytes = tlv(3, &[vec![0], tlv(4, &[0; 42])].concat());
+    let signature = carried(&source, &bytes);
+    let error = signature
+        .dstu4145_in(&memory(100_000), ByteOrder::LittleEndian, 163)
+        .unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!(error.offset(), signature.payload_span().start);
+}
+
+#[test]
+fn retained_parameters_keep_their_origin_after_current_query_drop() {
+    // Retained parameter views hold no new account owner and cannot reset the
+    // producer's work by attaching a fresh, wider operation.
+    let source = source();
+    let bytes = algorithm_bytes(&oid(0, 1, ByteOrder::LittleEndian), Some(&named(0, 1, 6)));
+    let identifier = id(&source, &bytes);
+    let held = source.memory().used();
+    let parameters = {
+        let current = memory(100_000);
+        let value = dstu4145::read_parameters(identifier, &current)
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.used(), 0);
+        value
+    };
+    assert_eq!(source.memory().used(), held);
+    leave(&source, 0);
+    assert!(
+        parameters
+            .execution_in(&memory(100_000))
+            .charge_work(1)
+            .is_err()
     );
 }
 

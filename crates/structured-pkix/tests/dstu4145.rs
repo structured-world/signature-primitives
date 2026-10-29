@@ -454,6 +454,35 @@ fn signatures_require_der_wrapper_unpadded_carriage_and_no_tail() {
 }
 
 #[test]
+fn standard_annex_b2_onb_signature_keeps_exact_scalar_values() {
+    // DSTU4145-2002 annex B.2: m=173, L(n)=172 and LD=352. These public
+    // numeric facts qualify representation only, without reproducing the
+    // standard text, a private key or an arithmetic implementation.
+    let r = [
+        0x04, 0x77, 0xec, 0xc2, 0x60, 0xf3, 0x90, 0xfb, 0x6d, 0x0a, 0xe4, 0xae, 0x3b, 0x7a, 0x78,
+        0x12, 0x0f, 0x8e, 0xc4, 0x58, 0xef, 0x9a,
+    ];
+    let s = [
+        0x04, 0x72, 0xea, 0x56, 0xae, 0x47, 0x8f, 0x95, 0xf1, 0xec, 0x9f, 0x62, 0x8f, 0xf4, 0x38,
+        0x57, 0xe1, 0x68, 0xb5, 0x0f, 0xb8, 0x19,
+    ];
+    let canonical = [s, r].concat();
+    let source = source();
+    for order in [ByteOrder::BigEndian, ByteOrder::LittleEndian] {
+        let octets = match order {
+            ByteOrder::BigEndian => canonical.clone(),
+            ByteOrder::LittleEndian => canonical.iter().rev().copied().collect(),
+        };
+        let bytes = tlv(3, &[vec![0], tlv(4, &octets)].concat());
+        let value = carried(&source, &bytes)
+            .dstu4145_in(source.memory(), order, 172)
+            .unwrap();
+        assert_eq!(value.r().big_endian().collect::<Vec<_>>(), r);
+        assert_eq!(value.s().big_endian().collect::<Vec<_>>(), s);
+    }
+}
+
+#[test]
 fn original_and_current_resource_refusals_precede_decoding() {
     // Wider current accounts cannot reset the original cumulative ceiling.
     let source = source();
@@ -476,6 +505,7 @@ fn original_and_current_resource_refusals_precede_decoding() {
         Encoding::Der,
         Limits {
             max_depth: 1,
+            max_work: 10_000,
             ..Limits::default()
         },
         memory(100_000),

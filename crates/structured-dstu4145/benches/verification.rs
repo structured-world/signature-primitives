@@ -28,6 +28,11 @@ fn timing(mut operation: impl FnMut(), count: usize) -> (Duration, Duration) {
 
 fn main() {
     println!("verification samples=500, warmup=5, times=nanoseconds");
+    signatures();
+    hashes();
+}
+
+fn signatures() {
     for (basis, degree) in [
         (Basis::Polynomial, 163),
         (Basis::Polynomial, 257),
@@ -122,6 +127,9 @@ fn main() {
             );
         }
     }
+}
+
+fn hashes() {
     let dke = Dke::new(&DEFAULT_DKE).unwrap();
     let input = vec![0x5a; 1 << 20];
     for identity in [

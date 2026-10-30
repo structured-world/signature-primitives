@@ -18,7 +18,9 @@ enum Instructions {
 
 impl Hardware {
     pub(crate) fn detect() -> Option<Self> {
-        #[cfg(target_arch = "x86_64")]
+        // A bare-metal ABI may deliberately disable XMM/SSE2 even when the
+        // CPU reports PCLMUL. The target contract must permit XMM state too.
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
         {
             if cfg!(target_feature = "pclmulqdq") {
                 return Some(Self(Instructions::Pclmul));
@@ -57,16 +59,37 @@ impl Hardware {
         right: [&Words; N],
         count: usize,
     ) -> [Product; N] {
-        debug_assert!(count <= LIMBS);
-        match (self.0, left, right, count) {
+        // Specialize the fixed widths so instruction loops and bounds checks
+        // do not depend on a runtime extent. Both ONB products share a left.
+        match count {
+            0 => [[0; 2 * LIMBS]; N],
+            1 => self.compute_words::<N, 1>(left, right),
+            2 => self.compute_words::<N, 2>(left, right),
+            3 => self.compute_words::<N, 3>(left, right),
+            4 => self.compute_words::<N, 4>(left, right),
+            5 => self.compute_words::<N, 5>(left, right),
+            6 => self.compute_words::<N, 6>(left, right),
+            7 => self.compute_words::<N, 7>(left, right),
+            8 => self.compute_words::<N, 8>(left, right),
+            _ => unreachable!("validated field exceeds fixed limb storage"),
+        }
+    }
+
+    #[inline]
+    fn compute_words<const N: usize, const WIDTH: usize>(
+        self,
+        left: &Words,
+        right: [&Words; N],
+    ) -> [Product; N] {
+        match (self.0, left, right) {
             #[cfg(target_arch = "x86_64")]
             // SAFETY: only detect constructs this witness after checking
             // PCLMUL; operands and result use safe fixed-array indexing.
-            (Instructions::Pclmul, left, right, count) => unsafe { x86(left, right, count) },
+            (Instructions::Pclmul, left, right) => unsafe { x86::<N, WIDTH>(left, right) },
             #[cfg(target_arch = "aarch64")]
             // SAFETY: Rust's aes feature includes PMULL. The witness also
             // proves NEON; neither kernel performs pointer memory access.
-            (Instructions::Pmull, left, right, count) => unsafe { arm(left, right, count) },
+            (Instructions::Pmull, left, right) => unsafe { arm::<N, WIDTH>(left, right) },
         }
     }
 }
@@ -86,15 +109,13 @@ impl Kernel for Hardware {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "pclmulqdq,sse2")]
-fn x86<const N: usize>(left: &Words, right: [&Words; N], count: usize) -> [Product; N] {
+fn x86<const N: usize, const WIDTH: usize>(left: &Words, right: [&Words; N]) -> [Product; N] {
     use core::arch::x86_64::{
         _mm_clmulepi64_si128, _mm_cvtsi64_si128, _mm_cvtsi128_si64, _mm_setzero_si128,
         _mm_unpackhi_epi64, _mm_xor_si128,
     };
+    let count = WIDTH;
     let mut result = [[0; 2 * LIMBS]; N];
-    if count == 0 {
-        return result;
-    }
     let mut carried = [0_u64; N];
     for k in 0..2 * count - 1 {
         let first = if k < count { 0 } else { k + 1 - count };
@@ -121,12 +142,10 @@ fn x86<const N: usize>(left: &Words, right: [&Words; N], count: usize) -> [Produ
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "aes,neon")]
-fn arm<const N: usize>(left: &Words, right: [&Words; N], count: usize) -> [Product; N] {
+fn arm<const N: usize, const WIDTH: usize>(left: &Words, right: [&Words; N]) -> [Product; N] {
     use core::arch::aarch64::vmull_p64;
+    let count = WIDTH;
     let mut result = [[0; 2 * LIMBS]; N];
-    if count == 0 {
-        return result;
-    }
     let mut carried = [0_u64; N];
     for k in 0..2 * count - 1 {
         let first = if k < count { 0 } else { k + 1 - count };

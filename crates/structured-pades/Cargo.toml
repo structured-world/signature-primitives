@@ -18,11 +18,11 @@ alloc = ["structured-asn1/alloc", "structured-pkix/alloc", "structured-cms/alloc
 interop-tests = ["std"]
 
 [dependencies]
-structured-asn1 = { version = "0.18.0", path = "../structured-asn1", default-features = false }
-structured-pkix = { version = "0.18.0", path = "../structured-pkix", default-features = false }
-structured-cms = { version = "0.18.0", path = "../structured-cms", default-features = false }
-structured-ltv = { version = "0.18.0", path = "../structured-ltv", default-features = false }
-structured-cades = { version = "0.18.0", path = "../structured-cades", default-features = false }
+structured-asn1 = { version = "0.18.1", path = "../structured-asn1", default-features = false }
+structured-pkix = { version = "0.18.1", path = "../structured-pkix", default-features = false }
+structured-cms = { version = "0.18.1", path = "../structured-cms", default-features = false }
+structured-ltv = { version = "0.18.1", path = "../structured-ltv", default-features = false }
+structured-cades = { version = "0.18.1", path = "../structured-cades", default-features = false }
 
 [dev-dependencies]
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }

@@ -58,8 +58,12 @@ fn example<F: Arithmetic>(
         let mut signature = encoded(Words::hex(first), width, endian);
         signature.extend(encoded(Words::hex(last), width, endian));
         assert!(key.verify_prehash(&hash, &signature, endian).unwrap());
+        #[cfg(feature = "rustcrypto")]
+        super::rustcrypto::check(&key, &hash, &signature, endian, true);
         hash[0] ^= 1;
         assert!(!key.verify_prehash(&hash, &signature, endian).unwrap());
+        #[cfg(feature = "rustcrypto")]
+        super::rustcrypto::check(&key, &hash, &signature, endian, false);
         hash[0] ^= 1;
         signature.fill(0);
         assert!(!key.verify_prehash(&hash, &signature, endian).unwrap());

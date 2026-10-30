@@ -109,6 +109,15 @@ an XML `CryptoProvider` or another dispatcher.
 
 ## Build and evidence
 
+The optional `rustcrypto` feature implements
+`signature::hazmat::PrehashVerifier<rustcrypto::Signature<'_>>` for the raw
+validated `domain::PublicKey`. The signature borrows the original OCTET payload
+and carries explicit byte order; the prehash is passed unchanged. This adapter
+does not hash, allocate or perform resource admission. Use a generic trait bound
+or UFCS because the inherent method also takes a separate byte-order argument.
+RustCrypto's verification error is intentionally opaque. Resource-aware callers
+retain the existing `accounted::Key` interface and its typed outcomes.
+
 Default builds are `no_std`. `alloc` and `std` forward the common library
 features. Allocation instrumentation is opt-in through `allocation-tests`
 and has no default release cost. Bare-metal and WASM compilation use the

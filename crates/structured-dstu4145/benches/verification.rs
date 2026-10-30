@@ -12,6 +12,9 @@ use structured_dstu4145::{
     hash::{Hash, State},
 };
 
+#[path = "verification/hash_comparison.rs"]
+mod hash_comparison;
+
 fn timing(mut operation: impl FnMut(), count: usize) -> (Duration, Duration) {
     for _ in 0..5 {
         operation();
@@ -30,6 +33,7 @@ fn main() {
     println!("verification samples=500, warmup=5, times=nanoseconds");
     signatures();
     hashes();
+    hash_comparison::run();
 }
 
 fn signatures() {

@@ -16,6 +16,7 @@ default = []
 alloc = ["structured-asn1/alloc", "structured-pkix/alloc"]
 std = ["structured-asn1/std", "structured-pkix/std"]
 allocation-tests = ["std", "dep:allocation-counter"]
+rustcrypto = ["dep:signature"]
 
 [dependencies]
 structured-asn1 = { version = "0.17.1", path = "../structured-asn1", default-features = false }
@@ -24,6 +25,7 @@ kupyna = { version = "=0.1.0", default-features = false }
 crypto-bigint = { version = "=0.7.10", default-features = false }
 rand_core = { version = "=0.10.1", default-features = false }
 allocation-counter = { version = "=0.8.1", optional = true }
+signature = { version = "=3.0.0", default-features = false, optional = true }
 
 [dev-dependencies]
 base64ct = { version = "=1.8.3", features = ["alloc"] }
@@ -31,6 +33,7 @@ gost94 = { version = "=0.11.0", default-features = false }
 structured-cms = { version = "0.17.1", path = "../structured-cms", default-features = false }
 rand_chacha = { version = "=0.10.0", default-features = false }
 ua-cryptography-dstu4145 = "=0.1.6"
+ua-cryptography-dstu7564 = "=0.1.6"
 
 [[bench]]
 name = "verification"

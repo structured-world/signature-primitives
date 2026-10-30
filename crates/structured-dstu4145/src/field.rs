@@ -198,22 +198,37 @@ impl<K: Kernel> Normal<K> {
 
     fn reflect(self, value: Words) -> Words {
         let count = self.count();
-        let reversed = Words(core::array::from_fn(|i| {
-            if i < count {
-                value.0[count - 1 - i].reverse_bits()
-            } else {
-                0
-            }
-        }));
+        let mut result = Words::ZERO;
+        let mut carry = 0;
         let extent = count * 64;
         if extent >= self.degree + 2 {
-            words::shr(&reversed.0, extent - self.degree - 2)
+            let shift = extent - self.degree - 2;
+            // All admitted degrees are odd, so this shift is nonzero.
+            debug_assert!(shift > 0 && shift < 64);
+            for i in (0..count).rev() {
+                let word = value.0[count - 1 - i].reverse_bits();
+                result.0[i] = (word >> shift) | carry;
+                carry = word << (64 - shift);
+            }
         } else {
             // m=191 has no spare high bit after its mandatory zero bit0.
-            Words(core::array::from_fn(|i| {
-                (reversed.0[i] << 1) | if i == 0 { 0 } else { reversed.0[i - 1] >> 63 }
-            }))
+            for i in 0..count {
+                let word = value.0[count - 1 - i].reverse_bits();
+                result.0[i] = (word << 1) | carry;
+                carry = word >> 63;
+            }
         }
+        result
+    }
+
+    fn shifted(product: &Product, bit: usize, limb: usize) -> u64 {
+        let offset = bit / 64 + limb;
+        let shift = bit % 64;
+        let mut value = product[offset] >> shift;
+        if shift != 0 {
+            value |= product[offset + 1] << (64 - shift);
+        }
+        value
     }
 }
 
@@ -227,23 +242,31 @@ impl<K: Kernel> Arithmetic for Normal<K> {
     fn multiply(&self, left: Words, right: Words) -> Words {
         // In the palindromic basis s_i=z^i+z^-i, s_i*s_j=s_(i+j)+s_|i-j|.
         // Two polynomial products replace an m-by-m multiplication matrix.
-        let product = self.kernel.product(&left, &right, self.count());
-        let difference = self
-            .kernel
-            .product(&left, &self.reflect(right), self.count());
-        let low = Words(core::array::from_fn(|i| product[i]));
-        let high = self.trim(
-            words::shr(&product, self.degree).add(Words(core::array::from_fn(|i| difference[i]))),
-        );
-        self.trim(
-            low.add(words::shr(&difference, self.degree + 1))
-                .add(self.reflect(high)),
-        )
+        let count = self.count();
+        let reflected = self.reflect(right);
+        let [product, difference] = self.kernel.products(&left, [&right, &reflected], count);
+        let mut high = Words::ZERO;
+        for (i, word) in high.0[..count].iter_mut().enumerate() {
+            *word = Self::shifted(&product, self.degree, i) ^ difference[i];
+        }
+        let mut result = self.reflect(self.trim(high));
+        for (i, word) in result.0[..count].iter_mut().enumerate() {
+            *word ^= product[i] ^ Self::shifted(&difference, self.degree + 1, i);
+        }
+        self.trim(result)
     }
     fn square(&self, value: Words) -> Words {
-        let square = words::square(value, self.count());
-        let high = self.trim(words::shr(&square, self.degree));
-        self.trim(Words(core::array::from_fn(|i| square[i])).add(self.reflect(high)))
+        let count = self.count();
+        let square = words::square(value, count);
+        let mut high = Words::ZERO;
+        for (i, word) in high.0[..count].iter_mut().enumerate() {
+            *word = Self::shifted(&square, self.degree, i);
+        }
+        let mut result = self.reflect(self.trim(high));
+        for (word, low) in result.0[..count].iter_mut().zip(&square) {
+            *word ^= low;
+        }
+        self.trim(result)
     }
     fn trace(&self, value: Words) -> bool {
         value

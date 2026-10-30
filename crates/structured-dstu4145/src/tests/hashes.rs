@@ -5,6 +5,31 @@ use crate::{
 };
 use gost94::{Digest, Gost94UA};
 
+/// The independently published little-endian table implementation must agree
+/// on padding boundaries and fragmented input, not just one published digest.
+#[test]
+fn kupyna_matches_independent_streaming_implementation() {
+    use ua_cryptography_dstu7564::{HashSize, Kupyna};
+    let input: std::vec::Vec<_> = (0..1025).map(|i| u8::try_from(i % 256).unwrap()).collect();
+    for (width, size) in [
+        (32, HashSize::Bits256),
+        (48, HashSize::Bits384),
+        (64, HashSize::Bits512),
+    ] {
+        for length in [0, 1, 51, 52, 63, 64, 65, 115, 116, 127, 128, 129, 255, 1025] {
+            for chunk in [1, 7, 64, 8192] {
+                let mut own = State::new(Hash::Kupyna(width)).unwrap();
+                let mut independent = Kupyna::new(size);
+                for bytes in input[..length].chunks(chunk) {
+                    own.update(bytes).unwrap();
+                    independent.update(bytes);
+                }
+                assert_eq!(own.finalize().as_ref(), independent.finalize());
+            }
+        }
+    }
+}
+
 struct Alternate;
 impl gost94::params::Gost94Params for Alternate {
     const S_BOX: [[u8; 16]; 8] = {

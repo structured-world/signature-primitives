@@ -5,6 +5,7 @@ use crate::{
     curve::{Curve, Point},
     domains,
     field::{Arithmetic, Normal, Polynomial},
+    multiplication::{Hardware, Kernel, Portable},
     validation::{self, Custom, Factor, Known, ValidationError, Validator},
     words::Words,
 };
@@ -42,6 +43,31 @@ pub struct Domain {
 enum Inner {
     Polynomial(Prepared<Polynomial>),
     Normal(Prepared<Normal>),
+    HardwarePolynomial(Prepared<Polynomial<Hardware>>),
+    HardwareNormal(Prepared<Normal<Hardware>>),
+}
+
+trait Backend: Kernel {
+    fn polynomial(value: Prepared<Polynomial<Self>>) -> Inner;
+    fn normal(value: Prepared<Normal<Self>>) -> Inner;
+}
+
+impl Backend for Portable {
+    fn polynomial(value: Prepared<Polynomial<Self>>) -> Inner {
+        Inner::Polynomial(value)
+    }
+    fn normal(value: Prepared<Normal<Self>>) -> Inner {
+        Inner::Normal(value)
+    }
+}
+
+impl Backend for Hardware {
+    fn polynomial(value: Prepared<Polynomial<Self>>) -> Inner {
+        Inner::HardwarePolynomial(value)
+    }
+    fn normal(value: Prepared<Normal<Self>>) -> Inner {
+        Inner::HardwareNormal(value)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -62,19 +88,10 @@ impl Domain {
     /// Prepares one of the standard's ten PB or five ONB recommended domains.
     /// Unknown degrees return unsupported, never a nearby curve.
     pub fn named(basis: Basis, degree: usize) -> Result<Self, Error> {
-        let spec = domains::named(basis, degree).ok_or(Error::UnsupportedDomain)?;
-        let inner = match basis {
-            Basis::Polynomial => {
-                let row = domains::POLYNOMIALS
-                    .iter()
-                    .find(|row| row[0] == degree)
-                    .ok_or(Error::UnsupportedDomain)?;
-                let count = if row[2] == 0 { 1 } else { 3 };
-                Inner::Polynomial(named(Polynomial::new(degree, &row[1..=count])?, spec)?)
-            }
-            Basis::OptimalNormal => Inner::Normal(named(Normal::new(degree)?, spec)?),
-        };
-        Ok(Self { inner })
+        if let Some(kernel) = Hardware::detect() {
+            return named_using(basis, degree, kernel);
+        }
+        named_using(basis, degree, Portable)
     }
 
     /// Validates explicit domains using standard polynomial/prime-order facts.
@@ -101,6 +118,8 @@ impl Domain {
         match &self.inner {
             Inner::Polynomial(value) => value.curve.field.degree(),
             Inner::Normal(value) => value.curve.field.degree(),
+            Inner::HardwarePolynomial(value) => value.curve.field.degree(),
+            Inner::HardwareNormal(value) => value.curve.field.degree(),
         }
     }
 
@@ -110,6 +129,8 @@ impl Domain {
         match &self.inner {
             Inner::Polynomial(value) => value.order.bits(),
             Inner::Normal(value) => value.order.bits(),
+            Inner::HardwarePolynomial(value) => value.order.bits(),
+            Inner::HardwareNormal(value) => value.order.bits(),
         }
     }
 
@@ -120,12 +141,33 @@ impl Domain {
         let point = match &self.inner {
             Inner::Polynomial(value) => value.public_key(compressed)?,
             Inner::Normal(value) => value.public_key(compressed)?,
+            Inner::HardwarePolynomial(value) => value.public_key(compressed)?,
+            Inner::HardwareNormal(value) => value.public_key(compressed)?,
         };
         Ok(PublicKey {
             domain: self,
             point,
         })
     }
+}
+
+fn named_using<K: Backend>(basis: Basis, degree: usize, kernel: K) -> Result<Domain, Error> {
+    let spec = domains::named(basis, degree).ok_or(Error::UnsupportedDomain)?;
+    let inner = match basis {
+        Basis::Polynomial => {
+            let row = domains::POLYNOMIALS
+                .iter()
+                .find(|row| row[0] == degree)
+                .ok_or(Error::UnsupportedDomain)?;
+            let count = if row[2] == 0 { 1 } else { 3 };
+            K::polynomial(named(
+                Polynomial::new(degree, &row[1..=count], kernel)?,
+                spec,
+            )?)
+        }
+        Basis::OptimalNormal => K::normal(named(Normal::new(degree, kernel)?, spec)?),
+    };
+    Ok(Domain { inner })
 }
 
 impl PublicKey {
@@ -181,6 +223,8 @@ impl PublicKey {
         Ok(match &self.domain.inner {
             Inner::Polynomial(value) => value.verify(self.point, digest, r, s),
             Inner::Normal(value) => value.verify(self.point, digest, r, s),
+            Inner::HardwarePolynomial(value) => value.verify(self.point, digest, r, s),
+            Inner::HardwareNormal(value) => value.verify(self.point, digest, r, s),
         })
     }
 }
@@ -202,13 +246,24 @@ fn named<F: Arithmetic>(field: F, spec: &domains::Spec) -> Result<Prepared<F>, E
 }
 
 fn prepare<V: Validator>(input: Explicit<'_>, validator: &mut V) -> Result<Domain, V::Error> {
+    if let Some(kernel) = Hardware::detect() {
+        return prepare_using(input, validator, kernel);
+    }
+    prepare_using(input, validator, Portable)
+}
+
+fn prepare_using<V: Validator, K: Backend>(
+    input: Explicit<'_>,
+    validator: &mut V,
+    kernel: K,
+) -> Result<Domain, V::Error> {
     let degree = usize::try_from(input.degree).map_err(|_| Error::UnsupportedDomain)?;
     let inner = match input.reduction {
         Reduction::Trinomial(exponent) => {
             let exponent = usize::try_from(exponent).map_err(|_| Error::InvalidField)?;
-            let field = Polynomial::new(degree, &[exponent])?;
+            let field = Polynomial::new(degree, &[exponent], kernel)?;
             validator.polynomial(&field, &[exponent])?;
-            Inner::Polynomial(explicit(field, input, validator)?)
+            K::polynomial(explicit(field, input, validator)?)
         }
         Reduction::Pentanomial { k, j, l } => {
             let terms = [
@@ -216,12 +271,12 @@ fn prepare<V: Validator>(input: Explicit<'_>, validator: &mut V) -> Result<Domai
                 usize::try_from(j).map_err(|_| Error::InvalidField)?,
                 usize::try_from(l).map_err(|_| Error::InvalidField)?,
             ];
-            let field = Polynomial::new(degree, &terms)?;
+            let field = Polynomial::new(degree, &terms, kernel)?;
             validator.polynomial(&field, &terms)?;
-            Inner::Polynomial(explicit(field, input, validator)?)
+            K::polynomial(explicit(field, input, validator)?)
         }
         Reduction::OptimalNormal => {
-            Inner::Normal(explicit(Normal::new(degree)?, input, validator)?)
+            K::normal(explicit(Normal::new(degree, kernel)?, input, validator)?)
         }
     };
     Ok(Domain { inner })

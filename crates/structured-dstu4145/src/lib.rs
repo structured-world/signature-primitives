@@ -4,7 +4,7 @@
 //! operation, implicit randomness, provider selection or operating-system I/O.
 #![no_std]
 
-#[cfg(test)]
+#[cfg(any(test, feature = "std"))]
 extern crate std;
 
 mod curve;
@@ -12,6 +12,7 @@ pub mod domain;
 mod domains;
 mod error;
 mod field;
+mod multiplication;
 pub mod validation;
 mod words;
 

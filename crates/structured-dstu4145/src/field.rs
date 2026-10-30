@@ -1,5 +1,6 @@
 //! Public binary-field arithmetic, without element-owned context or storage.
 
+use crate::multiplication::{Kernel, Portable};
 use crate::words::{self, LIMBS, Product, Words};
 use crate::{Error, MAX_DEGREE};
 
@@ -51,17 +52,18 @@ pub(crate) trait Arithmetic {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Polynomial {
+pub(crate) struct Polynomial<K: Kernel = Portable> {
+    kernel: K,
     degree: usize,
     terms: [usize; 4],
     count: usize,
     trace_mask: Words,
 }
 
-impl Polynomial {
+impl<K: Kernel> Polynomial<K> {
     // This checks representation, not primitivity. Domain preparation owns
     // the independent validation mandated by DSTU4145 section8.1.
-    pub(crate) fn new(degree: usize, exponents: &[usize]) -> Result<Self, Error> {
+    pub(crate) fn new(degree: usize, exponents: &[usize], kernel: K) -> Result<Self, Error> {
         if !(163..=MAX_DEGREE).contains(&degree) || degree.is_multiple_of(2) {
             return Err(Error::UnsupportedDomain);
         }
@@ -95,6 +97,7 @@ impl Polynomial {
             }
         }
         Ok(Self {
+            kernel,
             degree,
             terms,
             count: exponents.len() + 1,
@@ -136,7 +139,7 @@ impl Polynomial {
     }
 }
 
-impl Arithmetic for Polynomial {
+impl<K: Kernel> Arithmetic for Polynomial<K> {
     fn degree(&self) -> usize {
         self.degree
     }
@@ -144,7 +147,7 @@ impl Arithmetic for Polynomial {
         Words::ONE
     }
     fn multiply(&self, left: Words, right: Words) -> Words {
-        self.reduce(words::product(left, right, self.degree.div_ceil(64)))
+        self.reduce(self.kernel.product(&left, &right, self.degree.div_ceil(64)))
     }
     fn square(&self, value: Words) -> Words {
         self.reduce(words::square(value, self.degree.div_ceil(64)))
@@ -165,12 +168,13 @@ impl Arithmetic for Polynomial {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Normal {
+pub(crate) struct Normal<K: Kernel = Portable> {
+    kernel: K,
     degree: usize,
 }
 
-impl Normal {
-    pub(crate) fn new(degree: usize) -> Result<Self, Error> {
+impl<K: Kernel> Normal<K> {
+    pub(crate) fn new(degree: usize, kernel: K) -> Result<Self, Error> {
         // Table2 gives exactly these type-II Gaussian normal bases.
         if ![
             173, 179, 191, 233, 239, 251, 281, 293, 359, 419, 431, 443, 491, 509,
@@ -179,7 +183,7 @@ impl Normal {
         {
             return Err(Error::UnsupportedDomain);
         }
-        Ok(Self { degree })
+        Ok(Self { kernel, degree })
     }
 
     fn count(self) -> usize {
@@ -213,7 +217,7 @@ impl Normal {
     }
 }
 
-impl Arithmetic for Normal {
+impl<K: Kernel> Arithmetic for Normal<K> {
     fn degree(&self) -> usize {
         self.degree
     }
@@ -223,8 +227,10 @@ impl Arithmetic for Normal {
     fn multiply(&self, left: Words, right: Words) -> Words {
         // In the palindromic basis s_i=z^i+z^-i, s_i*s_j=s_(i+j)+s_|i-j|.
         // Two polynomial products replace an m-by-m multiplication matrix.
-        let product = words::product(left, right, self.count());
-        let difference = words::product(left, self.reflect(right), self.count());
+        let product = self.kernel.product(&left, &right, self.count());
+        let difference = self
+            .kernel
+            .product(&left, &self.reflect(right), self.count());
         let low = Words(core::array::from_fn(|i| product[i]));
         let high = self.trim(
             words::shr(&product, self.degree).add(Words(core::array::from_fn(|i| difference[i]))),

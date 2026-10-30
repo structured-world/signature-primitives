@@ -1,8 +1,18 @@
 # structured-dstu4145
 
 Verification-only DSTU 4145 arithmetic, streaming GOST 34.311 and Kupyna,
-using fixed inline storage and safe Rust. There is no signing, key generation,
+using fixed inline storage and safe public APIs. There is no signing, key generation,
 private-key API, operating-system I/O, implicit randomness or provider registry.
+
+Domain preparation selects PCLMULQDQ on supported x86-64 CPUs or PMULL on
+supported AArch64 CPUs. The private instruction module is the only unsafe
+arithmetic boundary; it operates on registers and safely indexed fixed arrays.
+All field reduction, validation and verification use the same monomorphized
+implementation with either instruction kernel or portable Rust multiplication.
+CPU discovery runs once per prepared domain, never per field operation. On
+AArch64, dynamic detection requires `std`; alloc-only builds use instructions
+only when their target features enable both AES/PMULL and NEON. Other targets
+retain the portable kernel. Source/current work admission is unchanged.
 
 This is a source package. Initial registry publication and Trusted Publisher
 configuration are separate release steps; a source checkout is not a published

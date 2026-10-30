@@ -3,6 +3,7 @@
 use crate::{
     Error, domains,
     field::{Arithmetic, Polynomial},
+    multiplication::Kernel,
     words::Words,
 };
 use core::fmt;
@@ -59,7 +60,11 @@ pub struct Factor<'a> {
 
 pub(crate) trait Validator {
     type Error: From<Error>;
-    fn polynomial(&mut self, field: &Polynomial, terms: &[usize]) -> Result<(), Self::Error>;
+    fn polynomial<K: Kernel>(
+        &mut self,
+        field: &Polynomial<K>,
+        terms: &[usize],
+    ) -> Result<(), Self::Error>;
     fn order(&mut self, value: Words, degree: usize) -> Result<(), Self::Error>;
 }
 
@@ -83,7 +88,11 @@ fn known_order(value: Words, degree: usize) -> bool {
 
 impl Validator for Known {
     type Error = Error;
-    fn polynomial(&mut self, field: &Polynomial, terms: &[usize]) -> Result<(), Error> {
+    fn polynomial<K: Kernel>(
+        &mut self,
+        field: &Polynomial<K>,
+        terms: &[usize],
+    ) -> Result<(), Error> {
         if standard_polynomial(field.degree(), terms) {
             Ok(())
         } else {
@@ -107,7 +116,11 @@ pub(crate) struct Custom<'a, R> {
 impl<R: TryCryptoRng> Validator for Custom<'_, R> {
     type Error = ValidationError<R::Error>;
 
-    fn polynomial(&mut self, field: &Polynomial, terms: &[usize]) -> Result<(), Self::Error> {
+    fn polynomial<K: Kernel>(
+        &mut self,
+        field: &Polynomial<K>,
+        terms: &[usize],
+    ) -> Result<(), Self::Error> {
         let degree = field.degree();
         if standard_polynomial(degree, terms) {
             return Ok(());

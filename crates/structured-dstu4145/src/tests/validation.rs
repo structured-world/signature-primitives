@@ -168,7 +168,8 @@ fn custom_curve_validation_succeeds_with_caller_entropy() {
     use super::accounting::{SIGNATURE_OID, memory, parser, read, tlv};
     use structured_asn1::memory::Work;
 
-    let field = crate::field::Polynomial::new(163, &[3, 6, 7]).unwrap();
+    let field =
+        crate::field::Polynomial::new(163, &[3, 6, 7], crate::multiplication::Portable).unwrap();
     let curve = crate::curve::Curve::new(field, true, Words::ONE).unwrap();
     let base = Point {
         x: Words::hex("02FE13C0537BBC11ACAA07D793DE4E6D5E5C94EEE8"),
@@ -258,7 +259,9 @@ fn primitive_polynomial_requires_complete_factor_evidence() {
             multiplicity: 1,
         })
         .collect();
-    let field = crate::field::Polynomial::new(163, &[156, 157, 160]).unwrap();
+    let field =
+        crate::field::Polynomial::new(163, &[156, 157, 160], crate::multiplication::Portable)
+            .unwrap();
     let mut random = rand_chacha::ChaCha20Rng::from_seed([9; 32]);
     let mut custom = Custom {
         factors: &factors,

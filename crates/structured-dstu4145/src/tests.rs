@@ -54,7 +54,8 @@ fn polynomial(spec: &crate::domains::Spec) -> Curve<crate::field::Polynomial> {
         .unwrap();
     let count = if row[2] == 0 { 1 } else { 3 };
     Curve::new(
-        crate::field::Polynomial::new(spec.m, &row[1..=count]).unwrap(),
+        crate::field::Polynomial::new(spec.m, &row[1..=count], crate::multiplication::Portable)
+            .unwrap(),
         spec.a,
         spec.b,
     )
@@ -62,7 +63,7 @@ fn polynomial(spec: &crate::domains::Spec) -> Curve<crate::field::Polynomial> {
 }
 
 fn normal(spec: &crate::domains::Spec) -> Curve<crate::field::Normal> {
-    let field = crate::field::Normal::new(spec.m).unwrap();
+    let field = crate::field::Normal::new(spec.m, crate::multiplication::Portable).unwrap();
     let b = field.import(spec.b);
     Curve::new(field, spec.a, b).unwrap()
 }

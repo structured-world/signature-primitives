@@ -4,6 +4,7 @@ use crate::{
     domain::Domain,
     domains,
     field::{Arithmetic, Normal, Polynomial},
+    multiplication::{Hardware, Kernel, Portable},
     words::{self, Words},
 };
 
@@ -59,7 +60,10 @@ fn axioms<F: Arithmetic>(field: &F) {
 fn all_standard_polynomial_fields() {
     for row in domains::POLYNOMIALS {
         let count = if row[2] == 0 { 1 } else { 3 };
-        axioms(&Polynomial::new(row[0], &row[1..=count]).unwrap());
+        axioms(&Polynomial::new(row[0], &row[1..=count], Portable).unwrap());
+        if let Some(kernel) = Hardware::detect() {
+            axioms(&Polynomial::new(row[0], &row[1..=count], kernel).unwrap());
+        }
     }
 }
 
@@ -69,9 +73,54 @@ fn all_standard_normal_fields() {
     for degree in [
         173, 179, 191, 233, 239, 251, 281, 293, 359, 419, 431, 443, 491, 509,
     ] {
-        axioms(&Normal::new(degree).unwrap());
+        axioms(&Normal::new(degree, Portable).unwrap());
+        if let Some(kernel) = Hardware::detect() {
+            axioms(&Normal::new(degree, kernel).unwrap());
+        }
     }
-    assert!(matches!(Normal::new(163), Err(Error::UnsupportedDomain)));
+    assert!(matches!(
+        Normal::new(163, Portable),
+        Err(Error::UnsupportedDomain)
+    ));
+}
+
+/// Every supported limb count must preserve all unreduced bits, including
+/// carries across output limbs. This exercises the actual detected backend.
+#[test]
+fn native_products_match_portable() {
+    let Some(kernel) = Hardware::detect() else {
+        return;
+    };
+    let mut state = 0xdead_beef_1234_5678_u64;
+    for count in 0..=8 {
+        for sample in 0..128 {
+            let left = Words(core::array::from_fn(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                match sample {
+                    0 => 0,
+                    1 => u64::MAX,
+                    2 => 1 << 63,
+                    _ => state,
+                }
+            }));
+            let right = Words(core::array::from_fn(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                match sample {
+                    0 | 1 => u64::MAX,
+                    2 => 1,
+                    _ => state,
+                }
+            }));
+            assert_eq!(
+                kernel.product(&left, &right, count),
+                Portable.product(&left, &right, count)
+            );
+        }
+    }
 }
 
 fn points<F: Arithmetic>(curve: &crate::curve::Curve<F>, spec: &domains::Spec) {

@@ -5,6 +5,8 @@ mod cms;
 mod fields;
 mod hashes;
 mod real;
+#[cfg(feature = "rustcrypto")]
+mod rustcrypto;
 mod signatures;
 mod validation;
 

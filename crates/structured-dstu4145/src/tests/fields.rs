@@ -119,6 +119,68 @@ fn native_products_match_portable() {
                 kernel.product(&left, &right, count),
                 Portable.product(&left, &right, count)
             );
+            assert_eq!(
+                kernel.products(&left, [&right, &left], count),
+                [
+                    Portable.product(&left, &right, count),
+                    Portable.product(&left, &left, count)
+                ]
+            );
+        }
+    }
+}
+
+/// The defining `s_i*s_j` identity is independent of convolution, shifts and
+/// reflection. It covers every supported degree, including m=191's left shift.
+#[test]
+fn normal_products_match_basis_identity() {
+    let mut seed = 0x8123_dead_beef_5678_u64;
+    for degree in [
+        173, 179, 191, 233, 239, 251, 281, 293, 359, 419, 431, 443, 491, 509,
+    ] {
+        let portable = Normal::new(degree, Portable).unwrap();
+        for _ in 0..4 {
+            let mut operand = || {
+                let mut value = Words(core::array::from_fn(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed
+                }));
+                value.clear_above(degree + 1);
+                value.0[0] &= !1;
+                value
+            };
+            let left = operand();
+            let right = operand();
+            let mut expected = Words::ZERO;
+            for i in 1..=degree {
+                if !left.bit(i) {
+                    continue;
+                }
+                for j in 1..=degree {
+                    if !right.bit(j) {
+                        continue;
+                    }
+                    let sum = i + j;
+                    expected.flip(if sum > degree {
+                        2 * degree + 1 - sum
+                    } else {
+                        sum
+                    });
+                    let difference = i.abs_diff(j);
+                    if difference != 0 {
+                        expected.flip(difference);
+                    }
+                }
+            }
+            assert_eq!(portable.multiply(left, right), expected);
+            assert_eq!(portable.square(left), portable.multiply(left, left));
+            if let Some(kernel) = Hardware::detect() {
+                let native = Normal::new(degree, kernel).unwrap();
+                assert_eq!(native.multiply(left, right), expected);
+                assert_eq!(native.square(left), portable.square(left));
+            }
         }
     }
 }
@@ -262,6 +324,15 @@ fn complete_backend_paths_do_not_allocate() {
             key.verify_prehash(&[1; 32], &signature, ByteOrder::LittleEndian)
                 .unwrap(),
         );
+        #[cfg(feature = "rustcrypto")]
+        {
+            let borrowed =
+                crate::rustcrypto::Signature::new(&signature, ByteOrder::LittleEndian).unwrap();
+            assert!(
+                signature::hazmat::PrehashVerifier::verify_prehash(&key, &[1; 32], &borrowed)
+                    .is_err()
+            );
+        }
         let dke = crate::gost::Dke::new(&crate::gost::DEFAULT_DKE).unwrap();
         for identity in [
             crate::hash::Hash::Gost34311(&dke),

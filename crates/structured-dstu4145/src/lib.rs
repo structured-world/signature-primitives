@@ -19,6 +19,8 @@ mod words;
 pub mod accounted;
 pub mod gost;
 pub mod hash;
+#[cfg(feature = "rustcrypto")]
+pub mod rustcrypto;
 
 pub use error::Error;
 pub use structured_pkix::algorithm::dstu4145::{Basis, ByteOrder};

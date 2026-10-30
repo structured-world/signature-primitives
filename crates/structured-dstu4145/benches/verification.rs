@@ -1,4 +1,6 @@
-//! Repeated verification and preparation are measured separately. The external
+//! Repeated verification and preparation are measured separately. Verification
+//! uses full-width scalars with a computed mismatch, not a valid signature.
+//! The external
 //! implementation is a performance reference, not a normative/security oracle.
 
 use std::{
@@ -11,6 +13,9 @@ use structured_dstu4145::{
     gost::{DEFAULT_DKE, Dke},
     hash::{Hash, State},
 };
+
+#[path = "verification/hash_comparison.rs"]
+mod hash_comparison;
 
 fn timing(mut operation: impl FnMut(), count: usize) -> (Duration, Duration) {
     for _ in 0..5 {
@@ -30,6 +35,7 @@ fn main() {
     println!("verification samples=500, warmup=5, times=nanoseconds");
     signatures();
     hashes();
+    hash_comparison::run();
 }
 
 fn signatures() {

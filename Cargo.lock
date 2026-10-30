@@ -957,10 +957,12 @@ dependencies = [
  "kupyna",
  "rand_chacha",
  "rand_core 0.10.1",
+ "signature",
  "structured-asn1",
  "structured-cms",
  "structured-pkix",
  "ua-cryptography-dstu4145",
+ "ua-cryptography-dstu7564",
 ]
 
 [[package]]
@@ -1088,6 +1090,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "ua-cryptography-dstu-sboxes"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecd0cfb3c6836fba5d835f3d7c23dfd2f330c785831ccc29bab4e6277a0c5ca7"
+
+[[package]]
 name = "ua-cryptography-dstu4145"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1098,6 +1106,15 @@ dependencies = [
  "rand_core 0.6.4",
  "ua-cryptography-gf2m",
  "ua-cryptography-gost",
+]
+
+[[package]]
+name = "ua-cryptography-dstu7564"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98e2cbf2daa6f2660c39f502d960216455524e5378f3f0fe21fc6e49fe261d14"
+dependencies = [
+ "ua-cryptography-dstu-sboxes",
 ]
 
 [[package]]

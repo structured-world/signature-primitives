@@ -114,22 +114,6 @@ pub(crate) fn xor_shift(out: &mut Product, word: u64, shift: usize) {
     }
 }
 
-pub(crate) fn shr(input: &[u64], bits: usize) -> Words {
-    let offset = bits / 64;
-    let shift = bits % 64;
-    Words(core::array::from_fn(|i| {
-        let at = offset + i;
-        if at >= input.len() {
-            return 0;
-        }
-        let mut word = input[at] >> shift;
-        if shift != 0 && at + 1 < input.len() {
-            word |= input[at + 1] << (64 - shift);
-        }
-        word
-    }))
-}
-
 pub(crate) fn product(left: &Words, right: &Words, count: usize) -> Product {
     let mut result = [0; 2 * LIMBS];
     // Public operands permit indexed windows. Build once per right limb,

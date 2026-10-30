@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/structured-world/signature-primitives/compare/structured-xades-v0.17.1...structured-xades-v0.18.0) - 2026-10-30
+
+### Added
+
+- *(dstu4145)* add bounded Ukrainian verification ([#253](https://github.com/structured-world/signature-primitives/pull/253))
+- *(pkix)* read dstu 4145 structures ([#250](https://github.com/structured-world/signature-primitives/pull/250))
+
+### Other
+
+- *(dstu4145)* optimize ONB and add RustCrypto traits ([#255](https://github.com/structured-world/signature-primitives/pull/255))
+
 ## [0.17.1](https://github.com/structured-world/signature-primitives/compare/structured-xades-v0.17.0...structured-xades-v0.17.1) - 2026-10-28
 
 ### Fixed

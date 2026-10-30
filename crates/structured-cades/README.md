@@ -195,17 +195,14 @@ archive cannot erase another original obligation.
 
 ## Publication
 
-This crate joins the coordinated workspace release through release-plz. Its
-first publication uses only `CADES_BOOTSTRAP_TOKEN` in the isolated `CAdES` step,
-after the existing packages publish through OIDC and their dependencies resolve.
-The bootstrap still requires an approved release commit and successful CI on
-that exact SHA; it cannot publish an ordinary feature commit. After the first
-version exists, configure the crates.io Trusted Publisher for repository
-`structured-world/signature-primitives`, workflow `release-plz.yml`, environment
-`release`, revoke the temporary token and remove that GitHub Actions secret.
-Subsequent coordinated versions use OIDC. Actual registry archives, checksums,
-source revision, packaged tests, MSRV and alloc-only targets are qualified by
-the existing registry job; source availability alone is not a released version.
+Published on [crates.io](https://crates.io/crates/structured-cades) as part of
+the coordinated release-plz release. New versions require GitHub Actions
+Trusted Publishing for repository `structured-world/signature-primitives`,
+workflow `release-plz.yml`, environment `release`. Publication follows the
+release PR merge and successful CI on that exact main commit, without a stored
+cargo token. The registry job qualifies actual archives, checksums, source
+revision, packaged tests and alloc-only targets when the workflow publishes
+new packages; source availability alone is not a released version.
 
 Optional policy qualifiers and credential formats retain their original open
 values for their actual owners. Policy-store linkage requires a protected,

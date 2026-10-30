@@ -14,9 +14,10 @@ AArch64, dynamic detection requires `std`; alloc-only builds use instructions
 only when their target features enable both AES/PMULL and NEON. Other targets
 retain the portable kernel. Source/current work admission is unchanged.
 
-This is a source package. Initial registry publication and Trusted Publisher
-configuration are separate release steps; a source checkout is not a published
-consumer dependency.
+Published on [crates.io](https://crates.io/crates/structured-dstu4145), with
+[API documentation](https://docs.rs/structured-dstu4145). New versions require
+GitHub Actions Trusted Publishing through this repository's `release-plz.yml`
+workflow and `release` environment, following the coordinated release PR.
 
 ## Domains and verification
 

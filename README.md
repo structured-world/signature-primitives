@@ -29,7 +29,7 @@ the long-term validation core.
 | [**structured-cades**](crates/structured-cades/README.md) | Source-bound CAdES baseline composition, original CMS timestamp/archive inputs and validation material | [![version](https://img.shields.io/crates/v/structured-cades)](https://crates.io/crates/structured-cades) | [![docs.rs](https://img.shields.io/docsrs/structured-cades)](https://docs.rs/structured-cades) |
 | [**structured-pades**](crates/structured-pades/README.md) | Asynchronous original-range PDF signatures, revisions, DSS/VRI, DocMDP/FieldMDP and PAdES baseline composition | [![version](https://img.shields.io/crates/v/structured-pades)](https://crates.io/crates/structured-pades) | [![docs.rs](https://img.shields.io/docsrs/structured-pades)](https://docs.rs/structured-pades) |
 | [**structured-asic**](crates/structured-asic/README.md) | Original-range ZIP/ZIP64 ASiC containers, producing XML/member binding, CAdES/XAdES and time-assertion composition | [![version](https://img.shields.io/crates/v/structured-asic)](https://crates.io/crates/structured-asic) | [![docs.rs](https://img.shields.io/docsrs/structured-asic)](https://docs.rs/structured-asic) |
-| [**structured-dstu4145**](crates/structured-dstu4145/README.md) | Fixed-storage DSTU 4145 verification, explicit-DKE GOST 34.311 and streaming Kupyna | Initial publication pending | [Source documentation](crates/structured-dstu4145/README.md) |
+| [**structured-dstu4145**](crates/structured-dstu4145/README.md) | Fixed-storage DSTU 4145 verification, explicit-DKE GOST 34.311 and streaming Kupyna | [![version](https://img.shields.io/crates/v/structured-dstu4145)](https://crates.io/crates/structured-dstu4145) | [![docs.rs](https://img.shields.io/docsrs/structured-dstu4145)](https://docs.rs/structured-dstu4145) |
 
 Each crate builds on the ones above it:
 
@@ -49,19 +49,23 @@ digest/work contracts; it introduces no format-specific provider dispatcher.
 ## Install
 
 The published crates are released together; keep them on the same version.
-Registry badges link to the available versions. Subsequent coordinated releases
-use GitHub Actions Trusted Publishing rather than stored bootstrap tokens.
+Registry badges link to the available versions. All nine crates require GitHub
+Actions Trusted Publishing for new versions, using this repository's
+`release-plz.yml` workflow and `release` environment. Coordinated publication
+follows the merge of a release-plz release PR and successful CI for its exact
+main commit, without stored cargo tokens.
 
 ```toml
 [dependencies]
-structured-asn1 = "0.15"
-structured-pkix = "0.15"   # certificates, paths, CRL, OCSP
-structured-cms = "0.15"    # CMS signatures, RFC 3161 timestamps
-structured-ltv = "0.15"    # long-term validation
-structured-xades = "0.15"  # XAdES
-structured-cades = "0.15"  # CAdES
-structured-pades = "0.15"  # PDF signatures and PAdES
-structured-asic = "0.15"   # ASiC containers
+structured-asn1 = "0.18"
+structured-pkix = "0.18"   # certificates, paths, CRL, OCSP
+structured-cms = "0.18"    # CMS signatures, RFC 3161 timestamps
+structured-ltv = "0.18"    # long-term validation
+structured-xades = "0.18"  # XAdES
+structured-cades = "0.18"  # CAdES
+structured-pades = "0.18"  # PDF signatures and PAdES
+structured-asic = "0.18"   # ASiC containers
+structured-dstu4145 = "0.18" # optional Ukrainian verification backend
 ```
 
 Rust 1.92 or newer. Everything works with `no_std + alloc`; enable the `std`

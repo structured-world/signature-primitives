@@ -1,4 +1,6 @@
-//! Repeated verification and preparation are measured separately. The external
+//! Repeated verification and preparation are measured separately. Verification
+//! uses full-width scalars with a computed mismatch, not a valid signature.
+//! The external
 //! implementation is a performance reference, not a normative/security oracle.
 
 use std::{

@@ -10,7 +10,7 @@ pub(crate) struct Hardware(Instructions);
 
 #[derive(Debug, Clone, Copy)]
 enum Instructions {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
     Pclmul,
     #[cfg(target_arch = "aarch64")]
     Pmull,
@@ -20,6 +20,7 @@ impl Hardware {
     pub(crate) fn detect() -> Option<Self> {
         // A bare-metal ABI may deliberately disable XMM/SSE2 even when the
         // CPU reports PCLMUL. The target contract must permit XMM state too.
+        // https://doc.rust-lang.org/rustc/platform-support/x86_64-unknown-none.html#requirements
         #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
         {
             if cfg!(target_feature = "pclmulqdq") {
@@ -82,7 +83,7 @@ impl Hardware {
         right: [&Words; N],
     ) -> [Product; N] {
         match (self.0, left, right) {
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
             // SAFETY: only detect constructs this witness after checking
             // PCLMUL; operands and result use safe fixed-array indexing.
             (Instructions::Pclmul, left, right) => unsafe { x86::<N, WIDTH>(left, right) },
@@ -107,7 +108,7 @@ impl Kernel for Hardware {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
 #[target_feature(enable = "pclmulqdq,sse2")]
 fn x86<const N: usize, const WIDTH: usize>(left: &Words, right: [&Words; N]) -> [Product; N] {
     use core::arch::x86_64::{

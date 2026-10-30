@@ -26,8 +26,13 @@ impl Hardware {
             // CPUID is baseline on x86-64. Leaf1 ECX bit1 reports PCLMULQDQ;
             // SSE2/XMM state is required by the ABI. SGX cannot execute CPUID.
             #[cfg(not(target_env = "sgx"))]
-            if core::arch::x86_64::__cpuid(1).ecx & 2 != 0 {
-                return Some(Self(Instructions::Pclmul));
+            {
+                #[allow(unused_unsafe, reason = "CPUID requires unsafe on Rust 1.92")]
+                // SAFETY: x86-64 guarantees CPUID outside SGX.
+                let features = unsafe { core::arch::x86_64::__cpuid(1) };
+                if features.ecx & 2 != 0 {
+                    return Some(Self(Instructions::Pclmul));
+                }
             }
         }
         #[cfg(target_arch = "aarch64")]

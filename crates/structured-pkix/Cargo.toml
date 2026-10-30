@@ -17,7 +17,7 @@ std = ["structured-asn1/std"]
 alloc = ["structured-asn1/alloc"]
 
 [dependencies]
-structured-asn1 = { version = "0.18.0", path = "../structured-asn1", default-features = false }
+structured-asn1 = { version = "0.18.1", path = "../structured-asn1", default-features = false }
 unicode-normalization = { version = "0.1", default-features = false }
 unicode-bidi = { version = "0.3", default-features = false, features = ["hardcoded-data"] }
 structured-email-address = { version = "0.0.22", default-features = false, features = ["alloc"] }

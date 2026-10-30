@@ -79,6 +79,81 @@ fn leave(parser: &Parser, remaining: usize) {
         .unwrap();
 }
 
+/// Rebinding a DKE source must not discard the current foreign-source limit.
+/// Each independent parser can refuse before table preparation is admitted.
+#[test]
+fn preparing_dke_preserves_every_current_ceiling() {
+    for exhausted in 0..3 {
+        let source = parser(memory());
+        let previous = parser(memory());
+        let root = parser(memory());
+        let raw = fixture(&DEFAULT_DKE);
+        let info = read(&source, &raw, 1200);
+        let parsed = structured_pkix::key::dstu4145::read(info, source.memory()).unwrap();
+        let parameters = parsed.parameters().unwrap();
+        leave([&source, &previous, &root][exhausted], 0);
+        let account = memory();
+        let operation = root.execution_in(&account);
+        let current = operation.execution_for(&previous);
+        assert!(matches!(
+            crate::accounted::prepare_dke(parameters, &current),
+            Err(Failure::Resource {
+                reason: MemoryError::WorkExceeded,
+                at: _
+            })
+        ));
+        assert_eq!(account.work_used(), 0);
+    }
+}
+
+/// Equal table bytes do not authorize binding after a current source is spent.
+#[test]
+fn binding_dke_preserves_existing_current_source() {
+    let source = parser(memory());
+    let previous = parser(memory());
+    let root = parser(memory());
+    let raw = fixture(&DEFAULT_DKE);
+    let info = read(&source, &raw, 1200);
+    let parsed = structured_pkix::key::dstu4145::read(info, source.memory()).unwrap();
+    let dke = Dke::new(&DEFAULT_DKE).unwrap();
+    leave(&previous, 0);
+    let account = memory();
+    let operation = root.execution_in(&account);
+    let current = operation.execution_for(&previous);
+    assert!(matches!(
+        DkeBinding::new(parsed.parameters().unwrap(), &dke, &current),
+        Err(Failure::Resource {
+            reason: MemoryError::WorkExceeded,
+            ..
+        })
+    ));
+    assert_eq!(account.work_used(), 0);
+}
+
+/// A single metadata unit must not authorize the complete curve operation
+/// after preparation rebinds from a foreign current source to the key source.
+#[test]
+fn preparing_key_preserves_existing_current_source() {
+    let source = parser(memory());
+    let previous = parser(memory());
+    let root = parser(memory());
+    let raw = fixture(&DEFAULT_DKE);
+    let info = read(&source, &raw, 1200);
+    let dke = Dke::new(&DEFAULT_DKE).unwrap();
+    leave(&previous, 1);
+    let account = memory();
+    let operation = root.execution_in(&account);
+    let current = operation.execution_for(&previous);
+    assert!(matches!(
+        Key::prepare(info, &dke, &current),
+        Err(Failure::Resource {
+            reason: MemoryError::WorkExceeded,
+            ..
+        })
+    ));
+    assert!(account.work_used() < 1000);
+}
+
 /// Bound DKE values carry the actual parameter source through deferred hashing.
 /// A broad fresh operation cannot bypass a spent producing parser.
 #[test]

@@ -88,9 +88,11 @@ impl<'a> DkeBinding<'a> {
         current: &W,
     ) -> Result<Self, Failure> {
         let at = parameters.element().span().start;
-        let execution = parameters.execution_in(current);
-        execution
-            .charge_work(65)
+        // Joint admission adds this producer without replacing an existing
+        // foreign source ceiling carried by the current operation.
+        parameters
+            .execution_origin()
+            .charge_work_in(current, 65)
             .map_err(|reason| Failure::Resource { reason, at })?;
         let written = parameters
             .dke()
@@ -114,8 +116,8 @@ impl<'a> DkeBinding<'a> {
 pub fn prepare_dke<W: Work>(parameters: Parameters<'_>, current: &W) -> Result<Dke, Failure> {
     let at = parameters.element().span().start;
     parameters
-        .execution_in(current)
-        .charge_work(64 + 128 + 4 * 256)
+        .execution_origin()
+        .charge_work_in(current, 64 + 128 + 4 * 256)
         .map_err(|reason| Failure::Resource { reason, at })?;
     let bytes = parameters
         .dke()
@@ -372,16 +374,16 @@ impl<'a> Key<'a> {
                 at,
             });
         }
-        let execution = parsed.execution_in(work);
         let field_cost = field_cost(degree, &parameters.curve());
         let cost = match parameters.curve() {
             Curve::Named(_) => curve_cost(degree, 20, field_cost),
             Curve::Explicit(_) => curve_cost(degree, 40, field_cost) + extra,
         };
-        execution
-            .charge_work(cost)
+        parameters
+            .execution_origin()
+            .charge_work_in(work, cost)
             .map_err(|reason| Failure::Resource { reason, at })?;
-        let dke = DkeBinding::new(parameters, dke, &execution).map_err(widen)?;
+        let dke = DkeBinding::new(parameters, dke, work).map_err(widen)?;
         let domain = match parameters.curve() {
             Curve::Named(named) => {
                 let (basis, m) = named.known().ok_or(Failure::Backend {

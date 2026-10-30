@@ -5,6 +5,76 @@ use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, SortError, Wor
 use structured_asn1::{Encoding, Limits, Parser};
 
 #[test]
+fn joint_admission_keeps_three_sources_and_one_account_bill() {
+    // Key-bound comparison can need two foreign parameter sources plus a
+    // current operation. Neither origin is replaced or billed twice.
+    let account = Memory::new(Arc::new(MemoryAccount::new(0, 100)));
+    let limits = Limits {
+        max_work: 10,
+        ..Limits::default()
+    };
+    let root = Parser::new(Encoding::Der, limits, account.clone());
+    let left = Parser::new(Encoding::Der, limits, account.clone());
+    let right = Parser::new(Encoding::Der, limits, account.clone());
+    let operation = root.execution_in(&account);
+    let pair = operation.execution_for(&left);
+    pair.charge_work_from([&right, &right], 4).unwrap();
+    assert_eq!(account.work_used(), 4);
+    for parser in [&root, &left, &right] {
+        assert_eq!(parser.execution_in(&account).work_remaining(), 6);
+    }
+    pair.charge_work_from([&root, &root], 2).unwrap();
+    assert_eq!(account.work_used(), 6);
+    assert_eq!(root.execution_in(&account).work_remaining(), 4);
+    assert_eq!(left.execution_in(&account).work_remaining(), 4);
+    assert_eq!(right.execution_in(&account).work_remaining(), 6);
+    right.execution_in(&account).charge_work(6).unwrap();
+    let before = account.work_used();
+    assert_eq!(
+        pair.charge_work_from([&right, &right], 1),
+        Err(MemoryError::WorkExceeded)
+    );
+    assert_eq!(account.work_used(), before);
+    assert_eq!(root.execution_in(&account).work_remaining(), 4);
+    assert_eq!(left.execution_in(&account).work_remaining(), 4);
+}
+
+#[test]
+fn joint_admission_deduplicates_all_four_source_aliases() {
+    // Two existing current ceilings plus two key/hash origins can coincide in
+    // any combination. No alias authorizes a reset or a duplicate account bill.
+    for left in 0..4 {
+        for right in 0..4 {
+            let account = Memory::new(Arc::new(MemoryAccount::new(0, 100)));
+            let parsers: [Parser; 4] = core::array::from_fn(|_| {
+                Parser::new(
+                    Encoding::Der,
+                    Limits {
+                        max_work: 10,
+                        ..Limits::default()
+                    },
+                    account.clone(),
+                )
+            });
+            let root = parsers[0].execution_in(&account);
+            let current = root.execution_for(&parsers[1]);
+            current
+                .charge_work_from([&parsers[left], &parsers[right]], 5)
+                .unwrap();
+            assert_eq!(account.work_used(), 5);
+            for (index, parser) in parsers.iter().enumerate() {
+                let expected = if index < 2 || index == left || index == right {
+                    5
+                } else {
+                    10
+                };
+                assert_eq!(parser.execution_in(&account).work_remaining(), expected);
+            }
+        }
+    }
+}
+
+#[test]
 fn scratch_growth_refuses_local_work_before_allocator_or_move() {
     // Spare aggregate allowance cannot authorize a replacement allocation
     // after the original parser's cumulative ceiling has been spent.

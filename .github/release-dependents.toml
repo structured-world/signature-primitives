@@ -35,3 +35,7 @@ release = false
 [[package]]
 name = "structured-asic"
 release = false
+
+[[package]]
+name = "structured-dstu4145"
+release = false

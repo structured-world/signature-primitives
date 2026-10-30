@@ -1,7 +1,7 @@
 //! Schema and selected-provider preflight before state initialization or I/O.
 
 use crate::binding::{self, Binding, Protection, Scope};
-use crate::provider::{DigestAlgorithm, SignatureMode, SignatureProvider, resolve_digest};
+use crate::provider::{SignatureDigestError, SignatureMode, SignatureProvider};
 use crate::signer::SignerInfo;
 use crate::{Error, ErrorCode};
 use core::cmp::Ordering;
@@ -214,8 +214,9 @@ pub fn resolve<'a, P: SignatureProvider<'a>>(
         Err(error) => return Ok(Preparation::Malformed(error)),
     };
     let identifier = identifiers.0;
-    let digest = match resolve_digest(provider, DigestAlgorithm::Written(identifier), parent)
-        .map_err(PrepareError::Processing)?
+    let digest = match provider
+        .resolve_signature_digest(identifier, key, parent)
+        .map_err(|error| digest_error(error, Part::Digest))?
     {
         Resolution::Supported(digest) => digest,
         Resolution::Unsupported => return Ok(Preparation::Unsupported(Part::Digest)),
@@ -326,22 +327,22 @@ fn protected<'a, P: SignatureProvider<'a>>(
 ) -> Result<ProtectionStatus, PrepareError<P::Error>> {
     const FIELD: &str = "signerInfo.signedAttrs.cmsAlgorithmProtection";
     let identifier = protection.digest();
-    let protected_digest =
-        match resolve_digest(provider, DigestAlgorithm::Written(identifier), parent)
-            .map_err(PrepareError::Processing)?
-        {
-            Resolution::Supported(digest) => digest,
-            Resolution::Unsupported => {
-                return Ok(ProtectionStatus::Unsupported(Part::ProtectedDigest));
-            }
-            Resolution::Malformed => {
-                return Ok(ProtectionStatus::Malformed(Error::schema(
-                    ErrorCode::AlgorithmSyntax,
-                    FIELD,
-                    identifier.offset(),
-                )));
-            }
-        };
+    let protected_digest = match provider
+        .resolve_signature_digest(identifier, key, parent)
+        .map_err(|error| digest_error(error, Part::ProtectedDigest))?
+    {
+        Resolution::Supported(digest) => digest,
+        Resolution::Unsupported => {
+            return Ok(ProtectionStatus::Unsupported(Part::ProtectedDigest));
+        }
+        Resolution::Malformed => {
+            return Ok(ProtectionStatus::Malformed(Error::schema(
+                ErrorCode::AlgorithmSyntax,
+                FIELD,
+                identifier.offset(),
+            )));
+        }
+    };
     if provider
         .compare(digest, &protected_digest, &parent.execution())
         .map_err(|source| PrepareError::Callback {
@@ -405,4 +406,11 @@ fn protected<'a, P: SignatureProvider<'a>>(
         )));
     }
     Ok(ProtectionStatus::Matching)
+}
+
+fn digest_error<E>(error: SignatureDigestError<E>, part: Part) -> PrepareError<E> {
+    match error {
+        SignatureDigestError::Encoding(error) => PrepareError::Processing(Error::pkix(error)),
+        SignatureDigestError::Callback(source) => PrepareError::Callback { part, source },
+    }
 }

@@ -39,6 +39,12 @@ pub struct SignatureValue<'a> {
 }
 
 impl<'a> SignatureValue<'a> {
+    /// Original producing work, without retaining bytes or an account owner.
+    #[must_use]
+    pub const fn execution_origin(self) -> crate::algorithm::Producer<'a> {
+        crate::algorithm::Producer::from_parser(self.parser)
+    }
+
     /// Reads DSTU's carried OCTET STRING with original/current source limits.
     /// Representation and order bit length come from the independently selected
     /// signature profile and signing key, never from payload length.

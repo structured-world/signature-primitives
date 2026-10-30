@@ -1,0 +1,8 @@
+The runtime-parameter GOST compression implementation was developed with
+reference to RustCrypto gost94 0.11.0, https://github.com/RustCrypto/hashes,
+available under Apache-2.0 or MIT. This package uses the Apache-2.0 option.
+
+DSTU 4145 mathematical constants and worked examples are referenced by their
+standard clauses. The full copyrighted standard is not distributed here.
+Algorithm descriptions and independent implementation references do not
+constitute a cryptographic audit or certification of this package.

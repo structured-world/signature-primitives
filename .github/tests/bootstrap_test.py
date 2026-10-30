@@ -16,7 +16,7 @@ class BootstrapPackages(unittest.TestCase):
         self.assertIs(config["workspace"]["release_always"], False)
         self.assertEqual(config["workspace"]["git_tag_name"], "structured-cades-v{{ version }}")
         disabled = {package["name"] for package in config["package"] if package.get("release") is False}
-        self.assertEqual(disabled, {"structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-pades", "structured-asic"})
+        self.assertEqual(disabled, {"structured-asn1", "structured-pkix", "structured-cms", "structured-ltv", "structured-xades", "structured-pades", "structured-asic", "structured-dstu4145"})
 
     def test_legacy_bootstrap_credentials_exclude_container_crates(self):
         # Registering new publishers must not broaden the old LTV/CAdES
@@ -31,6 +31,7 @@ class BootstrapPackages(unittest.TestCase):
                 if filename != "../release-plz.toml":
                     self.assertIs(packages.get("structured-pades"), False)
                     self.assertIs(packages.get("structured-asic"), False)
+                    self.assertIs(packages.get("structured-dstu4145"), False)
 
     def test_containers_use_the_coordinated_oidc_publication(self):
         # Each container's first publication and publisher registration precede
@@ -93,7 +94,7 @@ class BootstrapPackages(unittest.TestCase):
         new = {"structured-ltv"}
         cades = {"structured-cades"}
         dependents = {"structured-xades"} | cades
-        pending = {"structured-pades", "structured-asic"}
+        pending = {"structured-pades", "structured-asic", "structured-dstu4145"}
         self.assertEqual(names, existing | new | dependents | pending)
         for filename, expected in [
             ("release-core.toml", existing),

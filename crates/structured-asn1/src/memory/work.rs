@@ -41,6 +41,13 @@ pub trait Work: Clone + private::Sealed {
     /// Admits work before execution, against every applicable ceiling.
     fn charge_work(&self, amount: u64) -> Result<(), MemoryError>;
 
+    /// Admits one joint operation against two additional original sources and
+    /// every ceiling already carried by this work. Bills the current account
+    /// and each distinct parser once, before work; acquires no owner or storage.
+    /// Unlike [`Self::execution_for`], this does not replace a foreign source.
+    /// Pass the same parser twice when there is only one additional source.
+    fn charge_work_from(&self, sources: [&Parser; 2], amount: u64) -> Result<(), MemoryError>;
+
     /// The largest amount [`Work::charge_work`] would admit now, across every
     /// ceiling it checks, without reserving it.
     ///
@@ -266,6 +273,12 @@ impl Work for Memory {
         Memory::charge_work(self, amount)
     }
 
+    fn charge_work_from(&self, sources: [&Parser; 2], amount: u64) -> Result<(), MemoryError> {
+        sources[0]
+            .execution_in(self)
+            .charge_work_from(sources, amount)
+    }
+
     fn work_remaining(&self) -> usize {
         Memory::work_remaining(self)
     }
@@ -384,6 +397,16 @@ impl Work for Execution<'_> {
     fn charge_work(&self, amount: u64) -> Result<(), MemoryError> {
         self.budget
             .work_in(amount, self.memory)
+            .map_err(|_| MemoryError::WorkExceeded)
+    }
+
+    fn charge_work_from(&self, sources: [&Parser; 2], amount: u64) -> Result<(), MemoryError> {
+        self.budget
+            .work_with(
+                [sources[0].source_budget(), sources[1].source_budget()],
+                amount,
+                self.memory,
+            )
             .map_err(|_| MemoryError::WorkExceeded)
     }
 

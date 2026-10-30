@@ -130,7 +130,7 @@ pub(crate) fn shr(input: &[u64], bits: usize) -> Words {
     }))
 }
 
-pub(crate) fn product(left: Words, right: Words, count: usize) -> Product {
+pub(crate) fn product(left: &Words, right: &Words, count: usize) -> Product {
     let mut result = [0; 2 * LIMBS];
     // Public operands permit indexed windows. Build once per right limb,
     // not for each pair; the full u128 entries retain carry-less high bits.

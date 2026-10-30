@@ -16,6 +16,6 @@ pub(crate) struct Portable;
 impl Kernel for Portable {
     #[inline]
     fn product(self, left: &Words, right: &Words, count: usize) -> Product {
-        words::product(*left, *right, count)
+        words::product(left, right, count)
     }
 }

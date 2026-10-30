@@ -22,10 +22,10 @@ fn window_products_match_bitwise_oracle() {
                 }
             }
         }
-        assert_eq!(words::product(left, right, count), expected);
+        assert_eq!(words::product(&left, &right, count), expected);
         assert_eq!(
             words::square(left, count),
-            words::product(left, left, count)
+            words::product(&left, &left, count)
         );
     }
 }

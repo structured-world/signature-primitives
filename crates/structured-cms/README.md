@@ -267,6 +267,17 @@ Constructed content can have several physical ranges. `SourceMap` retains that
 mapping independently of temporary joins. Nested timestamp checking preserves
 separate CMS-envelope and TSTInfo coordinate contexts. A foreign-reader refusal
 occurs before map admission; it is caller misuse, not malformed document data.
+`timestamp::CheckContext::policy_accuracy` accepts explicit caller-authenticated
+accuracy bound to the selected TSA and signed policy OID (RFC 3161 §2.4.2).
+Policy mismatch refuses before profile, cryptographic and content callbacks.
+Token accuracy takes precedence; malformed accuracy is never replaced, and no
+accuracy is inferred when neither source provides it. `RetainedFacts::accuracy`
+preserves the signed field's absence; `effective_accuracy` reports the value and
+its `Token` or `CallerPolicy` origin through retention and independent copying.
+Both synchronous and asynchronous checks use this same resolution.
+Initialize `policy_accuracy` to `None` in timestamp/ERS selection contexts when
+no authenticated external accuracy is available; existing behavior is preserved.
+
 Timestamp inspection preserves a uniquely readable TSTInfo followed by trailing
 carried bytes, with a located `TrailingData` fault and the original source map.
 Fault retention is fallible and uses the producing execution's resource limits.

@@ -460,6 +460,7 @@ fn each_approval_root_keeps_its_own_revision_and_timestamp_coverage() {
                 utc: &utc,
                 reference: None,
                 window: None,
+                policy_accuracy: None,
             };
             let checked = support::ready(document.check_timestamp(
                 &timestamp,
@@ -665,6 +666,7 @@ fn vri_timestamp_hashes_signature_content_not_the_complete_cms_or_vri_name() {
             utc: &utc,
             reference: None,
             window: None,
+            policy_accuracy: None,
         };
         let checked = binding
             .check_timestamp(&message, &parent, &oracle, &timestamp_request, |_, _| {
@@ -825,6 +827,7 @@ fn actual_document_timestamp_binds_original_revision_and_root() {
         utc: &utc,
         reference: None,
         window: None,
+        policy_accuracy: None,
     };
     let checked = support::ready(document.check_timestamp(
         &container,
@@ -1045,6 +1048,7 @@ fn actual_pdf_range_and_signer_binding_do_not_require_forbidden_cms_signing_time
             utc: &utc,
             reference: None,
             window: None,
+            policy_accuracy: None,
         };
         let structured_pades::timestamp::sources::Slot::Value(timestamp_container) =
             sources.get(0, &work).unwrap().unwrap()
@@ -1323,6 +1327,7 @@ fn full_lt_and_lta_link_actual_tsa_status_material_and_original_revision() {
                     utc: &utc,
                     reference: None,
                     window: None,
+                    policy_accuracy: None,
                 };
                 let timestamp_parents: Vec<_> = (0..required.document_timestamps().len())
                     .map(|ordinal| models.reader(ordinal, &work).unwrap().unwrap())

@@ -1,6 +1,8 @@
 //! Long-term facts over a non-XML source: the unsigned attributes of one CMS
 //! `SignerInfo`, identified by original ordinal as a `CAdES` layer would.
 
+#[path = "cms_source/policy_accuracy.rs"]
+mod policy_accuracy;
 mod support;
 #[path = "cms_source/token.rs"]
 mod token;

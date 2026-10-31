@@ -261,6 +261,7 @@ fn both_reference_timestamp_roles_drive_real_rfc3161_checks_over_exact_inputs() 
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
                 window: None,
+                policy_accuracy: None,
             };
             let access = Access::new(&xml, xml.snapshot(), &memory);
             let layout = container::locate(&access, 0).unwrap();

@@ -76,6 +76,7 @@ impl<'d> structured_cades::evidence::Authorities<'d> for RecordAuthority<'_, 'd>
         Ok(structured_cades::evidence::Authority {
             path: self.path,
             certificate_parent: self.parent,
+            policy_accuracy: None,
         })
     }
 }
@@ -557,6 +558,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             let time = structured_cades::timestamp::CheckTime {
                 utc: &utc,
                 reference: Some(interval.to_instant()),
+                policy_accuracy: None,
             };
             let answer = pool
                 .with_token(0, &parent, |selected| {
@@ -609,6 +611,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             let time = structured_cades::timestamp::CheckTime {
                 utc: &utc,
                 reference: Some(interval.to_instant()),
+                policy_accuracy: None,
             };
             let ordinal = prepared
                 .timestamps()
@@ -665,6 +668,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
             let time = structured_cades::timestamp::CheckTime {
                 utc: &utc,
                 reference: Some(interval.to_instant()),
+                policy_accuracy: None,
             };
             let starts = oracle.starts.get();
             let answer = pool.with_token(0, &parent, |selected| {
@@ -747,6 +751,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
         let time = structured_cades::timestamp::CheckTime {
             utc: &utc,
             reference: Some(interval.to_instant()),
+            policy_accuracy: None,
         };
         let signature_ordinal = prepared
             .timestamps()

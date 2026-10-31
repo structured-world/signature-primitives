@@ -290,6 +290,7 @@ impl<'a, 'm, 'd> View<'a, 'm, 'd> {
                     certificate: target.certificate(),
                     certificate_parent: choice.certificate_parent,
                     key: target.key(),
+                    policy_accuracy: choice.policy_accuracy,
                 };
                 let context = tsp::CheckContext {
                     certificate: selection.certificate,
@@ -299,6 +300,7 @@ impl<'a, 'm, 'd> View<'a, 'm, 'd> {
                     utc,
                     reference: None,
                     window: None,
+                    policy_accuracy: selection.policy_accuracy,
                 };
                 let mut covered = Lazy {
                     view: self,

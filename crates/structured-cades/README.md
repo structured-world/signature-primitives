@@ -53,8 +53,10 @@ an envelope. Other revocation formats keep their original OID, wrapper and
 source-backed values for their actual format owner. Its token visitors use
 saved encoding, depth and source context, and `timestamp::Context` chooses the
 actual original content, owner signature or `ATSv3` archive input. `CheckTime`
-contains explicit UTC facts and an optional caller-supplied reference; there is
-no clock discovery or token-derived reference. Unknown accuracy, mismatched
+contains explicit UTC facts, an optional caller-supplied reference and optional
+caller-authenticated accuracy bound to the signed TSA policy. ERS authority
+selection carries the same explicit accuracy input. There is no clock discovery
+or token-derived reference. Unknown accuracy, mismatched
 imprints, negative arithmetic and unverified timeliness cannot create evidence.
 
 Bind each successful actor to its actual checked TSA path with the existing

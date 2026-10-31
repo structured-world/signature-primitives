@@ -19,6 +19,9 @@ const ED25519: &[u8] = &[0x2b, 0x65, 0x70];
 #[path = "response/native.rs"]
 mod timestamp_response_native;
 
+#[path = "ed25519/policy_accuracy.rs"]
+mod policy_accuracy;
+
 #[derive(Debug)]
 enum Failure {
     Resource(MemoryError),
@@ -515,6 +518,20 @@ fn timestamp_fixture_catalogue(
     nonminimal_serial: bool,
     catalogue: FixtureCatalogue,
 ) -> (Vec<u8>, Vec<u8>) {
+    timestamp_fixture_accuracy(
+        signing,
+        stated_accuracy.then_some(&[0x30, 0][..]),
+        nonminimal_serial,
+        catalogue,
+    )
+}
+
+fn timestamp_fixture_accuracy(
+    signing: &SigningKey,
+    accuracy: Option<&[u8]>,
+    nonminimal_serial: bool,
+    catalogue: FixtureCatalogue,
+) -> (Vec<u8>, Vec<u8>) {
     // Entirely synthetic certificate/token from the public RFC8032 test key.
     let algorithm = tlv(0x30, &tlv(6, ED25519));
     let mut attribute = tlv(6, &[0x55, 4, 3]);
@@ -566,8 +583,8 @@ fn timestamp_fixture_catalogue(
         info.extend([2, 1, 7]);
     }
     info.extend(tlv(0x18, b"20260101000000Z"));
-    if stated_accuracy {
-        info.extend([0x30, 0]);
+    if let Some(accuracy) = accuracy {
+        info.extend_from_slice(accuracy);
     }
     let mut info = tlv(0x30, &info);
     if matches!(catalogue, FixtureCatalogue::Tail) {
@@ -662,6 +679,7 @@ fn complete_timestamp_checker_binds_signature_ess_content_time_and_retains_evide
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
                 window: None,
+                policy_accuracy: None,
             };
             let checked = token
                 .check(
@@ -772,6 +790,7 @@ fn malformed_timestamp_info_is_refused_before_crypto_or_covered_source() {
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
         window: None,
+        policy_accuracy: None,
     };
     let answer = token.check(
         &provider,
@@ -861,6 +880,7 @@ fn profile_refusals(memory: &Memory) -> [ProfileRefusal; 2] {
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
         window: None,
+        policy_accuracy: None,
     };
     let failures = [ProfileSource::Envelope, ProfileSource::Information]
         .map(|source| refuse_profile(&token, &parent, &context, &provider, source));
@@ -1017,6 +1037,7 @@ fn readable_timestamp_tail_stays_nonconforming_before_crypto_and_evidence() {
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
         window: None,
+        policy_accuracy: None,
     };
     let answer = token.check(
         &provider,
@@ -1115,6 +1136,7 @@ fn requested_timestamp_uses_one_resolved_token_imprint_for_comparison_and_hashin
             Instant::new(1_767_225_500, 0).unwrap(),
             Instant::new(1_767_225_700, 0).unwrap(),
         ),
+        policy_accuracy: None,
     };
     let checked = token
         .check(
@@ -1192,6 +1214,7 @@ fn nested_timestamp_check_preserves_physical_evidence_and_error_frames() {
                     utc: &utc,
                     reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
                     window: None,
+                    policy_accuracy: None,
                 };
                 assert_mapped_session_preflight(&token, &provider, map, &context);
                 if !malformed {

@@ -3,6 +3,10 @@
 use super::{Tree, attribute_checks, funded, timestamp_oracle, xml_digest};
 use structured_asn1::memory::{MemoryError, Work};
 use structured_ltv::{baseline as composed, pki};
+use structured_pkix::{
+    path::WorkingKey,
+    temporal::{Instant, LeapTable},
+};
 use structured_xades::{
     baseline, certificate, hashes, prepare, timestamp, unsigned,
     xml::{Access, Xml},
@@ -88,10 +92,6 @@ fn run_timed_assembly(pool: values::Pool, requested: unsigned::Requirements) {
     // Static B-T composition cannot omit an original TSA, replay token math,
     // substitute a cached successful timestamp for query funding or treat a
     // certificate-path interval as an application trust/chronology verdict.
-    use structured_pkix::{
-        path::WorkingKey,
-        temporal::{Instant, LeapTable},
-    };
     xml_digest::with_checked_path(|path, leaf, root, memory| {
         let (xml, provider, tsa) = fixture(leaf, root, pool);
         let access = Access::new(&xml, xml.snapshot(), memory);
@@ -130,6 +130,7 @@ fn run_timed_assembly(pool: values::Pool, requested: unsigned::Requirements) {
             utc: &utc,
             reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
             window: None,
+            policy_accuracy: None,
         };
         let actor = timestamp::Check {
             xml: &xml,

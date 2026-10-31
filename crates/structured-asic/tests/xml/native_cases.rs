@@ -210,6 +210,7 @@ impl<'d> Authorities<'d> for Authority<'_> {
         'd: 'a,
     {
         Ok(Selection {
+            policy_accuracy: None,
             certificate: self.certificate,
             certificate_parent: self.parent,
             key: WorkingKey::standing(self.certificate.tbs().public_key()),
@@ -666,11 +667,11 @@ fn native_time_assertion_binds_actual_token_and_complete_original_input() {
         }
         let cert_parser = Parser::der(oracle::memory());
         let cert = Certificate::read(&cert_parser, &tsa, 100).unwrap();
-        let cert_parent = cert_parser.read(&[], 100).unwrap();
         let provider = Oracle::new();
         let verification = structured_cms::timestamp::CheckContext {
+            policy_accuracy: None,
             certificate: &cert,
-            certificate_parent: &cert_parent,
+            certificate_parent: &cert_parser.read(&[], 100).unwrap(),
             key: WorkingKey::standing(cert.tbs().public_key()),
             requested: None,
             utc: &utc,

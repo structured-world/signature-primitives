@@ -32,6 +32,8 @@ pub struct Authority<'path, 'd> {
     pub path: &'path CheckedPath<'d>,
     /// Candidate's own original producing reader, not a token/default parser.
     pub certificate_parent: &'path Reader<'d>,
+    /// Explicit trusted accuracy bound to the selected TSA's signed policy.
+    pub policy_accuracy: Option<structured_cms::timestamp::PolicyAccuracy<'path>>,
 }
 /// Select paths for actual original ERS timestamps; no crypto runs here.
 pub trait Authorities<'d> {
@@ -134,6 +136,7 @@ where
             certificate: target.certificate(),
             certificate_parent: selected.certificate_parent,
             key: target.key(),
+            policy_accuracy: selected.policy_accuracy,
         };
         let mut items = self
             .items

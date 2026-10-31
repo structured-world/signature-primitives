@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/structured-world/signature-primitives/compare/structured-dstu4145-v0.18.2...structured-dstu4145-v0.19.0) - 2026-10-31
+
+### Added
+
+- *(timestamp)* [**breaking**] accept TSA policy accuracy ([#263](https://github.com/structured-world/signature-primitives/pull/263))
+
 ## [0.18.2](https://github.com/structured-world/signature-primitives/compare/structured-dstu4145-v0.18.1...structured-dstu4145-v0.18.2) - 2026-10-31
 
 ### Added

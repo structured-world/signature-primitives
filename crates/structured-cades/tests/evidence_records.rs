@@ -306,6 +306,7 @@ fn internal_record_reuses_checked_paths_and_exact_tokens_without_rechecking_cryp
             Ok(structured_cades::evidence::Authority {
                 path: self.path,
                 certificate_parent: self.parent,
+                policy_accuracy: None,
             })
         }
     }
@@ -1310,6 +1311,7 @@ impl<'d> Authorities<'d> for Authority<'_> {
             certificate: self.certificate,
             certificate_parent: self.parent,
             key: WorkingKey::standing(self.certificate.tbs().public_key()),
+            policy_accuracy: None,
         })
     }
 }

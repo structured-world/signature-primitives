@@ -218,7 +218,12 @@ fn authority(signing: &SigningKey) -> Vec<u8> {
     tlv(0x30, &certificate)
 }
 
-fn token(signing: &SigningKey, certificate: &[u8], covered: &[u8]) -> Vec<u8> {
+fn token(
+    signing: &SigningKey,
+    certificate: &[u8],
+    covered: &[u8],
+    stated_accuracy: bool,
+) -> Vec<u8> {
     let digest_algorithm = tlv(0x30, &tlv(6, SHA512));
     let mut imprint = digest_algorithm.clone();
     imprint.extend(tlv(4, &Sha512::digest(covered)));
@@ -226,7 +231,9 @@ fn token(signing: &SigningKey, certificate: &[u8], covered: &[u8]) -> Vec<u8> {
     info.extend(tlv(0x30, &imprint));
     info.extend([2, 1, 7]);
     info.extend(tlv(0x18, b"20260101000000Z"));
-    info.extend([0x30, 0]);
+    if stated_accuracy {
+        info.extend([0x30, 0]);
+    }
     let info = tlv(0x30, &info);
     let mut content_type = tlv(6, oid::CONTENT_TYPE.as_bytes());
     content_type.extend(tlv(0x31, &tlv(6, oid::TST_INFO.as_bytes())));
@@ -264,13 +271,22 @@ fn token(signing: &SigningKey, certificate: &[u8], covered: &[u8]) -> Vec<u8> {
 
 /// Complete CMS token check over exactly `input`, retaining its evidence.
 pub fn evidence(stamped: &[u8], input: &[u8], memory: &Memory) -> Option<Evidence> {
+    evidence_with_policy(stamped, input, memory, None)
+}
+
+pub fn evidence_with_policy(
+    stamped: &[u8],
+    input: &[u8],
+    memory: &Memory,
+    policy: Option<structured_cms::timestamp::PolicyAccuracy<'_>>,
+) -> Option<Evidence> {
     let signing = SigningKey::from_bytes(&[
         0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c,
         0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae,
         0x7f, 0x60,
     ]);
     let certificate_bytes = authority(&signing);
-    let bytes = token(&signing, &certificate_bytes, stamped);
+    let bytes = token(&signing, &certificate_bytes, stamped, policy.is_none());
     let parser = Parser::ber(memory.clone());
     let certificates = Parser::der(memory.clone());
     let token = Token::read(&parser, &bytes, 400).unwrap();
@@ -290,6 +306,7 @@ pub fn evidence(stamped: &[u8], input: &[u8], memory: &Memory) -> Option<Evidenc
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
         window: None,
+        policy_accuracy: policy,
     };
     let checked = token
         .check(&provider, &parent, &context, &mut [input], |_, _| {

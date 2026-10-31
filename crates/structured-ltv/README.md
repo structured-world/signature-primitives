@@ -27,7 +27,8 @@ under the query that performs it; retained facts are never prepaid work.
 - `timestamp` retains a completed CMS token check as `Verified`, with the
   original token, signature, property and `Purpose` (content, signature,
   validation data or archive). It derives complete generation intervals from
-  the authority's stated accuracy, associates a signature timestamp with the
+  the retained effective accuracy (signed token or explicit caller-authenticated
+  TSA policy), associates a signature timestamp with the
   signer's checked path (`signature_time`) and holds the complete token
   obligations of one scope (`TimestampRequirements`, `TimestampPaths`).
 - `pki` runs the common PKIX path processor for actor paths, binds CRL and

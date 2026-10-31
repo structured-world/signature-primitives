@@ -1090,6 +1090,7 @@ fn nested_signature_timestamp_math_binds_child_signature_value() {
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
                 window: None,
+                policy_accuracy: None,
             };
             let check = timestamp::Check {
                 xml: &xml,
@@ -2721,6 +2722,7 @@ fn participant_archive_material_keeps_direct_anchor_coverage_and_late_refusal() 
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
                 window: None,
+                policy_accuracy: None,
             };
             let check = timestamp::Check {
                 xml: &xml,
@@ -4192,6 +4194,7 @@ fn archive_participants_require_the_actual_earlier_tsa_and_exclude_own_and_later
             utc: &utc,
             reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
             window: None,
+            policy_accuracy: None,
         };
         let actor = timestamp::Check {
             xml: &xml,
@@ -4493,6 +4496,7 @@ fn signature_time_binding_keeps_role_source_key_and_full_static_interval() {
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
                 window: None,
+                policy_accuracy: None,
             };
             let check = timestamp::Check {
                 xml: &xml,
@@ -4612,6 +4616,7 @@ fn nonce_freshness_cannot_supply_an_unstated_signature_time_accuracy() {
             utc: &utc,
             reference: None,
             window: None,
+            policy_accuracy: None,
         };
         let check = timestamp::Check {
             xml: &xml,

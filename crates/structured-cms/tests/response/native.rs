@@ -150,6 +150,7 @@ fn grants_check_real_signature_original_request_and_retained_evidence() {
                 utc: &utc,
                 reference: None,
                 window,
+                policy_accuracy: None,
             };
             let provider = oracle(&signing);
             let called = Cell::new(0);
@@ -251,6 +252,7 @@ fn status_cannot_override_request_substitution_bad_signature_or_adverse_time() {
             utc: &utc,
             reference: None,
             window,
+            policy_accuracy: None,
         };
         let provider = oracle(&signing);
         let checked = parsed
@@ -304,6 +306,7 @@ fn negative_status_has_no_provider_profile_recognizer_or_payload_side_effects() 
             utc: &utc,
             reference: None,
             window: None,
+            policy_accuracy: None,
         };
         let provider = oracle(&signing);
         let mut covered = RefusingSource { calls: 0 };
@@ -395,6 +398,7 @@ fn profile_and_source_refusals_keep_original_causes_and_drop_partial_evidence() 
             utc: &utc,
             reference: None,
             window: None,
+            policy_accuracy: None,
         };
         let provider = oracle(&signing);
         let mut covered = RefusingSource { calls: 0 };
@@ -480,6 +484,7 @@ fn current_query_exact_work_capacity_and_depth_apply_to_every_nested_operation()
                 utc: &utc,
                 reference: None,
                 window: None,
+                policy_accuracy: None,
             };
             let provider = oracle(&signing);
             let query_parser = Parser::new(

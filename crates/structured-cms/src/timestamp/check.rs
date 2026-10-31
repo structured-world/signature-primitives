@@ -1,6 +1,8 @@
 //! Complete common timestamp checks; path/status/policy acceptance stays external.
 
 mod asynchronous;
+#[cfg(test)]
+mod policy_tests;
 
 use super::profile::{
     self, MappedProfileCheckError, ProfileCheckError, ProfileFailure, ProfileInput,
@@ -54,11 +56,20 @@ pub struct CheckContext<'a, 'r> {
     pub reference: Option<Instant>,
     /// Caller-established outstanding-imprint uniqueness/window fact.
     pub window: Option<RequestWindow>,
+    /// Caller-authenticated accuracy for this TSA and signed policy identifier.
+    /// Used only when token accuracy is absent, never to repair malformed data.
+    pub policy_accuracy: Option<super::PolicyAccuracy<'r>>,
 }
 
 /// Scoped execution refusal retaining the actual source/operand and cause.
 #[derive(Debug)]
 pub enum InfoCheckError<SE, PE, RE> {
+    /// Explicit caller policy differs from signed `TSTInfo` policy. The span
+    /// locates the original information, not a malformed document assertion.
+    PolicyAccuracy {
+        /// Original `TSTInfo` enclosure in the accompanying source coordinates.
+        span: structured_asn1::Span,
+    },
     /// Inspection retained schema faults; complete execution did not start.
     Nonconforming {
         /// Original information range, interpreted through the accompanying map.
@@ -288,6 +299,7 @@ impl<P, S, R> Inspection<'_, '_, P, S, R> {
         info: &super::TokenInfo<'scope>,
         inside: &Reader<'scope>,
         source: &SourceMap,
+        accuracy: AccuracyFacts,
     ) -> Result<Information, InfoCheckError<S::Error, PE, RE>>
     where
         P: for<'input> SignatureProvider<'input, Error = PE>,
@@ -342,6 +354,7 @@ impl<P, S, R> Inspection<'_, '_, P, S, R> {
             source,
             self.context,
             InformationFacts {
+                accuracy,
                 authority,
                 imprint,
                 requested_imprint,
@@ -355,11 +368,57 @@ impl<P, S, R> Inspection<'_, '_, P, S, R> {
 }
 
 struct InformationFacts {
+    accuracy: AccuracyFacts,
     authority: AuthorityFacts,
     imprint: ImprintAgreement,
     requested_imprint: Option<RequestAgreement>,
     requested_fields: Option<RequestFields>,
     unknown: OwnedVec<OwnedOid>,
+}
+
+struct AccuracyFacts {
+    effective: Option<super::EffectiveAccuracy>,
+    error: Option<super::DeviationError>,
+}
+
+fn resolve_accuracy<SE, PE, RE>(
+    info: &super::TokenInfo<'_>,
+    inside: &Reader<'_>,
+    policy: Option<super::PolicyAccuracy<'_>>,
+) -> Result<AccuracyFacts, InfoCheckError<SE, PE, RE>> {
+    if let Some(policy) = policy {
+        let written = info.policy().as_bytes();
+        let expected = policy.policy().as_bytes();
+        inside
+            .execution()
+            .charge_work(1 + written.len().min(expected.len()) as u64)
+            .map_err(|cause| {
+                InfoCheckError::Processing(Error::resource(
+                    cause,
+                    "tstInfo.policy",
+                    info.span().start,
+                ))
+            })?;
+        if written != expected {
+            return Err(InfoCheckError::PolicyAccuracy { span: info.span() });
+        }
+    }
+    // RFC3161 §2.4.2 permits external policy accuracy only when the optional
+    // field is absent. A malformed present field must never be replaced.
+    // https://www.rfc-editor.org/rfc/rfc3161.html#section-2.4.2
+    let (effective, error) = match info
+        .accuracy()
+        .map(super::AccuracyReading::deviation)
+        .transpose()
+    {
+        Ok(Some(value)) => (Some(super::EffectiveAccuracy::Token(value)), None),
+        Ok(None) => (
+            policy.map(|value| super::EffectiveAccuracy::CallerPolicy(value.accuracy())),
+            None,
+        ),
+        Err(error) => (None, Some(error)),
+    };
+    Ok(AccuracyFacts { effective, error })
 }
 
 fn finish_information<SE, PE, RE>(
@@ -372,23 +431,16 @@ fn finish_information<SE, PE, RE>(
     purpose: CheckPurpose,
 ) -> Result<Information, InfoCheckError<SE, PE, RE>> {
     let InformationFacts {
+        accuracy,
         authority,
         imprint,
         requested_imprint,
         requested_fields,
         unknown,
     } = facts;
-    let (accuracy, accuracy_error) = match info
-        .accuracy()
-        .map(super::AccuracyReading::deviation)
-        .transpose()
-    {
-        Ok(accuracy) => (accuracy, None),
-        Err(error) => (None, Some(error)),
-    };
     let timeliness = super::timeliness(
         info.gen_time(),
-        accuracy,
+        accuracy.effective.map(super::EffectiveAccuracy::accuracy),
         context.utc,
         context.reference,
         context.requested.is_some(),
@@ -401,7 +453,7 @@ fn finish_information<SE, PE, RE>(
         requested_imprint,
         requested_fields,
         timeliness,
-        accuracy_error,
+        accuracy_error: accuracy.error,
         unknown,
         evidence: None,
     };
@@ -409,7 +461,8 @@ fn finish_information<SE, PE, RE>(
         information.evidence = Some(Evidence {
             facts: info
                 .retain_facts(inside)
-                .map_err(InfoCheckError::Processing)?,
+                .map_err(InfoCheckError::Processing)?
+                .with_effective_accuracy(accuracy.effective),
             source: source
                 .try_copy_in(&inside.execution())
                 .map_err(InfoCheckError::Provenance)?,
@@ -775,6 +828,8 @@ impl<'doc> Token<'doc> {
             if info.has_faults() {
                 return Err(InfoCheckError::Nonconforming { span: info.span() }.into());
             }
+            let accuracy =
+                resolve_accuracy::<S::Error, PE, RE>(info, inside, context.policy_accuracy)?;
             profile(ProfileInput {
                 token: self,
                 parent,
@@ -800,7 +855,7 @@ impl<'doc> Token<'doc> {
                 common_holds,
                 purpose,
             };
-            let checked = inspection.inspect(info, inside, information)?;
+            let checked = inspection.inspect(info, inside, information, accuracy)?;
             Ok((signature, bindings, checked))
         };
         let (signature, bindings, information) = match source {

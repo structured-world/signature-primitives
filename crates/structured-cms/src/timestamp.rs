@@ -4,6 +4,8 @@ use structured_pkix::temporal::{Instant, LeapTable, Reading, Uncertainty};
 
 mod accuracy;
 pub use accuracy::{AccuracyReading, Component, ComponentReading, DeviationError, DeviationReason};
+mod policy_accuracy;
+pub use policy_accuracy::{EffectiveAccuracy, InvalidPolicyAccuracy, PolicyAccuracy};
 mod imprint;
 pub use imprint::{HashAlgorithmReading, MessageImprint};
 mod imprint_check;

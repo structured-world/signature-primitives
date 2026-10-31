@@ -200,8 +200,9 @@ impl<N: Copy, D: Copy, G: Copy, I> Verified<N, D, G, I> {
     }
 
     /// Derives the complete authority generation interval using the existing
-    /// RFC3161/UTC arithmetic, funded by the current operation. Missing accuracy
-    /// remains uncertainty, never an implicitly exact time. Caller policy is
+    /// RFC3161/UTC arithmetic, funded by the current operation. The effective
+    /// deviation includes explicit TSA-policy accuracy retained by the checker;
+    /// absence from both sources remains uncertainty. Caller policy is
     /// responsible for authenticating the supplied leap table.
     ///
     /// EN319132-1 §6.3(o) requires the signature timestamp to precede signer
@@ -215,7 +216,10 @@ impl<N: Copy, D: Copy, G: Copy, I> Verified<N, D, G, I> {
     ) -> Result<Interval, TemporalError> {
         interval(
             self.evidence.facts().gen_time(),
-            self.evidence.facts().accuracy(),
+            self.evidence
+                .facts()
+                .effective_accuracy()
+                .map(structured_cms::timestamp::EffectiveAccuracy::accuracy),
             utc,
             execution,
         )

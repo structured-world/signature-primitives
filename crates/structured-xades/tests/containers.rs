@@ -1,5 +1,7 @@
 //! Direct-incorporation structure tests; these do not assert cryptographic trust.
 
+use structured_cms::timestamp::CheckContext;
+
 #[path = "support/timestamp_oracle.rs"]
 mod timestamp_oracle;
 
@@ -1238,6 +1240,7 @@ fn assert_timestamp_digest_prohibition(
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
         window: None,
+        policy_accuracy: None,
     };
     let access = Access::new(&xml, xml.snapshot(), &memory);
     let layout = container::locate(&access, 0).unwrap();
@@ -1350,6 +1353,7 @@ fn original_signature_and_archive_inputs_drive_real_timestamp_signature_and_reta
                     utc: &utc,
                     reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
                     window: None,
+                    policy_accuracy: None,
                 };
                 let access = Access::new(&xml, xml.snapshot(), &memory);
                 let layout = container::locate(&access, 0).unwrap();
@@ -1892,6 +1896,7 @@ fn an_archive_tokens_own_certificate_cannot_complete_its_prior_material() {
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
         window: None,
+        policy_accuracy: None,
     };
     let access = Access::new(&xml, xml.snapshot(), &memory);
     let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
@@ -1940,7 +1945,6 @@ fn archive_artifact_lookup_requires_a_covered_copy_and_exact_original_identity()
     // A later copy is not material present before this archive. Adding an early
     // duplicate can satisfy availability without changing the required bytes;
     // unknown DER and a foreign source/current resource refusal stay distinct.
-    use structured_cms::timestamp::CheckContext;
     use structured_pkix::{
         path::WorkingKey,
         temporal::{Instant, LeapTable},
@@ -1978,6 +1982,7 @@ fn archive_artifact_lookup_requires_a_covered_copy_and_exact_original_identity()
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
                 window: None,
+                policy_accuracy: None,
             };
             let check = timestamp::Check {
                 xml: &xml,
@@ -3979,6 +3984,7 @@ fn timestamp_source_set_runs_complete_common_checks_and_retains_independent_evid
             utc: &utc,
             reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
             window: None,
+            policy_accuracy: None,
         };
         let access = Access::new(&xml, xml.snapshot(), &memory);
         let prepared =
@@ -5159,6 +5165,7 @@ fn prior_timestamp_paths_require_each_actual_original_token_not_one_repeated_suc
             utc: &utc,
             reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
             window: None,
+            policy_accuracy: None,
         };
         let check = timestamp::Check {
             xml: &xml,

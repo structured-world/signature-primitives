@@ -35,6 +35,8 @@ pub struct CheckTime<'a, 'document> {
     pub utc: &'a LeapTable<'document>,
     /// Actual caller-supplied reference, never derived from the token itself.
     pub reference: Option<structured_pkix::temporal::Instant>,
+    /// Caller-authenticated accuracy bound to this timestamp's TSA policy.
+    pub policy_accuracy: Option<tsp::PolicyAccuracy<'a>>,
 }
 
 mod archive;
@@ -573,6 +575,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
             utc: time.utc,
             reference: time.reference,
             window: None,
+            policy_accuracy: time.policy_accuracy,
         };
         let restriction = core::cell::Cell::new(PathRestriction::Unproven);
         let checked = self

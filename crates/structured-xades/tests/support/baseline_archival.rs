@@ -74,6 +74,7 @@ impl Tokens<'_> {
             utc: &utc,
             reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
             window: None,
+            policy_accuracy: None,
         };
         let token = timestamp::Check {
             xml: self.xml,

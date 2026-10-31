@@ -4,7 +4,8 @@ use super::{
     CheckContext, CheckError, CheckPurpose, CheckedTimestamp, Error, ErrorCode, Execution,
     Infallible, InfoCheckError, Information, InformationFacts, ProfileCheckError, ProfileFailure,
     ProfileInput, Reader, SignatureProvider, SourceMap, Token, TokenExtension, TokenSignature,
-    common_holds, directory, ess, finish_information, preflight, profile, unrecognized,
+    common_holds, directory, ess, finish_information, preflight, profile, resolve_accuracy,
+    unrecognized,
 };
 use crate::timestamp::{AsyncComputedInput, AsyncInfoVisitor, AsyncRawInput, TokenInfo};
 
@@ -44,6 +45,8 @@ where
         if info.has_faults() {
             return Err(InfoCheckError::Nonconforming { span: info.span() }.into());
         }
+        let accuracy =
+            resolve_accuracy::<I::Error, PE, RE>(info, inside, self.context.policy_accuracy)?;
         self.profile.take().expect("one information visit")(ProfileInput {
             token: self.token,
             parent: self.parent,
@@ -112,6 +115,7 @@ where
             source,
             self.context,
             InformationFacts {
+                accuracy,
                 authority,
                 imprint,
                 requested_imprint,

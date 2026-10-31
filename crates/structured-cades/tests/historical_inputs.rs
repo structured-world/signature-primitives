@@ -652,6 +652,7 @@ fn legacy_token_cannot_enter_the_modern_archive_dispatcher() {
         let time = timestamp::CheckTime {
             utc: &utc,
             reference: Some(interval.to_instant()),
+            policy_accuracy: None,
         };
         let starts = oracle.starts.get();
         let result = timestamp::with_token(&prepared, ordinal, &operation, |context| {
@@ -886,6 +887,7 @@ fn other_root_counter_keeps_original_fields_and_parent_binding() {
             let time = timestamp::CheckTime {
                 utc: &utc,
                 reference: Some(interval.to_instant()),
+                policy_accuracy: None,
             };
             let mut input = input.unwrap();
             let checked = timestamp::with_token(&prepared, 0, &reader, |context| {
@@ -1055,6 +1057,7 @@ fn later_receipt_covers_earlier_value_in_same_archive_attribute() {
     let time = timestamp::CheckTime {
         utc: &utc,
         reference: Some(interval.to_instant()),
+        policy_accuracy: None,
     };
     let mut input = HistoricalInput::<NoDetached>::project(
         &prepared,

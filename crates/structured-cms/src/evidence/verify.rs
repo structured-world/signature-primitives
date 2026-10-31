@@ -38,6 +38,8 @@ pub struct Selection<'a> {
     pub certificate_parent: &'a Reader<'a>,
     /// Effective parameters from the selected candidate's actual path.
     pub key: WorkingKey<'a>,
+    /// Caller-authenticated accuracy for this actual TSA and signed policy.
+    pub policy_accuracy: Option<timestamp::PolicyAccuracy<'a>>,
 }
 impl<'a> Selection<'a> {
     fn historical_context<'s>(&'s self, utc: &'s LeapTable<'a>) -> CheckContext<'a, 's> {
@@ -49,6 +51,7 @@ impl<'a> Selection<'a> {
             utc,
             reference: None,
             window: None,
+            policy_accuracy: self.policy_accuracy,
         }
     }
 }
@@ -1069,7 +1072,7 @@ fn order(
 }
 
 /// Orders two actual authenticated TSA facts using RFC3161 §2.4.2's SAME-TSA
-/// ordering rule or complete stated-accuracy intervals. This is shared by
+/// ordering rule or complete effective-accuracy intervals. This is shared by
 /// in-record ERS renewal and `CAdES` cross-proof preservation closure. A readable
 /// unsigned poeDate is never substituted for either authenticated generation.
 pub fn order_evidence<W: Work>(
@@ -1114,12 +1117,26 @@ pub fn order_evidence<W: Work>(
             };
         }
     }
-    let a = match timestamp::interval_in(a.facts().gen_time(), a.facts().accuracy(), utc, work) {
+    let a = match timestamp::interval_in(
+        a.facts().gen_time(),
+        a.facts()
+            .effective_accuracy()
+            .map(timestamp::EffectiveAccuracy::accuracy),
+        utc,
+        work,
+    ) {
         Ok(value) => Ok(value),
         Err(timestamp::IntervalError::Resource(cause)) => return Err(resource(cause)),
         Err(timestamp::IntervalError::Uncertain(cause)) => Err(cause),
     };
-    let b = match timestamp::interval_in(b.facts().gen_time(), b.facts().accuracy(), utc, work) {
+    let b = match timestamp::interval_in(
+        b.facts().gen_time(),
+        b.facts()
+            .effective_accuracy()
+            .map(timestamp::EffectiveAccuracy::accuracy),
+        utc,
+        work,
+    ) {
         Ok(value) => Ok(value),
         Err(timestamp::IntervalError::Resource(cause)) => return Err(resource(cause)),
         Err(timestamp::IntervalError::Uncertain(cause)) => Err(cause),

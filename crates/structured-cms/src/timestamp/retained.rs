@@ -1,6 +1,6 @@
 //! Independent generation/imprint facts, not a signature or trust proof.
 
-use super::{Accuracy, HashAlgorithmReading, TokenInfo};
+use super::{Accuracy, EffectiveAccuracy, HashAlgorithmReading, TokenInfo};
 use crate::{Error, ErrorCode, Result};
 use structured_asn1::{
     Oid, Reader, Span,
@@ -36,7 +36,7 @@ impl RetainedImprint {
     }
 }
 
-/// A conforming token's declared generation/imprint projection.
+/// A conforming token's generation/imprint projection and accuracy provenance.
 ///
 /// This deliberately carries no successful signature/trust verdict. Callers
 /// inspect and verify the token independently; only the complete timestamp
@@ -49,7 +49,7 @@ pub struct RetainedFacts {
     serial: OwnedVec<u8>,
     nonce: Option<OwnedVec<u8>>,
     gen_time: structured_pkix::temporal::ExactReading,
-    accuracy: Option<Accuracy>,
+    accuracy: Option<EffectiveAccuracy>,
     ordering: bool,
     source_span: Span,
 }
@@ -152,7 +152,7 @@ impl TokenInfo<'_> {
             serial,
             nonce,
             gen_time,
-            accuracy,
+            accuracy: accuracy.map(EffectiveAccuracy::Token),
             ordering: self.ordering(),
             source_span: self.span(),
         })
@@ -168,7 +168,13 @@ fn retain<W: Work>(bytes: &[u8], work: &W, field: &'static str, at: u64) -> Resu
 }
 
 impl RetainedFacts {
-    /// Copies declared facts into independently charged current storage.
+    // Only the complete checker supplies this already resolved value, after
+    // policy binding and token conformance; raw retention never adds policy.
+    pub(super) fn with_effective_accuracy(mut self, accuracy: Option<EffectiveAccuracy>) -> Self {
+        self.accuracy = accuracy;
+        self
+    }
+    /// Copies facts and accuracy provenance into independently charged storage.
     /// Moving the owner needs no copy; a genuine deep copy admits new work and
     /// capacity before execution. Partial refusal leaves this source unchanged.
     pub fn try_copy_in<W: Work>(&self, work: &W) -> Result<Self> {
@@ -271,6 +277,15 @@ impl RetainedFacts {
     /// Complete Accuracy absence remains distinct from a present zero value.
     #[must_use]
     pub fn accuracy(&self) -> Option<Accuracy> {
+        match self.accuracy {
+            Some(EffectiveAccuracy::Token(value)) => Some(value),
+            None | Some(EffectiveAccuracy::CallerPolicy(_)) => None,
+        }
+    }
+    /// Resolved deviation and its origin. Token absence remains observable
+    /// through `accuracy()` even when an authenticated caller policy is used.
+    #[must_use]
+    pub fn effective_accuracy(&self) -> Option<EffectiveAccuracy> {
         self.accuracy
     }
     /// Original ordering assertion, which does not establish chronology itself.

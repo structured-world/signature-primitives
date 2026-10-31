@@ -303,6 +303,7 @@ fn real_reference_timestamps_bind_original_ber_inputs_for_every_owner() {
                 let time = timestamp::CheckTime {
                     utc: &utc,
                     reference: Some(interval.to_instant()),
+                    policy_accuracy: None,
                 };
                 let mut input = ReferenceInput::new(&prepared, ordinal, &operation).unwrap();
                 let checked = timestamp::with_token(&prepared, ordinal, &operation, |context| {

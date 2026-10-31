@@ -5,7 +5,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_run:
     # A main push leaves open updates behind; a PR run finishing makes one mergeable.
-    workflows: [ci]
+    workflows: [ci, Release]
     types: [completed]
   schedule:
     # Backstop for an event GitHub did not deliver.
@@ -50,9 +50,11 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: write
-      - name: Revalidate, then update or merge the exact head
+      - name: Revalidate planned heads, then request rebase or merge
         if: steps.inspect.outputs.action_count != '0'
         run: python3 .github/scripts/dependabot_merge.py
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MERGE_TOKEN: ${{ steps.app-token.outputs.token }}
+          MERGE_PLAN: ${{ steps.inspect.outputs.plan }}
+          MERGE_BOT: ${{ steps.app-token.outputs.app-slug }}[bot]

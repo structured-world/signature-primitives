@@ -1,7 +1,11 @@
 """Merge policy tests use synthetic GitHub records, without credentials/network."""
 
 import importlib.util
+import json
+import os
 import pathlib
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -54,8 +58,16 @@ class NativeBoundaryTests(unittest.TestCase):
                              "waiting for mandatory CI/base qualification")
 
     def test_an_update_behind_main_is_brought_up_to_date(self):
-        # Strict required checks keep a behind update unmergeable; Dependabot never rebases it.
+        # Strict required checks keep a behind head unmergeable until the
+        # explicitly requested native Dependabot rebase completes.
         self.assertEqual(self.dependabot("behind").inspect(42)[1], POLICY.UPDATE)
+
+    def test_unready_heads_do_not_download_contract_files(self):
+        # A completion event for another PR cannot cause TOML downloads for
+        # heads whose required checks are still pending or failing.
+        api = self.dependabot("blocked")
+        api.pages = lambda _: self.fail("unready head downloaded contract files")
+        self.assertNotEqual(api.inspect(42)[1], POLICY.READY)
 
     def test_pagination_follows_native_link_cursors(self):
         # Listings use Link cursors, not numbered page parameters.
@@ -79,17 +91,32 @@ class NativeBoundaryTests(unittest.TestCase):
         self.assertEqual(kwargs["token"], "merge-credential")
 
     def test_base_update_binds_the_inspected_head_and_uses_only_the_merge_token(self):
-        # A push between inspection and update must be refused by GitHub's sha guard.
+        # Rebase requests carry the inspected source pair and use only the App
+        # credential; branch mutation is performed by Dependabot itself.
         api = POLICY.GitHub("structured-world/signature-primitives", "read-credential")
         calls = []
         api.request = lambda *args, **kwargs: calls.append((args, kwargs))
-        pr = {"number": 42, "head": {"sha": "a" * 40}}
-        api.update(pr, "merge-credential")
+        api.pages = lambda _: []
+        pr = {"number": 42, "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40}}
+        api.update(pr, "merge-credential", "release-bot[bot]")
         args, kwargs = calls[0]
-        self.assertTrue(args[0].endswith("pulls/42/update-branch"))
-        self.assertEqual(args[1], "PUT")
-        self.assertEqual(args[2], {"expected_head_sha": pr["head"]["sha"]})
+        self.assertTrue(args[0].endswith("issues/42/comments"))
+        self.assertEqual(args[1], "POST")
+        self.assertTrue(args[2]["body"].startswith("@dependabot rebase\n"))
+        self.assertIn(pr["head"]["sha"], args[2]["body"])
+        self.assertIn(pr["base"]["sha"], args[2]["body"])
         self.assertEqual(kwargs["token"], "merge-credential")
+
+    def test_behind_updates_request_native_rebase_without_a_merge_commit(self):
+        # Updating a Dependabot branch must not insert main merge commits into
+        # the history analyzed by release-plz.
+        api = self.dependabot("behind")
+        calls = []
+        api.request = lambda *args, **kwargs: calls.append((args, kwargs))
+        pr = {"number": 42, "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40}}
+        api.update(pr, "merge-credential", "release-bot[bot]")
+        self.assertEqual(calls[0][0][1], "POST")
+        self.assertTrue(calls[0][0][0].endswith("issues/42/comments"))
 
     def test_non_bot_and_fork_inputs_never_reach_mutation(self):
         # Only repository-local Dependabot PRs can enter privileged processing.
@@ -101,6 +128,80 @@ class NativeBoundaryTests(unittest.TestCase):
         pr["user"]["login"] = "dependabot[bot]"
         pr["head"]["repo"]["full_name"] = "someone/fork"
         self.assertEqual(api.inspect(pr["number"])[1], "ineligible")
+
+    def test_live_plan_revalidation_reuses_immutable_contract_analysis(self):
+        # Apply refreshes the PR, not its already-qualified immutable files.
+        api = self.dependabot("clean")
+        pr = api.request("unused")
+        api.pages = lambda _: self.fail("contract files downloaded twice")
+        merged = []
+        api.merge = lambda current, token: merged.append((current, token)) or {"merged": True, "sha": "result"}
+        plan = {"number": 42, "head": pr["head"]["sha"], "base": pr["base"]["sha"], "verdict": POLICY.READY}
+        api.apply(plan, "merge-credential", "release-bot[bot]")
+        self.assertEqual(merged, [(pr, "merge-credential")])
+        for field in ("head", "base", "verdict"):
+            changed = {**plan, field: "changed" if field != "verdict" else POLICY.UPDATE}
+            api.apply(changed, "merge-credential", "release-bot[bot]")
+        self.assertEqual(len(merged), 1)
+        for state in ("blocked", "behind", "unknown"):
+            pr["mergeable_state"] = state
+            api.apply(plan, "merge-credential", "release-bot[bot]")
+        self.assertEqual(len(merged), 1)
+
+    def test_duplicate_rebase_requires_the_actual_app_author(self):
+        # Another user's matching text cannot suppress a real rebase request.
+        api = self.dependabot("behind")
+        pr = api.request("unused")
+        calls = []
+        body = "@dependabot rebase\n\n" + f"<!-- rebase head={pr['head']['sha']} base={pr['base']['sha']} -->"
+        api.pages = lambda _: [{"user": {"login": "release-bot[bot]"}, "body": body}]
+        api.request = lambda *args, **kwargs: calls.append((args, kwargs))
+        self.assertIsNone(api.update(pr, "merge-credential", "release-bot[bot]"))
+        self.assertEqual(calls, [])
+        api.pages = lambda _: [{"user": {"login": "other-user"}, "body": body}]
+        api.update(pr, "merge-credential", "release-bot[bot]")
+        self.assertEqual(len(calls), 1)
+
+    def test_immutable_content_cache_is_keyed_by_path_and_sha(self):
+        # Multiple PRs can share a base blob, but a new SHA cannot reuse it.
+        api = POLICY.GitHub("structured-world/signature-primitives", "read-credential")
+        calls = []
+        api.request = lambda path: calls.append(path) or {"encoding": "base64", "content": "YQ==\n"}
+        self.assertEqual(api.content("Cargo.toml", "old"), b"a")
+        self.assertEqual(api.content("Cargo.toml", "old"), b"a")
+        self.assertEqual(len(calls), 1)
+        api.content("Cargo.toml", "new")
+        api.content("Cargo.lock", "new")
+        self.assertEqual(len(calls), 3)
+
+    def test_cli_plan_is_serialized_once_and_apply_does_not_rescan(self):
+        # Exercise both actual entrypoint phases: job outputs carry the checked
+        # SHAs, and the second phase performs live revalidation without a new scan.
+        api = self.dependabot("clean")
+        pr = api.request("unused")
+        with tempfile.TemporaryDirectory(prefix="primitives-dependabot-") as directory:
+            output = pathlib.Path(directory) / "output"
+            env = {"GITHUB_REPOSITORY": api.repository, "GH_TOKEN": "read-credential",
+                   "GITHUB_OUTPUT": str(output)}
+            with patch.object(POLICY, "GitHub", return_value=api), patch.dict(os.environ, env, clear=True), \
+                    patch.object(sys, "argv", ["script", "--dry-run", "--github-output"]), \
+                    patch.object(api, "pages", return_value=[pr]), \
+                    patch.object(api, "inspect", return_value=(pr, POLICY.READY)) as inspect:
+                POLICY.main()
+                inspect.assert_called_once_with(pr["number"])
+            fields = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(fields["action_count"], "1")
+            plans = json.loads(fields["plan"])
+            self.assertEqual(plans, [{"number": pr["number"], "head": pr["head"]["sha"],
+                                      "base": pr["base"]["sha"], "verdict": POLICY.READY}])
+            env.update(MERGE_PLAN=fields["plan"], MERGE_TOKEN="merge-credential", MERGE_BOT="release-bot[bot]")
+            with patch.object(POLICY, "GitHub", return_value=api), patch.dict(os.environ, env, clear=True), \
+                    patch.object(sys, "argv", ["script"]), patch.object(api, "pages") as pages, \
+                    patch.object(api, "inspect") as inspect, patch.object(api, "apply") as apply:
+                POLICY.main()
+                pages.assert_not_called()
+                inspect.assert_not_called()
+                apply.assert_called_once_with(plans[0], "merge-credential", "release-bot[bot]")
 
 
 if __name__ == "__main__":

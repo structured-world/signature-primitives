@@ -20,7 +20,7 @@ their versioned guides on [docs.rs](https://docs.rs/crate/structured-asn1/latest
 
 ```toml
 [dependencies]
-structured-asn1 = "0.8"
+structured-asn1 = "0.20"
 ```
 
 Enable the optional `std` feature for a standard-library integration, or name

@@ -42,9 +42,9 @@ The snippets below target the coordinated 0.8 API family; see the
 
 ```toml
 [dependencies]
-structured-asn1 = "0.8"
-structured-pkix = "0.8"
-structured-cms = "0.8"
+structured-asn1 = "0.20"
+structured-pkix = "0.20"
+structured-cms = "0.20"
 ```
 
 - `enveloped::EnvelopedData` reads the entire RFC5652 digital-envelope schema:

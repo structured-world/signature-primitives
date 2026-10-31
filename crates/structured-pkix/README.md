@@ -20,8 +20,8 @@ their versioned guides on [docs.rs](https://docs.rs/crate/structured-pkix/latest
 
 ```toml
 [dependencies]
-structured-asn1 = "0.8"
-structured-pkix = "0.8"
+structured-asn1 = "0.20"
+structured-pkix = "0.20"
 ```
 
 `structured-asn1` supplies the parser and shared resource account used below.

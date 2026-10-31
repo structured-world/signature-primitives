@@ -75,7 +75,7 @@ The crate is available on [crates.io](https://crates.io/crates/structured-asic)
 and follows the coordinated version of the shared primitives:
 
 ```toml
-structured-asic = "0.15"
+structured-asic = "0.20"
 ```
 
 Subsequent releases use GitHub Actions Trusted Publishing through the repository's

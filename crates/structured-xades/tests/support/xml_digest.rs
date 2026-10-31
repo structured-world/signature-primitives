@@ -978,7 +978,17 @@ fn nested_counter_token_pool_preserves_each_source_and_drops_partial_decode() {
     use structured_xades::{prepare, timestamp, unsigned};
     with_checked_path(|path, _, _, memory| {
         let (_, token, _, _) = super::timestamp_oracle::fixture_with_root(b"inspection only");
-        for broken in [false, true] {
+        for (profile, broken) in [
+            (timestamp::TokenProfile::Etsi, false),
+            (timestamp::TokenProfile::Etsi, true),
+            (timestamp::TokenProfile::Cms, false),
+            (timestamp::TokenProfile::Cms, true),
+        ] {
+            let token = if profile == timestamp::TokenProfile::Cms {
+                super::token_profiles::indefinite_outer(&token)
+            } else {
+                token.clone()
+            };
             let mut xml = super::preparation_tree();
             xml.binary = token.clone();
             xml.key_association = structured_xades::certificate::KeyAssociation::Same;
@@ -1005,8 +1015,13 @@ fn nested_counter_token_pool_preserves_each_source_and_drops_partial_decode() {
             let operation = parser.read(&[], 900).unwrap();
             let before = memory.used();
             let calls = Cell::new(0);
-            let result =
-                timestamp::with_counter_tokens(&xml, &prepared, &stamps, &operation, |_, view| {
+            let result = timestamp::with_counter_tokens(
+                &xml,
+                &prepared,
+                &stamps,
+                &operation,
+                profile,
+                |_, view| {
                     calls.set(calls.get() + 1);
                     assert_eq!(view.sources().len(), 4);
                     assert_eq!(view.readings().len(), 4);
@@ -1024,9 +1039,16 @@ fn nested_counter_token_pool_preserves_each_source_and_drops_partial_decode() {
                             (owner, property, node)
                         );
                         assert_eq!(source.bytes(), token);
+                        if profile == timestamp::TokenProfile::Cms {
+                            assert!(matches!(
+                                source.encoding_conformance(),
+                                timestamp::EncodingConformance::Mismatch(_)
+                            ));
+                        }
                     }
                     Ok::<_, ()>(())
-                });
+                },
+            );
             if broken {
                 assert!(
                     matches!(result, Err(timestamp::TokenPipelineError::Token {location,..}) if location.node == second_tokens[1])
@@ -1103,6 +1125,7 @@ fn nested_signature_timestamp_math_binds_child_signature_value() {
                     &prepared,
                     &stamps,
                     &operation,
+                    timestamp::TokenProfile::Etsi,
                     |query, view| {
                         assert!(matches!(
                             check.retain_counter_from(
@@ -1304,6 +1327,7 @@ fn counter_timestamp_source_guards_precede_decoding_and_refusals_release_capacit
                 &selected,
                 &stamps,
                 &operation,
+                timestamp::TokenProfile::Etsi,
                 |_, _| -> Result<(), ()> { panic!("foreign pool") }
             ),
             Err(timestamp::TokenPipelineError::Foreign { node: 0 })

@@ -1782,6 +1782,7 @@ fn root_certificate_references_cover_actual_anchor_and_exclude_signer_with_one_m
 
 #[test]
 fn conditional_reference_presence_requires_complete_token_pool_and_keeps_missing_facts() {
+    use timestamp::TokenProfile::Etsi;
     // CertificateValues activates Annex A inclusion. An acquired value or
     // incomplete token search cannot manufacture either presence or absence.
     // Completed wrong digest is a missing-copy fact, not a processing refusal.
@@ -1845,7 +1846,7 @@ fn conditional_reference_presence_requires_complete_token_pool_and_keeps_missing
             let parser = structured_asn1::Parser::der(memory.clone());
             let operation = parser.read(&[], 900).unwrap();
             material::with_values(&xml, &prepared, &operation, |_, view| {
-                timestamp::with_tokens(&xml, &prepared, &operation, |_, tokens| {
+                timestamp::with_tokens(&xml, &prepared, &operation, Etsi, |_, tokens| {
                     let carried = tokens.material_in(&operation).unwrap();
                     let provider = Oracle::new(mode);
                     let report = compare_reference_catalogues_with_tokens(
@@ -1974,26 +1975,32 @@ fn reference_catalogue_rejects_foreign_token_pool_before_allocation_or_provider(
         let parser = structured_asn1::Parser::der(memory.clone());
         let operation = parser.read(&[], 900).unwrap();
         material::with_values(&xml, &prepared, &operation, |_, view| {
-            timestamp::with_tokens(&other, &foreign, &operation, |_, tokens| {
-                let carried = tokens.material_in(&operation).unwrap();
-                let provider = Oracle::new(Mode::Ready);
-                let zero = structured_asn1::memory::Memory::new(std::sync::Arc::new(
-                    structured_asn1::memory::MemoryAccount::new(0, 1 << 20),
-                ));
-                assert!(matches!(
-                    compare_reference_catalogues_with_tokens(
-                        &xml, &prepared, &view, &carried, &provider, &zero
-                    ),
-                    Err(binary::Error::Callback {
-                        cause: ReferenceDigestError::Foreign,
-                        ..
-                    })
-                ));
-                assert_eq!(provider.started.get(), 0);
-                assert_eq!(provider.finished.get(), 0);
-                assert_eq!(zero.used(), 0);
-                Ok::<_, ()>(())
-            })
+            timestamp::with_tokens(
+                &other,
+                &foreign,
+                &operation,
+                timestamp::TokenProfile::Etsi,
+                |_, tokens| {
+                    let carried = tokens.material_in(&operation).unwrap();
+                    let provider = Oracle::new(Mode::Ready);
+                    let zero = structured_asn1::memory::Memory::new(std::sync::Arc::new(
+                        structured_asn1::memory::MemoryAccount::new(0, 1 << 20),
+                    ));
+                    assert!(matches!(
+                        compare_reference_catalogues_with_tokens(
+                            &xml, &prepared, &view, &carried, &provider, &zero
+                        ),
+                        Err(binary::Error::Callback {
+                            cause: ReferenceDigestError::Foreign,
+                            ..
+                        })
+                    ));
+                    assert_eq!(provider.started.get(), 0);
+                    assert_eq!(provider.finished.get(), 0);
+                    assert_eq!(zero.used(), 0);
+                    Ok::<_, ()>(())
+                },
+            )
             .unwrap();
             Ok::<_, ()>(())
         })
@@ -2059,30 +2066,36 @@ fn reference_catalogues_include_token_certificates_crls_and_whole_ocsp_once() {
         let parser = structured_asn1::Parser::der(memory.clone());
         let operation = parser.read(&[], 900).unwrap();
         material::with_values(&xml, &prepared, &operation, |_, view| {
-            timestamp::with_tokens(&xml, &prepared, &operation, |_, tokens| {
-                let carried = tokens.material_in(&operation).unwrap();
-                assert_eq!(carried.responses()[0].value.as_bytes(), ocsp);
-                assert_ne!(
-                    carried.responses()[0].value.as_bytes(),
-                    carried.basic_responses()[0].value.as_bytes()
-                );
-                let provider = Oracle::new(Mode::Ready);
-                let held = memory.used();
-                let report = compare_reference_catalogues_with_tokens(
-                    &xml,
-                    &prepared,
-                    &view,
-                    &carried,
-                    &provider,
-                    &operation.execution(),
-                )
-                .unwrap();
-                assert_token_reference_origins(&report);
-                assert_eq!((provider.started.get(), provider.finished.get()), (3, 3));
-                drop(report);
-                assert_eq!(memory.used(), held);
-                Ok::<_, ()>(())
-            })
+            timestamp::with_tokens(
+                &xml,
+                &prepared,
+                &operation,
+                timestamp::TokenProfile::Etsi,
+                |_, tokens| {
+                    let carried = tokens.material_in(&operation).unwrap();
+                    assert_eq!(carried.responses()[0].value.as_bytes(), ocsp);
+                    assert_ne!(
+                        carried.responses()[0].value.as_bytes(),
+                        carried.basic_responses()[0].value.as_bytes()
+                    );
+                    let provider = Oracle::new(Mode::Ready);
+                    let held = memory.used();
+                    let report = compare_reference_catalogues_with_tokens(
+                        &xml,
+                        &prepared,
+                        &view,
+                        &carried,
+                        &provider,
+                        &operation.execution(),
+                    )
+                    .unwrap();
+                    assert_token_reference_origins(&report);
+                    assert_eq!((provider.started.get(), provider.finished.get()), (3, 3));
+                    drop(report);
+                    assert_eq!(memory.used(), held);
+                    Ok::<_, ()>(())
+                },
+            )
             .unwrap();
             Ok::<_, ()>(())
         })

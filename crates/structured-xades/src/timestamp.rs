@@ -38,8 +38,8 @@ pub use selection::{
     requirements_with_counters,
 };
 pub use tokens::{
-    TokenEntry, TokenPipelineError, TokenPipelineResult, TokenReading, TokenSource, TokenView,
-    with_counter_tokens, with_tokens,
+    EncodingConformance, TokenEntry, TokenPipelineError, TokenPipelineResult, TokenProfile,
+    TokenReading, TokenSource, TokenView, with_counter_tokens, with_tokens,
 };
 
 /// An implicit timestamp input prescribed by the current baseline.

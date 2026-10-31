@@ -1,7 +1,9 @@
 //! One frozen original source set for simultaneous timestamp/material checks.
 
 use super::Role;
-use crate::binary::{self, Location, OwnedBinaryXml, OwnedDecoded};
+use crate::binary::{
+    self, EncodingDeclaration, Location, OwnedBinaryXml, OwnedDecoded, PkiEncoding,
+};
 use crate::prepare::Prepared;
 use crate::xml::{Access, AccessError, Snapshot, Xml};
 use structured_asn1::{
@@ -9,6 +11,30 @@ use structured_asn1::{
     memory::{MemoryError, Work},
 };
 use structured_cms::timestamp::Token;
+
+/// Explicit envelope admission, selected by the caller, never by XML content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenProfile {
+    /// RFC5652 BER envelope, independently reporting the XML declaration.
+    Cms,
+    /// EN319132-1 §5.1.3 declaration-driven admission; absence selects DER.
+    /// CER, PER and XER remain unsupported by this parser.
+    Etsi,
+}
+
+/// Declaration admission is independent of timestamp mathematics and trust.
+/// `Matches` means the existing CMS Token reader accepts that encoding; it
+/// does not clear readable token faults or validate every opaque ANY value.
+#[derive(Debug)]
+pub enum EncodingConformance {
+    /// The declared encoding's CMS envelope reader accepted the original bytes.
+    Matches,
+    /// That reader refused syntax; the CMS profile still read the BER envelope.
+    Mismatch(structured_cms::Error),
+    /// No canonical checker exists for this encoding. BER success is not CER
+    /// conformance (X.690 §9); callers must not count this as a match.
+    Unchecked(PkiEncoding),
+}
 
 /// Independently retained original XML token source. There are no internal
 /// borrowed pointers, re-encoding, copied parser or reset source ceilings.
@@ -20,9 +46,22 @@ pub struct TokenSource<N, D, G> {
     stamp: usize,
     ordinal: usize,
     encoding: Encoding,
+    declaration: EncodingDeclaration,
+    conformance: EncodingConformance,
     source: OwnedDecoded,
 }
 impl<N: Copy, D: Copy, G: Copy> TokenSource<N, D, G> {
+    /// Original absent or explicit XML Encoding declaration.
+    #[must_use]
+    pub fn declaration(&self) -> EncodingDeclaration {
+        self.declaration
+    }
+    /// Separate envelope declaration result. No resource refusal is retained
+    /// here: it terminates the complete pool before the visitor is called.
+    #[must_use]
+    pub fn encoding_conformance(&self) -> &EncodingConformance {
+        &self.conformance
+    }
     /// Original root or nested signature owning this timestamp input.
     #[must_use]
     pub fn signature(&self) -> N {
@@ -196,7 +235,10 @@ pub type TokenPipelineResult<T, X, VE> = Result<
 /// Retains each actual token once, freezes ownership, then parses through the
 /// same CMS Token kernel used by standalone checks. A scoped visitor may inspect
 /// all carried certificate/status sources and perform common complete checks
-/// without a second token decode or retaining temporary XML/binary borrows.
+/// without retaining temporary XML/binary borrows. CMS mode additionally probes
+/// DER declarations through the same strict CMS kernel, under both ceilings;
+/// its temporary catalogue drops before the actual BER model is retained.
+/// Original decoded bytes are owned once; no XML or signed bytes are rewritten.
 /// No provider, source acquisition, TSA selection, trust or B level is implied.
 ///
 /// ```compile_fail
@@ -205,22 +247,23 @@ pub type TokenPipelineResult<T, X, VE> = Result<
 /// use structured_xades::{binary::OwnedBinaryXml,prepare::Prepared,timestamp};
 /// fn escape<'a,X:OwnedBinaryXml>(xml:&X,prepared:&Prepared<X>,operation:&Reader<'_>)
 ///   -> timestamp::TokenPipelineResult<&'a Token<'a>,X,()> {
-///   timestamp::with_tokens(xml,prepared,operation,|_,view|Ok(view.readings()[0].token()))
+///   timestamp::with_tokens(xml,prepared,operation,timestamp::TokenProfile::Cms,|_,view|Ok(view.readings()[0].token()))
 /// }
 /// ```
 pub fn with_tokens<X: OwnedBinaryXml, R, VE>(
     xml: &X,
     prepared: &Prepared<X>,
     operation: &Reader<'_>,
+    profile: TokenProfile,
     visitor: impl for<'source> FnOnce(
         &Reader<'source>,
         TokenView<'source, X::Id, X::Document, X::Generation>,
     ) -> Result<R, VE>,
 ) -> TokenPipelineResult<R, X, VE> {
-    with_inputs(xml, prepared, None, operation, visitor)
+    with_inputs(xml, prepared, None, operation, profile, visitor)
 }
 
-/// Freeze and parse root AND every nested counter's timestamp tokens once.
+/// Freeze root AND every nested counter's timestamp tokens in one pool.
 /// The complete child census is source-bound before any binary decoding; the
 /// visitor sees one source/reading pool, with each token's actual owning signature.
 /// No token is omitted because it lacks positive evidence or usable TSA material.
@@ -231,7 +274,7 @@ pub fn with_tokens<X: OwnedBinaryXml, R, VE>(
 /// fn escape<'a,X:OwnedBinaryXml>(xml:&X, prepared:&Prepared<X>, operation:&Reader<'_>,
 ///     counters:&timestamp::CounterTimestamps<X::Id,X::Document,X::Generation>)
 ///     -> timestamp::TokenPipelineResult<&'a [u8],X,()> {
-///     timestamp::with_counter_tokens(xml,prepared,counters,operation,|_,view|Ok(view.sources()[0].bytes()))
+///     timestamp::with_counter_tokens(xml,prepared,counters,operation,timestamp::TokenProfile::Cms,|_,view|Ok(view.sources()[0].bytes()))
 /// }
 /// ```
 pub fn with_counter_tokens<X: OwnedBinaryXml, R, VE>(
@@ -239,12 +282,13 @@ pub fn with_counter_tokens<X: OwnedBinaryXml, R, VE>(
     prepared: &Prepared<X>,
     counters: &super::CounterTimestamps<X::Id, X::Document, X::Generation>,
     operation: &Reader<'_>,
+    profile: TokenProfile,
     visitor: impl for<'source> FnOnce(
         &Reader<'source>,
         TokenView<'source, X::Id, X::Document, X::Generation>,
     ) -> Result<R, VE>,
 ) -> TokenPipelineResult<R, X, VE> {
-    with_inputs(xml, prepared, Some(counters), operation, visitor)
+    with_inputs(xml, prepared, Some(counters), operation, profile, visitor)
 }
 
 impl<N: Copy, D: Copy, G: Copy> TokenEntry<'_, '_, N, D, G> {
@@ -263,6 +307,7 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
     prepared: &Prepared<X>,
     counters: Option<&super::CounterTimestamps<X::Id, X::Document, X::Generation>>,
     operation: &Reader<'_>,
+    profile: TokenProfile,
     visitor: impl for<'source> FnOnce(
         &Reader<'source>,
         TokenView<'source, X::Id, X::Document, X::Generation>,
@@ -302,11 +347,17 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
                 snapshot: layout.snapshot(),
                 node,
             };
-            let encoding = binary::selected_encoding(&access, location)
-                .map_err(TokenPipelineError::Encoding)?;
+            let (declaration, encoding) = select_encoding(profile, &access, location)?;
             let source = binary::owned_source(xml, location, operation)
                 .map_err(TokenPipelineError::Access)?
                 .value;
+            let conformance = declaration_conformance::<X, VE>(
+                profile,
+                declaration.encoding(),
+                &source,
+                operation,
+                location,
+            )?;
             sources
                 .try_push(TokenSource {
                     location,
@@ -316,6 +367,8 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
                     stamp,
                     ordinal,
                     encoding,
+                    declaration,
+                    conformance,
                     source,
                 })
                 .map_err(|cause| TokenPipelineError::Resource { node, cause })?;
@@ -356,6 +409,57 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
     .map_err(TokenPipelineError::Visitor)?;
     admit(&access, layout.signature())?;
     Ok(result)
+}
+
+fn select_encoding<X: Xml, W: Work, VE>(
+    profile: TokenProfile,
+    access: &Access<'_, X, W>,
+    location: Location<X::Id, X::Document, X::Generation>,
+) -> TokenPipelineResult<(EncodingDeclaration, Encoding), X, VE> {
+    let declaration = binary::pki_encoding(access, location.node)
+        .map_err(|cause| TokenPipelineError::Encoding(binary::Error::Access { location, cause }))?
+        .ok_or(TokenPipelineError::Encoding(
+            binary::Error::UnknownEncoding { location },
+        ))?;
+    let encoding = match (profile, declaration.encoding()) {
+        (TokenProfile::Cms, PkiEncoding::Der | PkiEncoding::Ber | PkiEncoding::Cer)
+        | (TokenProfile::Etsi, PkiEncoding::Ber) => Encoding::Ber,
+        (TokenProfile::Etsi, PkiEncoding::Der) => Encoding::Der,
+        (_, encoding) => {
+            return Err(TokenPipelineError::Encoding(
+                binary::Error::UnsupportedEncoding { location, encoding },
+            ));
+        }
+    };
+    Ok((declaration, encoding))
+}
+
+fn declaration_conformance<X: Xml, VE>(
+    profile: TokenProfile,
+    declared: PkiEncoding,
+    source: &OwnedDecoded,
+    operation: &Reader<'_>,
+    location: Location<X::Id, X::Document, X::Generation>,
+) -> TokenPipelineResult<EncodingConformance, X, VE> {
+    if profile == TokenProfile::Cms && declared == PkiEncoding::Der {
+        // RFC5652 §§1/5.3 allows BER envelopes with DER signedAttrs.
+        // Reuse the strict schema reader, including IMPLICIT SET order,
+        // rather than guessing conformance from BER framing success.
+        // https://www.rfc-editor.org/rfc/rfc5652#section-5.3
+        let mut strict = source
+            .reader_in(operation, Encoding::Der)
+            .map_err(|cause| TokenPipelineError::Reader { location, cause })?;
+        match Token::read_from(&mut strict) {
+            Ok(_) => Ok(EncodingConformance::Matches),
+            Err(cause) if cause.is_terminal() => Err(TokenPipelineError::Token { location, cause }),
+            Err(cause) => Ok(EncodingConformance::Mismatch(cause)),
+        }
+    } else if declared == PkiEncoding::Cer {
+        Ok(EncodingConformance::Unchecked(declared))
+    } else {
+        // Only exposed after the entire actual pool has parsed.
+        Ok(EncodingConformance::Matches)
+    }
 }
 
 fn admit<X: Xml, W: Work, VE>(

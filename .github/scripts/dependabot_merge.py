@@ -118,19 +118,23 @@ class GitHub:
         return self.request(self.repo(f"pulls/{pr['number']}/merge"), "PUT",
                             {"sha": pr["head"]["sha"], "merge_method": "squash"}, token=token)
 
-    def update(self, pr, token, bot):
-        # Dependabot owns the rebase and subsequent CI. The source/base marker
-        # suppresses duplicate commands while that asynchronous work is pending.
-        body = ("@dependabot rebase\n\n"
-                f"<!-- rebase head={pr['head']['sha']} base={pr['base']['sha']} -->")
-        for comment in self.pages(self.repo(f"issues/{pr['number']}/comments")):
-            if comment["user"]["login"] == bot and comment["body"] == body:
-                print(f"PR #{pr['number']}: rebase already requested", flush=True)
-                return None
-        return self.request(self.repo(f"issues/{pr['number']}/comments"), "POST",
-                            {"body": body}, token=token)
+    def update(self, pr, token):
+        # App-authored Dependabot commands are unsupported (dependabot-core#9147).
+        # GitHub's native REBASE mutation preserves linear history and atomically
+        # checks expectedHeadOid, as in cli/cli's `pr update-branch --rebase`.
+        result = self.request("graphql", "POST", {
+            "query": "mutation($input: UpdatePullRequestBranchInput!) { "
+                     "updatePullRequestBranch(input: $input) { clientMutationId } }",
+            "variables": {"input": {"pullRequestId": pr["node_id"],
+                                    "expectedHeadOid": pr["head"]["sha"],
+                                    "updateMethod": "REBASE"}}}, token=token)
+        if result.get("errors"):
+            raise GitHubError(json.dumps(result["errors"]))
+        if result["data"]["updatePullRequestBranch"] is None:
+            raise GitHubError("GitHub did not accept the rebase")
+        return result
 
-    def apply(self, plan, token, bot):
+    def apply(self, plan, token):
         number = plan["number"]
         if plan["verdict"] not in (READY, UPDATE):
             raise ValueError("Invalid action plan")
@@ -142,10 +146,9 @@ class GitHub:
             return
         # Identical immutable content SHAs reuse the completed contract analysis;
         # the live PR and native atomic head guard still authorize the mutation.
-        result = self.merge(pr, token) if state == READY else self.update(pr, token, bot)
+        result = self.merge(pr, token) if state == READY else self.update(pr, token)
         if state == UPDATE:
-            if result is not None:
-                print(f"PR #{number}: native rebase requested", flush=True)
+            print(f"PR #{number}: native rebase requested", flush=True)
         elif not result["merged"]:
             raise ValueError("GitHub refused merge")
         else:
@@ -176,7 +179,7 @@ def main():
         plans = json.loads(os.environ["MERGE_PLAN"])
     for plan in [] if options.dry_run else plans:
         try:
-            api.apply(plan, os.environ["MERGE_TOKEN"], os.environ["MERGE_BOT"])
+            api.apply(plan, os.environ["MERGE_TOKEN"])
         except GitHubError as error:
             # Native protection refuses changed heads/bases/checks atomically.
             if not any(f"HTTP {code}" in str(error) for code in (405, 409, 422)):

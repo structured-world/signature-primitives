@@ -57,4 +57,3 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MERGE_TOKEN: ${{ steps.app-token.outputs.token }}
           MERGE_PLAN: ${{ steps.inspect.outputs.plan }}
-          MERGE_BOT: ${{ steps.app-token.outputs.app-slug }}[bot]

@@ -86,6 +86,25 @@ trust inputs and decides whether the resulting evidence meets its policy.
    The timestamp census also retains the optional Annex A signature/reference
    and reference-only timestamps; their implicit inputs preserve original
    preceding-property order rather than reusing archive coverage.
+
+   `timestamp::with_tokens` and `with_counter_tokens` require an explicit
+   `TokenProfile`. `Cms` admits the RFC 5652 BER envelope independently of the
+   unsigned XML encoding declaration. `Etsi` preserves declaration-driven
+   admission, with DER required when the attribute is absent. Each `TokenSource`
+   retains `EncodingDeclaration::{Absent,Explicit}` and separate
+   `EncodingConformance::{Matches,Mismatch,Unchecked}`. A mismatch retains the
+   strict reader's located cause. CER is readable as BER in `Cms`, but its
+   canonical conformance is `Unchecked(Cer)`; `Etsi` refuses CER. PER/XER and
+   unknown URIs refuse before decoding in either profile.
+
+   `Matches` reports the existing declared-encoding CMS envelope reader's
+   admission, not signature validity, trust, a baseline level or full validation
+   of opaque ANY values. CMS mode probes DER declarations with that same strict
+   kernel under original/current budgets, then retains the BER model. It owns
+   decoded bytes once and drops probe catalogues before retaining the model.
+   Terminal resource failures stop the pool rather than becoming mismatches.
+   DER requirements for signed attributes and `TSTInfo`, validation-material
+   encoding rules and original XML/archive input bytes remain unchanged.
 4. `baseline::basic` joins the checked fields, exact signing certificate,
    effective key, counter paths and actual hash uses. Every written protected,
    ordinary and attribute certificate-reference issuer hint uses the same DER

@@ -273,10 +273,30 @@ pub enum PkiEncoding {
     Xer,
 }
 
-fn pki_encoding<X: Xml, W: Work>(
+/// Original XML declaration, distinct from the caller-selected parser profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodingDeclaration {
+    /// No Encoding attribute: EN319132-1 §5.1.3 declares DER by absence.
+    Absent,
+    /// The original recognized Encoding attribute, without changing XML.
+    Explicit(PkiEncoding),
+}
+
+impl EncodingDeclaration {
+    /// Effective declared encoding, including the specified wire default.
+    #[must_use]
+    pub fn encoding(self) -> PkiEncoding {
+        match self {
+            Self::Absent => PkiEncoding::Der,
+            Self::Explicit(encoding) => encoding,
+        }
+    }
+}
+
+pub(crate) fn pki_encoding<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     node: X::Id,
-) -> core::result::Result<Option<PkiEncoding>, AccessError<X::Error, X::Id>> {
+) -> core::result::Result<Option<EncodingDeclaration>, AccessError<X::Error, X::Id>> {
     access
         .attribute(
             node,
@@ -289,7 +309,7 @@ fn pki_encoding<X: Xml, W: Work>(
                 // a wire default, never an implicit permissive parser/policy fallback.
                 // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
                 let Some(value) = value else {
-                    return Ok(Some(PkiEncoding::Der));
+                    return Ok(Some(EncodingDeclaration::Absent));
                 };
                 let value = access.trim_xml_whitespace(value)?;
                 for (uri, encoding) in [
@@ -300,7 +320,7 @@ fn pki_encoding<X: Xml, W: Work>(
                     ("http://uri.etsi.org/01903/v1.2.2#XER", PkiEncoding::Xer),
                 ] {
                     if access.equal(value, uri)? {
-                        return Ok(Some(encoding));
+                        return Ok(Some(EncodingDeclaration::Explicit(encoding)));
                     }
                 }
                 Ok(None)
@@ -363,7 +383,7 @@ pub(crate) fn selected_encoding<X: Xml, W: Work>(
     let specified = pki_encoding(access, location.node)
         .map_err(|cause| Error::Access { location, cause })?
         .ok_or(Error::UnknownEncoding { location })?;
-    let encoding = match specified {
+    let encoding = match specified.encoding() {
         PkiEncoding::Der => Encoding::Der,
         PkiEncoding::Ber => Encoding::Ber,
         other => {

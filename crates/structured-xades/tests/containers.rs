@@ -5,6 +5,9 @@ use structured_cms::timestamp::CheckContext;
 #[path = "support/timestamp_oracle.rs"]
 mod timestamp_oracle;
 
+#[path = "support/token_profiles.rs"]
+mod token_profiles;
+
 #[path = "support/independent_corpus.rs"]
 pub mod independent_corpus;
 
@@ -116,6 +119,7 @@ struct Tree {
     text_routes: Vec<(usize, &'static str)>,
     calendar_routes: Vec<(usize, properties::CalendarFact<'static>)>,
     binary_depth: u32,
+    binary_parser: RefCell<Option<structured_asn1::Parser>>,
     mutate_binary: bool,
     decoding: Decoding,
     binary_encoding: Option<&'static str>,
@@ -247,6 +251,7 @@ impl Tree {
             text_routes: Vec::new(),
             calendar_routes: Vec::new(),
             binary_depth: 0,
+            binary_parser: RefCell::new(None),
             mutate_binary: false,
             decoding: Decoding::Ready,
             binary_encoding: None,
@@ -866,8 +871,12 @@ impl binary::OwnedBinaryXml for Tree {
             binary::OwnedBinaryXml::decode_owned(self, snapshot, node, &operation.execution())?;
         // Synthetic fresh source, as in with_binary. Cached real sources must
         // move their original Parser too, rather than use this fixture constructor.
+        let parser = match self.binary_parser.borrow_mut().take() {
+            Some(original) => original,
+            None => structured_asn1::Parser::ber(operation.memory().clone()),
+        };
         Ok(binary::OwnedDecoded {
-            parser: structured_asn1::Parser::ber(operation.memory().clone()),
+            parser,
             bytes,
             base: 0,
             depth: self.binary_depth,
@@ -1671,7 +1680,7 @@ fn material_index_combines_xml_and_token_pools_without_losing_original_placement
     let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
     let held = memory.used();
     material::with_values(&xml, &prepared, &operation, |query, values| {
-        timestamp::with_tokens(&xml, &prepared, query, |current, tokens| {
+        timestamp::with_tokens(&xml, &prepared, query, timestamp::TokenProfile::Etsi, |current, tokens| {
             let carried = tokens.material_in(current).unwrap();
             let execution = current.execution();
             let access = Access::new(&xml, xml.snapshot(), &execution);
@@ -1919,7 +1928,7 @@ fn an_archive_tokens_own_certificate_cannot_complete_its_prior_material() {
     let input = Input::prepare(&xml, prepared.bound(), stamp, &memory).unwrap();
     let coverage = input.element_coverage(&memory).unwrap();
     material::with_values(&xml,&prepared,&operation,|query,values| {
-        timestamp::with_tokens(&xml,&prepared,query,|query,tokens| {
+        timestamp::with_tokens(&xml,&prepared,query,timestamp::TokenProfile::Etsi,|query,tokens| {
             let carried=tokens.material_in(query).unwrap();
             let work=query.execution();let access=Access::new(&xml,xml.snapshot(),&work);
             let index=material::index_with_tokens(&values,&carried,&access).unwrap();
@@ -3703,38 +3712,44 @@ fn timestamp_carried_material_keeps_token_pool_identity_and_embedded_ocsp_certif
     let access = Access::new(&xml, xml.snapshot(), &memory);
     let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
     let held = memory.used();
-    timestamp::with_tokens(&xml, &prepared, &operation, |query, view| {
-        let material = view.material_in(query).unwrap();
-        assert!(material.crls().is_empty());
-        assert_eq!(material.responses().len(), 2);
-        assert_eq!(material.basic_responses().len(), 2);
-        assert_eq!(material.other().len(), 2);
-        for ordinal in 0..2 {
-            let basic = &material.basic_responses()[ordinal];
-            assert_eq!(
-                basic.origin,
-                structured_ltv::material::CarriedOrigin {
-                    token: ordinal,
-                    choice: 1
-                }
-            );
-            assert_eq!(
-                basic.value.as_bytes().as_ptr(),
-                material.responses()[ordinal].value.payload().as_ptr()
-            );
-            assert_eq!(basic.value.certificates()[0].as_bytes(), certificate);
-            assert_eq!(
-                material.other()[ordinal].origin,
-                structured_ltv::material::CarriedOrigin {
-                    token: ordinal,
-                    choice: 0
-                }
-            );
-            assert_eq!(material.other()[ordinal].value.kind.as_bytes(), &[42]);
-            assert_eq!(material.other()[ordinal].value.value.as_bytes(), &[5, 0]);
-        }
-        Ok::<_, ()>(())
-    })
+    timestamp::with_tokens(
+        &xml,
+        &prepared,
+        &operation,
+        timestamp::TokenProfile::Etsi,
+        |query, view| {
+            let material = view.material_in(query).unwrap();
+            assert!(material.crls().is_empty());
+            assert_eq!(material.responses().len(), 2);
+            assert_eq!(material.basic_responses().len(), 2);
+            assert_eq!(material.other().len(), 2);
+            for ordinal in 0..2 {
+                let basic = &material.basic_responses()[ordinal];
+                assert_eq!(
+                    basic.origin,
+                    structured_ltv::material::CarriedOrigin {
+                        token: ordinal,
+                        choice: 1
+                    }
+                );
+                assert_eq!(
+                    basic.value.as_bytes().as_ptr(),
+                    material.responses()[ordinal].value.payload().as_ptr()
+                );
+                assert_eq!(basic.value.certificates()[0].as_bytes(), certificate);
+                assert_eq!(
+                    material.other()[ordinal].origin,
+                    structured_ltv::material::CarriedOrigin {
+                        token: ordinal,
+                        choice: 0
+                    }
+                );
+                assert_eq!(material.other()[ordinal].value.kind.as_bytes(), &[42]);
+                assert_eq!(material.other()[ordinal].value.value.as_bytes(), &[5, 0]);
+            }
+            Ok::<_, ()>(())
+        },
+    )
     .unwrap();
     assert_eq!(memory.used(), held);
     drop(prepared);
@@ -3760,7 +3775,7 @@ fn timestamp_carried_material_late_known_failure_drops_all_partial_catalogues() 
     let access = Access::new(&xml, xml.snapshot(), &memory);
     let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
     let held = memory.used();
-    let result = timestamp::with_tokens(&xml, &prepared, &operation, |query, view| {
+    let result = timestamp::with_tokens(&xml, &prepared, &operation, timestamp::TokenProfile::Etsi, |query, view| {
         let Err(error) = view.material_in(query) else { panic!("late invalid status must refuse") };
         assert_eq!(error.location.node, second);
         assert_eq!(error.origin, structured_ltv::material::CarriedOrigin { token: 1, choice: 0 });
@@ -3783,7 +3798,7 @@ fn timestamp_carried_material_empty_set_still_pays_current_metadata_admission() 
     let operation = parser.read(&[], 900).unwrap();
     let access = Access::new(&xml, xml.snapshot(), &memory);
     let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
-    timestamp::with_tokens(&xml, &prepared, &operation, |_, view| {
+    timestamp::with_tokens(&xml, &prepared, &operation, timestamp::TokenProfile::Etsi, |_, view| {
         let denied = structured_asn1::Parser::new(
             structured_asn1::Encoding::Der,
             structured_asn1::Limits {
@@ -3825,31 +3840,37 @@ fn timestamp_carried_crl_uses_original_choice_bytes_and_actual_enclosing_depth()
     let access = Access::new(&xml, xml.snapshot(), &memory);
     let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
     let held = memory.used();
-    timestamp::with_tokens(&xml, &prepared, &operation, |query, view| {
-        let material = view.material_in(query).unwrap();
-        assert_eq!(material.crls().len(), 2);
-        assert!(material.responses().is_empty());
-        assert!(material.basic_responses().is_empty());
-        assert!(material.other().is_empty());
-        for ordinal in 0..2 {
-            let value = &material.crls()[ordinal];
-            let original = view.readings()[ordinal].token().message().revocations()[0];
-            assert_eq!(
-                value.origin,
-                structured_ltv::material::CarriedOrigin {
-                    token: ordinal,
-                    choice: 0
-                }
-            );
-            assert_eq!(value.value.as_bytes(), crl);
-            assert_eq!(
-                value.value.as_bytes().as_ptr(),
-                original.as_bytes().as_ptr()
-            );
-            assert_eq!(value.value.span(), original.span());
-        }
-        Ok::<_, ()>(())
-    })
+    timestamp::with_tokens(
+        &xml,
+        &prepared,
+        &operation,
+        timestamp::TokenProfile::Etsi,
+        |query, view| {
+            let material = view.material_in(query).unwrap();
+            assert_eq!(material.crls().len(), 2);
+            assert!(material.responses().is_empty());
+            assert!(material.basic_responses().is_empty());
+            assert!(material.other().is_empty());
+            for ordinal in 0..2 {
+                let value = &material.crls()[ordinal];
+                let original = view.readings()[ordinal].token().message().revocations()[0];
+                assert_eq!(
+                    value.origin,
+                    structured_ltv::material::CarriedOrigin {
+                        token: ordinal,
+                        choice: 0
+                    }
+                );
+                assert_eq!(value.value.as_bytes(), crl);
+                assert_eq!(
+                    value.value.as_bytes().as_ptr(),
+                    original.as_bytes().as_ptr()
+                );
+                assert_eq!(value.value.span(), original.span());
+            }
+            Ok::<_, ()>(())
+        },
+    )
     .unwrap();
     assert_eq!(memory.used(), held);
 }
@@ -3868,42 +3889,48 @@ fn timestamp_carried_material_new_operation_cannot_bypass_storage_or_original_de
     let operation = parser.read(&[], 900).unwrap();
     let access = Access::new(&xml, xml.snapshot(), &memory);
     let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
-    timestamp::with_tokens(&xml, &prepared, &operation, |_, view| {
-        for (capacity, depth) in [(0, 64), (1_048_576, 3)] {
-            let account = Memory::new(Arc::new(MemoryAccount::new(capacity, 1_048_576)));
-            let current = structured_asn1::Parser::new(
-                structured_asn1::Encoding::Der,
-                structured_asn1::Limits {
-                    max_depth: depth,
-                    ..structured_asn1::Limits::default()
-                },
-                account.clone(),
-            );
-            let query = current.read(&[], 0).unwrap();
-            let held = memory.used();
-            let Err(error) = view.material_in(&query) else {
-                panic!("refusal must precede usable material")
-            };
-            assert_eq!(error.location.node, first);
-            assert_eq!(
-                error.origin,
-                structured_ltv::material::CarriedOrigin {
-                    token: 0,
-                    choice: 0
-                }
-            );
-            assert!(match &error.cause {
-                timestamp::CarriedCause::Cms(cause) => cause.is_resource(),
-                timestamp::CarriedCause::Pkix(cause) => cause.is_resource(),
-                timestamp::CarriedCause::Encoding(cause) => cause.is_resource(),
-                timestamp::CarriedCause::Resource(_) => true,
-            });
-            drop(error);
-            assert_eq!(account.used(), 0);
-            assert_eq!(memory.used(), held);
-        }
-        Ok::<_, ()>(())
-    })
+    timestamp::with_tokens(
+        &xml,
+        &prepared,
+        &operation,
+        timestamp::TokenProfile::Etsi,
+        |_, view| {
+            for (capacity, depth) in [(0, 64), (1_048_576, 3)] {
+                let account = Memory::new(Arc::new(MemoryAccount::new(capacity, 1_048_576)));
+                let current = structured_asn1::Parser::new(
+                    structured_asn1::Encoding::Der,
+                    structured_asn1::Limits {
+                        max_depth: depth,
+                        ..structured_asn1::Limits::default()
+                    },
+                    account.clone(),
+                );
+                let query = current.read(&[], 0).unwrap();
+                let held = memory.used();
+                let Err(error) = view.material_in(&query) else {
+                    panic!("refusal must precede usable material")
+                };
+                assert_eq!(error.location.node, first);
+                assert_eq!(
+                    error.origin,
+                    structured_ltv::material::CarriedOrigin {
+                        token: 0,
+                        choice: 0
+                    }
+                );
+                assert!(match &error.cause {
+                    timestamp::CarriedCause::Cms(cause) => cause.is_resource(),
+                    timestamp::CarriedCause::Pkix(cause) => cause.is_resource(),
+                    timestamp::CarriedCause::Encoding(cause) => cause.is_resource(),
+                    timestamp::CarriedCause::Resource(_) => true,
+                });
+                drop(error);
+                assert_eq!(account.used(), 0);
+                assert_eq!(memory.used(), held);
+            }
+            Ok::<_, ()>(())
+        },
+    )
     .unwrap();
 }
 
@@ -3919,25 +3946,32 @@ fn timestamp_source_set_freezes_ownership_before_borrowing_original_tokens_and_r
     let access = Access::new(&xml, xml.snapshot(), &memory);
     let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
     let held = memory.used();
-    timestamp::with_tokens(&xml, &prepared, &operation, |_, view| {
-        assert_eq!(view.sources().len(), 2);
-        assert_eq!(view.readings().len(), 2);
-        for (index, (source, reading)) in view.sources().iter().zip(view.readings()).enumerate() {
-            assert_eq!(source.location().node, [first, second][index]);
-            assert_eq!(source.location().snapshot, xml.snapshot());
-            assert_eq!(source.stamp_index(), index);
-            assert_eq!(source.token_index(), 0);
-            assert_eq!(source.property(), prepared.timestamps()[index].node());
-            assert_eq!(source.role(), [Role::Signature, Role::Archive][index]);
-            assert!(reading.reader().is_empty());
-            assert_eq!(reading.reader().depth(), 0);
-            assert_eq!(reading.token().message().signers().len(), 1);
-            let bytes = reading.token().message().as_bytes();
-            assert!(bytes.as_ptr() >= source.bytes().as_ptr());
-            assert!(bytes.as_ptr_range().end <= source.bytes().as_ptr_range().end);
-        }
-        Ok::<_, ()>(())
-    })
+    timestamp::with_tokens(
+        &xml,
+        &prepared,
+        &operation,
+        timestamp::TokenProfile::Etsi,
+        |_, view| {
+            assert_eq!(view.sources().len(), 2);
+            assert_eq!(view.readings().len(), 2);
+            for (index, (source, reading)) in view.sources().iter().zip(view.readings()).enumerate()
+            {
+                assert_eq!(source.location().node, [first, second][index]);
+                assert_eq!(source.location().snapshot, xml.snapshot());
+                assert_eq!(source.stamp_index(), index);
+                assert_eq!(source.token_index(), 0);
+                assert_eq!(source.property(), prepared.timestamps()[index].node());
+                assert_eq!(source.role(), [Role::Signature, Role::Archive][index]);
+                assert!(reading.reader().is_empty());
+                assert_eq!(reading.reader().depth(), 0);
+                assert_eq!(reading.token().message().signers().len(), 1);
+                let bytes = reading.token().message().as_bytes();
+                assert!(bytes.as_ptr() >= source.bytes().as_ptr());
+                assert!(bytes.as_ptr_range().end <= source.bytes().as_ptr_range().end);
+            }
+            Ok::<_, ()>(())
+        },
+    )
     .unwrap();
     assert_eq!(memory.used(), held);
     drop(prepared);
@@ -3989,33 +4023,43 @@ fn timestamp_source_set_runs_complete_common_checks_and_retains_independent_evid
         let access = Access::new(&xml, xml.snapshot(), &memory);
         let prepared =
             prepare::prepare(&access, 0, unsigned::Requirements::Timestamped, None).unwrap();
-        let proofs = timestamp::with_tokens(&xml, &prepared, &operation, |query, view| {
-            let execution = query.execution();
-            let mut proofs = execution.vector();
-            for (source, reading) in view.sources().iter().zip(view.readings()) {
-                assert_eq!(reading.token().message().certificates().len(), 1);
-                let stamp = &prepared.timestamps()[source.stamp_index()];
-                let mut input =
-                    Input::prepare(&xml, prepared.bound(), stamp, &reading.reader().execution())
+        let proofs = timestamp::with_tokens(
+            &xml,
+            &prepared,
+            &operation,
+            timestamp::TokenProfile::Etsi,
+            |query, view| {
+                let execution = query.execution();
+                let mut proofs = execution.vector();
+                for (source, reading) in view.sources().iter().zip(view.readings()) {
+                    assert_eq!(reading.token().message().certificates().len(), 1);
+                    let stamp = &prepared.timestamps()[source.stamp_index()];
+                    let mut input = Input::prepare(
+                        &xml,
+                        prepared.bound(),
+                        stamp,
+                        &reading.reader().execution(),
+                    )
+                    .unwrap();
+                    let checked = reading
+                        .token()
+                        .check(&provider, reading.reader(), &context, &mut input, |_, _| {
+                            Ok::<_, ()>(false)
+                        })
                         .unwrap();
-                let checked = reading
-                    .token()
-                    .check(&provider, reading.reader(), &context, &mut input, |_, _| {
-                        Ok::<_, ()>(false)
-                    })
-                    .unwrap();
-                let evidence = checked
-                    .into_evidence()
-                    .expect("complete real timestamp check");
-                proofs
-                    .try_push(binary::Located {
-                        location: source.location(),
-                        value: evidence,
-                    })
-                    .unwrap();
-            }
-            Ok::<_, ()>(proofs.into_owned())
-        })
+                    let evidence = checked
+                        .into_evidence()
+                        .expect("complete real timestamp check");
+                    proofs
+                        .try_push(binary::Located {
+                            location: source.location(),
+                            value: evidence,
+                        })
+                        .unwrap();
+                }
+                Ok::<_, ()>(proofs.into_owned())
+            },
+        )
         .unwrap();
         assert_eq!(provider.verified.get(), 1);
         (proofs, node)
@@ -4045,10 +4089,16 @@ fn timestamp_source_set_never_exposes_a_parsed_prefix_when_a_later_token_is_brok
     let prepared = prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
     let held = memory.used();
     let called = Cell::new(false);
-    let result = timestamp::with_tokens(&xml, &prepared, &operation, |_, _| {
-        called.set(true);
-        Ok::<_, ()>(())
-    });
+    let result = timestamp::with_tokens(
+        &xml,
+        &prepared,
+        &operation,
+        timestamp::TokenProfile::Etsi,
+        |_, _| {
+            called.set(true);
+            Ok::<_, ()>(())
+        },
+    );
     assert!(
         matches!(result,Err(timestamp::TokenPipelineError::Token{location,..}) if location.node==second)
     );
@@ -4073,15 +4123,21 @@ fn timestamp_source_set_preserves_visitor_cause_current_budget_and_generation_ro
         let prepared =
             prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
         let held = memory.used();
-        let result = timestamp::with_tokens(&xml, &prepared, &operation, |_, _| {
-            if !mutate {
-                return Err("visitor refused");
-            }
-            let mut owned = memory.vector();
-            owned.try_push(7u8).unwrap();
-            xml.generation.set(2);
-            Ok(owned)
-        });
+        let result = timestamp::with_tokens(
+            &xml,
+            &prepared,
+            &operation,
+            timestamp::TokenProfile::Etsi,
+            |_, _| {
+                if !mutate {
+                    return Err("visitor refused");
+                }
+                let mut owned = memory.vector();
+                owned.try_push(7u8).unwrap();
+                xml.generation.set(2);
+                Ok(owned)
+            },
+        );
         if mutate {
             assert!(matches!(
                 result,
@@ -4112,7 +4168,13 @@ fn timestamp_source_set_preserves_visitor_cause_current_budget_and_generation_ro
     );
     let operation = parser.read(&[], 900).unwrap();
     assert!(matches!(
-        timestamp::with_tokens(&xml, &prepared, &operation, |_, _| Ok::<_, ()>(())),
+        timestamp::with_tokens(
+            &xml,
+            &prepared,
+            &operation,
+            timestamp::TokenProfile::Etsi,
+            |_, _| Ok::<_, ()>(())
+        ),
         Err(timestamp::TokenPipelineError::Access(
             AccessError::Resource { .. }
         ))

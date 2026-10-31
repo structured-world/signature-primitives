@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/structured-asn1", "crates/structured-pkix", "crates/structured-cms", "crates/structured-ltv", "crates/structured-xades", "crates/structured-cades", "crates/structured-pades", "crates/structured-asic", "crates/structured-dstu4145"]
 
 [workspace.package]
-version = "0.18.1"
+version = "0.18.2"
 edition = "2024"
 rust-version = "1.92"
 license = "Apache-2.0"

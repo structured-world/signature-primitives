@@ -18,12 +18,12 @@ std = ["structured-asn1/std", "structured-pkix/std", "structured-cms/std", "stru
 interop-tests = ["std"]
 
 [dependencies]
-structured-asn1 = { version = "0.19.0", path = "../structured-asn1", default-features = false }
-structured-pkix = { version = "0.19.0", path = "../structured-pkix", default-features = false }
-structured-cms = { version = "0.19.0", path = "../structured-cms", default-features = false }
-structured-ltv = { version = "0.19.0", path = "../structured-ltv", default-features = false }
-structured-cades = { version = "0.19.0", path = "../structured-cades", default-features = false }
-structured-xades = { version = "0.19.0", path = "../structured-xades", default-features = false }
+structured-asn1 = { version = "0.20.0", path = "../structured-asn1", default-features = false }
+structured-pkix = { version = "0.20.0", path = "../structured-pkix", default-features = false }
+structured-cms = { version = "0.20.0", path = "../structured-cms", default-features = false }
+structured-ltv = { version = "0.20.0", path = "../structured-ltv", default-features = false }
+structured-cades = { version = "0.20.0", path = "../structured-cades", default-features = false }
+structured-xades = { version = "0.20.0", path = "../structured-xades", default-features = false }
 crc32fast = { version = "1.5.3", default-features = false }
 
 [dev-dependencies]

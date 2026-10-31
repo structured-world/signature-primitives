@@ -526,6 +526,11 @@ not fall back to the base. A current delta may update a stale base, but future,
 invalid or uncertain base times cannot establish absence. An unpaired delta
 never establishes standalone absence.
 
+`BoundDelta::compare_delta_number` orders the already validated delta numbers
+without parsing or allocating. It preserves both producing sessions and every
+current work ceiling, billing the current account once. Numeric ordering does
+not establish a common issuer/scope or select a candidate for the caller.
+
 Only usable, conflict-free absence or delta removal can create `AbsenceEvidence`.
 `Coverage` unions its reason masks while retaining exact contributing sources.
 It rejects different targets, evaluation moments and execution accounts. This

@@ -51,6 +51,7 @@ pub enum DeltaFailure {
 pub struct BoundDelta<'b, 'r, 'a> {
     base: &'b Authenticated<'r, 'a>,
     delta: &'b Authenticated<'r, 'a>,
+    delta_number: Integer<'a>,
 }
 
 /// Source of an entry in combined evidence; original ranges remain untouched.
@@ -102,6 +103,39 @@ pub enum CombinedEntry<'r, 'a> {
 }
 
 impl<'b, 'r, 'a> BoundDelta<'b, 'r, 'a> {
+    /// Compare the already validated delta CRL numbers without rereading them.
+    /// Numeric order establishes supersession only within the same issuer and
+    /// scope (RFC 5280 §5.2.3); applicability and selection remain with the caller.
+    /// <https://www.rfc-editor.org/rfc/rfc5280#section-5.2.3>
+    ///
+    /// Both delta producers and all current work ceilings fund the comparison,
+    /// with one aggregate bill and no allocation. A resource refusal is located
+    /// at this delta CRL's original start. Binding performs no extra comparison.
+    pub fn compare_delta_number<W: Work>(
+        self,
+        other: BoundDelta<'_, '_, '_>,
+        execution: &W,
+    ) -> Result<Ordering> {
+        const FIELD: &str = "certificateList.deltaNumberOrder";
+        let at = self.delta.crl().span().start;
+        let left = self.delta_number.as_bytes();
+        let right = other.delta_number.as_bytes();
+        // Pay for sign-octet inspection as well as magnitude comparison before
+        // examining either number. A current foreign source must not be replaced.
+        let work = comparison_work(left.len().max(right.len()), FIELD, at)?;
+        self.delta
+            .crl()
+            .signature_algorithm()
+            .execution_origin()
+            .charge_work_with(
+                other.delta.crl().signature_algorithm().execution_origin(),
+                execution,
+                work,
+            )
+            .map_err(|reason| Error::resource(reason, FIELD, at))?;
+        Ok(compare_magnitudes(magnitude(left), magnitude(right)))
+    }
+
     /// Apply RFC5280 §6.3.3(i)–(k) over original authenticated sources.
     /// Each source is scanned independently so indirect issuer state never
     /// leaks between lists. Critical demands and conflicting duplicates are
@@ -270,7 +304,11 @@ impl<'r, 'a> Authenticated<'r, 'a> {
         if compare(base_number, delta_number, execution, FIELD, at)? != Ordering::Less {
             return Ok(DeltaBinding::Rejected(DeltaFailure::NumberOrder));
         }
-        Ok(DeltaBinding::Bound(BoundDelta { base: self, delta }))
+        Ok(DeltaBinding::Bound(BoundDelta {
+            base: self,
+            delta,
+            delta_number,
+        }))
     }
 }
 
@@ -359,7 +397,11 @@ fn compare(
     let right = magnitude(right.as_bytes());
     // DER INTEGER is minimal; a possible zero sign octet has no magnitude.
     admit(left.len().max(right.len()), execution, field, at)?;
-    Ok(left.len().cmp(&right.len()).then_with(|| left.cmp(right)))
+    Ok(compare_magnitudes(left, right))
+}
+
+fn compare_magnitudes(left: &[u8], right: &[u8]) -> Ordering {
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
 }
 
 fn magnitude(bytes: &[u8]) -> &[u8] {
@@ -398,7 +440,14 @@ fn equal(
 }
 
 fn admit(width: usize, execution: &impl Work, field: &'static str, at: u64) -> Result<()> {
-    let work = (width as u64)
+    let work = comparison_work(width, field, at)?;
+    execution
+        .charge_work(work)
+        .map_err(|reason| Error::resource(reason, field, at))
+}
+
+fn comparison_work(width: usize, field: &'static str, at: u64) -> Result<u64> {
+    (width as u64)
         .checked_mul(2)
         .and_then(|n| n.checked_add(1))
         .ok_or_else(|| {
@@ -407,8 +456,5 @@ fn admit(width: usize, execution: &impl Work, field: &'static str, at: u64) -> R
                 field,
                 at,
             )
-        })?;
-    execution
-        .charge_work(work)
-        .map_err(|reason| Error::resource(reason, field, at))
+        })
 }

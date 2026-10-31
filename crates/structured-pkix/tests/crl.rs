@@ -6,6 +6,9 @@ use structured_asn1::{Encoding, Limits, Parser};
 use structured_pkix::ErrorCode;
 use structured_pkix::crl::{CertificateList, Version};
 
+#[path = "crl/delta_number.rs"]
+mod delta_number;
+
 fn memory(storage: usize, work: usize) -> Memory {
     Memory::new(Arc::new(MemoryAccount::new(storage, work)))
 }

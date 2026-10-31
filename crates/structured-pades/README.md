@@ -64,7 +64,7 @@ The crate is available on [crates.io](https://crates.io/crates/structured-pades)
 and follows the coordinated version of the shared primitives:
 
 ```toml
-structured-pades = "0.15"
+structured-pades = "0.20"
 ```
 
 Subsequent releases use GitHub Actions Trusted Publishing through the repository's

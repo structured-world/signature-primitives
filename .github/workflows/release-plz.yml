@@ -9,10 +9,15 @@ permissions:
   contents: read
 
 jobs:
+  validation:
+    # Reuse the same checks as PRs, on this push/dispatch's exact source SHA.
+    # Native needs avoids polling while keeping the OIDC-compatible trigger.
+    uses: ./.github/workflows/ci.yml
+
   release-pr:
     # Preparing before publication sees a partially updated registry and can
-    # turn a version-only merge into another release. The publisher already
-    # waits for successful CI on this exact SHA; do not race its completion.
+    # turn a version-only merge into another release. Native dependencies bind
+    # validation, publication and preparation to the same source revision.
     needs: publish
     if: >-
       github.repository == 'structured-world/signature-primitives' &&
@@ -54,7 +59,9 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
   publish:
+    needs: validation
     if: >-
+      needs.validation.result == 'success' &&
       github.repository == 'structured-world/signature-primitives' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -66,10 +73,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
-      actions: read
       id-token: write
     outputs:
-      released: ${{ steps.release.outputs.releases_created == 'true' || steps.first-ltv.outputs.releases_created == 'true' || steps.dependents.outputs.releases_created == 'true' || steps.first-cades.outputs.releases_created == 'true' }}
+      released: ${{ steps.release.outputs.releases_created == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,77 +83,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - run: rustup toolchain install stable --profile minimal
-      - name: Require successful CI for this exact main commit
-        run: python3 .github/scripts/release_ci.py
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Select first-publication mode
-        id: bootstrap
-        env:
-          LTV_BOOTSTRAP_TOKEN: ${{ secrets.LTV_BOOTSTRAP_TOKEN }}
-          CADES_BOOTSTRAP_TOKEN: ${{ secrets.CADES_BOOTSTRAP_TOKEN }}
-        run: |
-          if [ -n "$LTV_BOOTSTRAP_TOKEN" ] && [ -n "$CADES_BOOTSTRAP_TOKEN" ]; then
-            echo 'Select only one initial publication in a release run.' >&2
-            exit 1
-          fi
-          if [ -n "$LTV_BOOTSTRAP_TOKEN" ]; then
-            echo 'enabled=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'enabled=false' >> "$GITHUB_OUTPUT"
-          fi
-          if [ -n "$CADES_BOOTSTRAP_TOKEN" ]; then
-            echo 'cades=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'cades=false' >> "$GITHUB_OUTPUT"
-          fi
       - name: Publish approved coordinated release
         id: release
         uses: release-plz/action@8b5bf233ecb5779f63508db7cd050e948ee77cc2 # v0.5.144
         with:
           command: release
           version: 0.3.171
-          config: ${{ steps.bootstrap.outputs.enabled == 'true' && '.github/release-core.toml' || steps.bootstrap.outputs.cades == 'true' && '.github/release-before-cades.toml' || 'release-plz.toml' }}
+          config: release-plz.toml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish the first LTV version
-        id: first-ltv
-        if: steps.bootstrap.outputs.enabled == 'true'
-        uses: release-plz/action@8b5bf233ecb5779f63508db7cd050e948ee77cc2 # v0.5.144
-        with:
-          command: release
-          version: 0.3.171
-          config: .github/release-ltv.toml
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.LTV_BOOTSTRAP_TOKEN }}
-      - name: Wait until LTV resolves for dependents
-        if: steps.first-ltv.outputs.releases_created == 'true'
-        run: bash scripts/wait-registry-resolution.sh structured-ltv
-      - name: Publish packages depending on LTV
-        id: dependents
-        if: steps.bootstrap.outputs.enabled == 'true'
-        uses: release-plz/action@8b5bf233ecb5779f63508db7cd050e948ee77cc2 # v0.5.144
-        with:
-          command: release
-          version: 0.3.171
-          config: .github/release-dependents.toml
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Wait until CAdES dependencies resolve
-        if: steps.bootstrap.outputs.cades == 'true'
-        run: bash scripts/wait-registry-resolution.sh structured-ltv
-      - name: Publish the first CAdES version
-        id: first-cades
-        if: steps.bootstrap.outputs.cades == 'true'
-        uses: release-plz/action@8b5bf233ecb5779f63508db7cd050e948ee77cc2 # v0.5.144
-        with:
-          command: release
-          version: 0.3.171
-          config: .github/release-cades.toml
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CADES_BOOTSTRAP_TOKEN }}
 
   registry:
     # Qualify what crates.io serves for the version this revision published.
@@ -164,5 +108,8 @@ jobs:
       - name: PDF interoperability tools
         run: sudo apt-get update && sudo apt-get install --yes qpdf openssl
       - name: Test runner
-        run: cargo +stable install cargo-nextest --locked --version 0.9.146
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2
+        with:
+          tool: cargo-nextest@0.9.146
+          fallback: none
       - run: bash scripts/qualify-registry.sh

@@ -18,6 +18,22 @@ class GitHubError(RuntimeError):
     pass
 
 
+def candidate_state(pr, repository):
+    if (pr["user"]["login"] != "dependabot[bot]" or pr["state"] != "open"
+            or pr["draft"] or pr["base"]["ref"] != "main"
+            or pr["head"]["repo"]["full_name"] != repository):
+        return "ineligible"
+    if any(re.search(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", pr["title"])
+           for name in CRITICAL):
+        return "manual contract review"
+    # Strict repository rules enforce the required CI contexts and fresh base.
+    if pr["mergeable_state"] == "behind":
+        return UPDATE
+    if pr["mergeable_state"] == "clean":
+        return READY
+    return "waiting for mandatory CI/base qualification"
+
+
 def contract_changed(filename, before, after):
     def critical(data):
         doc = tomllib.loads(data.decode("utf-8"))
@@ -42,6 +58,7 @@ class GitHub:
     def __init__(self, repository, token):
         self.repository = repository
         self.token = token
+        self.contents = {}
 
     def request(self, path, method="GET", body=None, token=None, paginate=False):
         # gh owns authentication, TLS and API transport; no credential enters argv.
@@ -53,6 +70,7 @@ class GitHub:
             command.extend(["--paginate", "--slurp"])
         environment = os.environ.copy()
         environment["GH_TOKEN"] = self.token if token is None else token
+        print(f"GitHub {method} {path}", flush=True)
         result = subprocess.run(command, input=None if body is None else json.dumps(body),
                                 text=True, capture_output=True, env=environment, timeout=30)
         if result.returncode:
@@ -68,21 +86,23 @@ class GitHub:
             yield from values
 
     def content(self, path, sha):
+        key = (path, sha)
+        if key in self.contents:
+            return self.contents[key]
         encoded = urllib.parse.quote(path, safe="/")
         result = self.request(self.repo(f"contents/{encoded}?ref={sha}"))
         if result["encoding"] != "base64":
             raise ValueError("Unexpected file encoding")
-        return base64.b64decode(result["content"])
+        value = base64.b64decode(result["content"])
+        self.contents[key] = value
+        return value
 
     def inspect(self, number):
+        print(f"Inspect PR #{number}", flush=True)
         pr = self.request(self.repo(f"pulls/{number}"))
-        if (pr["user"]["login"] != "dependabot[bot]" or pr["state"] != "open"
-                or pr["draft"] or pr["base"]["ref"] != "main"
-                or pr["head"]["repo"]["full_name"] != self.repository):
-            return pr, "ineligible"
-        if any(re.search(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", pr["title"])
-               for name in CRITICAL):
-            return pr, "manual contract review"
+        state = candidate_state(pr, self.repository)
+        if state not in (READY, UPDATE):
+            return pr, state
         for file in self.pages(self.repo(f"pulls/{number}/files")):
             name = file["filename"]
             if not name.endswith(("Cargo.toml", "Cargo.lock")):
@@ -91,13 +111,7 @@ class GitHub:
             after = b"" if file["status"] == "removed" else self.content(name, pr["head"]["sha"])
             if contract_changed(name, before, after):
                 return pr, "manual contract review"
-        # Native branch protection enforces every required check and base freshness;
-        # Dependabot never updates a branch that is only behind, so it is updated here.
-        if pr["mergeable_state"] == "behind":
-            return pr, UPDATE
-        if pr["mergeable_state"] != "clean":
-            return pr, "waiting for mandatory CI/base qualification"
-        return pr, READY
+        return pr, state
 
     def merge(self, pr, token):
         # The native merge operation atomically refuses a head changed since inspection.
@@ -105,10 +119,40 @@ class GitHub:
                             {"sha": pr["head"]["sha"], "merge_method": "squash"}, token=token)
 
     def update(self, pr, token):
-        # The native update refuses a head changed since inspection; the App's
-        # push starts CI, whose completion brings the new head back here.
-        return self.request(self.repo(f"pulls/{pr['number']}/update-branch"), "PUT",
-                            {"expected_head_sha": pr["head"]["sha"]}, token=token)
+        # App-authored Dependabot commands are unsupported (dependabot-core#9147).
+        # GitHub's native REBASE mutation preserves linear history and atomically
+        # checks expectedHeadOid, as in cli/cli's `pr update-branch --rebase`.
+        result = self.request("graphql", "POST", {
+            "query": "mutation($input: UpdatePullRequestBranchInput!) { "
+                     "updatePullRequestBranch(input: $input) { clientMutationId } }",
+            "variables": {"input": {"pullRequestId": pr["node_id"],
+                                    "expectedHeadOid": pr["head"]["sha"],
+                                    "updateMethod": "REBASE"}}}, token=token)
+        if result.get("errors"):
+            raise GitHubError(json.dumps(result["errors"]))
+        if result["data"]["updatePullRequestBranch"] is None:
+            raise GitHubError("GitHub did not accept the rebase")
+        return result
+
+    def apply(self, plan, token):
+        number = plan["number"]
+        if plan["verdict"] not in (READY, UPDATE):
+            raise ValueError("Invalid action plan")
+        pr = self.request(self.repo(f"pulls/{number}"))
+        state = candidate_state(pr, self.repository)
+        if (pr["head"]["sha"] != plan["head"] or pr["base"]["sha"] != plan["base"]
+                or state != plan["verdict"]):
+            print(f"PR #{number}: source/base/check state changed; wait for next event", flush=True)
+            return
+        # Identical immutable content SHAs reuse the completed contract analysis;
+        # the live PR and native atomic head guard still authorize the mutation.
+        result = self.merge(pr, token) if state == READY else self.update(pr, token)
+        if state == UPDATE:
+            print(f"PR #{number}: native rebase requested", flush=True)
+        elif not result["merged"]:
+            raise ValueError("GitHub refused merge")
+        else:
+            print(f"PR #{number}: merged {result['sha']}", flush=True)
 
 
 def main():
@@ -120,35 +164,32 @@ def main():
     if repository != "structured-world/signature-primitives":
         raise ValueError("Unsupported repository")
     api = GitHub(repository, os.environ["GH_TOKEN"])
-    numbers = [p["number"] for p in api.pages(api.repo("pulls?state=open&base=main"))
-               if p["user"]["login"] == "dependabot[bot]"]
-    actions = 0
-    for number in numbers:
-        pr, verdict = api.inspect(number)
-        print(f"PR #{number} {pr['head']['sha'][:12]}: {verdict}", flush=True)
-        if verdict not in (READY, UPDATE):
-            continue
-        actions += 1
-        if options.dry_run:
-            continue
-        token = os.environ["MERGE_TOKEN"]
+    print("Inspecting Dependabot source/base and required-check state", flush=True)
+    plans = []
+    if options.dry_run:
+        numbers = [p["number"] for p in api.pages(api.repo("pulls?state=open&base=main"))
+                   if p["user"]["login"] == "dependabot[bot]"]
+        for number in numbers:
+            pr, verdict = api.inspect(number)
+            print(f"PR #{number} {pr['head']['sha'][:12]}: {verdict}", flush=True)
+            if verdict in (READY, UPDATE):
+                plans.append({"number": number, "head": pr["head"]["sha"],
+                              "base": pr["base"]["sha"], "verdict": verdict})
+    else:
+        plans = json.loads(os.environ["MERGE_PLAN"])
+    for plan in [] if options.dry_run else plans:
         try:
-            result = api.merge(pr, token) if verdict == READY else api.update(pr, token)
+            api.apply(plan, os.environ["MERGE_TOKEN"])
         except GitHubError as error:
-            # 405/409 refuse a merge, 422 an update, of a head or base changed since inspection.
+            # Native protection refuses changed heads/bases/checks atomically.
             if not any(f"HTTP {code}" in str(error) for code in (405, 409, 422)):
                 raise
-            print(f"PR #{number}: branch/check state changed; waiting for next event")
+            print(f"PR #{plan['number']}: branch/check state changed; wait for next event", flush=True)
             continue
-        if verdict == UPDATE:
-            print(f"PR #{number}: base update started", flush=True)
-            continue
-        if not result["merged"]:
-            raise ValueError("GitHub refused merge")
-        print(f"PR #{number}: merged {result['sha']}", flush=True)
     if options.github_output:
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-            output.write(f"action_count={actions}\n")
+            output.write(f"action_count={len(plans)}\n")
+            output.write("plan=" + json.dumps(plans, separators=(",", ":")) + "\n")
 
 
 if __name__ == "__main__":

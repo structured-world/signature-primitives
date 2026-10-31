@@ -1,7 +1,11 @@
 """Merge policy tests use synthetic GitHub records, without credentials/network."""
 
 import importlib.util
+import json
+import os
 import pathlib
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -54,8 +58,16 @@ class NativeBoundaryTests(unittest.TestCase):
                              "waiting for mandatory CI/base qualification")
 
     def test_an_update_behind_main_is_brought_up_to_date(self):
-        # Strict required checks keep a behind update unmergeable; Dependabot never rebases it.
+        # Strict required checks keep a behind head unmergeable until the
+        # explicitly requested native GitHub rebase completes.
         self.assertEqual(self.dependabot("behind").inspect(42)[1], POLICY.UPDATE)
+
+    def test_unready_heads_do_not_download_contract_files(self):
+        # A completion event for another PR cannot cause TOML downloads for
+        # heads whose required checks are still pending or failing.
+        api = self.dependabot("blocked")
+        api.pages = lambda _: self.fail("unready head downloaded contract files")
+        self.assertNotEqual(api.inspect(42)[1], POLICY.READY)
 
     def test_pagination_follows_native_link_cursors(self):
         # Listings use Link cursors, not numbered page parameters.
@@ -78,18 +90,56 @@ class NativeBoundaryTests(unittest.TestCase):
         self.assertEqual(args[2], {"sha": pr["head"]["sha"], "merge_method": "squash"})
         self.assertEqual(kwargs["token"], "merge-credential")
 
-    def test_base_update_binds_the_inspected_head_and_uses_only_the_merge_token(self):
-        # A push between inspection and update must be refused by GitHub's sha guard.
-        api = POLICY.GitHub("structured-world/signature-primitives", "read-credential")
+    def test_app_rebase_uses_native_graphql_with_atomic_head_guard(self):
+        # Dependabot ignores App-authored commands. Use GitHub's native rebase
+        # mutation, which binds the inspected head without creating a merge commit.
+        api = self.dependabot("behind")
+        pr = api.request("unused")
+        pr["node_id"] = "PR_example"
         calls = []
-        api.request = lambda *args, **kwargs: calls.append((args, kwargs))
-        pr = {"number": 42, "head": {"sha": "a" * 40}}
+        api.pages = lambda _: self.fail("rebase must not depend on comment history")
+        api.request = lambda *args, **kwargs: calls.append((args, kwargs)) or {
+            "data": {"updatePullRequestBranch": {"clientMutationId": None}}}
         api.update(pr, "merge-credential")
+        self.assertEqual(len(calls), 1)
         args, kwargs = calls[0]
-        self.assertTrue(args[0].endswith("pulls/42/update-branch"))
-        self.assertEqual(args[1], "PUT")
-        self.assertEqual(args[2], {"expected_head_sha": pr["head"]["sha"]})
+        self.assertEqual(args[:2], ("graphql", "POST"))
+        self.assertIn("updatePullRequestBranch", args[2]["query"])
+        self.assertEqual(args[2]["variables"]["input"], {
+            "pullRequestId": pr["node_id"], "expectedHeadOid": pr["head"]["sha"],
+            "updateMethod": "REBASE"})
         self.assertEqual(kwargs["token"], "merge-credential")
+
+    def test_graphql_rebase_errors_are_terminal(self):
+        # HTTP success with GraphQL errors or an absent mutation result must
+        # not be logged as an accepted rebase or silently retried as a merge.
+        api = self.dependabot("behind")
+        pr = api.request("unused")
+        pr["node_id"] = "PR_example"
+        for response in ({"errors": [{"message": "Head changed"}]},
+                         {"data": {"updatePullRequestBranch": None}}):
+            with self.subTest(response=response):
+                api.request = lambda *args, **kwargs: response
+                with self.assertRaises(POLICY.GitHubError):
+                    api.update(pr, "merge-credential")
+
+    def test_graphql_transport_keeps_input_and_app_credential_separate(self):
+        # Exercise the actual gh invocation: JSON goes through stdin, the App
+        # credential stays in the subprocess environment, never argv or payload.
+        api = POLICY.GitHub("structured-world/signature-primitives", "read-credential")
+        response = POLICY.subprocess.CompletedProcess(
+            [], 0, '{"data":{"updatePullRequestBranch":{"clientMutationId":null}}}', '')
+        pr = {"node_id": "PR_example", "head": {"sha": "a" * 40}}
+        with patch.object(POLICY.subprocess, "run", return_value=response) as run:
+            api.update(pr, "merge-credential")
+            args, kwargs = run.call_args
+            self.assertEqual(args[0][:5], ["gh", "api", "graphql", "--method", "POST"])
+            self.assertEqual(args[0][-2:], ["--input", "-"])
+            self.assertEqual(kwargs["env"]["GH_TOKEN"], "merge-credential")
+            self.assertNotIn("merge-credential", str(args) + kwargs["input"])
+            self.assertEqual(json.loads(kwargs["input"])["variables"]["input"], {
+                "pullRequestId": "PR_example", "expectedHeadOid": "a" * 40,
+                "updateMethod": "REBASE"})
 
     def test_non_bot_and_fork_inputs_never_reach_mutation(self):
         # Only repository-local Dependabot PRs can enter privileged processing.
@@ -101,6 +151,98 @@ class NativeBoundaryTests(unittest.TestCase):
         pr["user"]["login"] = "dependabot[bot]"
         pr["head"]["repo"]["full_name"] = "someone/fork"
         self.assertEqual(api.inspect(pr["number"])[1], "ineligible")
+
+    def test_live_plan_revalidation_reuses_immutable_contract_analysis(self):
+        # Apply refreshes the PR, not its already-qualified immutable files.
+        api = self.dependabot("clean")
+        pr = api.request("unused")
+        api.pages = lambda _: self.fail("contract files downloaded twice")
+        merged = []
+        api.merge = lambda current, token: merged.append((current, token)) or {"merged": True, "sha": "result"}
+        plan = {"number": 42, "head": pr["head"]["sha"], "base": pr["base"]["sha"], "verdict": POLICY.READY}
+        api.apply(plan, "merge-credential")
+        self.assertEqual(merged, [(pr, "merge-credential")])
+        for field in ("head", "base", "verdict"):
+            changed = {**plan, field: "changed" if field != "verdict" else POLICY.UPDATE}
+            api.apply(changed, "merge-credential")
+        self.assertEqual(len(merged), 1)
+        for state in ("blocked", "behind", "unknown"):
+            pr["mergeable_state"] = state
+            api.apply(plan, "merge-credential")
+        self.assertEqual(len(merged), 1)
+
+    def test_immutable_content_cache_is_keyed_by_path_and_sha(self):
+        # Multiple PRs can share a base blob, but a new SHA cannot reuse it.
+        api = POLICY.GitHub("structured-world/signature-primitives", "read-credential")
+        calls = []
+        api.request = lambda path: calls.append(path) or {"encoding": "base64", "content": "YQ==\n"}
+        self.assertEqual(api.content("Cargo.toml", "old"), b"a")
+        self.assertEqual(api.content("Cargo.toml", "old"), b"a")
+        self.assertEqual(len(calls), 1)
+        api.content("Cargo.toml", "new")
+        api.content("Cargo.lock", "new")
+        self.assertEqual(len(calls), 3)
+
+    def test_cli_plan_is_serialized_once_and_apply_does_not_rescan(self):
+        # Exercise both actual entrypoint phases: job outputs carry the checked
+        # SHAs, and the second phase performs live revalidation without a new scan.
+        api = self.dependabot("clean")
+        pr = api.request("unused")
+        with tempfile.TemporaryDirectory(prefix="primitives-dependabot-") as directory:
+            output = pathlib.Path(directory) / "output"
+            env = {"GITHUB_REPOSITORY": api.repository, "GH_TOKEN": "read-credential",
+                   "GITHUB_OUTPUT": str(output)}
+            with patch.object(POLICY, "GitHub", return_value=api), patch.dict(os.environ, env, clear=True), \
+                    patch.object(sys, "argv", ["script", "--dry-run", "--github-output"]), \
+                    patch.object(api, "pages", return_value=[pr]), \
+                    patch.object(api, "inspect", return_value=(pr, POLICY.READY)) as inspect:
+                POLICY.main()
+                inspect.assert_called_once_with(pr["number"])
+            fields = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(fields["action_count"], "1")
+            plans = json.loads(fields["plan"])
+            self.assertEqual(plans, [{"number": pr["number"], "head": pr["head"]["sha"],
+                                      "base": pr["base"]["sha"], "verdict": POLICY.READY}])
+            env.update(MERGE_PLAN=fields["plan"], MERGE_TOKEN="merge-credential")
+            with patch.object(POLICY, "GitHub", return_value=api), patch.dict(os.environ, env, clear=True), \
+                    patch.object(sys, "argv", ["script"]), patch.object(api, "pages") as pages, \
+                    patch.object(api, "inspect") as inspect, patch.object(api, "apply") as apply:
+                POLICY.main()
+                pages.assert_not_called()
+                inspect.assert_not_called()
+                apply.assert_called_once_with(plans[0], "merge-credential")
+
+    def test_cli_rebase_rejects_repeated_source_plan(self):
+        # Run the real CLI and transport against synthetic API responses. Once
+        # rebased, a repeated event's old plan cannot mutate the branch again.
+        api = self.dependabot("behind")
+        pr = api.request("unused")
+        pr["node_id"] = "PR_example"
+        plan = {"number": pr["number"], "head": pr["head"]["sha"],
+                "base": pr["base"]["sha"], "verdict": POLICY.UPDATE}
+        env = {"GITHUB_REPOSITORY": api.repository, "GH_TOKEN": "read-credential",
+               "MERGE_TOKEN": "merge-credential", "MERGE_PLAN": json.dumps([plan])}
+        mutations = []
+
+        def respond(command, **kwargs):
+            if command[2] == "graphql":
+                mutations.append(json.loads(kwargs["input"])["variables"]["input"])
+                self.assertEqual(kwargs["env"]["GH_TOKEN"], "merge-credential")
+                pr["head"]["sha"] = "c" * 40
+                pr["mergeable_state"] = "blocked"
+                result = {"data": {"updatePullRequestBranch": {"clientMutationId": None}}}
+            else:
+                self.assertEqual(command[2], api.repo("pulls/42"))
+                self.assertEqual(kwargs["env"]["GH_TOKEN"], "read-credential")
+                result = pr
+            return POLICY.subprocess.CompletedProcess(command, 0, json.dumps(result), "")
+
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["script"]), \
+                patch.object(POLICY.subprocess, "run", side_effect=respond):
+            POLICY.main()
+            POLICY.main()
+        self.assertEqual(mutations, [{"pullRequestId": pr["node_id"],
+                                     "expectedHeadOid": plan["head"], "updateMethod": "REBASE"}])
 
 
 if __name__ == "__main__":

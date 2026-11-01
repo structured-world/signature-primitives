@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.1](https://github.com/structured-world/signature-primitives/compare/structured-dstu4145-v0.20.0...structured-dstu4145-v0.20.1) - 2026-10-31
+
+### Other
+
+- streamline release and dependency workflows ([#269](https://github.com/structured-world/signature-primitives/pull/269))
+
 ## [0.20.0](https://github.com/structured-world/signature-primitives/compare/structured-dstu4145-v0.19.0...structured-dstu4145-v0.20.0) - 2026-10-31
 
 ### Added

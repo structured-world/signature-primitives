@@ -31,6 +31,29 @@ Enable the optional `std` feature for a standard-library integration, or name
 configuration. Alloc-only consumers can use them as typed error sources without
 enabling `std`; the same implementations also satisfy `std::error::Error`.
 
+## Seeded table hashing
+
+`hash::SeededState<B>` combines a seeded non-cryptographic integer fast path
+with a caller-supplied keyed byte builder. The first byte write prefixes the
+integer state, then all later typed writes stay in that byte stream. This keeps
+mixed document identities and string fields in their original order.
+
+With `std`, `hash::RandomState::default()` supplies independent per-table
+seeding through the standard library. Without `std`, use
+`SeededState::new(integer_seed, byte_builder)` with trusted seed material and
+an appropriate `core::hash::BuildHasher + Clone` implementation. No new entropy
+source or mutable global store is introduced.
+
+The helper does not replace resource admission or make arbitrary `Hash`
+implementations prefix-free. Charge input work and collection storage before
+using it. The integer path is not cryptographic and does not promise resistance
+to adaptive seed recovery; hashes must not be persisted across versions or
+platforms. Hashing has fixed state, with byte-builder costs determined by the
+injected implementation. Existing accounted maps keep their current builder.
+
+Run `cargo bench -p structured-asn1 --features std --bench seeded_hash` for
+integer, composite-identity and mixed-key comparisons against standard hashing.
+
 ## Quick start
 
 ```rust

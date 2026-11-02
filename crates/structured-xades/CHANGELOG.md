@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.2](https://github.com/structured-world/signature-primitives/compare/structured-xades-v0.20.1...structured-xades-v0.20.2) - 2026-11-02
+
+### Added
+
+- *(hash)* add seeded table hashing ([#273](https://github.com/structured-world/signature-primitives/pull/273))
+
 ## [0.20.1](https://github.com/structured-world/signature-primitives/compare/structured-xades-v0.20.0...structured-xades-v0.20.1) - 2026-10-31
 
 ### Other

@@ -117,6 +117,13 @@ macro_rules! integer_write {
     };
 }
 
+// Keep the byte engine out of the mode selector so integer-only callers can
+// eliminate the unused state without requiring forced inlining of both engines.
+#[inline(never)]
+fn finish_bytes<H: Hasher>(bytes: &H) -> u64 {
+    bytes.finish()
+}
+
 impl<B: BuildHasher> Hasher for SeededHasher<B> {
     #[inline]
     fn write(&mut self, input: &[u8]) {
@@ -143,11 +150,10 @@ impl<B: BuildHasher> Hasher for SeededHasher<B> {
     integer_write!(write_i128(value: i128) => write_u128(value.cast_unsigned()));
     integer_write!(write_isize(value: isize) => write_usize(value.cast_unsigned()));
 
-    // Expose the mode to the caller so integer-only keys eliminate byte state.
-    #[inline(always)]
+    #[inline]
     fn finish(&self) -> u64 {
         match &self.bytes {
-            Some(bytes) => bytes.finish(),
+            Some(bytes) => finish_bytes(bytes),
             None => self.integers.finish(),
         }
     }

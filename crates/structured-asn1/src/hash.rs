@@ -143,7 +143,8 @@ impl<B: BuildHasher> Hasher for SeededHasher<B> {
     integer_write!(write_i128(value: i128) => write_u128(value.cast_unsigned()));
     integer_write!(write_isize(value: isize) => write_usize(value.cast_unsigned()));
 
-    #[inline]
+    // Expose the mode to the caller so integer-only keys eliminate byte state.
+    #[inline(always)]
     fn finish(&self) -> u64 {
         match &self.bytes {
             Some(bytes) => bytes.finish(),

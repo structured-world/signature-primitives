@@ -34,6 +34,7 @@ use foldhash::quality::{FixedState, FoldHasher};
 /// Cloning preserves the same hashing configuration; it does not reseed a table.
 /// Each built hasher clones `B` so it can start the byte path lazily without
 /// borrowing the table. With the standard builder, this only copies seed words.
+/// `B::clone` must preserve its hashing configuration.
 #[derive(Clone)]
 pub struct SeededState<B> {
     integers: FixedState,
@@ -89,7 +90,7 @@ pub type RandomState = SeededState<std::hash::RandomState>;
 impl Default for RandomState {
     fn default() -> Self {
         let bytes = std::hash::RandomState::new();
-        let seed = bytes.hash_one(b"integer table seed");
+        let seed = bytes.hash_one(0x6861_7368_7365_6564_u64);
         Self::new(seed, bytes)
     }
 }

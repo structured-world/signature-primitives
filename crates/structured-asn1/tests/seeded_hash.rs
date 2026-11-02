@@ -165,6 +165,34 @@ fn first_bytes_prefix_integer_state_then_preserve_all_typed_writes() {
 }
 
 #[test]
+fn full_width_integer_values_reach_the_selected_mixer() {
+    // Detect truncation and accidental signed-to-byte fallback against the
+    // selected upstream integer core, not just the byte engine's event log.
+    let state = SeededState::new(17, Trace::default());
+    macro_rules! compare {
+        ($method:ident($value:expr) => $integer:ident($mapped:expr)) => {{
+            let mut actual = state.build_hasher();
+            actual.$method($value);
+            let mut reference = foldhash::quality::FixedState::with_seed(17).build_hasher();
+            reference.$integer($mapped);
+            assert_eq!(actual.finish(), reference.finish(), stringify!($method));
+        }};
+    }
+    compare!(write_u8(u8::MAX) => write_u8(u8::MAX));
+    compare!(write_u16(u16::MAX) => write_u16(u16::MAX));
+    compare!(write_u32(u32::MAX) => write_u32(u32::MAX));
+    compare!(write_u64(u64::MAX) => write_u64(u64::MAX));
+    compare!(write_u128(1 << 127) => write_u128(1 << 127));
+    compare!(write_usize(usize::MAX) => write_usize(usize::MAX));
+    compare!(write_i8(i8::MIN) => write_u8(i8::MIN.cast_unsigned()));
+    compare!(write_i16(i16::MIN) => write_u16(i16::MIN.cast_unsigned()));
+    compare!(write_i32(i32::MIN) => write_u32(i32::MIN.cast_unsigned()));
+    compare!(write_i64(i64::MIN) => write_u64(i64::MIN.cast_unsigned()));
+    compare!(write_i128(i128::MIN) => write_u128(i128::MIN.cast_unsigned()));
+    compare!(write_isize(isize::MIN) => write_usize(isize::MIN.cast_unsigned()));
+}
+
+#[test]
 fn finish_does_not_consume_either_mode() {
     // Hashing may continue after finish, including a transition after an empty
     // byte write. The resulting stream must match uninterrupted hashing.

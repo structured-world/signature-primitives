@@ -23,7 +23,8 @@ fn measure(label: &str, iterations: u32, mut hash: impl FnMut(u64) -> u64) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut arguments = std::env::args().skip(1);
+    // Cargo adds this harness flag even for a harness-free benchmark binary.
+    let mut arguments = std::env::args().skip(1).filter(|arg| arg != "--bench");
     let case = arguments.next().unwrap_or_else(|| "all".to_owned());
     let iterations = match arguments.next() {
         Some(value) => value.parse::<u32>()?,
@@ -31,6 +32,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if iterations == 0 {
         return Err("iterations must be positive".into());
+    }
+    if arguments.next().is_some() {
+        return Err("unexpected benchmark argument".into());
     }
     let names = [
         "u64-standard",

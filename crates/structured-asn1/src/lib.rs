@@ -51,6 +51,7 @@ extern crate alloc;
 
 pub mod digest;
 pub mod error;
+pub mod hash;
 pub mod inflate;
 pub mod length;
 pub mod limits;

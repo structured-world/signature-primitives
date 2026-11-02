@@ -912,6 +912,7 @@ version = "0.20.1"
 dependencies = [
  "allocator-api2 0.2.21",
  "allocator-api2 0.4.0",
+ "foldhash",
  "hashbrown",
  "miniz_oxide",
 ]

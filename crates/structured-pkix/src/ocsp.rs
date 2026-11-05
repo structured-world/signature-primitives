@@ -99,6 +99,14 @@ pub struct ResponseBytes<'a> {
 }
 
 impl<'a> ResponseBytes<'a> {
+    /// Original source capability for work jointly derived from this envelope
+    /// and another independently parsed object. It retains no account owner
+    /// and performs no payload scan, decoding or allocation.
+    #[must_use]
+    pub fn execution_origin(&self) -> crate::algorithm::Producer<'a> {
+        crate::algorithm::Producer::from_parser(self.reader.parser())
+    }
+
     /// Fund deferred copying or comparing of this original complete envelope
     /// under both its producing ceiling and the current operation. This does
     /// not decode the payload or authenticate a response.

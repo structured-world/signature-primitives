@@ -55,9 +55,14 @@ impl<'a, 'source> Material<'a, 'source> {
         required: &BasicResponse<'_>,
         work: &W,
     ) -> Result<Self, Error<E>> {
-        let original = required.execution_in(work);
-        let envelope = value.execution_in(&original);
-        envelope.charge_work(20).map_err(Error::Resource)?;
+        let original = required.signature_algorithm().execution_origin();
+        let envelope = value.execution_origin();
+        // A joint comparison must preserve both foreign producers as well as
+        // every active current ceiling; sequential source rebinding replaces
+        // the previous foreign source and cannot establish this invariant.
+        original
+            .charge_work_with(envelope, work, 20)
+            .map_err(Error::Resource)?;
         if value.kind() != structured_pkix::oid::OCSP_BASIC {
             return Err(Error::Value("ocsp.responseType"));
         }
@@ -66,8 +71,8 @@ impl<'a, 'source> Material<'a, 'source> {
         if bytes.len() != expected.len() {
             return Err(Error::Value("ocsp.envelope"));
         }
-        envelope
-            .charge_work(bytes.len() as u64)
+        original
+            .charge_work_with(envelope, work, bytes.len() as u64)
             .map_err(Error::Resource)?;
         if bytes != expected {
             return Err(Error::Value("ocsp.envelope"));

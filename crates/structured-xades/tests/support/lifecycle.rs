@@ -283,7 +283,14 @@ fn material_construction_uses_the_whole_original_ocsp_envelope_and_both_origins(
     // OCSPResponse and its signed BasicOCSPResponse are different byte inputs.
     // A foreign payload must not acquire the required body's material identity.
     let original = funded();
-    let parser = structured_asn1::Parser::new(structured_asn1::Encoding::Der, structured_asn1::Limits { max_work: 100_000, ..structured_asn1::Limits::default() }, original.clone());
+    let parser = structured_asn1::Parser::new(
+        structured_asn1::Encoding::Der,
+        structured_asn1::Limits {
+            max_work: 100_000,
+            ..structured_asn1::Limits::default()
+        },
+        original.clone(),
+    );
     let bytes = timestamp_oracle::ocsp_response(2);
     let foreign = timestamp_oracle::ocsp_response(3);
     let structured_pkix::ocsp::Response::Successful(envelope) =
@@ -327,4 +334,36 @@ fn material_construction_uses_the_whole_original_ocsp_envelope_and_both_origins(
             .iter()
             .any(|value| matches!(value, Written::Binary(_)))
     );
+}
+
+#[test]
+fn ocsp_material_binding_preserves_two_foreign_producers_and_current_root() {
+    // A current root already has its own ceiling. Binding an independently
+    // parsed body and envelope must retain BOTH foreign producing ceilings.
+    let envelope_parser = structured_asn1::Parser::der(funded());
+    let bytes = timestamp_oracle::ocsp_response(2);
+    let structured_pkix::ocsp::Response::Successful(envelope) =
+        structured_pkix::ocsp::Response::read(&envelope_parser, &bytes, 500).unwrap()
+    else {
+        panic!("successful fixture");
+    };
+    let body_parser = structured_asn1::Parser::new(
+        structured_asn1::Encoding::Der,
+        structured_asn1::Limits {
+            max_work: 100_000,
+            ..structured_asn1::Limits::default()
+        },
+        funded(),
+    );
+    let mut body_reader = body_parser.read(envelope.payload(), 1500).unwrap();
+    let element = body_reader.next_element().unwrap().unwrap();
+    let body = structured_pkix::ocsp::BasicResponse::read_element(&body_reader, &element).unwrap();
+    let source = body_reader.execution();
+    source.charge_work(source.work_remaining() as u64).unwrap();
+    let current_parser = structured_asn1::Parser::der(funded());
+    let current_reader = current_parser.read(&[], 0).unwrap();
+    assert!(matches!(
+        produce::Material::ocsp::<(), _>(&envelope, &body, &current_reader.execution()),
+        Err(produce::Error::Resource(MemoryError::WorkExceeded))
+    ));
 }

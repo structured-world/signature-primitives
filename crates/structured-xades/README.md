@@ -44,11 +44,11 @@ serializer, signing backend, network client or clock is added here.
 - `renewed::create` derives `RenewedDigestsV2` from the complete authenticated
   Manifest catalogue. The caller explicitly selects expiring algorithms. Shared
   processing resolves all selected old/new identities before hashing, refuses
-  unchanged identities, hashes the actual detached ReferenceOutput and the
+  unchanged identities, hashes the actual detached `ReferenceOutput` and the
   canonical original instruction separately, and retains every selected pair.
   Unavailable input or resource/provider refusal cannot return a success subset.
 - `produce::Augmentation::check_response` calls the existing request-bound
-  RFC3161 checker and XAdES profile hook. `Checked::facts` retains negative
+  RFC3161 checker and `XAdES` profile hook. `Checked::facts` retains negative
   results. Only privately issued evidence permits `Checked::timestamp` to
   borrow an appendable same-response token. `write_timestamp` checks the exact
   original source, selected signature and transaction tail before and after

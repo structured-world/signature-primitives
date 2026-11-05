@@ -10,7 +10,97 @@ providers supply digest and signature operations: digests through the shared
 adding only XML `DigestMethod` resolution and classification. Application code supplies
 trust inputs and decides whether the resulting evidence meets its policy.
 
-## Processing the original signature
+## Creating and augmenting signatures
+
+`produce` supplies construction and append planning for the EN 319 132-1
+V1.3.1 (2024-07) baseline. An XML owner implements `produce::Writer` over an
+unpublished staging transaction. Typed expanded-name events describe elements,
+attributes, text and exact binary values. The owner selects prefixes, validates
+the requested XML Schema datatypes, escapes text, encodes base64, registers IDs
+and admits every allocation and scan through the supplied Work. No XML parser,
+serializer, signing backend, network client or clock is added here.
+
+- `produce::Basic::write` creates the mandatory directly incorporated
+  `QualifyingProperties`/`SignedProperties`, claimed zoned `SigningTime`,
+  `SigningCertificateV2` and the ordinary objects' MIME descriptions. The
+  returned reference instructions identify the signed-properties and optional
+  countersignature reference roles. `write_key_info` includes the actual complete
+  signing certificate. The XML signer installs the references and signs through
+  its selected provider. Optional policy, role, commitment and object timestamps
+  can be staged before signing and use the existing complete validation pipeline.
+- `produce::Augmentation::input` prepares a future signature or archive timestamp
+  without inserting a placeholder token. It requires a positive assessment of
+  the same preparation. Archive creation requires LT or LTA material facts.
+  `timestamp::Input::prepare_append` is the lower-level input selector, without
+  a grade claim. Creation's complete unsigned tail and validation's prefix before
+  an existing archive share one normative input-order kernel.
+- `produce::Materials::missing` derives every missing certificate/CRL/OCSP
+  from the shared complete incorporation report. `write_materials` appends the
+  actual missing values as `AnyValidationData`, preserving earlier subtrees.
+  OCSP construction requires the original whole response matching the actual
+  required signed body; a bare `BasicOCSPResponse` is insufficient. Empty plans
+  emit no empty property. Placement, credential-specific evidence and temporal
+  validity remain explicit existing assessments.
+- `renewed::create` derives `RenewedDigestsV2` from the complete authenticated
+  Manifest catalogue. The caller explicitly selects expiring algorithms. Shared
+  processing resolves all selected old/new identities before hashing, refuses
+  unchanged identities, hashes the actual detached ReferenceOutput and the
+  canonical original instruction separately, and retains every selected pair.
+  Unavailable input or resource/provider refusal cannot return a success subset.
+- `produce::Augmentation::check_response` calls the existing request-bound
+  RFC3161 checker and XAdES profile hook. `Checked::facts` retains negative
+  results. Only privately issued evidence permits `Checked::timestamp` to
+  borrow an appendable same-response token. `write_timestamp` checks the exact
+  original source, selected signature and transaction tail before and after
+  emission, and copies the original canonicalization method with its parameters.
+
+For migration, implement `Writer` first, then `Transaction` for append operations.
+Its immutable base snapshot, signature and unsigned parent must describe the
+actual source used by the plan. The evolving draft is separate. Discard the whole
+draft on failure; publishing a partially emitted property is not supported.
+
+```rust
+use structured_asn1::memory::Work;
+use structured_xades::{produce, timestamp::TimestampXml};
+
+// The owner has already checked the response against the live request and the
+// proposed input. Negative facts stay available in checked.facts().
+fn append_checked<X, B, W>(
+    plan: &produce::Augmentation<'_, X>,
+    checked: &produce::CheckedFor<'_, X>,
+    draft: &mut B,
+    work: &W,
+) -> Result<bool, produce::Error<B::Error>>
+where
+    X: TimestampXml,
+    B: produce::Transaction<
+        Id = X::Id, Document = X::Document, Generation = X::Generation,
+    >,
+    W: Work,
+{
+    let Some(token) = checked.timestamp() else { return Ok(false); };
+    plan.write_timestamp(&token, draft, work)?;
+    Ok(true)
+}
+```
+
+The full sequence is: create/sign B-B, assess that generation, compute the future
+B-T input and its selected-provider digest, encode a `structured_cms::timestamp::NewRequest`,
+acquire a response outside the library, check it with explicit request/time facts,
+and append its accepted token. For LT/LTA, stage missing validation material and
+any selected digest renewal first, then re-prepare/re-assess that staged
+generation before computing the next archive input. Repeat this sequence for
+every renewal, including the previous TSA's material. Any intervening source
+change invalidates the plan and request. Previously protected signed bytes,
+namespace context, unsigned subtrees and archive inputs must survive commit;
+do not add an Object or rewrite an earlier counter after archiving it.
+
+Construction alone asserts neither an attained level nor trust. Run the existing
+field, certificate, complete participant/material and baseline assessments on the
+resulting generation before publishing it. Native XML signing/C14N integration
+and downstream interoperability remain separate from this package's mechanisms.
+
+## Validating an existing signature
 
 1. `prepare::prepare` binds the selected signature to its complete protected
    `SignedProperties` and inventories its original properties and references.

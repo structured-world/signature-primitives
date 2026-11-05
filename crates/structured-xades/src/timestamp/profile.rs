@@ -48,7 +48,7 @@ pub enum DigestError {
     },
 }
 
-pub(super) fn check(
+pub(crate) fn check(
     input: &ProfileInput<'_, '_, '_, '_>,
 ) -> Result<(), ProfileFailure<DigestError>> {
     // The baseline's SHALL NOT applies to actual digest use, including a

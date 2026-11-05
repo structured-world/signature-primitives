@@ -1,6 +1,22 @@
 # structured-cms
 
-## Personal key containers
+## Constructing timestamp requests
+
+`timestamp::NewRequest::encode_der` encodes an RFC3161 request over an original
+selected `AlgorithmIdentifier` and explicit caller-provided finished digest,
+policy, nonce magnitude, certificate-carriage request and extensions. It uses
+the identifier's producing reader with current Work, retains actual output
+capacity charges and refuses duplicate extensions or opaque non-DER parameters.
+Outer BER identifier framing is regenerated as DER without changing its payload.
+Nonces are unsigned arbitrary-width magnitudes; no truncation, entropy source,
+clock, network transport or implicit algorithm selection is introduced.
+
+Keep the generated request and its parsed `Request` alive through response
+checking. Existing `Response::read`/`check_with_profile`, `CheckContext::requested`
+and the token request-comparison APIs provide correlation and mathematical
+checking. A granted status or nonce match alone is not timestamp evidence.
+
+## Processing personal key containers
 
 `personal::Pfx` reads PKCS#12 v3 over the same borrowed BER/DER readers as CMS.
 `personal::process` first asks the selected `Backend` to authenticate the entire

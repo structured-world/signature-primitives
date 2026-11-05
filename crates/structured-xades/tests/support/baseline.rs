@@ -14,6 +14,8 @@ use structured_xades::{
 
 #[path = "baseline_archival.rs"]
 mod archival;
+#[path = "baseline_production.rs"]
+mod production;
 #[path = "baseline_values.rs"]
 mod values;
 
@@ -385,6 +387,7 @@ fn check_material(
             assert!(report.credentials().all_requirements_met());
             assert_eq!(report.all_material_requirements_met(), complete);
             assert_long_term_level(&report, complete);
+            production::assert_material_construction(&report, xml, access.execution());
             let foreign = material::credentials::check(
                 &other,
                 basic.counters,

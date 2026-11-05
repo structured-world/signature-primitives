@@ -30,6 +30,8 @@ mod timeliness;
 pub use timeliness::{RequestWindow, Timeliness, timeliness};
 mod request;
 pub use request::Request;
+mod request_encoding;
+pub use request_encoding::{NewRequest, RequestEncodingError, RequestExtension};
 pub mod response;
 pub use response::Response;
 mod request_extensions;

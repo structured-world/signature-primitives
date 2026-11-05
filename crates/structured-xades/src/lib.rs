@@ -23,6 +23,7 @@ mod mime;
 pub mod pki;
 pub mod policy;
 pub mod prepare;
+pub mod produce;
 pub mod properties;
 pub mod reference;
 pub mod renewed;

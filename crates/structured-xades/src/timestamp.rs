@@ -28,7 +28,7 @@ pub use counters::{
     counter_timestamps,
 };
 pub use coverage::{CoverageError, CoverageFor};
-mod profile;
+pub(crate) mod profile;
 mod selection;
 mod tokens;
 pub use material::{Carried, CarriedCause, CarriedError, CarriedMaterial, OtherCarried};
@@ -56,6 +56,16 @@ pub enum Role {
     /// Earlier validation references, without signature or data-object input.
     ReferencesOnly,
     /// Original reference outputs and earlier signature/validation components.
+    Archive,
+}
+
+/// Input for a timestamp that will be appended after all current unsigned
+/// properties. This is a construction role, not an existing token occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppendKind {
+    /// B-T: canonicalize the selected `SignatureValue` element.
+    Signature,
+    /// B-LTA or renewal: include every current unsigned property in order.
     Archive,
 }
 
@@ -811,6 +821,56 @@ pub struct Input<'a, X: TimestampXml> {
 }
 
 impl<'a, X: TimestampXml> Input<'a, X> {
+    /// Select the input before the new timestamp exists. `method` is an actual
+    /// owner-validated `CanonicalizationMethod` in this immutable snapshot,
+    /// including its parameters. It may be in the owner's unpublished staging
+    /// area; it must not be a new unsigned property or an extra ds:Object.
+    ///
+    /// EN319132-1 §§5.3/5.5.2.2–3 distinguish creation's full unsigned tail
+    /// from validation's prefix before an existing archive. Any material or
+    /// `RenewedDigestsV2` must already be staged before preparing this input.
+    /// Mutation invalidates it; obtain a new input/request after any change.
+    /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
+    pub fn prepare_append<W: Work>(
+        xml: &'a X,
+        bound: &Bound<X::Id, X::Document, X::Generation>,
+        kind: AppendKind,
+        method: X::Id,
+        execution: &W,
+    ) -> InputResult<Self, X> {
+        let layout = bound.containers();
+        let access = Access::new(xml, layout.snapshot(), execution);
+        if !named(&access, method, DS, "CanonicalizationMethod")? {
+            return Err(InputError::Unexpected { node: method });
+        }
+        let mut parts = execution.vector();
+        let role = match kind {
+            AppendKind::Signature => {
+                let value = singleton(&access, layout.signature(), DS, "SignatureValue")?;
+                parts
+                    .try_push(Part::Element(value))
+                    .map_err(|cause| InputError::Resource {
+                        node: method,
+                        cause,
+                    })?;
+                Role::Signature
+            }
+            AppendKind::Archive => {
+                append_archive(&access, layout, method, None, &mut parts)?;
+                Role::Archive
+            }
+        };
+        Ok(Self {
+            xml,
+            snapshot: layout.snapshot(),
+            signature: layout.signature(),
+            timestamp: method,
+            method,
+            role,
+            parts: parts.into_owned(),
+        })
+    }
+
     /// Selects every original input part before C14N, hashing or source callbacks.
     pub fn prepare<W: Work>(
         xml: &'a X,
@@ -852,7 +912,13 @@ impl<'a, X: TimestampXml> Input<'a, X> {
                 // except those referencing SignedProperties. A signed Manifest's
                 // referenced targets do not add another traversal to this input.
                 // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
-                append_references(&access, stamp, Some(layout.signed()), &mut parts)?;
+                append_references(
+                    &access,
+                    stamp.signature,
+                    stamp.node,
+                    Some(layout.signed()),
+                    &mut parts,
+                )?;
             }
             Role::IndividualDataObjects => {
                 append_includes(&access, stamp, layout.signed(), &mut parts)?;
@@ -861,38 +927,13 @@ impl<'a, X: TimestampXml> Input<'a, X> {
                 append_validation_references(&access, stamp, &mut parts)?;
             }
             Role::Archive => {
-                // EN319132-1 §5.5.2.3: Reference outputs, SignedInfo, SignatureValue,
-                // optional KeyInfo, earlier unsigned properties, other Objects.
-                append_references(&access, stamp, None, &mut parts)?;
-                let value = singleton(&access, stamp.signature, DS, "SignatureValue")?;
-                let signed_info = singleton(&access, stamp.signature, DS, "SignedInfo")?;
-                parts
-                    .try_push(Part::Element(signed_info))
-                    .map_err(refusal)?;
-                parts.try_push(Part::Element(value)).map_err(refusal)?;
-                if let Some(key) = optional(&access, stamp.signature, DS, "KeyInfo")? {
-                    parts.try_push(Part::Element(key)).map_err(refusal)?;
-                }
-                let mut reached = false;
-                for child in access.children(stamp.parent) {
-                    let node = child.map_err(InputError::Child)?;
-                    if access.equal_id(node, stamp.node).map_err(refusal)? {
-                        reached = true;
-                        break;
-                    }
-                    parts.try_push(Part::Element(node)).map_err(refusal)?;
-                }
-                if !reached {
-                    return Err(InputError::Foreign { node: stamp.node });
-                }
-                for child in access.children(stamp.signature) {
-                    let node = child.map_err(InputError::Child)?;
-                    if !access.equal_id(node, layout.object()).map_err(refusal)?
-                        && named(&access, node, DS, "Object")?
-                    {
-                        parts.try_push(Part::Element(node)).map_err(refusal)?;
-                    }
-                }
+                append_archive(
+                    &access,
+                    layout,
+                    stamp.node,
+                    Some((stamp.parent, stamp.node)),
+                    &mut parts,
+                )?;
             }
         }
         Ok(Self {
@@ -1072,19 +1113,20 @@ fn append_includes<X: TimestampXml, W: Work>(
 
 fn append_references<X: TimestampXml, W: Work>(
     access: &Access<'_, X, W>,
-    stamp: &Timestamp<X>,
+    signature: X::Id,
+    context: X::Id,
     excluded: Option<X::Id>,
     parts: &mut OwnedVec<Part<X::Id>, W>,
 ) -> InputResult<(), X> {
     let count = access
-        .query(stamp.signature, |xml, snapshot, work| {
-            xml.reference_count(snapshot, stamp.signature, work)
+        .query(signature, |xml, snapshot, work| {
+            xml.reference_count(snapshot, signature, work)
         })
         .map_err(InputError::Access)?;
     for ordinal in 0..count {
         let (part, target) = access
-            .query(stamp.signature, |xml, snapshot, work| {
-                xml.reference(snapshot, stamp.signature, ordinal, work, |r| {
+            .query(signature, |xml, snapshot, work| {
+                xml.reference(snapshot, signature, ordinal, work, |r| {
                     (
                         Part::Reference {
                             node: r.node,
@@ -1105,16 +1147,84 @@ fn append_references<X: TimestampXml, W: Work>(
             && access
                 .equal_id(target, excluded)
                 .map_err(|cause| InputError::Resource {
-                    node: stamp.node,
+                    node: context,
                     cause,
                 })?
         {
             continue;
         }
         parts.try_push(part).map_err(|cause| InputError::Resource {
-            node: stamp.node,
+            node: context,
             cause,
         })?;
+    }
+    Ok(())
+}
+
+// One input-order kernel for creation's complete tail and validation's original
+// prefix, EN319132-1 §5.5.2.3. The optional boundary is a source node, not a count.
+fn append_archive<X: TimestampXml, W: Work>(
+    access: &Access<'_, X, W>,
+    layout: &crate::container::Layout<X>,
+    context: X::Id,
+    before: Option<(X::Id, X::Id)>,
+    parts: &mut OwnedVec<Part<X::Id>, W>,
+) -> InputResult<(), X> {
+    let refusal = |cause| InputError::Resource {
+        node: context,
+        cause,
+    };
+    let signature = layout.signature();
+    append_references(access, signature, context, None, parts)?;
+    parts
+        .try_push(Part::Element(singleton(
+            access,
+            signature,
+            DS,
+            "SignedInfo",
+        )?))
+        .map_err(refusal)?;
+    parts
+        .try_push(Part::Element(singleton(
+            access,
+            signature,
+            DS,
+            "SignatureValue",
+        )?))
+        .map_err(refusal)?;
+    if let Some(key) = optional(access, signature, DS, "KeyInfo")? {
+        parts.try_push(Part::Element(key)).map_err(refusal)?;
+    }
+    let parent = match before {
+        Some((parent, _)) => Some(parent),
+        None => match layout.unsigned() {
+            Some(unsigned) => optional(access, unsigned, XADES, "UnsignedSignatureProperties")?,
+            None => None,
+        },
+    };
+    let mut reached = before.is_none();
+    if let Some(parent) = parent {
+        for child in access.children(parent) {
+            let node = child.map_err(InputError::Child)?;
+            if let Some((_, boundary)) = before
+                && access.equal_id(node, boundary).map_err(refusal)?
+            {
+                reached = true;
+                break;
+            }
+            parts.try_push(Part::Element(node)).map_err(refusal)?;
+        }
+    }
+    if !reached {
+        return Err(InputError::Foreign { node: context });
+    }
+    for child in access.children(signature) {
+        let node = child.map_err(InputError::Child)?;
+        if !access.equal_id(node, layout.object()).map_err(refusal)?
+            && named(access, node, DS, "Object")?
+        {
+            parts.try_push(Part::Element(node)).map_err(refusal)?;
+        }
     }
     Ok(())
 }
@@ -1212,7 +1322,7 @@ pub(crate) fn singleton<X: Xml, W: Work>(
     })
 }
 
-fn optional<X: Xml, W: Work>(
+pub(crate) fn optional<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     parent: X::Id,
     namespace: &str,

@@ -334,6 +334,13 @@ impl<'a> Response<'a> {
     pub fn token(&self) -> Option<&Token<'a>> {
         self.token.as_ref().map(|token| &token.value)
     }
+    /// Whole original `ContentInfo` carried by this exact response. This does
+    /// not prove successful request/token checks. Construction must associate
+    /// it with this response's own completed check, never another token receipt.
+    #[must_use]
+    pub fn token_element(&self) -> Option<&Element<'a>> {
+        self.token.as_ref().map(|token| &token.element)
+    }
     /// Original whole response; no re-encoded token or physical-offset reset.
     #[must_use]
     pub fn element(&self) -> &Element<'a> {

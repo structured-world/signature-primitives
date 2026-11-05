@@ -165,10 +165,10 @@ pub type CheckResult<T, X, PE> = Result<
 pub type Checked<X> =
     Report<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation, <X as Xml>::Error>;
 
-struct Instruction<N> {
-    node: N,
-    location: ObjectLocation,
-    status: crate::binding::Status,
+pub(super) struct Instruction<N> {
+    pub(super) node: N,
+    pub(super) location: ObjectLocation,
+    pub(super) status: crate::binding::Status,
 }
 struct Expected<N> {
     pair: Pair<N>,
@@ -240,14 +240,14 @@ fn memoize<'q, X: TimestampXml, P: DigestProvider<'q, X>, W: Work>(
     Ok(Resolution::Supported(candidates.into_owned()))
 }
 
-enum Mode<N> {
+pub(super) enum Mode<N> {
     Canonical { node: N, method: N },
     Reference { signature: N, node: N },
 }
-struct Input<'a, X: TimestampXml> {
-    xml: &'a X,
-    snapshot: Snapshot<X::Document, X::Generation>,
-    mode: Mode<X::Id>,
+pub(super) struct Input<'a, X: TimestampXml> {
+    pub(super) xml: &'a X,
+    pub(super) snapshot: Snapshot<X::Document, X::Generation>,
+    pub(super) mode: Mode<X::Id>,
 }
 impl<X: TimestampXml> Source for Input<'_, X> {
     type Error = SourceError<X::Error, X::Id>;
@@ -328,7 +328,7 @@ fn check_inner<'q, X: TimestampXml + binary::BinaryXml, P: DigestProvider<'q, X>
         ));
     }
     let expected = read_expected(xml, reading, work)?;
-    let instructions = inventory(&access, reading)?;
+    let instructions = inventory(&access, reading.signature, reading.node)?;
     if let Some(state) = manifest_state::<X, W, P::Error>(&instructions, reading.node, work)? {
         return Ok(report(reading, state, work.vector().into_owned(), false));
     }
@@ -472,7 +472,7 @@ fn report<N: Copy, D: Copy, G: Copy, E>(
     }
 }
 
-fn resolve<'q, X: Xml, P: DigestProvider<'q, X>, W: Work>(
+pub(super) fn resolve<'q, X: Xml, P: DigestProvider<'q, X>, W: Work>(
     access: &Access<'_, X, W>,
     node: X::Id,
     provider: &P,
@@ -488,7 +488,7 @@ fn resolve<'q, X: Xml, P: DigestProvider<'q, X>, W: Work>(
     })
 }
 
-fn original_method<X: Xml, W: Work>(
+pub(super) fn original_method<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     node: X::Id,
 ) -> properties::PropertyResult<X::Id, X> {
@@ -517,19 +517,17 @@ fn original_method<X: Xml, W: Work>(
     })
 }
 
-fn inventory<X: ReferenceXml, W: Work, PE>(
+pub(super) fn inventory<X: ReferenceXml, W: Work, PE>(
     access: &Access<'_, X, W>,
-    reading: &Catalogue<X::Id, X::Document, X::Generation>,
+    signature: X::Id,
+    context: X::Id,
 ) -> CheckResult<OwnedVec<Instruction<X::Id>>, X, PE> {
     let work = access.execution();
     let mut entries = work.vector();
     let complete = access
-        .query(reading.node, |xml, snapshot, work| {
-            Ok(xml.visit_authenticated_references(
-                snapshot,
-                reading.signature,
-                work,
-                |descriptor| {
+        .query(context, |xml, snapshot, work| {
+            Ok(
+                xml.visit_authenticated_references(snapshot, signature, work, |descriptor| {
                     if matches!(descriptor.parent, Parent::Manifest(_)) {
                         entries
                             .try_push(Instruction {
@@ -543,8 +541,8 @@ fn inventory<X: ReferenceXml, W: Work, PE>(
                             })?;
                     }
                     Ok::<_, CheckError<X::Error, PE, X::Id, X::Document, X::Generation>>(())
-                },
-            ))
+                }),
+            )
         })
         .map_err(CheckError::Access)?;
     let complete = match complete {

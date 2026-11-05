@@ -20,6 +20,8 @@ const SHA384: &str = "http://www.w3.org/2001/04/xmldsig-more#sha384";
 const SHA256_ALIAS: &str = "urn:fixture:sha256-alias";
 const SHA512_256: &str = "urn:fixture:sha512-256";
 const MD5_ALIAS: &str = "urn:fixture:md5-alias";
+#[path = "renewed_production.rs"]
+mod production;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Identity {
     Sha256,

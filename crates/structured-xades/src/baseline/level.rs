@@ -92,7 +92,7 @@ impl<A, N: Copy, D: Copy, G: Copy> Evidence<'_, A, N, D, G> {
         }
     }
 
-    fn prepared(&self) -> &Preparation<N, D, G> {
+    pub(crate) fn prepared(&self) -> &Preparation<N, D, G> {
         match self {
             Self::Basic(basic) => basic.inputs().fields.prepared(),
             Self::Timestamped(timed) => timed.basic().inputs().fields.prepared(),

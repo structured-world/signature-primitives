@@ -8,6 +8,9 @@ mod timestamp_oracle;
 #[path = "support/token_profiles.rs"]
 mod token_profiles;
 
+#[path = "support/lifecycle.rs"]
+mod lifecycle;
+
 #[path = "support/independent_corpus.rs"]
 pub mod independent_corpus;
 

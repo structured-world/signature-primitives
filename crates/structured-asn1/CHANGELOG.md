@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.3](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.20.2...structured-asn1-v0.20.3) - 2026-11-05
+
+### Added
+
+- *(xades)* add signature lifecycle construction ([#276](https://github.com/structured-world/signature-primitives/pull/276))
+
 ## [0.20.2](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.20.1...structured-asn1-v0.20.2) - 2026-11-02
 
 ### Added

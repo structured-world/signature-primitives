@@ -48,6 +48,8 @@ impl core::fmt::Display for Failure {
 struct Oracle<'a> {
     mutate_start: Option<&'a Cell<u8>>,
     resolved: Cell<usize>,
+    new_resolved: Cell<usize>,
+    refuse_new: bool,
     started: Cell<usize>,
     finished: Cell<usize>,
     refuse_update: bool,

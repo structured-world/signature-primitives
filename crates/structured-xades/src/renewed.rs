@@ -12,7 +12,9 @@ mod create;
 pub use check::{
     CheckError, CheckResult, Checked, PairCheck, PairOutcome, Report, SourceError, State, check,
 };
-pub use create::{Candidate, Created, CreationError, CreationResult, Renewal, create};
+pub use create::{
+    Candidate, Created, CreationError, CreationResult, MethodProvider, Renewal, create,
+};
 mod prepared;
 pub use prepared::{PreparedChecks, PreparedResult, check_prepared};
 

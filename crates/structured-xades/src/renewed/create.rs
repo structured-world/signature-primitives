@@ -4,6 +4,7 @@ use super::check::{self, Input, Mode};
 use crate::{
     binding::{Bound, Status},
     certificate::{self, Agreement, DigestProvider},
+    container::DS,
     digest,
     produce::{Emit, Error, Transaction},
     reference::ObjectLocation,
@@ -41,6 +42,10 @@ pub enum CreationError<E, PE, N, D, G> {
         /// Completed algorithm classification.
         answer: Agreement,
     },
+    /// Classification of the supplied new parameter-free method, not a source node.
+    NewAlgorithm(Agreement),
+    /// Original construction resolver cause, including deployment/resource refusal.
+    NewProvider(PE),
     /// Selected instruction is not an actual successfully checked detached reference.
     Ineligible {
         /// Original instruction.
@@ -62,16 +67,16 @@ struct Pair<N, O> {
 /// Complete recomputed pairs from the selected original Manifest instructions.
 /// Output ownership is that of the existing selected digest provider. No whole
 /// detached input is buffered, and no URI-based algorithm dispatcher is added.
-pub struct Renewal<N, D, G, O> {
+pub struct Renewal<'method, N, D, G, O> {
     snapshot: Snapshot<D, G>,
     signature: N,
     parent: Option<N>,
     canonicalization: N,
-    digest: N,
+    digest: &'method str,
     pairs: OwnedVec<Pair<N, O>>,
 }
 
-impl<N: Copy, D: Copy + Eq, G: Copy + Eq, O: AsRef<[u8]>> Renewal<N, D, G, O> {
+impl<N: Copy, D: Copy + Eq, G: Copy + Eq, O: AsRef<[u8]>> Renewal<'_, N, D, G, O> {
     /// Number of actual selected original instructions, not a success subset.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -84,7 +89,8 @@ impl<N: Copy, D: Copy + Eq, G: Copy + Eq, O: AsRef<[u8]>> Renewal<N, D, G, O> {
     }
 
     /// Append the original computed pairs in selection order. The transaction
-    /// copies complete original method elements, preserving parameters.
+    /// copies the original canonicalization method with its parameters and
+    /// emits the exact new parameter-free digest URI resolved during creation.
     /// EN319132-1 §5.5.3 requires ordinary `ReferenceOutput` for `NewSDODigestValue`
     /// and canonicalized Reference XML for `OriginalRefDigest`, in that order.
     /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
@@ -114,10 +120,9 @@ impl<N: Copy, D: Copy + Eq, G: Copy + Eq, O: AsRef<[u8]>> Renewal<N, D, G, O> {
         emit.writer
             .method(self.canonicalization, work)
             .map_err(Error::Writer)?;
-        work.charge_work(1).map_err(Error::Resource)?;
-        emit.writer
-            .method(self.digest, work)
-            .map_err(Error::Writer)?;
+        emit.begin(DS, "DigestMethod")?;
+        emit.attribute("Algorithm", self.digest)?;
+        emit.end()?;
         for pair in &self.pairs {
             emit.begin(XADES_141, "RecomputedDigestValue")?;
             emit.binary(XADES_141, "NewSDODigestValue", pair.object.as_ref())?;
@@ -154,30 +159,48 @@ pub type CreationResult<T, X, PE> = Result<
     >,
 >;
 /// Complete new renewal with the selected provider's actual output storage.
-pub type Created<'p, X, P> = Renewal<
+pub type Created<'method, 'p, X, P> = Renewal<
+    'method,
     <X as crate::xml::Xml>::Id,
     <X as crate::xml::Xml>::Document,
     <X as crate::xml::Xml>::Generation,
     <P as structured_asn1::digest::Digest<'p>>::Output,
 >;
 
+/// New parameter-free XML digest methods through the SAME selected provider.
+/// This capability does not add a dispatcher or change existing-node resolution.
+pub trait MethodProvider<'p, X: crate::xml::Xml>: DigestProvider<'p, X> {
+    /// Resolve exactly this URI under the current operation's compiled policy.
+    /// It is emitted unchanged as the new `DigestMethod` Algorithm attribute.
+    /// Admit lexical scans, policy evaluation and any retained identity storage
+    /// through `work` before execution. Reject noncanonical lexical input as
+    /// `Malformed`; do not normalize into a different emitted value. Methods
+    /// requiring parameters are `Unsupported` or `Malformed`, never silently
+    /// assigned absent/default parameters. Original terminal errors stay errors.
+    fn resolve_new<W: Work>(
+        &self,
+        algorithm: &str,
+        work: &W,
+    ) -> Result<Resolution<Self::Identity>, Self::Error>;
+}
+
 /// Resolve every selected method before starting any digest/source callback.
 /// Selection examines the complete authenticated Manifest census under Work;
 /// unknown origin/unchecked/invalid selected instructions refuse, never skip.
 /// Both hashes reuse validation's source and digest kernels. Strength beyond
 /// semantic inequality is the caller's explicit algorithm-longevity policy.
-pub fn create<'p, X, P, W>(
+pub fn create<'method, 'p, X, P, W>(
     xml: &X,
     bound: &Bound<X::Id, X::Document, X::Generation>,
     canonicalization: X::Id,
-    new_method: X::Id,
+    new_method: &'method str,
     provider: &'p P,
     work: &W,
     selected: impl FnMut(Candidate<X::Id>, &W) -> Result<bool, P::Error>,
-) -> CreationResult<Created<'p, X, P>, X, P::Error>
+) -> CreationResult<Created<'method, 'p, X, P>, X, P::Error>
 where
     X: TimestampXml,
-    P: DigestProvider<'p, X>,
+    P: MethodProvider<'p, X>,
     W: Work,
 {
     let layout = bound.containers();
@@ -185,7 +208,7 @@ where
     let processing = CreationError::Processing;
     let resource = |cause| {
         processing(super::CheckError::Resource {
-            node: new_method,
+            node: layout.signature(),
             cause,
         })
     };
@@ -216,31 +239,8 @@ where
             reference: canonicalization,
         });
     }
-    if let Some(answer) = certificate::preflight_method(&access, new_method)
-        .map_err(|e| processing(super::CheckError::Access(e)))?
-    {
-        return Err(CreationError::Algorithm {
-            method: new_method,
-            answer,
-        });
-    }
-    let identity = match check::resolve(&access, new_method, provider).map_err(processing)? {
-        certificate::Expected::Ready(identity) => identity,
-        certificate::Expected::Answer(answer) => {
-            return Err(CreationError::Algorithm {
-                method: new_method,
-                answer,
-            });
-        }
-    };
-    let choices = choose(
-        &access,
-        layout.signature(),
-        new_method,
-        &identity,
-        provider,
-        selected,
-    )?;
+    let identity = resolve_new(&access, layout.signature(), new_method, provider)?;
+    let choices = choose(&access, layout.signature(), &identity, provider, selected)?;
     let mut pairs = work.vector();
     pairs.try_reserve_exact(choices.len()).map_err(resource)?;
     for reference in choices {
@@ -279,10 +279,44 @@ where
     })
 }
 
+fn resolve_new<'p, X: TimestampXml, P: MethodProvider<'p, X>, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    algorithm: &str,
+    provider: &P,
+) -> CreationResult<certificate::FormatDigest<P::Identity>, X, P::Error> {
+    if let Some(answer) =
+        certificate::preflight_algorithm(algorithm, access.execution()).map_err(|cause| {
+            CreationError::Processing(super::CheckError::Resource {
+                node: signature,
+                cause,
+            })
+        })?
+    {
+        return Err(CreationError::NewAlgorithm(answer));
+    }
+    let resolved = access
+        .query(signature, |_, _, work| {
+            Ok(provider.resolve_new(algorithm, work))
+        })
+        .map_err(|e| CreationError::Processing(super::CheckError::Access(e)))?
+        .map_err(CreationError::NewProvider)?;
+    let resolved = match resolved {
+        Resolution::Supported(identity) => identity,
+        Resolution::Unsupported => return Err(CreationError::NewAlgorithm(Agreement::Unsupported)),
+        Resolution::Malformed => {
+            return Err(CreationError::NewAlgorithm(Agreement::MalformedMethod));
+        }
+    };
+    match certificate::baseline_digest::<X, P>(resolved, provider) {
+        certificate::Expected::Ready(identity) => Ok(identity),
+        certificate::Expected::Answer(answer) => Err(CreationError::NewAlgorithm(answer)),
+    }
+}
+
 fn choose<'p, X: TimestampXml, P: DigestProvider<'p, X>, W: Work>(
     access: &Access<'_, X, W>,
     signature: X::Id,
-    new_method: X::Id,
     identity: &certificate::FormatDigest<P::Identity>,
     provider: &P,
     mut selected: impl FnMut(Candidate<X::Id>, &W) -> Result<bool, P::Error>,
@@ -291,11 +325,11 @@ fn choose<'p, X: TimestampXml, P: DigestProvider<'p, X>, W: Work>(
     let processing = CreationError::Processing;
     let resource = |cause| {
         processing(super::CheckError::Resource {
-            node: new_method,
+            node: signature,
             cause,
         })
     };
-    let instructions = check::inventory(access, signature, new_method).map_err(processing)?;
+    let instructions = check::inventory(access, signature, signature).map_err(processing)?;
     let mut choices = work.vector();
     for instruction in instructions {
         work.charge_work(1).map_err(resource)?;

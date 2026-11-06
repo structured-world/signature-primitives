@@ -389,18 +389,29 @@ pub(crate) fn preflight_method<X: Xml, W: Work>(
                     return Ok(Some(Agreement::MalformedMethod));
                 };
                 let value = access.trim_xml_whitespace(value)?;
-                // EN319132-1 §6.2.1 unconditionally excludes MD5. This format rule
-                // cannot be relaxed by a general XML algorithm policy or provider.
-                // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
-                // The URI is RFC9231 §2.1.1's MD5 digest identifier.
-                // https://www.rfc-editor.org/rfc/rfc9231.html#section-2.1.1
-                if access.equal(value, "http://www.w3.org/2001/04/xmldsig-more#md5")? {
-                    return Ok(Some(Agreement::ProhibitedAlgorithm));
-                }
-                Ok(None)
+                preflight_algorithm(value, access.execution())
             },
         )?
         .map_err(|cause| AccessError::Resource { node, cause })
+}
+
+pub(crate) fn preflight_algorithm<W: Work>(
+    algorithm: &str,
+    work: &W,
+) -> Result<Option<Agreement>, MemoryError> {
+    // EN319132-1 §6.2.1 unconditionally excludes MD5 before deployment policy.
+    // Creation and existing-node validation share this format rule.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
+    // RFC9231 §2.1.1 defines this identifier.
+    // https://www.rfc-editor.org/rfc/rfc9231.html#section-2.1.1
+    work.charge_work(algorithm.len() as u64)?;
+    Ok(
+        if algorithm == "http://www.w3.org/2001/04/xmldsig-more#md5" {
+            Some(Agreement::ProhibitedAlgorithm)
+        } else {
+            None
+        },
+    )
 }
 
 /// Certificate-reference catalogue using the XML owner's original identities.

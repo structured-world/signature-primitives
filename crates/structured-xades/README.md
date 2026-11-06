@@ -47,6 +47,13 @@ serializer, signing backend, network client or clock is added here.
   unchanged identities, hashes the actual detached `ReferenceOutput` and the
   canonical original instruction separately, and retains every selected pair.
   Unavailable input or resource/provider refusal cannot return a success subset.
+  The new method is a borrowed URI, not a node that must already exist in the
+  document. `renewed::MethodProvider::resolve_new` resolves that exact value
+  through the same selected provider and compiled policy. Only parameter-free
+  methods are supported by this construction capability; methods requiring
+  parameters must be explicitly refused. `Renewal::write` emits the same URI
+  through typed writer events and copies only the original canonicalization
+  method with its parameters. No intermediate document generation is needed.
 - `produce::Augmentation::check_response` calls the existing request-bound
   RFC3161 checker and `XAdES` profile hook. `Checked::facts` retains negative
   results. Only privately issued evidence permits `Checked::timestamp` to
@@ -58,6 +65,13 @@ For migration, implement `Writer` first, then `Transaction` for append operation
 Its immutable base snapshot, signature and unsigned parent must describe the
 actual source used by the plan. The evolving draft is separate. Discard the whole
 draft on failure; publishing a partially emitted property is not supported.
+
+For renewal producers migrating from a node-based `new_method`, pass the selected
+algorithm URI to `renewed::create` and implement `renewed::MethodProvider` beside
+the existing `certificate::DigestProvider`. The new hook must preserve the exact
+URI, actual digest identity, current Work and deployment-policy refusal; do not
+delegate by manufacturing an XML node. `Renewal` and `Created` now carry a lifetime
+for the borrowed method URI. Existing-node digest validation is unchanged.
 
 ```rust
 use structured_asn1::memory::Work;

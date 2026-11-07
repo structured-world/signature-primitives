@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.21.0...structured-asn1-v0.21.1) - 2026-11-07
+
+### Fixed
+
+- *(xades)* reuse pooled root timestamp tokens ([#282](https://github.com/structured-world/signature-primitives/pull/282))
+
 ## [0.21.0](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.20.3...structured-asn1-v0.21.0) - 2026-11-06
 
 ### Fixed

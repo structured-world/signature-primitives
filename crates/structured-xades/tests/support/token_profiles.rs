@@ -231,6 +231,88 @@ fn replace_at(der: &[u8], path: &[usize], replacement: &impl Fn(&[u8]) -> Vec<u8
 }
 
 #[test]
+fn root_actor_uses_the_cms_pool_encoding_for_unordered_certificates() {
+    use structured_pkix::{
+        path::WorkingKey,
+        temporal::{Instant, LeapTable},
+    };
+    // Reorder only the unsigned certificate set. The actual ECDSA signature,
+    // DER signedAttrs, TSTInfo and original XML input must still verify.
+    let (mut xml, first, second) = token_pipeline_tree();
+    let method = u8::try_from(first - 1).unwrap();
+    let (provider, token, tsa, root) =
+        timestamp_oracle::fixture_with_root(&[b'E', 12, b'M', method]);
+    let (high, low) = if tsa > root {
+        (&tsa, &root)
+    } else {
+        (&root, &tsa)
+    };
+    xml.binary = replace_at(&token, &[1, 0, 3], &|_| {
+        timestamp_oracle::tlv(0xa0, &[high.as_slice(), low.as_slice()].concat())
+    });
+    let memory = funded();
+    let parser = structured_asn1::Parser::der(memory.clone());
+    let operation = parser.read(&[], 900).unwrap();
+    let certificate = structured_pkix::Certificate::read(&parser, &tsa, 400).unwrap();
+    let utc = LeapTable::new(0, 2_000_000_000, &[]).unwrap();
+    let context = CheckContext {
+        certificate: &certificate,
+        certificate_parent: &operation,
+        key: WorkingKey::standing(certificate.tbs().public_key()),
+        requested: None,
+        utc: &utc,
+        reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
+        window: None,
+        policy_accuracy: None,
+    };
+    let prepared = prepare::prepare(
+        &Access::new(&xml, xml.snapshot(), &memory),
+        0,
+        unsigned::Requirements::Archival,
+        None,
+    )
+    .unwrap();
+    let check = timestamp::Check {
+        xml: &xml,
+        provider: &provider,
+        context: &context,
+    };
+    assert!(matches!(
+        timestamp::with_tokens(&xml, &prepared, &operation, timestamp::TokenProfile::Etsi, |_, _| Ok::<_, ()>(())),
+        Err(timestamp::TokenPipelineError::Token { cause, .. })
+            if cause.code() == structured_cms::ErrorCode::SetOrder
+    ));
+    timestamp::with_tokens(&xml, &prepared, &operation, timestamp::TokenProfile::Cms, |query, view| {
+        assert_eq!(view.sources()[0].location().node, first);
+        assert_eq!(view.sources()[1].location().node, second);
+        assert!(matches!(
+            view.sources()[0].encoding_conformance(),
+            timestamp::EncodingConformance::Mismatch(cause)
+                if cause.code() == structured_cms::ErrorCode::SetOrder
+        ));
+        let stamp = &prepared.timestamps()[0];
+        let streamed = xml.streamed.get();
+        xml.decoded_pointer.set(0);
+        assert!(matches!(
+            check.retain_actor_from(prepared.bound(), stamp, view.entry(1).unwrap(), query, |_, _| Ok::<_, ()>(false)),
+            Err(timestamp::CheckError::Input(timestamp::InputError::Foreign { node })) if node == second
+        ));
+        assert_eq!(provider.verified.get(), 0);
+        assert_eq!(xml.streamed.get(), streamed);
+        let actor = check
+            .retain_actor_from(prepared.bound(), stamp, view.entry(0).unwrap(), query, |_, _| Ok::<_, ()>(false))
+            .unwrap()
+            .expect("the pooled BER token verifies over its original input");
+        assert_eq!(actor.verified().token().node, first);
+        assert_eq!(actor.verified().property(), stamp.node());
+        assert_eq!(xml.decoded_pointer.get(), 0);
+        assert_eq!(provider.verified.get(), 1);
+        Ok::<_, ()>(())
+    })
+    .unwrap();
+}
+
+#[test]
 fn cms_envelope_does_not_relax_signed_attributes_or_inner_tstinfo_der() {
     // Changing only BER container spelling cannot make non-DER signedAttrs
     // readable or a non-DER TSTInfo a usable proof. No math callback may run.

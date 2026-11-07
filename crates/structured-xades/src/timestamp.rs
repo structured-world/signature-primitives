@@ -286,8 +286,8 @@ pub type CheckResult<R, X, PE, RE> = Result<
     >,
 >;
 
-impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
-    Check<'_, 'document, 'certificate, '_, X, P>
+impl<'xml, 'document, 'certificate, X: TimestampXml + BinaryXml, P>
+    Check<'xml, 'document, 'certificate, '_, X, P>
 {
     /// Retains positive evidence with the actual selected certificate/key.
     ///
@@ -434,6 +434,31 @@ impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
         }))
     }
 
+    /// Retain evidence for a root timestamp from its original frozen pool entry.
+    /// The pool's selected encoding is reused without decoding or parsing the
+    /// CMS envelope again. The original token and input must belong to the same
+    /// timestamp on the bound signature. Declaration conformance remains a
+    /// separate pool fact.
+    #[expect(
+        clippy::result_large_err,
+        reason = "retain original source maps and opaque callback causes"
+    )]
+    pub fn retain_actor_from<PE, RE>(
+        &self,
+        bound: &Bound<X::Id, X::Document, X::Generation>,
+        stamp: &Timestamp<X>,
+        entry: TokenEntry<'_, '_, X::Id, X::Document, X::Generation>,
+        operation: &Reader<'_>,
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+    ) -> CheckResult<Option<TimestampActor<'certificate, 'document, X>>, X, PE, RE>
+    where
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+    {
+        self.retain_from(stamp, entry, operation, recognizes, |execution| {
+            Input::prepare(self.xml, bound, stamp, execution)
+        })
+    }
+
     /// Reuse an already decoded/parsed original child token from the frozen
     /// pool. The SAME common profile/check kernel supplies evidence; a fresh
     /// source reader preserves original and current ceilings without reparsing.
@@ -453,7 +478,26 @@ impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
     where
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
     {
-        let stamp = counter.stamp();
+        self.retain_from(counter.stamp(), entry, operation, recognizes, |execution| {
+            counter.input(self.xml, execution)
+        })
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "retain original source maps and opaque callback causes"
+    )]
+    fn retain_from<PE, RE>(
+        &self,
+        stamp: &Timestamp<X>,
+        entry: TokenEntry<'_, '_, X::Id, X::Document, X::Generation>,
+        operation: &Reader<'_>,
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+        prepare: impl FnOnce(&Execution<'_>) -> InputResult<Input<'xml, X>, X>,
+    ) -> CheckResult<Option<TimestampActor<'certificate, 'document, X>>, X, PE, RE>
+    where
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+    {
         let execution = operation.execution();
         let access = Access::new(self.xml, stamp.snapshot, &execution);
         access
@@ -488,9 +532,7 @@ impl<'document, 'certificate, X: TimestampXml + BinaryXml, P>
                 node: source.location().node,
             }));
         }
-        let mut input = counter
-            .input(self.xml, &execution)
-            .map_err(CheckError::Input)?;
+        let mut input = prepare(&execution).map_err(CheckError::Input)?;
         let location = source.location();
         let reader = entry.reader_in(operation).map_err(|cause| {
             CheckError::Token(binary::Error::ReaderCreation { location, cause })

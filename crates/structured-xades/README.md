@@ -209,6 +209,10 @@ and downstream interoperability remain separate from this package's mechanisms.
    Terminal resource failures stop the pool rather than becoming mismatches.
    DER requirements for signed attributes and `TSTInfo`, validation-material
    encoding rules and original XML/archive input bytes remain unchanged.
+   Use `Check::retain_actor_from` for root timestamps and
+   `Check::retain_counter_from` for countersignatures when checking a
+   `TokenEntry` from either pool. These checks reuse the parsed token and
+   its selected encoding. Standalone checks read the XML declaration directly.
 4. `baseline::basic` joins the checked fields, exact signing certificate,
    effective key, counter paths and actual hash uses. Every written protected,
    ordinary and attribute certificate-reference issuer hint uses the same DER

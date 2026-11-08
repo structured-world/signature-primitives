@@ -20,8 +20,8 @@ structured-ltv = { version = "0.21.1", path = "../structured-ltv", default-featu
 
 [dev-dependencies]
 # Test-only fixed-curve oracle, using the same pinned engines as CMS tests.
-p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
-sha2 = { version = "=0.11.1", default-features = false }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa"] }
+sha2 = { version = "0.11.1", default-features = false }
 
 [lints]
 workspace = true

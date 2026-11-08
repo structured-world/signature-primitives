@@ -25,9 +25,9 @@ structured-ltv = { version = "0.21.1", path = "../structured-ltv", default-featu
 structured-cades = { version = "0.21.1", path = "../structured-cades", default-features = false }
 
 [dev-dependencies]
-p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa"] }
 sha1 = { version = "0.11", default-features = false }
-sha2 = { version = "=0.11.1", default-features = false }
+sha2 = { version = "0.11.1", default-features = false }
 
 [lints]
 workspace = true

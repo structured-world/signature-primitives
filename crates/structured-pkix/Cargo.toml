@@ -21,10 +21,10 @@ structured-asn1 = { version = "0.21.1", path = "../structured-asn1", default-fea
 unicode-normalization = { version = "0.1", default-features = false }
 unicode-bidi = { version = "0.3", default-features = false, features = ["hardcoded-data"] }
 structured-email-address = { version = "0.0.22", default-features = false, features = ["alloc"] }
-zeroize = { version = "=1.9.1", default-features = false }
+zeroize = { version = "1.9.1", default-features = false }
 
 [dev-dependencies]
-ml-dsa = { version = "=0.1.2", default-features = false }
+ml-dsa = { version = "0.1.2", default-features = false }
 p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }
 # Independent protocol-identity test oracle; production hashing stays injected.
 sha1 = { version = "0.11", default-features = false }

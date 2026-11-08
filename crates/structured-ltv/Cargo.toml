@@ -23,9 +23,9 @@ structured-cms = { version = "0.21.1", path = "../structured-cms", default-featu
 
 [dev-dependencies]
 # Test-only fixed-curve oracles, using the same pinned engines as CMS tests.
-ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["fast"] }
-p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
-sha2 = { version = "=0.11.1", default-features = false }
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa"] }
+sha2 = { version = "0.11.1", default-features = false }
 
 [lints]
 workspace = true

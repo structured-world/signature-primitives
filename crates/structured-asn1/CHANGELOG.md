@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.2](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.21.1...structured-asn1-v0.21.2) - 2026-11-08
+
+### Fixed
+
+- *(deps)* allow compatible registry versions ([#291](https://github.com/structured-world/signature-primitives/pull/291))
+
+### Other
+
+- *(deps)* bump ml-dsa from 0.1.1 to 0.1.2 ([#286](https://github.com/structured-world/signature-primitives/pull/286))
+- *(deps)* bump aes from 0.9.3 to 0.9.4 ([#287](https://github.com/structured-world/signature-primitives/pull/287))
+
 ## [0.21.1](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.21.0...structured-asn1-v0.21.1) - 2026-11-07
 
 ### Fixed

@@ -245,7 +245,7 @@ fn probable_prime<R: TryCryptoRng>(
     let minus_one = candidate.wrapping_sub(&U512::ONE);
     let twos = minus_one.trailing_zeros_vartime();
     let exponent = minus_one.shr_vartime(twos);
-    let bits = candidate.bits_vartime();
+    let bits = candidate.bit_width_vartime();
     let bytes = usize::try_from(bits.div_ceil(8)).map_err(|_| Error::InvalidDomain)?;
     // DSTU6.12 prescribes50 independent random bases. Rejection sampling
     // is bounded, uses caller entropy, and never reduces biased bytes mod n.
@@ -293,7 +293,7 @@ fn probable_prime<R: TryCryptoRng>(
 fn power<F: Arithmetic>(field: &F, value: Words, exponent: U512) -> Words {
     let bytes = exponent.to_le_bytes();
     let mut result = field.one();
-    for bit in (0..exponent.bits_vartime()).rev() {
+    for bit in (0..exponent.bit_width_vartime()).rev() {
         result = field.square(result);
         let index = bit as usize;
         if bytes[index / 8] & (1 << (index % 8)) != 0 {

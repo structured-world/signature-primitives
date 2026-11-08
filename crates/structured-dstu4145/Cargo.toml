@@ -21,19 +21,19 @@ rustcrypto = ["dep:signature"]
 [dependencies]
 structured-asn1 = { version = "0.21.1", path = "../structured-asn1", default-features = false }
 structured-pkix = { version = "0.21.1", path = "../structured-pkix", default-features = false }
-kupyna = { version = "=0.1.0", default-features = false }
-crypto-bigint = { version = "=0.7.10", default-features = false }
-rand_core = { version = "=0.10.1", default-features = false }
-allocation-counter = { version = "=0.8.1", optional = true }
-signature = { version = "=3.0.0", default-features = false, optional = true }
+kupyna = { version = "0.1.0", default-features = false }
+crypto-bigint = { version = "0.7.11", default-features = false }
+rand_core = { version = "0.10.1", default-features = false }
+allocation-counter = { version = "0.8.1", optional = true }
+signature = { version = "3.0.0", default-features = false, optional = true }
 
 [dev-dependencies]
-base64ct = { version = "=1.8.3", features = ["alloc"] }
-gost94 = { version = "=0.11.0", default-features = false }
+base64ct = { version = "1.8.3", features = ["alloc"] }
+gost94 = { version = "0.11.0", default-features = false }
 structured-cms = { version = "0.21.1", path = "../structured-cms", default-features = false }
-rand_chacha = { version = "=0.10.0", default-features = false }
-ua-cryptography-dstu4145 = "=0.1.6"
-ua-cryptography-dstu7564 = "=0.1.6"
+rand_chacha = { version = "0.10.0", default-features = false }
+ua-cryptography-dstu4145 = "0.1.6"
+ua-cryptography-dstu7564 = "0.1.6"
 
 [[bench]]
 name = "verification"

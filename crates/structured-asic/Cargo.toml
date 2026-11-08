@@ -28,8 +28,8 @@ crc32fast = { version = "1.5.3", default-features = false }
 
 [dev-dependencies]
 # Fixed-curve native integration oracle, never a runtime provider.
-p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
-sha2 = { version = "=0.11.1", default-features = false }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa"] }
+sha2 = { version = "0.11.1", default-features = false }
 
 [lints]
 workspace = true

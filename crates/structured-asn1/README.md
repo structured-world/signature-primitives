@@ -237,11 +237,12 @@ As with shared text, callers fund Hash/Eq/formatting scans; `HashWork` enables
 paid borrowed map lookup. Its validated immutable UTF-8 view is confined to
 the narrowly scoped allocator boundary.
 
-The source uses allocator-api2 0.4.0 for vectors and hashbrown 0.17.1 for maps.
-Hashbrown's published allocator interface still requires allocator-api2 0.2.21;
-that interface forwards to the same account allocator. Both container families
-share capacity, work, growth-peak and rollback rules. These dependency updates
-are not in registry version 0.1.2.
+The manifest accepts compatible versions of the allocator, map and inflate
+dependencies. The lockfile records the versions used to qualify allocation
+layouts, map probing and inflate block costs. Review those implementation
+bounds when updating the resolved versions. The two allocator interfaces
+forward to the same account allocator and share capacity, work, growth-peak
+and rollback rules.
 
 Raw byte views and ordinary formatting/equality traits leave application-owned
 traversal and output storage to the caller. An explicit budget bounds admitted

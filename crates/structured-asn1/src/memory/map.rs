@@ -368,7 +368,7 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
                     true
                 }
                 Ok(false) => {
-                    // Pinned hashbrown 0.17.1 RawTableInner::erase loads the
+                    // In hashbrown 0.17.1, RawTableInner::erase loads the
                     // adjacent two control groups, then drops the pair in place.
                     // It neither hashes keys nor moves entries to another table.
                     if let Err(reason) = execution.charge_work(2) {
@@ -397,7 +397,7 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
     }
 
     fn buckets(&self) -> Result<u64, MemoryError> {
-        // Pinned hashbrown 0.17.1 raw::bucket_mask_to_capacity: tables with
+        // Audited hashbrown 0.17.1 raw::bucket_mask_to_capacity: tables with
         // four/eight buckets keep one empty slot; larger tables use 7/8 of
         // the buckets. Maximum capacity records each table immediately after
         // reserve, before tombstones can reduce the public capacity value.
@@ -412,7 +412,7 @@ impl<K: HashWork, V, W: Work> OwnedMap<K, V, W> {
 
     fn control_work(&self) -> Result<u64, MemoryError> {
         let buckets = self.buckets()?;
-        // The pinned engine's narrowest control group is four bytes. Wider
+        // The audited engine's narrowest control group is four bytes. Wider
         // scalar/SIMD groups perform the same fixed group operations. One unit
         // admits one group visit; triangular probing visits each group once.
         Ok(buckets / 4)

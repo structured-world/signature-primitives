@@ -232,7 +232,7 @@ unsafe fn charge<W: Work>(execution: *const (), amount: u64) -> Result<(), Memor
 ///
 /// Growth work is admitted through the execution that `scoped` installs for
 /// one growth call; without one, allocation is refused before the backend.
-/// Deliberately not `Clone`: the pinned hashbrown copies an allocator only in
+/// Deliberately not `Clone`: hashbrown 0.17.1 copies an allocator only in
 /// `Clone for RawTable`, so no copy can retain an installed scope.
 #[derive(Debug)]
 pub(super) struct TableAllocator {

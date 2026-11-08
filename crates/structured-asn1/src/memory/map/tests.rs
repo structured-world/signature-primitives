@@ -707,7 +707,7 @@ fn retain_zero_sized_pair_drops_once_and_keeps_table_capacity_until_drop() {
     map.try_insert(Key, Value).unwrap();
     let before = storage.used();
     assert!(before > 0);
-    // The pinned engine chooses a larger minimum table for tiny/ZST entries
+    // The audited engine chooses a larger minimum table for tiny/ZST entries
     // on wide-control-group targets. Fund that actual table, not a four-bucket
     // assumption appropriate only to the usize-pair fixtures above.
     let scan = usize::try_from(map.buckets().unwrap()).unwrap();

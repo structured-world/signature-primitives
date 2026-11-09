@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.4](https://github.com/structured-world/signature-primitives/compare/v0.21.3...v0.21.4) - 2026-11-09
+
+### Added
+
+- *(base64)* add resumable codec ([#296](https://github.com/structured-world/signature-primitives/pull/296))
+
 ## [0.21.3](https://github.com/structured-world/signature-primitives/compare/v0.21.2...v0.21.3) - 2026-11-08
 
 ### Fixed

@@ -120,8 +120,12 @@ for label in "${packages[@]}"; do
   cd -- "$work/packages/$label"
   check "$label" cargo +stable nextest run --locked --all-features --no-tests=pass
   check "$label" cargo +stable test --locked --doc --all-features
+  alloc_args=(--no-default-features)
+  if jq -e --arg label "$label" '.packages[] | select(.name + "-" + .version == $label) | .features | has("alloc")' "$work/metadata.json" >/dev/null; then
+    alloc_args+=(--features alloc)
+  fi
   for target in wasm32-unknown-unknown thumbv7em-none-eabihf; do
-    check "$label" cargo +stable check --locked --no-default-features --features alloc --target "$target"
+    check "$label" cargo +stable check --locked "${alloc_args[@]}" --target "$target"
   done
   cd - >/dev/null
 done

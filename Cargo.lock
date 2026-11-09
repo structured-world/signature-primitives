@@ -893,7 +893,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "structured-asic"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "crc32fast",
  "p256",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "structured-asn1"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "allocator-api2 0.2.21",
  "allocator-api2 0.4.0",
@@ -919,11 +919,11 @@ dependencies = [
 
 [[package]]
 name = "structured-base64"
-version = "0.21.3"
+version = "0.21.4"
 
 [[package]]
 name = "structured-cades"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "p256",
  "sha2",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "structured-cms"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "aes",
  "aes-kw",
@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "structured-dstu4145"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "allocation-counter",
  "base64ct",
@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "structured-ltv"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "ed25519-dalek",
  "p256",
@@ -995,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "structured-pades"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "p256",
  "sha1",
@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "structured-pkix"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "ml-dsa",
  "p256",
@@ -1023,7 +1023,7 @@ dependencies = [
 
 [[package]]
 name = "structured-xades"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "p256",
  "sha2",

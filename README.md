@@ -30,6 +30,7 @@ the long-term validation core.
 | [**structured-pades**](crates/structured-pades/README.md) | Asynchronous original-range PDF signatures, revisions, DSS/VRI, DocMDP/FieldMDP and PAdES baseline composition | [![version](https://img.shields.io/crates/v/structured-pades)](https://crates.io/crates/structured-pades) | [![docs.rs](https://img.shields.io/docsrs/structured-pades)](https://docs.rs/structured-pades) |
 | [**structured-asic**](crates/structured-asic/README.md) | Original-range ZIP/ZIP64 ASiC containers, producing XML/member binding, CAdES/XAdES and time-assertion composition | [![version](https://img.shields.io/crates/v/structured-asic)](https://crates.io/crates/structured-asic) | [![docs.rs](https://img.shields.io/docsrs/structured-asic)](https://docs.rs/structured-asic) |
 | [**structured-dstu4145**](crates/structured-dstu4145/README.md) | Fixed-storage DSTU 4145 verification, explicit-DKE GOST 34.311 and streaming Kupyna | [![version](https://img.shields.io/crates/v/structured-dstu4145)](https://crates.io/crates/structured-dstu4145) | [![docs.rs](https://img.shields.io/docsrs/structured-dstu4145)](https://docs.rs/structured-dstu4145) |
+| [**structured-base64**](crates/structured-base64/README.md) | Resumable Base64 in caller-provided buffers, using only `core` | [![version](https://img.shields.io/crates/v/structured-base64)](https://crates.io/crates/structured-base64) | [![docs.rs](https://img.shields.io/docsrs/structured-base64)](https://docs.rs/structured-base64) |
 
 Each crate builds on the ones above it:
 
@@ -49,7 +50,7 @@ digest/work contracts; it introduces no format-specific provider dispatcher.
 ## Install
 
 The published crates are released together; keep them on the same version.
-Registry badges link to the available versions. All nine crates require GitHub
+Registry badges link to the available versions. Published crates require GitHub
 Actions Trusted Publishing for new versions, using this repository's
 `release-plz.yml` workflow and `release` environment. Coordinated publication
 follows the merge of a release-plz release PR and successful CI for its exact
@@ -70,8 +71,9 @@ structured-asic = "0.20"   # ASiC containers
 structured-dstu4145 = "0.20" # optional Ukrainian verification backend
 ```
 
-Rust 1.92 or newer. Everything works with `no_std + alloc`; enable the `std`
-feature in ordinary applications.
+Rust 1.92 or newer. The signature and container crates work with `no_std + alloc`;
+enable their `std` feature in ordinary applications. `structured-base64` uses only
+`core` and has no feature flags.
 
 ## Quick start
 

@@ -1,0 +1,15 @@
+[package]
+name = "structured-base64"
+description = "Resumable Base64 encoding and decoding in caller-provided buffers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["base64", "streaming", "no-std"]
+categories = ["encoding", "no-std"]
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
+
+[lints]
+workspace = true

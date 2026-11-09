@@ -918,6 +918,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "structured-base64"
+version = "0.21.3"
+
+[[package]]
 name = "structured-cades"
 version = "0.21.3"
 dependencies = [

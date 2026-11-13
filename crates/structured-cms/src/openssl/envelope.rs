@@ -1,4 +1,4 @@
-use cbc::cipher::{BlockModeDecrypt, KeyIvInit, inout::InOutBuf};
+use crate::cbc::Cipher;
 use md5::{Digest, Md5};
 use structured_asn1::memory::Work;
 use zeroize::{Zeroize, Zeroizing};
@@ -87,38 +87,9 @@ impl Envelope {
         charge(work, buffer.len())?;
         let key = envelope_key(password, &self.iv[..8], key_len);
         let iv = &self.iv[..width];
-        macro_rules! decrypt {
-            ($cipher:ty) => {{
-                let mut mode = cbc::Decryptor::<$cipher>::new_from_slices(&key[..key_len], iv)
-                    .map_err(|_| Error::Protected)?;
-                let (blocks, tail) = InOutBuf::from(&mut *buffer).into_chunks();
-                debug_assert!(tail.is_empty());
-                mode.decrypt_blocks_inout(blocks);
-            }};
-        }
-        match self.cipher {
-            Cipher::Aes128 => decrypt!(aes::Aes128),
-            Cipher::Aes192 => decrypt!(aes::Aes192),
-            Cipher::Aes256 => decrypt!(aes::Aes256),
-            Cipher::Des => decrypt!(des::Des),
-            Cipher::DesEde => decrypt!(des::TdesEde2),
-            Cipher::DesEde3 => decrypt!(des::TdesEde3),
-        }
-        let padding_byte = buffer[buffer.len() - 1];
-        let padding = usize::from(padding_byte);
-        // Scan the entire final block regardless of the decrypted padding length.
-        let mut invalid = u8::from(padding == 0 || padding > width);
-        for (index, byte) in buffer.iter().rev().take(width).enumerate() {
-            let mask = 0_u8.wrapping_sub(u8::from(index < padding));
-            invalid |= (*byte ^ padding_byte) & mask;
-        }
-        if invalid != 0 {
-            buffer.zeroize();
-            return Err(Error::Protected);
-        }
-        let length = buffer.len() - padding;
-        buffer[length..].zeroize();
-        Ok(length)
+        self.cipher
+            .decrypt(&key[..key_len], iv, buffer)
+            .ok_or(Error::Protected)
     }
 }
 
@@ -129,16 +100,6 @@ fn nibble(byte: u8) -> Result<u8, Error> {
         b'A'..=b'F' => Ok(byte - b'A' + 10),
         _ => Err(Error::Protected),
     }
-}
-
-#[derive(Clone, Copy)]
-enum Cipher {
-    Aes128,
-    Aes192,
-    Aes256,
-    Des,
-    DesEde,
-    DesEde3,
 }
 
 impl Cipher {
@@ -152,22 +113,6 @@ impl Cipher {
             "DES-EDE3-CBC" => Self::DesEde3,
             _ => return None,
         })
-    }
-
-    fn key_len(self) -> usize {
-        match self {
-            Self::Aes128 | Self::DesEde => 16,
-            Self::Aes192 | Self::DesEde3 => 24,
-            Self::Aes256 => 32,
-            Self::Des => 8,
-        }
-    }
-
-    fn block_len(self) -> usize {
-        match self {
-            Self::Aes128 | Self::Aes192 | Self::Aes256 => 16,
-            Self::Des | Self::DesEde | Self::DesEde3 => 8,
-        }
     }
 }
 

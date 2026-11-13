@@ -45,6 +45,20 @@ Carried fragment maps and decrypted coordinate boundaries remain separate in
 callback sources and retained errors. A refusal yields no completed import;
 callers stage their own visitor side effects until completion.
 
+### Opening password-protected containers
+
+Enable `password-protection` for password MAC verification and decryption
+of PKCS#12 safes and shrouded keys, and for encrypted PKCS#8. The engine
+supports legacy SHA-based PKCS#12 MAC and 2-key/3-key Triple DES, PBMAC1,
+and PBES2 with PBKDF2 or scrypt and AES-CBC or Triple DES-CBC.
+
+Prepare a `personal::password::Authentication` or `Decryption` plan from
+the parsed model. Check `cost` before requesting the password, then check
+`password_cost` for the actual password octets. The caller applies policy
+and supplies accounted scratch. Decryption can write into caller storage
+or return the accounted wiping `personal::Plaintext` expected by
+`personal::Backend`. CBC padding alone provides no authentication.
+
 ### Importing traditional OpenSSL keys
 
 Enable the optional `openssl` feature for traditional PEM password envelopes

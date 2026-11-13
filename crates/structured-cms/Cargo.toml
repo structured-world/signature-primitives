@@ -17,6 +17,7 @@ std = ["structured-asn1/std", "structured-pkix/std"]
 alloc = ["structured-asn1/alloc", "structured-pkix/alloc"]
 hmac = ["dep:ctutils", "dep:hmac", "dep:sha1", "dep:sha2", "dep:thiserror"]
 legacy-hmac = ["hmac", "dep:md-5", "dep:ripemd"]
+password-protection = ["hmac", "dep:aes", "dep:cbc", "dep:des"]
 openssl = [
     "dep:aes", "dep:cbc", "dep:crypto-bigint", "dep:der", "dep:des",
     "dep:md-5", "dep:p256", "dep:p384", "dep:p521", "dep:pkcs8", "dep:sec1",

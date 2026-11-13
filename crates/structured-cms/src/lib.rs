@@ -12,6 +12,8 @@ pub mod attribute;
 pub mod attribute_certificate;
 pub mod binding;
 pub mod cades;
+#[cfg(any(feature = "openssl", feature = "password-protection"))]
+mod cbc;
 pub mod content;
 pub mod content_source;
 pub mod counter;

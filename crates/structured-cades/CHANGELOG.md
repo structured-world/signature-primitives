@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.5](https://github.com/structured-world/signature-primitives/compare/structured-cades-v0.21.4...structured-cades-v0.21.5) - 2026-11-13
+
+### Added
+
+- *(cms)* add incremental HMAC ([#299](https://github.com/structured-world/signature-primitives/pull/299))
+
 ## [0.21.4](https://github.com/structured-world/signature-primitives/compare/structured-cades-v0.21.3...structured-cades-v0.21.4) - 2026-11-09
 
 ### Added

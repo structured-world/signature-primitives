@@ -755,9 +755,9 @@ impl Xml for Tree {
             execution.charge_work(1).map_err(Cause::Resource)?;
             return Ok(index.first[parent]);
         }
-        for index in 0..self.nodes.len() {
+        for (index, child) in self.nodes.iter().enumerate() {
             execution.charge_work(1).map_err(Cause::Resource)?;
-            if self.nodes[index].parent == Some(parent) {
+            if child.parent == Some(parent) {
                 return Ok(Some(index));
             }
         }
@@ -782,9 +782,9 @@ impl Xml for Tree {
             execution.charge_work(1).map_err(Cause::Resource)?;
             return Ok(index.next[node]);
         }
-        for index in node + 1..self.nodes.len() {
+        for (index, sibling) in self.nodes.iter().enumerate().skip(node + 1) {
             execution.charge_work(1).map_err(Cause::Resource)?;
-            if self.nodes[index].parent == Some(parent) {
+            if sibling.parent == Some(parent) {
                 return Ok(Some(index));
             }
         }

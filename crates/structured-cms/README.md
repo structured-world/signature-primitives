@@ -45,10 +45,25 @@ Carried fragment maps and decrypted coordinate boundaries remain separate in
 callback sources and retained errors. A refusal yields no completed import;
 callers stage their own visitor side effects until completion.
 
+### Importing traditional OpenSSL keys
+
+Enable the optional `openssl` feature for traditional PEM password envelopes
+and DER conversion of SEC1 EC and OpenSSL DSA keys to PKCS#8. Give
+`openssl::Envelope::read` the PEM headers and decrypt the decoded body in
+caller-owned wiping storage. CBC padding alone provides no authentication.
+An encrypted candidate that fails subsequent key validation remains a protected
+container failure.
+
+`openssl::Key::read` validates the DER and returns a borrowing plan with an
+exact `encoded_len`. Reserve that length in your wiping output storage and
+call `write`. The module uses no heap allocation, takes explicit work accounts,
+and lets callers tighten the fixed DSA component ceiling. Keep algorithm
+policy, password acquisition, and key inventory in the application.
+
 CMS SignedData, digital-envelope and RFC 3161 timestamp mechanisms over borrowed ASN.1 ranges,
 explicit resource accounts and injected cryptographic providers. Applications
 supply content and own trust, policy, acquisition and reporting. The library
-performs no implicit I/O and includes no cryptographic engine.
+performs no implicit I/O. Optional compatibility modules use RustCrypto.
 
 Use the coordinated ASN.1/PKIX/CMS API family. The encrypted-attribute APIs
 described below are new workspace source; registry availability follows release.

@@ -17,6 +17,11 @@ std = ["structured-asn1/std", "structured-pkix/std"]
 alloc = ["structured-asn1/alloc", "structured-pkix/alloc"]
 hmac = ["dep:ctutils", "dep:hmac", "dep:sha1", "dep:sha2", "dep:thiserror"]
 legacy-hmac = ["hmac", "dep:md-5", "dep:ripemd"]
+openssl = [
+    "dep:aes", "dep:cbc", "dep:crypto-bigint", "dep:der", "dep:des",
+    "dep:md-5", "dep:p256", "dep:p384", "dep:p521", "dep:pkcs8", "dep:sec1",
+    "dep:thiserror",
+]
 
 [dependencies]
 structured-asn1 = { version = "0.21.5", path = "../structured-asn1", default-features = false }
@@ -29,8 +34,20 @@ sha2 = { version = "0.11", default-features = false, features = ["zeroize"], opt
 md-5 = { version = "0.11", default-features = false, features = ["zeroize"], optional = true }
 ripemd = { version = "0.2", default-features = false, features = ["zeroize"], optional = true }
 thiserror = { version = "2", default-features = false, optional = true }
+aes = { version = "0.9", default-features = false, features = ["zeroize"], optional = true }
+cbc = { version = "0.2", default-features = false, features = ["zeroize"], optional = true }
+crypto-bigint = { version = "0.7", default-features = false, features = ["zeroize"], optional = true }
+der = { version = "0.8", default-features = false, features = ["derive", "oid"], optional = true }
+des = { version = "0.9", default-features = false, features = ["zeroize"], optional = true }
+p256 = { version = "0.14", default-features = false, features = ["arithmetic"], optional = true }
+p384 = { version = "0.14", default-features = false, features = ["arithmetic"], optional = true }
+p521 = { version = "0.14", default-features = false, features = ["arithmetic"], optional = true }
+pkcs8 = { version = "0.11", default-features = false, optional = true }
+sec1 = { version = "0.8", default-features = false, features = ["der"], optional = true }
 
 [dev-dependencies]
+der = { version = "0.8", default-features = false, features = ["alloc"] }
+zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
 # Independent public-vector oracle/adapter only; no engine in the runtime API.
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
 sha2 = { version = "0.11.1", default-features = false }

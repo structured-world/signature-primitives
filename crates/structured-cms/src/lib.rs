@@ -27,6 +27,8 @@ pub mod hmac;
 pub mod mime;
 pub mod octets;
 pub mod oid;
+#[cfg(feature = "openssl")]
+pub mod openssl;
 pub mod payload;
 pub mod personal;
 pub mod prepare;

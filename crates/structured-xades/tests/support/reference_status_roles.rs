@@ -6,7 +6,7 @@ mod credential_status;
 use super::*;
 use structured_asn1::{Parser, memory::Memory};
 use structured_ltv::pki;
-use structured_pkix::path::{Anchor, Interval, ValidationBounds, ValidationContext, WorkingKey};
+use structured_pkix::path::{Anchor, EffectiveKey, Interval, ValidationBounds, ValidationContext};
 use structured_xades::{certificate, credential, timestamp, validation};
 
 fn with_ca_path(root_bytes: &[u8], memory: &Memory, check: impl FnOnce(&pki::CheckedPath<'_>)) {
@@ -68,7 +68,7 @@ fn with_complete_status(
     let crl::Authentication::Authenticated(authenticated) = crl
         .authenticate(
             issuer,
-            WorkingKey::standing(issuer.tbs().public_key()),
+            EffectiveKey::standing(issuer.tbs().public_key()),
             &verifier,
             memory,
         )
@@ -159,7 +159,7 @@ fn with_ocsp_status(
     let query = parser.read(&[], 900).unwrap();
     let basic = response.basic_in(&query).unwrap().unwrap();
     let issuer = path.anchor().certificate().unwrap();
-    let key = WorkingKey::standing(issuer.tbs().public_key());
+    let key = EffectiveKey::standing(issuer.tbs().public_key());
     let verifier = super::super::super::timestamp_oracle::PathOracle {
         calls: Cell::new(0),
     };
@@ -280,7 +280,7 @@ fn with_participants<'d>(
     let anchor = ca_path.anchor();
     let effective = structured_pkix::path::EffectiveAnchor::bind(
         anchor,
-        WorkingKey::standing(anchor.key()),
+        EffectiveKey::standing(anchor.key()),
         memory,
     )
     .unwrap()

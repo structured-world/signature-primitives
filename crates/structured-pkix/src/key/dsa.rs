@@ -8,7 +8,7 @@
 
 use super::same_oid;
 use crate::error::{Error, ErrorCode, Located, Result};
-use crate::path::WorkingKey;
+use crate::path::EffectiveKey;
 use structured_asn1::memory::Work;
 use structured_asn1::{Element, Encoding, Integer, Oid, ScopedReader, Tag, universal};
 
@@ -132,7 +132,7 @@ impl<'a> PublicKey<'a> {
 /// ```
 /// use std::sync::Arc;
 /// use structured_asn1::{Parser, memory::{Memory, MemoryAccount}};
-/// use structured_pkix::{PublicKeyInfo, key::dsa, path::WorkingKey};
+/// use structured_pkix::{PublicKeyInfo, key::dsa, path::EffectiveKey};
 /// let memory = Memory::new(Arc::new(MemoryAccount::new(4096, 4096)));
 /// let parser = Parser::der(memory.clone());
 /// // id-dsa, omitted parameters; subjectPublicKey contains INTEGER 7.
@@ -140,12 +140,12 @@ impl<'a> PublicKey<'a> {
 /// let mut reader = parser.read(bytes, 400).unwrap();
 /// let element = reader.next_element().unwrap().unwrap();
 /// let info = PublicKeyInfo::read_element(&reader, &element, "key")?;
-/// let key = dsa::read(WorkingKey::standing(info), &memory)?;
+/// let key = dsa::read(EffectiveKey::standing(info), &memory)?;
 /// assert_eq!(key.y().as_bytes(), [7]);
 /// assert!(key.parameters().is_none());
 /// # Ok::<(), structured_pkix::Error>(())
 /// ```
-pub fn read<'a, W: Work>(key: WorkingKey<'a>, execution: &W) -> Result<PublicKey<'a>> {
+pub fn read<'a, W: Work>(key: EffectiveKey<'a>, execution: &W) -> Result<PublicKey<'a>> {
     let info = key.key();
     let own = info.algorithm();
     // Even an identity mismatch belongs to the original key source, before

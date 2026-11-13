@@ -22,7 +22,7 @@ use structured_cms::{
     verify::{self, ContentMode, DocumentBatch, DocumentChecks},
 };
 use structured_ltv::pki::{CounterReceipts, SignerReceipt};
-use structured_pkix::{Certificate, algorithm::digest::AsnDigest, path::WorkingKey};
+use structured_pkix::{Certificate, algorithm::digest::AsnDigest, path::EffectiveKey};
 
 /// Original preparation/source/provider failure or completed unsupported input.
 /// Each class remains distinguishable; none can produce a positive receipt.
@@ -299,7 +299,7 @@ impl<'p, 'm, 'd, 'a, 's, D: Copy + Eq, G: Copy + Eq> Preparation<'p, 'm, 'd, 'a,
         &'v self,
         document: &'v Document<'s, S>,
         provider: &'v P,
-        key: WorkingKey<'v>,
+        key: EffectiveKey<'v>,
         parent: &Reader<'v>,
     ) -> Result<Mathematical<'v, 'p, 'm, 'd, 'a, 's, D, G>, CheckError<S::Error, P::Error>>
     where

@@ -11,7 +11,7 @@ use structured_asn1::{Encoding, Parser, Reader};
 use structured_cms::provider::{Prehash, SignatureAnswer, SignatureMode, SignatureProvider};
 use structured_cms::{Octets, binding, oid, prepare, signer::SignerInfo, verify};
 use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
-use structured_pkix::{AlgorithmIdentifier, PublicKeyInfo, path::WorkingKey};
+use structured_pkix::{AlgorithmIdentifier, PublicKeyInfo, path::EffectiveKey};
 
 const SHA512: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 3];
 const ED25519: &[u8] = &[0x2b, 0x65, 0x70];
@@ -112,7 +112,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
         &'a self,
         identifier: AlgorithmIdentifier<'a>,
         (): &(),
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         _encoding: Encoding,
         parent: &Reader<'a>,
     ) -> Result<Resolution<SignatureMode<()>>, Failure> {
@@ -140,7 +140,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
     fn start_raw<W: Work>(
         &'a self,
         (): &(),
-        _key: WorkingKey<'a>,
+        _key: EffectiveKey<'a>,
         signature: &'a Octets<'a>,
         work: &W,
     ) -> Result<Raw<'a>, Failure> {
@@ -189,7 +189,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
     fn verify_prehashed<W: Work>(
         &'a self,
         (): &(),
-        _key: WorkingKey<'a>,
+        _key: EffectiveKey<'a>,
         _signature: &Octets<'a>,
         _digest: Prehash<'_, '_, Self, ()>,
         _work: &W,
@@ -278,7 +278,7 @@ fn check_input(
     let prepare::Preparation::Ready(ready) = prepare::resolve(
         &provider,
         &signer,
-        WorkingKey::standing(key),
+        EffectiveKey::standing(key),
         &parent,
         binding::Scope::Content(oid::DATA),
     )
@@ -465,7 +465,7 @@ fn timestamp_signature_driver_covers_original_segmented_info_and_keeps_key() {
         };
         let held = memory.used();
         let TokenSignature::Checked(checked) = token
-            .check_signature(&provider, WorkingKey::standing(key), &parent)
+            .check_signature(&provider, EffectiveKey::standing(key), &parent)
             .unwrap()
         else {
             panic!("supported profile");
@@ -674,7 +674,7 @@ fn complete_timestamp_checker_binds_signature_ess_content_time_and_retains_evide
             let context = CheckContext {
                 certificate: &certificate,
                 certificate_parent: &certificate_parent,
-                key: WorkingKey::standing(certificate.tbs().public_key()),
+                key: EffectiveKey::standing(certificate.tbs().public_key()),
                 requested: None,
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -785,7 +785,7 @@ fn malformed_timestamp_info_is_refused_before_crypto_or_covered_source() {
     let context = CheckContext {
         certificate: &certificate,
         certificate_parent: &certificate_parent,
-        key: WorkingKey::standing(certificate.tbs().public_key()),
+        key: EffectiveKey::standing(certificate.tbs().public_key()),
         requested: None,
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -875,7 +875,7 @@ fn profile_refusals(memory: &Memory) -> [ProfileRefusal; 2] {
     let context = CheckContext {
         certificate: &certificate,
         certificate_parent: &certificate_parent,
-        key: WorkingKey::standing(certificate.tbs().public_key()),
+        key: EffectiveKey::standing(certificate.tbs().public_key()),
         requested: None,
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -1032,7 +1032,7 @@ fn readable_timestamp_tail_stays_nonconforming_before_crypto_and_evidence() {
     let context = CheckContext {
         certificate: &certificate,
         certificate_parent: &certificate_parent,
-        key: WorkingKey::standing(certificate.tbs().public_key()),
+        key: EffectiveKey::standing(certificate.tbs().public_key()),
         requested: None,
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -1125,7 +1125,7 @@ fn requested_timestamp_uses_one_resolved_token_imprint_for_comparison_and_hashin
     let context = CheckContext {
         certificate: &certificate,
         certificate_parent: &certificate_parent,
-        key: WorkingKey::standing(certificate.tbs().public_key()),
+        key: EffectiveKey::standing(certificate.tbs().public_key()),
         requested: Some(Requested {
             request: &request,
             parent: &request_parent,
@@ -1209,7 +1209,7 @@ fn nested_timestamp_check_preserves_physical_evidence_and_error_frames() {
                 let context = CheckContext {
                     certificate: &certificate,
                     certificate_parent: &certificate_parent,
-                    key: WorkingKey::standing(certificate.tbs().public_key()),
+                    key: EffectiveKey::standing(certificate.tbs().public_key()),
                     requested: None,
                     utc: &utc,
                     reference: Some(Instant::new(1_800_000_000, 0).unwrap()),

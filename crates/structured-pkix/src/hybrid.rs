@@ -8,7 +8,7 @@
 
 use crate::algorithm::{AlgorithmIdentifier, ml_dsa};
 use crate::error::{CallbackError, CallbackResult, Located};
-use crate::path::{Verified, Verify, WorkingKey};
+use crate::path::{EffectiveKey, Verified, Verify};
 use crate::signature::SignatureValue;
 use crate::{Error, ErrorCode, PublicKeyInfo, Result};
 use structured_asn1::memory::Work;
@@ -103,12 +103,12 @@ pub trait AlternativeVerifier<W: Work> {
     type Error;
     /// Verify the exact raw stream. For RFC9881 ML-DSA this is pure mode with
     /// empty context, not HashML-DSA or a digest passed as the message. Admit
-    /// key work through `key.execution_in(work)` and input through `visit`;
+    /// key work through `alternative_key.execution_in(work)` and input through `visit`;
     /// the provider owns transitive backend allocation/work qualification.
     fn verify(
         &self,
         algorithm: AlgorithmIdentifier<'_>,
-        key: PublicKeyInfo<'_>,
+        alternative_key: PublicKeyInfo<'_>,
         preimage: &Preimage<'_>,
         signature: SignatureValue<'_>,
         work: &W,
@@ -349,7 +349,7 @@ pub(crate) fn terminal(error: &Error) -> bool {
 /// Check both mathematical signatures without short-circuiting on native No or Unsupported.
 pub fn check_certificate<W: Work, N: Verify<W>, A: AlternativeVerifier<W>>(
     certificate: &crate::Certificate<'_>,
-    native_key: WorkingKey<'_>,
+    native_key: EffectiveKey<'_>,
     alternative_key: PublicKeyInfo<'_>,
     native: &N,
     verifier: &A,
@@ -393,7 +393,7 @@ pub fn check_certificate<W: Work, N: Verify<W>, A: AlternativeVerifier<W>>(
 /// not replace issuer-name, cRLSign, freshness, scope or revocation processing.
 pub fn check_crl<W: Work, N: Verify<W>, A: AlternativeVerifier<W>>(
     crl: &crate::crl::CertificateList<'_>,
-    native_key: WorkingKey<'_>,
+    native_key: EffectiveKey<'_>,
     alternative_key: PublicKeyInfo<'_>,
     native: &N,
     verifier: &A,

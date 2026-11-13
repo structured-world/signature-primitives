@@ -447,8 +447,8 @@ mod ecdsa_callback {
         signature::{Signer, Verifier},
     };
     use structured_pkix::path::{
-        self, Anchor, Interval, Policy, ValidationBounds, ValidationContext, Verified, Verify,
-        WorkingKey,
+        self, Anchor, EffectiveKey, Interval, Policy, ValidationBounds, ValidationContext,
+        Verified, Verify,
     };
     use structured_pkix::signature::{DssValue, SignatureValue};
     struct Provider;
@@ -457,7 +457,7 @@ mod ecdsa_callback {
         fn verify(
             &self,
             id: &AlgorithmIdentifier<'_>,
-            key: WorkingKey<'_>,
+            key: EffectiveKey<'_>,
             signed: &[u8],
             signature: SignatureValue<'_>,
             work: &W,
@@ -578,7 +578,7 @@ mod ecdsa_callback {
             provider
                 .verify(
                     &leaf.signature_algorithm(),
-                    WorkingKey::standing(root.tbs().public_key()),
+                    EffectiveKey::standing(root.tbs().public_key()),
                     b"changed",
                     leaf.signature_value(),
                     &work

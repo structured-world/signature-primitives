@@ -1058,7 +1058,7 @@ fn actual_signature_timestamp_and_complete_bt_cannot_use_wrong_input_or_unknown_
                 let structured_pkix::crl::Authentication::Authenticated(authenticated) = crl
                     .authenticate(
                         root,
-                        structured_pkix::path::WorkingKey::standing(root.tbs().public_key()),
+                        structured_pkix::path::EffectiveKey::standing(root.tbs().public_key()),
                         &oracle,
                         &work,
                     )

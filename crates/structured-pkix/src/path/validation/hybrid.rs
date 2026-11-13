@@ -9,7 +9,7 @@ use super::{
 use crate::extension::Recognizer;
 use crate::hybrid::{Alternative, AlternativeVerifier, CheckError, Fault, Requirement, Signatures};
 use crate::path::{
-    Anchor, BuildError, BuildResult, Meter, Truncation, Verified, Verify, Watch, WorkingKey, cost,
+    Anchor, BuildError, BuildResult, EffectiveKey, Meter, Truncation, Verified, Verify, Watch, cost,
 };
 use crate::{Certificate, Error, PublicKeyInfo};
 use structured_asn1::memory::{OwnedVec, Work};
@@ -126,7 +126,7 @@ impl<'a, N: Verify<E>, W: Watch, R: Recognizer<E>, A: AlternativeVerifier<E>, E:
     fn verified(
         &mut self,
         certificate: &'a Certificate<'a>,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
     ) -> BuildResult<Option<Verified>, Self::VerificationError, R::Error> {
         if !self.spend(cost::SIGNATURE)? || !self.spend(cost::SIGNATURE)? {
             return Ok(None);

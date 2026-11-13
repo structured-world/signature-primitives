@@ -226,7 +226,7 @@ fn both_reference_timestamp_roles_drive_real_rfc3161_checks_over_exact_inputs() 
     // the real common RFC3161/ECDSA checker. An unrelated imprint gives no proof.
     use structured_cms::timestamp::CheckContext;
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     for index in 0..2 {
@@ -256,7 +256,7 @@ fn both_reference_timestamp_roles_drive_real_rfc3161_checks_over_exact_inputs() 
             let context = CheckContext {
                 certificate: &certificate,
                 certificate_parent: &operation,
-                key: WorkingKey::standing(certificate.tbs().public_key()),
+                key: EffectiveKey::standing(certificate.tbs().public_key()),
                 requested: None,
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),

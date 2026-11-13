@@ -468,7 +468,7 @@ fn selected_working_key_restrictions_precede_the_adapter_verification_step() {
     // and the selected key's original SPKI. Refused restrictions never reach
     // the adapter's later mathematical operation; this test does not perform
     // or claim to qualify RSA arithmetic or backend allocation behavior.
-    use structured_pkix::{PublicKeyInfo, path::WorkingKey};
+    use structured_pkix::{PublicKeyInfo, path::EffectiveKey};
     let key_source = parser();
     let signature_source = parser();
     let key_algorithm = pss_bytes(Some(&alg(SHA256, None)), None, Some(&[2, 1, 32]), None);
@@ -480,7 +480,7 @@ fn selected_working_key_restrictions_precede_the_adapter_verification_step() {
     let mut reader = key_source.read(&spki_bytes, 400).unwrap();
     let element = reader.next_element().unwrap().unwrap();
     let key = PublicKeyInfo::read_element(&reader, &element, "subjectPublicKeyInfo").unwrap();
-    let selected = WorkingKey::standing(key);
+    let selected = EffectiveKey::standing(key);
     for (salt, expected) in [(31, false), (32, true), (33, true)] {
         let bytes = pss_bytes(Some(&alg(SHA256, None)), None, Some(&[2, 1, salt]), None);
         let identifier = id(&signature_source, &bytes, 9000);

@@ -8,8 +8,8 @@ use structured_asn1::memory::{Memory, MemoryAccount, Work};
 use structured_asn1::{Parser, Span};
 use structured_pkix::hybrid::{self, Alternative, AlternativeVerifier, Preimage, Requirement};
 use structured_pkix::path::{
-    self, Anchor, Interval, Policy, ValidationBounds, ValidationContext, Verified, Verify,
-    WorkingKey,
+    self, Anchor, EffectiveKey, Interval, Policy, ValidationBounds, ValidationContext, Verified,
+    Verify,
 };
 use structured_pkix::signature::SignatureValue;
 use structured_pkix::{AlgorithmIdentifier, Certificate, PublicKeyInfo};
@@ -34,7 +34,7 @@ impl<W: Work> Verify<W> for Native {
     fn verify(
         &self,
         _: &AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         signed: &[u8],
         signature: SignatureValue<'_>,
         work: &W,
@@ -155,7 +155,7 @@ fn bouncy_castle_preimages_and_both_mathematical_signatures() {
         REQUEST_INPUT
     );
     let pq = Pq::new();
-    let key = WorkingKey::standing(root.tbs().public_key());
+    let key = EffectiveKey::standing(root.tbs().public_key());
     let cert = hybrid::check_certificate(&cert, key, alt, &Native, &pq, &work).unwrap();
     let crl = hybrid::check_crl(&crl, key, alt, &Native, &pq, &work).unwrap();
     let request = request.check(&Native, &pq, &work).unwrap();
@@ -171,7 +171,7 @@ impl<W: Work> Verify<W> for Answer {
     fn verify(
         &self,
         _: &AlgorithmIdentifier<'_>,
-        _: WorkingKey<'_>,
+        _: EffectiveKey<'_>,
         _: &[u8],
         _: SignatureValue<'_>,
         _: &W,
@@ -333,7 +333,7 @@ fn missing_malformed_and_substituted_alternatives_never_become_native_success() 
         let pq = Pq::new();
         let result = hybrid::check_certificate(
             &cert,
-            WorkingKey::standing(root.tbs().public_key()),
+            EffectiveKey::standing(root.tbs().public_key()),
             alt,
             &Answer(Verified::Yes),
             &pq,
@@ -367,7 +367,7 @@ fn alternative_issuer_key_is_not_the_subject_key() {
     let pq = Pq::new();
     let pair = hybrid::check_certificate(
         &cert,
-        WorkingKey::standing(root.tbs().public_key()),
+        EffectiveKey::standing(root.tbs().public_key()),
         subject_key,
         &Native,
         &pq,
@@ -434,7 +434,7 @@ fn oversized_and_truncated_ml_dsa_values_are_refused_before_provider() {
         let pq = Pq::new();
         let pair = hybrid::check_certificate(
             &cert,
-            WorkingKey::standing(root.tbs().public_key()),
+            EffectiveKey::standing(root.tbs().public_key()),
             key,
             &Answer(Verified::Yes),
             &pq,
@@ -710,7 +710,7 @@ fn unsupported_backend_is_not_invalid_mathematics_or_native_fallback() {
         .unwrap();
     let pair = hybrid::check_certificate(
         &cert,
-        WorkingKey::standing(root.tbs().public_key()),
+        EffectiveKey::standing(root.tbs().public_key()),
         key,
         &Answer(Verified::Yes),
         &Unsupported,

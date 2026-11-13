@@ -12,7 +12,7 @@ use structured_asn1::{
     universal,
 };
 use structured_cms::ess::IssuerSerialReading;
-use structured_pkix::{Certificate, path::WorkingKey};
+use structured_pkix::{Certificate, path::EffectiveKey};
 
 mod path;
 pub use path::{
@@ -50,7 +50,7 @@ pub trait CertificateXml: SignatureXml {
         snapshot: Snapshot<Self::Document, Self::Generation>,
         signature: Self::Id,
         certificate: &Certificate<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         execution: &W,
     ) -> Result<KeyAssociation, Self::Error>;
 }
@@ -602,7 +602,7 @@ pub fn check<
         bound,
         reference,
         certificate,
-        WorkingKey::standing(certificate.tbs().public_key()),
+        EffectiveKey::standing(certificate.tbs().public_key()),
         execution,
     )?;
     let digest =
@@ -620,7 +620,7 @@ fn bind_key<X: CertificateXml, PE, W: Work>(
     bound: &Bound<X::Id, X::Document, X::Generation>,
     reference: &Catalogue<X>,
     certificate: &Certificate<'_>,
-    key: WorkingKey<'_>,
+    key: EffectiveKey<'_>,
     execution: &W,
 ) -> CertificateResult<KeyAssociation, X, PE> {
     let source = bound.containers();

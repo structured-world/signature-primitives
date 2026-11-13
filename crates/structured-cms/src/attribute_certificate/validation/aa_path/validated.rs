@@ -9,7 +9,7 @@ use structured_asn1::memory::{Execution, Work};
 use structured_asn1::{Oid, Span};
 use structured_pkix::Certificate;
 use structured_pkix::extension::Recognizer;
-use structured_pkix::path::{self, Anchor, EffectiveAnchor, Interval, Verify, Watch, WorkingKey};
+use structured_pkix::path::{self, Anchor, EffectiveAnchor, EffectiveKey, Interval, Verify, Watch};
 
 /// Completed AA path result. No rejected or incomplete path carries a usable key.
 #[derive(Debug)]
@@ -199,7 +199,7 @@ where
 pub fn validate_with_key<'p, 'a, V, T, R, W>(
     certificates: &'p [&'a Certificate<'a>],
     trusted_aa_ca: &'a Certificate<'a>,
-    anchor_key: WorkingKey<'a>,
+    anchor_key: EffectiveKey<'a>,
     context: &path::ValidationContext<'a, '_, V, T, R, W>,
 ) -> PathResult<'p, 'a, <V as Verify<W>>::Error, R::Error>
 where
@@ -233,7 +233,7 @@ where
     fn verify(
         &self,
         algorithm: &structured_pkix::AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         input: &[u8],
         signature: structured_pkix::signature::SignatureValue<'_>,
         work: &W,
@@ -302,7 +302,7 @@ impl<W: Work, R: Recognizer<W>> Recognizer<W> for Recognized<'_, R> {
 fn validate_inner<'p, 'a, V, T, R, W>(
     certificates: &'p [&'a Certificate<'a>],
     trusted_aa_ca: &'a Certificate<'a>,
-    key: Option<WorkingKey<'a>>,
+    key: Option<EffectiveKey<'a>>,
     context: &path::ValidationContext<'a, '_, V, T, R, W>,
 ) -> PathResult<'p, 'a, <V as Verify<W>>::Error, R::Error>
 where
@@ -325,7 +325,7 @@ where
         return Ok(PathCheck::Incomplete(path::Truncation::Depth));
     }
     let anchor = Anchor::from_certificate(aa_ca);
-    let key = key.unwrap_or_else(|| WorkingKey::standing(anchor.key()));
+    let key = key.unwrap_or_else(|| EffectiveKey::standing(anchor.key()));
     let Some(anchor) = EffectiveAnchor::bind(anchor, key, context.execution)
         .map_err(|e| PathError::Processing(Error::pkix(e)))?
     else {

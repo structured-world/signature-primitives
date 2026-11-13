@@ -3,8 +3,8 @@
 //! purpose, algorithm permissions and trust-anchor selection remain external.
 
 use super::{
-    Anchor, BuildError, BuildResult, Interval, Meter, Policy, Truncation, Verified, Verify, Watch,
-    WorkingKey, cost, sorting_rounds,
+    Anchor, BuildError, BuildResult, EffectiveKey, Interval, Meter, Policy, Truncation, Verified,
+    Verify, Watch, cost, sorting_rounds,
 };
 use crate::constraints::BasicConstraints;
 use crate::extension::{Extension, Recognizer};
@@ -21,7 +21,7 @@ mod processing;
 #[derive(Debug, Clone, Copy)]
 pub struct EffectiveAnchor<'a> {
     anchor: Anchor<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
 }
 
 impl<'a> EffectiveAnchor<'a> {
@@ -30,7 +30,7 @@ impl<'a> EffectiveAnchor<'a> {
     /// errors. Inherited parameter bytes continue borrowing their source.
     pub fn bind<E: Work>(
         anchor: Anchor<'a>,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         execution: &E,
     ) -> crate::Result<Option<Self>> {
         let left = anchor.key().as_bytes();
@@ -73,14 +73,14 @@ impl<'a> EffectiveAnchor<'a> {
 
     /// Effective key bound to the anchor's original SPKI.
     #[must_use]
-    pub fn key(self) -> WorkingKey<'a> {
+    pub fn key(self) -> EffectiveKey<'a> {
         self.key
     }
 
     fn standing(anchor: Anchor<'a>) -> Self {
         Self {
             anchor,
-            key: WorkingKey::standing(anchor.key()),
+            key: EffectiveKey::standing(anchor.key()),
         }
     }
 }
@@ -180,7 +180,7 @@ pub struct Rejection<'a> {
 #[derive(Debug)]
 pub struct ValidationFacts<'a> {
     /// The target's effective key, including inherited algorithm parameters.
-    pub key: WorkingKey<'a>,
+    pub key: EffectiveKey<'a>,
     /// Intermediate CAs that are not self-issued, excluding target and anchor.
     /// This scalar lets caller anchor-policy checks reuse the completed census.
     pub non_self_issued_intermediates: u32,
@@ -276,7 +276,7 @@ pub(super) trait Driver<'a, R: Recognizer<E>, E: Work = Memory>: Meter {
     fn verified(
         &mut self,
         certificate: &'a Certificate<'a>,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
     ) -> BuildResult<Option<Verified>, Self::VerificationError, R::Error>;
     fn facts(
         &mut self,
@@ -542,7 +542,7 @@ impl<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work> Driver<'a, R, E>
     fn verified(
         &mut self,
         certificate: &'a Certificate<'a>,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
     ) -> BuildResult<Option<Verified>, V::Error, R::Error> {
         if !self.spend(cost::SIGNATURE)? {
             return Ok(None);
@@ -724,7 +724,7 @@ mod tests {
         fn verify(
             &self,
             _algorithm: &crate::AlgorithmIdentifier<'_>,
-            _key: WorkingKey<'_>,
+            _key: EffectiveKey<'_>,
             _signed: &[u8],
             _signature: SignatureValue<'_>,
             _execution: &Memory,

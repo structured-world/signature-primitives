@@ -26,7 +26,7 @@ use structured_asn1::{
 use structured_pkix::{
     Certificate,
     algorithm::digest::{self, Algorithm},
-    path::WorkingKey,
+    path::EffectiveKey,
     temporal::{Instant, LeapTable},
 };
 
@@ -37,7 +37,7 @@ pub struct Selection<'a> {
     /// That certificate's own producing source and resource ceiling.
     pub certificate_parent: &'a Reader<'a>,
     /// Effective parameters from the selected candidate's actual path.
-    pub key: WorkingKey<'a>,
+    pub key: EffectiveKey<'a>,
     /// Caller-authenticated accuracy for this actual TSA and signed policy.
     pub policy_accuracy: Option<timestamp::PolicyAccuracy<'a>>,
 }

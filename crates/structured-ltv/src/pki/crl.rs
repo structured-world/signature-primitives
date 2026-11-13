@@ -4,7 +4,7 @@ use super::{CheckedPath, exact};
 use structured_asn1::memory::{MemoryError, Work};
 use structured_pkix::{
     crl::{AbsenceEvidence, Authenticated, EvidenceSource},
-    path::WorkingKey,
+    path::EffectiveKey,
     temporal::{LeapTable, Reading, Uncertainty},
 };
 
@@ -373,7 +373,7 @@ impl<'document> CheckedPath<'document> {
                 {
                     return Ok(Some(CrlBindingFailure::Signer));
                 }
-                WorkingKey::standing(self.anchor.key())
+                EffectiveKey::standing(self.anchor.key())
             }
             CrlAuthority::Path(path) => {
                 return Ok(self

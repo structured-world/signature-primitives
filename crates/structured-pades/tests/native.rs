@@ -1420,7 +1420,7 @@ fn full_lt_and_lta_link_actual_tsa_status_material_and_original_revision() {
                 let structured_pkix::crl::Authentication::Authenticated(crl) = crl
                     .authenticate(
                         root,
-                        structured_pkix::path::WorkingKey::standing(root.tbs().public_key()),
+                        structured_pkix::path::EffectiveKey::standing(root.tbs().public_key()),
                         &oracle,
                         &work,
                     )

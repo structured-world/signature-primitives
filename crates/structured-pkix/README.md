@@ -398,7 +398,7 @@ chain and one explicit `Anchor`, excluding the anchor's certificate from the
 chain. Validation checks exactly those certificates; `path::build` additionally
 searches candidate issuers. Both entry points use the same static processing core.
 
-`Validation::Accepted` returns the target's effective `WorkingKey`, the number
+`Validation::Accepted` returns the target's effective `EffectiveKey`, the number
 of non-self-issued intermediate CAs, and the accepted authority/user policy OIDs.
 Inherited key parameters refer to the original anchor or certificate bytes.
 The shared transition preserves the algorithm-specific PSS absence rule:
@@ -512,7 +512,7 @@ discovery, or a built-in cryptographic backend. The original signed ranges,
 certificate identities and evidence sources remain borrowed throughout.
 
 For CRLs, read `CertificateList`, authenticate its exact TBS with the actual
-issuer certificate and effective `WorkingKey`, then call `evaluate` for the
+issuer certificate and effective `EffectiveKey`, then call `evaluate` for the
 target and caller-supplied UTC facts. Authentication alone establishes neither
 applicability nor freshness. Evaluation keeps distribution-point/category/reason
 scope, complete-list entry processing, unsupported critical demands, conflicts
@@ -550,7 +550,7 @@ and a signed request must name its requestor. No request is generated, sent or
 automatically authorized.
 
 `authenticate_signature` verifies the original TBS with an explicitly selected
-certificate-bound `WorkingKey` and `path::Verify`. A `SignedRequest` reports the
+certificate-bound `EffectiveKey` and `path::Verify`. A `SignedRequest` reports the
 subject/SAN name relation separately; a valid signature does not authenticate
 a different declared name, establish a certificate path or grant server access.
 Verifiers use the carried `SignatureValue` source execution/reader before

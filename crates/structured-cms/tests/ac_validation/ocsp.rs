@@ -12,7 +12,7 @@ use structured_cms::attribute_certificate::validation::usage::{
 };
 use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 use structured_pkix::ocsp::*;
-use structured_pkix::path::{self, Verified, Verify, WorkingKey};
+use structured_pkix::path::{self, EffectiveKey, Verified, Verify};
 use structured_pkix::revocation::RevocationTarget;
 use structured_pkix::signature::SignatureValue;
 use structured_pkix::temporal::LeapTable;
@@ -119,7 +119,7 @@ impl<W: Work> Verify<W> for Crypto {
     fn verify(
         &self,
         _: &structured_pkix::AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         data: &[u8],
         signature: SignatureValue<'_>,
         w: &W,
@@ -401,7 +401,7 @@ fn scoped<'r>(
         let Delegation::Accepted(facts) = check_delegate(
             authenticated.signer(),
             aa,
-            WorkingKey::standing(aa.tbs().public_key()),
+            EffectiveKey::standing(aa.tbs().public_key()),
             &context,
         )
         .unwrap() else {
@@ -410,7 +410,7 @@ fn scoped<'r>(
         authenticated.bind_delegate(facts, work).unwrap()
     } else {
         authenticated
-            .bind_issuer(aa, WorkingKey::standing(aa.tbs().public_key()), work)
+            .bind_issuer(aa, EffectiveKey::standing(aa.tbs().public_key()), work)
             .unwrap()
     };
     let AuthorityBinding::Bound(value) = binding else {
@@ -473,7 +473,7 @@ fn inspect(
     let result = response
         .authenticate_signature(
             &signer,
-            WorkingKey::standing(signer.tbs().public_key()),
+            EffectiveKey::standing(signer.tbs().public_key()),
             &crypto,
             &crypto,
             &w,
@@ -726,7 +726,7 @@ fn ac_ocsp_retains_each_source_ceiling_and_current_operation_without_storage_lea
             signatures: Cell::new(0),
             failure: Cell::new(false),
         };
-        let key = WorkingKey::standing(aa.tbs().public_key());
+        let key = EffectiveKey::standing(aa.tbs().public_key());
         let SignatureAuthentication::Signed(signed) = response
             .authenticate_signature(&aa, key, &crypto, &crypto, response_p.memory())
             .unwrap()

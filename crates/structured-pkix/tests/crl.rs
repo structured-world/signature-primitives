@@ -93,7 +93,7 @@ impl structured_pkix::path::Verify for SignatureYes {
     fn verify(
         &self,
         _: &structured_pkix::AlgorithmIdentifier<'_>,
-        _: structured_pkix::path::WorkingKey<'_>,
+        _: structured_pkix::path::EffectiveKey<'_>,
         _: &[u8],
         _: structured_pkix::signature::SignatureValue<'_>,
         _: &Memory,
@@ -110,7 +110,7 @@ fn authenticated<'r, 'a>(
     let result = crl
         .authenticate(
             issuer,
-            structured_pkix::path::WorkingKey::standing(issuer.tbs().public_key()),
+            structured_pkix::path::EffectiveKey::standing(issuer.tbs().public_key()),
             &SignatureYes,
             execution,
         )
@@ -1457,7 +1457,7 @@ fn authentication_binds_key_and_usage_before_signature_dispatch() {
     // one signing authority. V3 requires cRLSign; V1 is exempt from presence.
     use std::cell::Cell;
     use structured_pkix::crl::{Authentication, AuthenticationFailure};
-    use structured_pkix::path::{Verified, Verify, WorkingKey};
+    use structured_pkix::path::{EffectiveKey, Verified, Verify};
     struct Verifier<'s> {
         calls: Cell<usize>,
         signed: &'s [u8],
@@ -1467,7 +1467,7 @@ fn authentication_binds_key_and_usage_before_signature_dispatch() {
         fn verify(
             &self,
             _: &structured_pkix::AlgorithmIdentifier<'_>,
-            _: WorkingKey<'_>,
+            _: EffectiveKey<'_>,
             signed: &[u8],
             _: structured_pkix::signature::SignatureValue<'_>,
             _: &Memory,
@@ -1497,7 +1497,7 @@ fn authentication_binds_key_and_usage_before_signature_dispatch() {
         let outcome = parsed
             .authenticate(
                 &issuer,
-                WorkingKey::standing(issuer.tbs().public_key()),
+                EffectiveKey::standing(issuer.tbs().public_key()),
                 &verifier,
                 &execution,
             )
@@ -1524,7 +1524,7 @@ fn authentication_binds_key_and_usage_before_signature_dispatch() {
         parsed
             .authenticate(
                 &a,
-                WorkingKey::standing(b.tbs().public_key()),
+                EffectiveKey::standing(b.tbs().public_key()),
                 &verifier,
                 &execution
             )
@@ -1540,14 +1540,14 @@ fn callback_refusal_unsupported_and_resource_errors_keep_their_origin() {
     // exhaustion must survive as errors instead of becoming signature mismatch.
     use structured_pkix::crl::{Authentication, AuthenticationFailure};
     use structured_pkix::error::CallbackError;
-    use structured_pkix::path::{Verified, Verify, WorkingKey};
+    use structured_pkix::path::{EffectiveKey, Verified, Verify};
     struct Verifier(Result<Verified, u8>);
     impl Verify for Verifier {
         type Error = u8;
         fn verify(
             &self,
             _: &structured_pkix::AlgorithmIdentifier<'_>,
-            _: WorkingKey<'_>,
+            _: EffectiveKey<'_>,
             _: &[u8],
             _: structured_pkix::signature::SignatureValue<'_>,
             _: &Memory,
@@ -1561,7 +1561,7 @@ fn callback_refusal_unsupported_and_resource_errors_keep_their_origin() {
     let parsed = CertificateList::read(&parser, &bytes, 300).unwrap();
     let issuer_bytes = certificate(false, None, 7);
     let issuer = structured_pkix::Certificate::read(&parser, &issuer_bytes, 700).unwrap();
-    let key = WorkingKey::standing(issuer.tbs().public_key());
+    let key = EffectiveKey::standing(issuer.tbs().public_key());
     assert!(matches!(
         parsed
             .authenticate(&issuer, key, &Verifier(Ok(Verified::No)), &execution)
@@ -2012,14 +2012,14 @@ fn authenticated_delta_binding_keeps_sources_and_checks_arbitrary_width_numbers(
     // numbers are not narrowed to u64, and the combined evidence keeps both
     // original signed objects rather than constructing a new signed CRL.
     use structured_pkix::crl::{Authentication, DeltaBinding, DeltaFailure, MissingDeltaField};
-    use structured_pkix::path::{Verified, Verify, WorkingKey};
+    use structured_pkix::path::{EffectiveKey, Verified, Verify};
     struct Accept;
     impl Verify for Accept {
         type Error = std::convert::Infallible;
         fn verify(
             &self,
             _: &structured_pkix::AlgorithmIdentifier<'_>,
-            _: WorkingKey<'_>,
+            _: EffectiveKey<'_>,
             _: &[u8],
             _: structured_pkix::signature::SignatureValue<'_>,
             _: &Memory,
@@ -2031,7 +2031,7 @@ fn authenticated_delta_binding_keeps_sources_and_checks_arbitrary_width_numbers(
     let parser = Parser::der(execution.clone());
     let issuer_bytes = certificate(false, None, 7);
     let issuer = structured_pkix::Certificate::read(&parser, &issuer_bytes, 100).unwrap();
-    let key = WorkingKey::standing(issuer.tbs().public_key());
+    let key = EffectiveKey::standing(issuer.tbs().public_key());
     for (base_number, delta_number, minimum, scope, expected) in [
         (Some(&[5][..]), Some(&[6][..]), Some(&[5][..]), false, None),
         (

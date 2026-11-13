@@ -10,7 +10,7 @@ use super::{
 };
 use crate::algorithm::{self, AlgorithmIdentifier};
 use crate::error::Located;
-use crate::path::{Verify, WorkingKey};
+use crate::path::{EffectiveKey, Verify};
 use crate::signature::SignatureValue;
 use crate::{Error, ErrorCode, Name, PublicKeyInfo, Result};
 use structured_asn1::memory::{OwnedVec, Work};
@@ -183,7 +183,7 @@ impl<'a> Request<'a> {
         let native = native
             .verify(
                 &self.algorithm,
-                WorkingKey::standing(self.key),
+                EffectiveKey::standing(self.key),
                 self.signed_bytes(),
                 self.signature,
                 work,

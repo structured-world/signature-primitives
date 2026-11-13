@@ -79,7 +79,7 @@ fn with_delta_status(
     let base = crl::CertificateList::read(&parser, &pair.0, 5000).unwrap();
     let delta = crl::CertificateList::read(&parser, &pair.1, 6000).unwrap();
     let issuer = path.anchor().certificate().unwrap();
-    let key = WorkingKey::standing(issuer.tbs().public_key());
+    let key = EffectiveKey::standing(issuer.tbs().public_key());
     let verifier = super::super::super::super::timestamp_oracle::PathOracle {
         calls: Cell::new(0),
     };

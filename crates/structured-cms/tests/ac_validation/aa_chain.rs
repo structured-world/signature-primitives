@@ -17,7 +17,7 @@ use structured_cms::attribute_certificate::validation::authentication::{
     AlgorithmAgreement, AuthenticationError, Failure, Outcome,
 };
 use structured_pkix::extension::Recognizer;
-use structured_pkix::path::{self, Interval, ValidationContext, Verified, Verify, WorkingKey};
+use structured_pkix::path::{self, EffectiveKey, Interval, ValidationContext, Verified, Verify};
 use structured_pkix::signature::SignatureValue;
 use structured_pkix::{AlgorithmIdentifier, oid};
 
@@ -211,7 +211,7 @@ impl<W: Work> Verify<W> for Crypto {
     fn verify(
         &self,
         algorithm: &AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         bytes: &[u8],
         signature: SignatureValue<'_>,
         work: &W,
@@ -501,7 +501,7 @@ fn ac_failure_and_mismatched_anchor_key_do_not_inherit_path_success() {
         aa_path::validate_with_key(
             &refs,
             &certs[2],
-            WorkingKey::standing(certs[0].tbs().public_key()),
+            EffectiveKey::standing(certs[0].tbs().public_key()),
             &c
         )
         .unwrap(),
@@ -656,7 +656,7 @@ fn anchor_mismatch_cannot_hide_exhausted_original_supplied_key() {
     let result = aa_path::validate_with_key(
         &refs,
         &certs[2],
-        WorkingKey::standing(foreign.tbs().public_key()),
+        EffectiveKey::standing(foreign.tbs().public_key()),
         &context(&q, &v, &()),
     );
     assert!(
@@ -676,7 +676,7 @@ impl<W: Work> Verify<W> for Inherited {
     fn verify(
         &self,
         _: &AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         _: &[u8],
         _: SignatureValue<'_>,
         work: &W,
@@ -744,7 +744,7 @@ fn inherited_anchor_parameters_survive_complete_path_and_ac_composition() {
     let root = read_pkc(&p, &root_bytes);
     let aa = read_pkc(&p, &aa_bytes);
     let q = generous();
-    let effective = WorkingKey::standing(ancestor.tbs().public_key())
+    let effective = EffectiveKey::standing(ancestor.tbs().public_key())
         .subject(&root, &q)
         .unwrap();
     let path_certificates = [&aa, &root];
@@ -804,7 +804,7 @@ impl<W: Work> Verify<W> for Expensive {
     fn verify(
         &self,
         _: &AlgorithmIdentifier<'_>,
-        _: WorkingKey<'_>,
+        _: EffectiveKey<'_>,
         _: &[u8],
         _: SignatureValue<'_>,
         work: &W,
@@ -870,7 +870,7 @@ fn issuer_mismatch_after_control_census_still_funds_original_names() {
     let query = generous();
     let _ = path::EffectiveAnchor::bind(
         path::Anchor::from_certificate(&certs[1]),
-        WorkingKey::standing(certs[1].tbs().public_key()),
+        EffectiveKey::standing(certs[1].tbs().public_key()),
         &query,
     )
     .unwrap();

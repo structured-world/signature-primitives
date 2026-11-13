@@ -127,7 +127,7 @@ fn format_material_checks_every_original_credential_even_without_x509_authoritie
     xml_digest::with_checked_path(|path, leaf, _, memory| {
         let paths = [path];
         let anchor = path.anchor();
-        let key = structured_pkix::path::WorkingKey::standing(anchor.key());
+        let key = structured_pkix::path::EffectiveKey::standing(anchor.key());
         let anchor = structured_pkix::path::EffectiveAnchor::bind(anchor, key, memory)
             .unwrap()
             .unwrap();
@@ -432,7 +432,7 @@ fn every_original_credential_is_checked_and_late_refusal_drops_retained_prefix()
     xml_digest::with_checked_path(|path, _, _, memory| {
         let paths = [path];
         let anchor = path.anchor();
-        let key = structured_pkix::path::WorkingKey::standing(anchor.key());
+        let key = structured_pkix::path::EffectiveKey::standing(anchor.key());
         let anchor = structured_pkix::path::EffectiveAnchor::bind(anchor, key, memory)
             .unwrap()
             .unwrap();
@@ -524,7 +524,7 @@ fn foreign_or_unfunded_credential_source_refuses_before_provider_dispatch() {
     xml_digest::with_checked_path(|path, _, _, memory| {
         let paths = [path];
         let anchor = path.anchor();
-        let key = structured_pkix::path::WorkingKey::standing(anchor.key());
+        let key = structured_pkix::path::EffectiveKey::standing(anchor.key());
         let anchor = structured_pkix::path::EffectiveAnchor::bind(anchor, key, memory)
             .unwrap()
             .unwrap();
@@ -563,7 +563,7 @@ fn credential_facts_retain_their_own_capacity_after_xml_roles_and_provider_drop(
     xml_digest::with_checked_path(|path, _, _, path_memory| {
         let paths = [path];
         let anchor = path.anchor();
-        let key = structured_pkix::path::WorkingKey::standing(anchor.key());
+        let key = structured_pkix::path::EffectiveKey::standing(anchor.key());
         let anchor = structured_pkix::path::EffectiveAnchor::bind(anchor, key, path_memory)
             .unwrap()
             .unwrap();
@@ -610,7 +610,7 @@ fn root_and_counter_credentials_form_one_source_derived_set_without_partial_grou
     xml_digest::with_checked_path(|path, _, _, memory| {
         let paths = [path];
         let anchor = path.anchor();
-        let key = structured_pkix::path::WorkingKey::standing(anchor.key());
+        let key = structured_pkix::path::EffectiveKey::standing(anchor.key());
         let anchor = structured_pkix::path::EffectiveAnchor::bind(anchor, key, memory)
             .unwrap()
             .unwrap();

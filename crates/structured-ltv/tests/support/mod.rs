@@ -10,7 +10,7 @@ use std::sync::Arc;
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, Work};
 use structured_pkix::{
     AlgorithmIdentifier, oid,
-    path::{Verified, Verify, WorkingKey},
+    path::{EffectiveKey, Verified, Verify},
 };
 
 const ECDSA: &[u8] = &[42, 134, 72, 206, 61, 4, 3, 2];
@@ -93,7 +93,7 @@ impl<E: Work> Verify<E> for Oracle {
     fn verify(
         &self,
         algorithm: &AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         signed: &[u8],
         signature: structured_pkix::signature::SignatureValue<'_>,
         work: &E,

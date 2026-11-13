@@ -753,8 +753,8 @@ fn verification_callback_reads_signature_and_key_parameters_without_a_reader() {
     use structured_pkix::{
         Certificate,
         path::{
-            self, Anchor, Interval, Policy, ValidationBounds, ValidationContext, Verified, Verify,
-            WorkingKey,
+            self, Anchor, EffectiveKey, Interval, Policy, ValidationBounds, ValidationContext,
+            Verified, Verify,
         },
     };
     struct Provider {
@@ -766,7 +766,7 @@ fn verification_callback_reads_signature_and_key_parameters_without_a_reader() {
         fn verify(
             &self,
             algorithm: &AlgorithmIdentifier<'_>,
-            key: WorkingKey<'_>,
+            key: EffectiveKey<'_>,
             _: &[u8],
             _: structured_pkix::signature::SignatureValue<'_>,
             work: &W,
@@ -821,7 +821,7 @@ fn verification_callback_reads_signature_and_key_parameters_without_a_reader() {
             path::Validation::Accepted(_)
         ));
         assert_eq!(provider.calls.get(), 1);
-        let projected = WorkingKey::standing(root.tbs().public_key())
+        let projected = EffectiveKey::standing(root.tbs().public_key())
             .subject(&leaf, &work)
             .unwrap();
         assert_eq!(projected.parameters(), None);

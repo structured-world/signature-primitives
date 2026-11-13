@@ -6,7 +6,7 @@ use structured_cms::attribute_certificate::validation::usage::{
     Evidence as _, Status as UseStatus,
 };
 use structured_pkix::crl::*;
-use structured_pkix::path::{Verified, Verify, WorkingKey};
+use structured_pkix::path::{EffectiveKey, Verified, Verify};
 use structured_pkix::temporal::LeapTable;
 use structured_pkix::{Certificate, oid};
 
@@ -19,7 +19,7 @@ impl<W: Work> Verify<W> for FixtureSignature {
     fn verify(
         &self,
         _: &structured_pkix::AlgorithmIdentifier<'_>,
-        _: WorkingKey<'_>,
+        _: EffectiveKey<'_>,
         data: &[u8],
         sig: structured_pkix::signature::SignatureValue<'_>,
         w: &W,
@@ -37,7 +37,7 @@ fn auth<'r, 'a>(
     match list
         .authenticate(
             aa,
-            WorkingKey::standing(aa.tbs().public_key()),
+            EffectiveKey::standing(aa.tbs().public_key()),
             &FixtureSignature,
             w,
         )
@@ -360,7 +360,7 @@ fn native_ed25519_crl_signature_authenticates_before_ac_evidence() {
     let Authentication::Authenticated(proof) = crl
         .authenticate(
             &aa,
-            WorkingKey::standing(aa.tbs().public_key()),
+            EffectiveKey::standing(aa.tbs().public_key()),
             &verifier,
             &generous(),
         )
@@ -384,7 +384,7 @@ fn native_ed25519_crl_signature_authenticates_before_ac_evidence() {
     assert!(matches!(
         crl.authenticate(
             &aa,
-            WorkingKey::standing(aa.tbs().public_key()),
+            EffectiveKey::standing(aa.tbs().public_key()),
             &verifier,
             &generous()
         )

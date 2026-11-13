@@ -102,7 +102,7 @@ fn check(
     let context = CheckContext {
         certificate: &certificate,
         certificate_parent: &certificate_parent,
-        key: WorkingKey::standing(certificate.tbs().public_key()),
+        key: EffectiveKey::standing(certificate.tbs().public_key()),
         requested: None,
         utc: &utc,
         reference: if matches!(mode, Mode::Historical | Mode::HistoricalAsync) {

@@ -27,7 +27,7 @@ fn inherited_query_refuses_spent_issuer_before_classification() {
         let root = Certificate::read(&root_source, &root_bytes, 400).unwrap();
         let leaf = Certificate::read(&leaf_source, &leaf_bytes, 9000).unwrap();
         let setup = memory(100_000);
-        let key = WorkingKey::standing(root.tbs().public_key())
+        let key = EffectiveKey::standing(root.tbs().public_key())
             .subject(&leaf, &setup)
             .unwrap();
         let view = ec::read(key, &setup).unwrap();
@@ -66,7 +66,7 @@ fn current_local_and_aggregate_limits_and_exact_boundary_survive() {
         let root = Certificate::read(&root_source, &root_bytes, 400).unwrap();
         let leaf = Certificate::read(&leaf_source, &leaf_bytes, 9000).unwrap();
         let setup = memory(100_000);
-        let working = WorkingKey::standing(root.tbs().public_key())
+        let working = EffectiveKey::standing(root.tbs().public_key())
             .subject(&leaf, &setup)
             .unwrap();
         let view = ec::read(working, &setup).unwrap();
@@ -121,7 +121,7 @@ fn direct_implicit_and_specified_parameters_keep_their_source_and_bytes() {
         let bytes = ec_spki(Some(&parameters), &[4, 1, 2]);
         let original = info(&source, &bytes);
         let setup = memory(100_000);
-        let view = ec::read(WorkingKey::standing(original), &setup).unwrap();
+        let view = ec::read(EffectiveKey::standing(original), &setup).unwrap();
         assert_eq!(view.parameters().as_bytes(), parameters);
         assert_eq!(
             view.parameters().span().start,
@@ -152,7 +152,11 @@ fn same_session_queries_charge_once_and_construction_does_no_work() {
     // A repeated query needs admission each time but never double aggregate billing.
     let source = bounded_source();
     let bytes = ec_spki(Some(&named()), &[3, 7]);
-    let view = ec::read(WorkingKey::standing(info(&source, &bytes)), source.memory()).unwrap();
+    let view = ec::read(
+        EffectiveKey::standing(info(&source, &bytes)),
+        source.memory(),
+    )
+    .unwrap();
     let work = source.execution_in(source.memory());
     let before = source.memory().work_used();
     let first = view.parameters_execution_in(&work);
@@ -178,7 +182,7 @@ fn parameter_query_does_not_spend_point_source_or_pin_old_operation() {
         let setup = memory(100_000);
         let operation = Parser::der(setup);
         let query = operation.read(&[], 80000).unwrap();
-        working = WorkingKey::standing(root.tbs().public_key())
+        working = EffectiveKey::standing(root.tbs().public_key())
             .subject(&leaf, &query.execution())
             .unwrap();
         ec::read(working, &query.execution()).unwrap()
@@ -203,7 +207,11 @@ fn query_keeps_current_root_when_switching_from_another_foreign_source() {
     // The intermediate source is not the root operation and cannot widen its ceiling.
     let source = bounded_source();
     let bytes = ec_spki(Some(&named()), &[3, 7]);
-    let view = ec::read(WorkingKey::standing(info(&source, &bytes)), source.memory()).unwrap();
+    let view = ec::read(
+        EffectiveKey::standing(info(&source, &bytes)),
+        source.memory(),
+    )
+    .unwrap();
     let other = bounded_source();
     let current = memory(100_000);
     let operation = Parser::new(
@@ -234,7 +242,11 @@ fn query_borrow_is_independent_of_the_view() {
     // An immutable descriptor may end before its query, without owning an account.
     let source = bounded_source();
     let bytes = ec_spki(Some(&named()), &[3, 7]);
-    let view = ec::read(WorkingKey::standing(info(&source, &bytes)), source.memory()).unwrap();
+    let view = ec::read(
+        EffectiveKey::standing(info(&source, &bytes)),
+        source.memory(),
+    )
+    .unwrap();
     let current = Memory::new(Arc::new(MemoryAccount::new(0, 1000)));
     let execution = {
         let transient = view;

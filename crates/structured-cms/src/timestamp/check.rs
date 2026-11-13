@@ -28,7 +28,7 @@ use structured_asn1::{
 };
 use structured_pkix::{
     Certificate,
-    path::WorkingKey,
+    path::EffectiveKey,
     temporal::{Instant, LeapTable},
 };
 
@@ -47,7 +47,7 @@ pub struct CheckContext<'a, 'r> {
     /// That certificate's own original producing reader.
     pub certificate_parent: &'r Reader<'a>,
     /// Effective key retaining independently established inherited parameters.
-    pub key: WorkingKey<'a>,
+    pub key: EffectiveKey<'a>,
     /// Complete live request, absent for archived evidence.
     pub requested: Option<Requested<'a, 'r>>,
     /// Explicit UTC correction facts, without implicit clock lookup.

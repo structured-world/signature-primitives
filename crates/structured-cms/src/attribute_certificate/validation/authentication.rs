@@ -13,7 +13,7 @@ use crate::{Error, Result};
 use structured_asn1::Span;
 use structured_asn1::digest::Resolution;
 use structured_asn1::memory::{Execution, Work};
-use structured_pkix::path::{Interval, Verified, Verify, WorkingKey};
+use structured_pkix::path::{EffectiveKey, Interval, Verified, Verify};
 use structured_pkix::{AlgorithmIdentifier, Certificate};
 
 /// Semantic agreement supplied by the same selected signature verifier.
@@ -122,7 +122,7 @@ impl<E> From<Error> for AuthenticationError<E> {
 pub struct Authenticated<'r, 'a, 's> {
     profile: Profile<'r, 'a>,
     authority: &'r Certificate<'s>,
-    key: WorkingKey<'s>,
+    key: EffectiveKey<'s>,
     interval: Interval,
 }
 impl<'r, 'a, 's> Authenticated<'r, 'a, 's> {
@@ -143,7 +143,7 @@ impl<'r, 'a, 's> Authenticated<'r, 'a, 's> {
     }
     /// Actual supplied effective key, preserving its inherited parameter source.
     #[must_use]
-    pub fn key(&self) -> WorkingKey<'s> {
+    pub fn key(&self) -> EffectiveKey<'s> {
         self.key
     }
     /// Complete explicit interval checked against both AC and authority validity.
@@ -159,7 +159,7 @@ fn rejected<T>(reason: Failure, source: Span) -> Outcome<T> {
 
 fn key_matches<W: Work>(
     authority: &Certificate<'_>,
-    key: WorkingKey<'_>,
+    key: EffectiveKey<'_>,
     work: &W,
 ) -> Result<bool> {
     let original = key.key().algorithm();
@@ -194,7 +194,7 @@ impl<'a> AttributeCertificate<'a> {
     pub fn authenticate<'r, 's, V, W: Work>(
         &'r self,
         authority: &'r Certificate<'s>,
-        key: WorkingKey<'s>,
+        key: EffectiveKey<'s>,
         interval: Interval,
         verifier: &V,
         work: &W,

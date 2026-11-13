@@ -89,7 +89,7 @@ struct KeyProjection {
 }
 
 impl KeyProjection {
-    fn of(key: structured_pkix::path::WorkingKey<'_>) -> Self {
+    fn of(key: structured_pkix::path::EffectiveKey<'_>) -> Self {
         Self {
             key: key.key().as_bytes().as_ptr() as usize,
             parameters: key
@@ -814,7 +814,7 @@ impl certificate::CertificateXml for Tree {
         snapshot: Snapshot<u8, u8>,
         signature: usize,
         _certificate: &structured_pkix::Certificate<'_>,
-        key: structured_pkix::path::WorkingKey<'_>,
+        key: structured_pkix::path::EffectiveKey<'_>,
         execution: &W,
     ) -> Result<certificate::KeyAssociation, Cause> {
         // Explicit synthetic owner receipt, not real crypto/key qualification.
@@ -1234,7 +1234,7 @@ fn assert_timestamp_digest_prohibition(
     // including a later signed restriction after the allowed first identity.
     use structured_cms::timestamp::CheckContext;
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     let (mut xml, node, _) = Tree::stamped(Role::Signature);
@@ -1247,7 +1247,7 @@ fn assert_timestamp_digest_prohibition(
     let context = CheckContext {
         certificate: &certificate,
         certificate_parent: &operation,
-        key: WorkingKey::standing(certificate.tbs().public_key()),
+        key: EffectiveKey::standing(certificate.tbs().public_key()),
         requested: None,
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -1303,7 +1303,7 @@ fn original_signature_and_archive_inputs_drive_real_timestamp_signature_and_reta
     // Framing is synthetic: this does not qualify real XML C14N or B profiles.
     use structured_cms::timestamp::CheckContext;
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     for role in [Role::Signature, Role::Archive] {
@@ -1360,7 +1360,7 @@ fn original_signature_and_archive_inputs_drive_real_timestamp_signature_and_reta
                 let context = CheckContext {
                     certificate: &certificate,
                     certificate_parent: &certificate_parent,
-                    key: WorkingKey::standing(certificate.tbs().public_key()),
+                    key: EffectiveKey::standing(certificate.tbs().public_key()),
                     requested: None,
                     utc: &utc,
                     reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -1872,7 +1872,7 @@ fn an_archive_tokens_own_certificate_cannot_complete_its_prior_material() {
     // otherwise that legitimately covered earlier copy could satisfy lookup.
     use structured_cms::timestamp::CheckContext;
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     let (mut xml, archive, provider, certificate_bytes, _) =
@@ -1903,7 +1903,7 @@ fn an_archive_tokens_own_certificate_cannot_complete_its_prior_material() {
     let context = CheckContext {
         certificate: &certificate,
         certificate_parent: &operation,
-        key: WorkingKey::standing(certificate.tbs().public_key()),
+        key: EffectiveKey::standing(certificate.tbs().public_key()),
         requested: None,
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -1958,7 +1958,7 @@ fn archive_artifact_lookup_requires_a_covered_copy_and_exact_original_identity()
     // duplicate can satisfy availability without changing the required bytes;
     // unknown DER and a foreign source/current resource refusal stay distinct.
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     for order in [
@@ -1989,7 +1989,7 @@ fn archive_artifact_lookup_requires_a_covered_copy_and_exact_original_identity()
             let context = CheckContext {
                 certificate: &certificate,
                 certificate_parent: &parent,
-                key: WorkingKey::standing(certificate.tbs().public_key()),
+                key: EffectiveKey::standing(certificate.tbs().public_key()),
                 requested: None,
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -2098,7 +2098,7 @@ fn assert_crl_archive<'source, W: Work + 'source, C: Work>(
     let verifier = timestamp_oracle::PathOracle {
         calls: Cell::new(0),
     };
-    let key = structured_pkix::path::WorkingKey::standing(issuer.tbs().public_key());
+    let key = structured_pkix::path::EffectiveKey::standing(issuer.tbs().public_key());
     let Authentication::Authenticated(base) = lists[0]
         .authenticate(issuer, key, &verifier, access.execution())
         .unwrap()
@@ -2411,7 +2411,7 @@ fn crl_authority_paths_require_same_anchor_and_full_evaluation_reading() {
             let verifier = timestamp_oracle::PathOracle {
                 calls: Cell::new(0),
             };
-            let key = structured_pkix::path::WorkingKey::standing(signer.tbs().public_key());
+            let key = structured_pkix::path::EffectiveKey::standing(signer.tbs().public_key());
             let crl::Authentication::Authenticated(source) =
                 list.authenticate(&signer, key, &verifier, work).unwrap()
             else {
@@ -2958,7 +2958,7 @@ fn assert_no_check_archive<W: Work, C: Work, Q: Work>(
     };
     use structured_pkix::{
         Certificate, ocsp,
-        path::{Anchor, Interval, ValidationBounds, ValidationContext, WorkingKey},
+        path::{Anchor, EffectiveKey, Interval, ValidationBounds, ValidationContext},
         temporal::{Instant, LeapTable},
     };
     let work = access.execution();
@@ -2983,7 +2983,7 @@ fn assert_no_check_archive<W: Work, C: Work, Q: Work>(
     let ocsp::Delegation::Accepted(local) = ocsp::check_delegate(
         &delegate,
         &root,
-        WorkingKey::standing(root.tbs().public_key()),
+        EffectiveKey::standing(root.tbs().public_key()),
         &context,
     )
     .unwrap() else {
@@ -3062,7 +3062,7 @@ fn checked_ocsp<'a, W: Work + 'a>(
     let verifier = timestamp_oracle::PathOracle {
         calls: Cell::new(0),
     };
-    let key = structured_pkix::path::WorkingKey::standing(issuer.tbs().public_key());
+    let key = structured_pkix::path::EffectiveKey::standing(issuer.tbs().public_key());
     let SignatureAuthentication::Signed(signed) = response
         .authenticate_signature(issuer, key, &verifier, &verifier, execution)
         .unwrap()
@@ -3119,7 +3119,7 @@ fn assert_delegated_ocsp_path(no_check: bool) {
     use structured_ltv::pki::{self, OcspBinding, PathOutcome, ResponderBinding, ResponderFailure};
     use structured_pkix::{
         Certificate, ocsp,
-        path::{Anchor, Interval, ValidationBounds, ValidationContext, WorkingKey},
+        path::{Anchor, EffectiveKey, Interval, ValidationBounds, ValidationContext},
         temporal::{Instant, LeapTable},
     };
     xml_digest::with_checked_path(|target_path, _, _, work| {
@@ -3148,7 +3148,7 @@ fn assert_delegated_ocsp_path(no_check: bool) {
         let ocsp::Delegation::Accepted(local) = ocsp::check_delegate(
             &delegate,
             &root,
-            WorkingKey::standing(root.tbs().public_key()),
+            EffectiveKey::standing(root.tbs().public_key()),
             &context,
         )
         .unwrap() else {
@@ -3561,7 +3561,7 @@ fn ocsp_name_and_serial_cannot_substitute_another_issuer_or_path_target() {
     use structured_ltv::pki::{OcspBinding, OcspBindingFailure};
     use structured_pkix::{
         ocsp,
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     xml_digest::with_checked_path(|path, _, _, memory| {
@@ -3584,7 +3584,7 @@ fn ocsp_name_and_serial_cannot_substitute_another_issuer_or_path_target() {
         let ocsp::SignatureAuthentication::Signed(authenticated) = response
             .authenticate_signature(
                 signer,
-                WorkingKey::standing(signer.tbs().public_key()),
+                EffectiveKey::standing(signer.tbs().public_key()),
                 &verifier,
                 &verifier,
                 memory,
@@ -3988,7 +3988,7 @@ fn timestamp_source_set_runs_complete_common_checks_and_retains_independent_evid
     // set, not full XML C14N, signer trust or a completed XAdES baseline level.
     use structured_cms::timestamp::CheckContext;
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     let memory = Memory::new(Arc::new(MemoryAccount::new(1_000_000, 10_000_000)));
@@ -4016,7 +4016,7 @@ fn timestamp_source_set_runs_complete_common_checks_and_retains_independent_evid
         let context = CheckContext {
             certificate: &certificate,
             certificate_parent: &certificate_parent,
-            key: WorkingKey::standing(certificate.tbs().public_key()),
+            key: EffectiveKey::standing(certificate.tbs().public_key()),
             requested: None,
             utc: &utc,
             reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -5202,7 +5202,7 @@ fn prior_timestamp_paths_require_each_actual_original_token_not_one_repeated_suc
     // A real common token check plus actual TSA path can satisfy its own
     // antecedent. It cannot cover a different, still unchecked archive token.
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     xml_digest::with_checked_path(|path, _, _, work| {
@@ -5225,7 +5225,7 @@ fn prior_timestamp_paths_require_each_actual_original_token_not_one_repeated_suc
         let context = structured_cms::timestamp::CheckContext {
             certificate: &certificate,
             certificate_parent: &parent,
-            key: WorkingKey::standing(certificate.tbs().public_key()),
+            key: EffectiveKey::standing(certificate.tbs().public_key()),
             requested: None,
             utc: &utc,
             reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -10096,7 +10096,7 @@ fn crl_reason_union_binds_every_original_authority_without_partial_receipts() {
     };
     use structured_pkix::{
         crl,
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     xml_digest::with_checked_path(|path, _, _, work| {
@@ -10122,7 +10122,7 @@ fn crl_reason_union_binds_every_original_authority_without_partial_receipts() {
             let crl::Authentication::Authenticated(source) = list
                 .authenticate(
                     issuer,
-                    WorkingKey::standing(issuer.tbs().public_key()),
+                    EffectiveKey::standing(issuer.tbs().public_key()),
                     &verifier,
                     work,
                 )

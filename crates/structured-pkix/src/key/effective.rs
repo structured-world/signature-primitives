@@ -8,7 +8,7 @@
 
 use crate::algorithm::Nested;
 use crate::error::{Error, ErrorCode, Located, Result};
-use crate::path::WorkingKey;
+use crate::path::EffectiveKey;
 use structured_asn1::memory::{Execution, MemoryError, Work};
 use structured_asn1::{Encoding, Span};
 
@@ -77,12 +77,12 @@ impl Header {
 ///
 /// This proves canonical outer framing and parameter DER, not that a key's
 /// algorithm-specific payload is valid. A selected provider must check the
-/// original `WorkingKey` against its algorithm rules before using this stream.
+/// original `EffectiveKey` against its algorithm rules before using this stream.
 /// In particular, inherited parameters cannot repair an invalid written NULL.
 /// The type owns no allocation, account, parser or operation borrow.
 #[derive(Debug)]
 pub struct EffectiveSpki<'a> {
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     parameters: Option<Nested<'a>>,
     sequence: Header,
     algorithm: Header,
@@ -104,7 +104,7 @@ impl<'a> EffectiveSpki<'a> {
     /// new scan. BER sources are held to DER in their original nested context;
     /// noncanonical parameter TLVs are rejected rather than silently rewritten.
     /// Written NULL is retained when there is no effective inherited value.
-    pub fn read<W: Work>(key: WorkingKey<'a>, work: &W) -> Result<Self> {
+    pub fn read<W: Work>(key: EffectiveKey<'a>, work: &W) -> Result<Self> {
         let own = key.key().algorithm();
         let execution = own.query_in(work);
         // Four length headers have at most eight significant length octets.
@@ -164,7 +164,7 @@ impl<'a> EffectiveSpki<'a> {
 
     /// Original effective key, including its parameter provenance.
     #[must_use]
-    pub fn key(&self) -> WorkingKey<'a> {
+    pub fn key(&self) -> EffectiveKey<'a> {
         self.key
     }
 

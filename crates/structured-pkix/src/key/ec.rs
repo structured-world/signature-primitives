@@ -12,7 +12,7 @@
 use super::same_oid;
 use crate::algorithm::Producer;
 use crate::error::{Error, ErrorCode, Located, Result};
-use crate::path::WorkingKey;
+use crate::path::EffectiveKey;
 use structured_asn1::memory::{Execution, Work};
 use structured_asn1::{Element, Oid, Tag, universal};
 
@@ -154,7 +154,7 @@ impl<'a> PublicKey<'a> {
 /// ```
 /// use std::sync::Arc;
 /// use structured_asn1::{Parser, memory::{Memory, MemoryAccount}};
-/// use structured_pkix::{PublicKeyInfo, key::ec, path::WorkingKey};
+/// use structured_pkix::{PublicKeyInfo, key::ec, path::EffectiveKey};
 /// let memory = Memory::new(Arc::new(MemoryAccount::new(4096, 4096)));
 /// let parser = Parser::der(memory.clone());
 /// // id-ecPublicKey, prime256v1; compressed point with a one-octet x
@@ -163,14 +163,14 @@ impl<'a> PublicKey<'a> {
 /// let mut reader = parser.read(spki, 0).unwrap();
 /// let element = reader.next_element().unwrap().unwrap();
 /// let key = PublicKeyInfo::read_element(&reader, &element, "subjectPublicKeyInfo")?;
-/// let read = ec::read(WorkingKey::standing(key), &memory)?;
+/// let read = ec::read(EffectiveKey::standing(key), &memory)?;
 /// assert!(matches!(read.curve(), ec::Curve::Named(_)));
 /// assert!(matches!(read.point(), ec::Point::Compressed { odd: true, .. }));
 /// assert_eq!(read.point().coordinate_len(), 2);
 /// assert_eq!(read.offset(), 26);
 /// # Ok::<(), structured_pkix::Error>(())
 /// ```
-pub fn read<'a, W: Work>(key: WorkingKey<'a>, execution: &W) -> Result<PublicKey<'a>> {
+pub fn read<'a, W: Work>(key: EffectiveKey<'a>, execution: &W) -> Result<PublicKey<'a>> {
     let info = key.key();
     let own = info.algorithm();
     // The key's OID and point belong to its own source even when the curve

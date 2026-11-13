@@ -22,7 +22,7 @@ use structured_pkix::ocsp::{
     BasicResponse, CertMatch, ExtensionProcessing, Lookup, NonceBinding, OcspRequest, RequestNonce,
     SignatureAuthentication,
 };
-use structured_pkix::path::{Verified, Verify, WorkingKey};
+use structured_pkix::path::{EffectiveKey, Verified, Verify};
 use structured_pkix::signature::{DssValue, SignatureValue};
 use structured_pkix::{AlgorithmIdentifier, Certificate, Error, ErrorCode, oid};
 
@@ -166,7 +166,7 @@ impl<W: Work> Verify<W> for Provider {
     fn verify(
         &self,
         id: &AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         signed: &[u8],
         signature: SignatureValue<'_>,
         work: &W,
@@ -293,7 +293,7 @@ fn original_signed_request_verifies_native_p256_and_name_separately() {
         let outcome = request
             .authenticate_signature(
                 &certificate,
-                WorkingKey::standing(certificate.tbs().public_key()),
+                EffectiveKey::standing(certificate.tbs().public_key()),
                 &provider,
                 &ample(),
             )
@@ -341,7 +341,7 @@ fn complete_batch_preserves_nonce_original_entries_and_response_duplicates() {
     let SignatureAuthentication::Signed(authenticated) = response
         .authenticate_signature(
             &certificate,
-            WorkingKey::standing(certificate.tbs().public_key()),
+            EffectiveKey::standing(certificate.tbs().public_key()),
             &provider,
             &provider,
             &ample(),
@@ -575,7 +575,7 @@ fn signature_negative_unsupported_callback_and_wrong_key_are_distinct() {
         request
             .authenticate_signature(
                 &certificate,
-                WorkingKey::standing(other.tbs().public_key()),
+                EffectiveKey::standing(other.tbs().public_key()),
                 &provider,
                 &ample()
             )
@@ -591,7 +591,7 @@ fn signature_negative_unsupported_callback_and_wrong_key_are_distinct() {
         request
             .authenticate_signature(
                 &certificate,
-                WorkingKey::standing(certificate.tbs().public_key()),
+                EffectiveKey::standing(certificate.tbs().public_key()),
                 &unsupported,
                 &ample()
             )
@@ -603,7 +603,7 @@ fn signature_negative_unsupported_callback_and_wrong_key_are_distinct() {
         ..Provider::default()
     };
     assert!(
-        matches!(request.authenticate_signature(&certificate,WorkingKey::standing(certificate.tbs().public_key()),&failure,&ample()),Err(CallbackError::Callback(error)) if error.offset()==91)
+        matches!(request.authenticate_signature(&certificate,EffectiveKey::standing(certificate.tbs().public_key()),&failure,&ample()),Err(CallbackError::Callback(error)) if error.offset()==91)
     );
     let mut changed = bytes.clone();
     let position = usize::try_from(request.requests()[0].span().start - 400).unwrap();
@@ -613,7 +613,7 @@ fn signature_negative_unsupported_callback_and_wrong_key_are_distinct() {
         changed
             .authenticate_signature(
                 &certificate,
-                WorkingKey::standing(certificate.tbs().public_key()),
+                EffectiveKey::standing(certificate.tbs().public_key()),
                 &provider,
                 &ample()
             )
@@ -627,7 +627,7 @@ fn signature_negative_unsupported_callback_and_wrong_key_are_distinct() {
         unsigned
             .authenticate_signature(
                 &certificate,
-                WorkingKey::standing(certificate.tbs().public_key()),
+                EffectiveKey::standing(certificate.tbs().public_key()),
                 &provider,
                 &ample()
             )
@@ -768,7 +768,7 @@ fn batch_binding_keeps_every_nonce_and_critical_scope_outcome() {
         let SignatureAuthentication::Signed(signed) = response
             .authenticate_signature(
                 &certificate,
-                WorkingKey::standing(certificate.tbs().public_key()),
+                EffectiveKey::standing(certificate.tbs().public_key()),
                 &provider,
                 &provider,
                 &ample(),
@@ -808,7 +808,7 @@ fn signature_query_keeps_independent_signer_and_current_source_limits() {
     let request_source = Parser::der(ample());
     let request = OcspRequest::read(&request_source, &bytes, 400).unwrap();
     let provider = Provider::default();
-    let key = WorkingKey::standing(certificate.tbs().public_key());
+    let key = EffectiveKey::standing(certificate.tbs().public_key());
     assert!(
         matches!(request.authenticate_signature(&certificate,key,&provider,&memory(0,0)),
         Err(CallbackError::Processing(error)) if error.is_resource() && error.offset()==400)

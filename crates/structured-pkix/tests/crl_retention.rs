@@ -62,7 +62,7 @@ impl structured_pkix::path::Verify for SignatureYes {
     fn verify(
         &self,
         _: &structured_pkix::AlgorithmIdentifier<'_>,
-        _: structured_pkix::path::WorkingKey<'_>,
+        _: structured_pkix::path::EffectiveKey<'_>,
         _: &[u8],
         _: structured_pkix::signature::SignatureValue<'_>,
         _: &Memory,
@@ -79,7 +79,7 @@ fn lookup(
     let structured_pkix::crl::Authentication::Authenticated(proof) = parsed
         .authenticate(
             issuer,
-            structured_pkix::path::WorkingKey::standing(issuer.tbs().public_key()),
+            structured_pkix::path::EffectiveKey::standing(issuer.tbs().public_key()),
             &SignatureYes,
             execution,
         )

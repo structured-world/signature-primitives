@@ -59,7 +59,7 @@ impl Tokens<'_> {
         // Both original tokens are checked once with their real TSA key and
         // bound to the actual checked path; later stages reuse these receipts.
         use structured_pkix::{
-            path::WorkingKey,
+            path::EffectiveKey,
             temporal::{Instant, LeapTable},
         };
         let parser = structured_asn1::Parser::der(memory.clone());
@@ -69,7 +69,7 @@ impl Tokens<'_> {
         let context = structured_cms::timestamp::CheckContext {
             certificate: &tsa,
             certificate_parent: &operation,
-            key: WorkingKey::standing(tsa.tbs().public_key()),
+            key: EffectiveKey::standing(tsa.tbs().public_key()),
             requested: None,
             utc: &utc,
             reference: Some(Instant::new(1_800_000_000, 0).unwrap()),

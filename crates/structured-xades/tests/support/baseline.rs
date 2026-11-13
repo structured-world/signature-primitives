@@ -4,7 +4,7 @@ use super::{Tree, attribute_checks, funded, timestamp_oracle, xml_digest};
 use structured_asn1::memory::{MemoryError, Work};
 use structured_ltv::{baseline as composed, pki};
 use structured_pkix::{
-    path::WorkingKey,
+    path::EffectiveKey,
     temporal::{Instant, LeapTable},
 };
 use structured_xades::{
@@ -127,7 +127,7 @@ fn run_timed_assembly(pool: values::Pool, requested: unsigned::Requirements) {
         let context = structured_cms::timestamp::CheckContext {
             certificate: &tsa,
             certificate_parent: &operation,
-            key: WorkingKey::standing(tsa.tbs().public_key()),
+            key: EffectiveKey::standing(tsa.tbs().public_key()),
             requested: None,
             utc: &utc,
             reference: Some(Instant::new(1_800_000_000, 0).unwrap()),

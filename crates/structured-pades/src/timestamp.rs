@@ -26,7 +26,7 @@ use structured_ltv::{
     source::Location as Original,
     timestamp::{CheckedActor, Purpose, Verified},
 };
-use structured_pkix::{Certificate, path::WorkingKey};
+use structured_pkix::{Certificate, path::EffectiveKey};
 
 pub mod coverage;
 mod requirements;
@@ -239,7 +239,7 @@ pub struct DocumentTime<'q, 'a, 's, 'd, D, G> {
     signature: Signature<'a, 's, D, G>,
     checks: CheckedTimestamp<'q>,
     certificate: &'q Certificate<'d>,
-    key: WorkingKey<'d>,
+    key: EffectiveKey<'d>,
 }
 
 impl<'q, 'a, 's, 'd, D: Copy + Eq, G: Copy + Eq> DocumentTime<'q, 'a, 's, 'd, D, G> {

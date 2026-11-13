@@ -142,7 +142,7 @@ fn grants_check_real_signature_original_request_and_retained_evidence() {
             let context = CheckContext {
                 certificate: &certificate,
                 certificate_parent: &certificate_parent,
-                key: WorkingKey::standing(certificate.tbs().public_key()),
+                key: EffectiveKey::standing(certificate.tbs().public_key()),
                 requested: Some(Requested {
                     request: &req,
                     parent: &req_parent,
@@ -244,7 +244,7 @@ fn status_cannot_override_request_substitution_bad_signature_or_adverse_time() {
         let context = CheckContext {
             certificate: &certificate,
             certificate_parent: &certificate_parent,
-            key: WorkingKey::standing(certificate.tbs().public_key()),
+            key: EffectiveKey::standing(certificate.tbs().public_key()),
             requested: Some(Requested {
                 request: &req,
                 parent: &req_parent,
@@ -298,7 +298,7 @@ fn negative_status_has_no_provider_profile_recognizer_or_payload_side_effects() 
         let mut context = CheckContext {
             certificate: &certificate,
             certificate_parent: &certificate_parent,
-            key: WorkingKey::standing(certificate.tbs().public_key()),
+            key: EffectiveKey::standing(certificate.tbs().public_key()),
             requested: Some(Requested {
                 request: &req,
                 parent: &req_parent,
@@ -390,7 +390,7 @@ fn profile_and_source_refusals_keep_original_causes_and_drop_partial_evidence() 
         let context = CheckContext {
             certificate: &certificate,
             certificate_parent: &certificate_parent,
-            key: WorkingKey::standing(certificate.tbs().public_key()),
+            key: EffectiveKey::standing(certificate.tbs().public_key()),
             requested: Some(Requested {
                 request: &req,
                 parent: &req_parent,
@@ -476,7 +476,7 @@ fn current_query_exact_work_capacity_and_depth_apply_to_every_nested_operation()
             let context = CheckContext {
                 certificate: &certificate,
                 certificate_parent: &certificate_parent,
-                key: WorkingKey::standing(certificate.tbs().public_key()),
+                key: EffectiveKey::standing(certificate.tbs().public_key()),
                 requested: Some(Requested {
                     request: &req,
                     parent: &req_parent,

@@ -4,7 +4,7 @@ use super::{CheckedPath, exact};
 use structured_asn1::memory::{MemoryError, Work};
 use structured_pkix::{
     Certificate,
-    path::WorkingKey,
+    path::EffectiveKey,
     temporal::{LeapTable, Reading, Uncertainty},
 };
 
@@ -27,7 +27,7 @@ impl<'document> CheckedPath<'document> {
         &self,
         path: &CheckedPath<'document>,
         signer: &Certificate<'document>,
-        key: WorkingKey<'document>,
+        key: EffectiveKey<'document>,
         at: Reading,
         utc: &LeapTable<'_>,
         execution: &W,

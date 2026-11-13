@@ -9,8 +9,8 @@ use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 use structured_pkix::Certificate;
 use structured_pkix::extension::Recognizer;
 use structured_pkix::path::{
-    self, Anchor, BuildResult, Interval, Rejection, Truncation, Validation, ValidationContext,
-    ValidationFacts, Verify, Watch, WorkingKey,
+    self, Anchor, BuildResult, EffectiveKey, Interval, Rejection, Truncation, Validation,
+    ValidationContext, ValidationFacts, Verify, Watch,
 };
 use structured_pkix::temporal::LeapTable;
 
@@ -49,7 +49,7 @@ pub use status::{OcspBinding, OcspBindingError, OcspBindingFailure, OcspTarget};
 #[derive(Debug, Clone, Copy)]
 pub struct Member<'a> {
     certificate: &'a Certificate<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
 }
 
 impl<'a> Member<'a> {
@@ -61,7 +61,7 @@ impl<'a> Member<'a> {
 
     /// Effective key at this certificate, including inherited parameters.
     #[must_use]
-    pub fn key(self) -> WorkingKey<'a> {
+    pub fn key(self) -> EffectiveKey<'a> {
         self.key
     }
 }
@@ -292,7 +292,7 @@ pub fn check_path<'a, V: Verify<E>, T: Watch, R: Recognizer<E>, E: Work>(
         structured_pkix::Error::resource(reason, "ltv.validationPath", chain[0].span().start)
     };
     members.try_reserve_exact(chain.len()).map_err(fail)?;
-    let mut key = WorkingKey::standing(anchor.key());
+    let mut key = EffectiveKey::standing(anchor.key());
     for certificate in chain.iter().rev() {
         key = key.subject(certificate, execution)?;
         members

@@ -97,7 +97,7 @@ macro_rules! setup {
         let super::super::Outcome::Authenticated(facts) = $ac
             .authenticate(
                 &aa,
-                WorkingKey::standing(aa.tbs().public_key()),
+                EffectiveKey::standing(aa.tbs().public_key()),
                 path.interval(),
                 &$crypto,
                 &$work,

@@ -14,7 +14,7 @@ use structured_cms::provider::{Prehash, SignatureAnswer, SignatureMode, Signatur
 use structured_cms::timestamp::{CheckContext, Evidence, Token};
 use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 use structured_pkix::temporal::{Instant, LeapTable};
-use structured_pkix::{AlgorithmIdentifier, Certificate, path::WorkingKey};
+use structured_pkix::{AlgorithmIdentifier, Certificate, path::EffectiveKey};
 
 const SHA512: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 3];
 const ED25519: &[u8] = &[0x2b, 0x65, 0x70];
@@ -97,7 +97,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
         &'a self,
         identifier: AlgorithmIdentifier<'a>,
         (): &(),
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         _encoding: Encoding,
         parent: &Reader<'a>,
     ) -> Result<Resolution<SignatureMode<()>>, Failure> {
@@ -123,7 +123,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
     fn start_raw<W: Work>(
         &'a self,
         (): &(),
-        _key: WorkingKey<'a>,
+        _key: EffectiveKey<'a>,
         signature: &'a Octets<'a>,
         work: &W,
     ) -> Result<Raw<'a>, Failure> {
@@ -167,7 +167,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
     fn verify_prehashed<W: Work>(
         &'a self,
         (): &(),
-        _key: WorkingKey<'a>,
+        _key: EffectiveKey<'a>,
         _signature: &Octets<'a>,
         _digest: Prehash<'_, '_, Self, ()>,
         _work: &W,
@@ -301,7 +301,7 @@ pub fn evidence_with_policy(
     let context = CheckContext {
         certificate: &certificate,
         certificate_parent: &certificate_parent,
-        key: WorkingKey::standing(certificate.tbs().public_key()),
+        key: EffectiveKey::standing(certificate.tbs().public_key()),
         requested: None,
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),

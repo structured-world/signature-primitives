@@ -6,7 +6,7 @@ use core::cmp::Ordering;
 use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::{Encoding, Reader, memory::Work};
 use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
-use structured_pkix::{AlgorithmIdentifier, path::WorkingKey};
+use structured_pkix::{AlgorithmIdentifier, path::EffectiveKey};
 
 /// One explicitly selected backend session with stable nonzero-sized ownership.
 ///
@@ -106,7 +106,7 @@ impl<'a, P: SignatureProvider<'a>> SignatureProvider<'a> for ProviderSession<P> 
     fn resolve_signature_digest(
         &'a self,
         identifier: AlgorithmIdentifier<'a>,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         parent: &Reader<'a>,
     ) -> Result<Resolution<Self::Identity>, SignatureDigestError<Self::Error>> {
         self.backend
@@ -116,7 +116,7 @@ impl<'a, P: SignatureProvider<'a>> SignatureProvider<'a> for ProviderSession<P> 
         &'a self,
         algorithm: AlgorithmIdentifier<'a>,
         digest: &Self::Identity,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         encoding: Encoding,
         parent: &Reader<'a>,
     ) -> Result<Resolution<SignatureMode<Self::SignatureIdentity>>, Self::Error> {
@@ -134,7 +134,7 @@ impl<'a, P: SignatureProvider<'a>> SignatureProvider<'a> for ProviderSession<P> 
     fn start_raw<W: Work>(
         &'a self,
         identity: &Self::SignatureIdentity,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         signature: &'a Octets<'a>,
         work: &W,
     ) -> Result<Self::RawState, Self::Error> {
@@ -158,7 +158,7 @@ impl<'a, P: SignatureProvider<'a>> SignatureProvider<'a> for ProviderSession<P> 
     fn verify_prehashed<W: Work>(
         &'a self,
         identity: &Self::SignatureIdentity,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         signature: &Octets<'a>,
         digest: Prehash<'_, '_, Self, Self::Identity>,
         work: &W,

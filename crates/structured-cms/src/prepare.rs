@@ -8,7 +8,7 @@ use core::cmp::Ordering;
 use structured_asn1::Reader;
 use structured_asn1::digest::Resolution;
 use structured_asn1::memory::Work;
-use structured_pkix::path::WorkingKey;
+use structured_pkix::path::EffectiveKey;
 
 /// Which selected-provider operation could not answer the challenge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +70,7 @@ pub enum ResolvedBinding<'a> {
 pub struct ResolvedSigner<'a, P: SignatureProvider<'a>> {
     provider: &'a P,
     signer: &'a SignerInfo<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     binding: ResolvedBinding<'a>,
     digest: P::Identity,
     signature: SignatureMode<P::SignatureIdentity>,
@@ -98,7 +98,7 @@ impl<'a, P: SignatureProvider<'a>> ResolvedSigner<'a, P> {
     }
     /// Original effective key descriptor; no new standing key is synthesized.
     #[must_use]
-    pub fn key(&self) -> WorkingKey<'a> {
+    pub fn key(&self) -> EffectiveKey<'a> {
         self.key
     }
     /// Original direct/attribute content binding.
@@ -173,7 +173,7 @@ impl<'a, P: SignatureProvider<'a>> ResolvedSigner<'a, P> {
 
 pub(crate) struct ResolvedParts<'a, P: SignatureProvider<'a>> {
     pub signer: &'a SignerInfo<'a>,
-    pub key: WorkingKey<'a>,
+    pub key: EffectiveKey<'a>,
     pub binding: ResolvedBinding<'a>,
     pub digest: P::Identity,
     pub signature: SignatureMode<P::SignatureIdentity>,
@@ -192,7 +192,7 @@ pub(crate) struct ResolvedParts<'a, P: SignatureProvider<'a>> {
 pub fn resolve<'a, P: SignatureProvider<'a>>(
     provider: &'a P,
     signer: &'a SignerInfo<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     parent: &Reader<'a>,
     scope: Scope<'a>,
 ) -> Result<Preparation<'a, P>, PrepareError<P::Error>> {
@@ -322,7 +322,7 @@ fn protected<'a, P: SignatureProvider<'a>>(
     protection: Protection<'a>,
     digest: &P::Identity,
     signature: &SignatureMode<P::SignatureIdentity>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     parent: &Reader<'a>,
 ) -> Result<ProtectionStatus, PrepareError<P::Error>> {
     const FIELD: &str = "signerInfo.signedAttrs.cmsAlgorithmProtection";

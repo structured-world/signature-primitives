@@ -269,22 +269,16 @@ fn item(text: &str) -> bool {
     let Some((left, value)) = text.split_once('=') else {
         return false;
     };
-    let substring = if let Some(prefix) = left.strip_suffix(':') {
-        if !extensible(prefix) {
-            return false;
-        }
-        false
+    let (valid_attribute, substring) = if let Some(prefix) = left.strip_suffix(':') {
+        (extensible(prefix), false)
     } else if let Some(prefix) = left.strip_suffix(['~', '>', '<']) {
-        if !attribute(prefix) {
-            return false;
-        }
-        false
+        (attribute(prefix), false)
     } else {
-        if !attribute(left) {
-            return false;
-        }
-        true
+        (attribute(left), true)
     };
+    if !valid_attribute {
+        return false;
+    }
     let mut bytes = value.bytes();
     while let Some(byte) = bytes.next() {
         if byte == b'\\' {

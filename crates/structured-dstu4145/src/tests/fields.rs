@@ -17,8 +17,8 @@ fn window_products_match_bitwise_oracle() {
         let mut expected = [0; 16];
         for i in 0..count * 64 {
             if left.bit(i) {
-                for j in 0..count {
-                    words::xor_shift(&mut expected, right.0[j], i + j * 64);
+                for (j, &word) in right.0[..count].iter().enumerate() {
+                    words::xor_shift(&mut expected, word, i + j * 64);
                 }
             }
         }

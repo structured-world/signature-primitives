@@ -311,6 +311,12 @@ revocation the signature does not hold, and a TS 101 733 index that is not read
 as v3. The `archive` results must agree with it entry by entry. Upstream
 payloads and their licence notice remain outside packages in `target/`.
 
+The optional `hmac` feature exposes `structured_cms::hmac` for incremental
+HMAC with SHA-1 and SHA-2. It uses fixed storage for the running state and
+full-width tag. `verify_truncated` checks a nonempty leftmost bit prefix
+in constant time with respect to tag contents. Callers enforce key
+and tag length policy. The `legacy-hmac` feature adds MD5 and RIPEMD-160.
+
 The runtime supports `no_std + alloc`; `std` is optional. Cryptographic test
 adapters are development-only oracles, not qualified production providers or
 proof of their internal resource accounting.

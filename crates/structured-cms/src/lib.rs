@@ -1,7 +1,7 @@
 //! CMS signatures, digital envelopes and timestamps over original ASN.1 ranges.
 //!
-//! Content acquisition, cryptographic engines, trust policy and application
-//! verdicts belong to the caller. This crate performs no implicit I/O.
+//! Format processing uses caller-provided engines. The optional HMAC module
+//! supplies a standalone MAC primitive. This crate performs no implicit I/O.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -22,6 +22,8 @@ pub mod enveloped;
 pub mod error;
 pub mod ess;
 pub mod evidence;
+#[cfg(feature = "hmac")]
+pub mod hmac;
 pub mod mime;
 pub mod octets;
 pub mod oid;

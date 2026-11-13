@@ -1,4 +1,4 @@
-use super::{Fold, TABLE, of};
+use super::{Fold, data, of};
 use alloc::string::String;
 
 /// The published mapping this module's table was derived from, so that a
@@ -11,7 +11,6 @@ fn folded(c: char) -> String {
     match of(c) {
         Fold::Mapped(mapped) => String::from(mapped),
         Fold::One(one) => String::from(one),
-        Fold::Lowercase => c.to_lowercase().collect(),
     }
 }
 
@@ -87,17 +86,12 @@ fn a_character_the_file_does_not_fold_folds_to_itself() {
 }
 
 #[test]
-fn the_table_is_searchable_and_earns_its_entries() {
-    // Binary search is only an answer over a sorted list without repeats.
-    assert!(
-        TABLE.windows(2).all(|pair| pair[0].0 < pair[1].0),
-        "the table is not sorted"
-    );
-    // An entry that agreed with the lowercase mapping would be a wrong one
-    // copied from the wrong column, and nothing else would notice.
-    for &(from, to) in &TABLE {
-        let lowered: String = from.to_lowercase().collect();
-        assert_ne!(lowered, to, "{from:?}");
+fn folding_tables_are_sorted_and_nonoverlapping() {
+    // Range and expansion lookups require ordered, nonoverlapping keys.
+    assert!(data::SINGLE.windows(2).all(|pair| pair[0].1 < pair[1].0));
+    assert!(data::MULTI.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    for &(start, end, _, stride) in data::SINGLE {
+        assert!(start <= end && (end - start).is_multiple_of(stride));
     }
 }
 

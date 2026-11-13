@@ -99,6 +99,54 @@ fn encrypt(bytes: &[u8]) -> Vec<u8> {
         .unwrap()
         .to_vec()
 }
+
+#[cfg(feature = "password-protection")]
+#[test]
+fn password_plan_reads_segmented_ber_inputs() {
+    use structured_cms::personal::password::{Decryption, Password};
+
+    // Fragment boundaries are unrelated to either AES blocks or KDF input.
+    let segmented = |parts: &[&[u8]]| {
+        tlv(
+            0x24,
+            &parts
+                .iter()
+                .flat_map(|bytes| tlv(4, bytes))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let prf = alg(&[42, 134, 72, 134, 247, 13, 2, 9], &[5, 0]);
+    let kdf = alg(
+        protection::PBKDF2.as_bytes(),
+        &seq(&[
+            &segmented(&[b"s", b"", b"alt"]),
+            &number(2),
+            &number(32),
+            &prf,
+        ]),
+    );
+    let cipher = alg(
+        &[96, 134, 72, 1, 101, 3, 4, 1, 42],
+        &segmented(&[&[7; 5], &[7; 11]]),
+    );
+    let scheme = alg(protection::PBES2.as_bytes(), &seq(&[&kdf, &cipher]));
+    let plaintext = private(0, &[]);
+    let encrypted = encrypt(&plaintext);
+    let input = seq(&[&scheme, &segmented(&[&encrypted[..3], &encrypted[3..]])]);
+    let parser = Parser::ber(generous());
+    let mut query = parser.read(&input, 0).unwrap();
+    let element = query.next_element().unwrap().unwrap();
+    let key = ShroudedKey::read(&query, &element).unwrap();
+    let plan = Decryption::key(&key, &query).unwrap();
+    let cost = plan.cost().unwrap();
+    assert_eq!(cost.scratch, 4);
+    let mut workspace = [0xa5; 4];
+    let result = plan
+        .decrypt_owned(Password::Octets(PASSWORD), &mut workspace, &query)
+        .unwrap();
+    assert_eq!(result.as_bytes(), plaintext);
+    assert_eq!(workspace, [0; 4]);
+}
 fn mac_data(safe: &[u8], length: bool) -> Vec<u8> {
     let mut key = [0; 32];
     pbkdf2::pbkdf2_hmac::<Sha256>(PASSWORD, b"salt", 2, &mut key);

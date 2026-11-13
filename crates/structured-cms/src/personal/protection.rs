@@ -220,14 +220,17 @@ impl<'a> Protection<'a> {
     }
 }
 
-fn parameters<'a>(identifier: AlgorithmIdentifier<'a>, parent: &Reader<'a>) -> Result<Reader<'a>> {
+pub(super) fn parameters<'a>(
+    identifier: AlgorithmIdentifier<'a>,
+    parent: &Reader<'a>,
+) -> Result<Reader<'a>> {
     identifier
         .parameters_reader_in(parent, FIELD)
         .map_err(Error::pkix)?
         .ok_or_else(|| Error::schema(ErrorCode::MissingField, FIELD, identifier.offset()))
 }
 
-fn session(identifier: AlgorithmIdentifier<'_>, parent: &Reader<'_>) -> Result<()> {
+pub(super) fn session(identifier: AlgorithmIdentifier<'_>, parent: &Reader<'_>) -> Result<()> {
     if !identifier.same_session(parent) {
         return Err(Error::pkix(structured_pkix::Error::new(
             structured_pkix::ErrorCode::ForeignReader,

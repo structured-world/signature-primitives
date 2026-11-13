@@ -12,6 +12,8 @@ use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{Element, Integer, Oid, Reader, Tag, universal};
 use structured_pkix::AlgorithmIdentifier;
 
+#[cfg(feature = "password-protection")]
+pub mod password;
 mod process;
 pub mod protection;
 pub use process::{

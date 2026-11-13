@@ -3,6 +3,10 @@
 `CaseFolding.txt` is Unicode 17.0.0 data from
 https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt . Its copyright notice
 is retained in the file; its Unicode License v3 is in `UNICODE-LICENSE.txt`.
+The runtime tables in `src/name/fold/data.rs` use statuses C and F.
+Single-scalar mappings are grouped by constant source stride and destination
+offset. Expansions are stored separately. The tests check every Unicode scalar
+against this file, including characters with no mapping.
 
 `rfc3454-a1.txt` contains the code-point ranges from RFC 3454 Appendix A.1,
 https://www.rfc-editor.org/rfc/rfc3454.html#appendix-A.1 , without page headers

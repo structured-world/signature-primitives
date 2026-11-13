@@ -1138,25 +1138,7 @@ fn normalized<I: Iterator<Item = char>>(inner: I) -> Recomposed<Mapped<I>> {
 struct Mapped<I, const FOLD_CASE: bool = true> {
     inner: I,
     /// What one folded character expands to, which is at most a few.
-    folded: Option<Folded>,
-}
-
-/// The tail of one character's fold, after its first character has been
-/// handed out.
-enum Folded {
-    Mapped(core::str::Chars<'static>),
-    Lowered(core::char::ToLowercase),
-}
-
-impl Iterator for Folded {
-    type Item = char;
-
-    fn next(&mut self) -> Option<char> {
-        match self {
-            Self::Mapped(rest) => rest.next(),
-            Self::Lowered(rest) => rest.next(),
-        }
-    }
+    folded: Option<core::str::Chars<'static>>,
 }
 
 impl<I: Iterator<Item = char>, const FOLD_CASE: bool> Mapped<I, FOLD_CASE> {
@@ -1180,18 +1162,12 @@ impl<I: Iterator<Item = char>, const FOLD_CASE: bool> Mapped<I, FOLD_CASE> {
             fold::Fold::Mapped(mapped) => {
                 let mut rest = mapped.chars();
                 let first = rest.next();
-                self.folded = Some(Folded::Mapped(rest));
+                self.folded = Some(rest);
                 first
             }
             fold::Fold::One(one) => {
                 self.folded = None;
                 Some(one)
-            }
-            fold::Fold::Lowercase => {
-                let mut lowered = c.to_lowercase();
-                let first = lowered.next();
-                self.folded = Some(Folded::Lowered(lowered));
-                first
             }
         }
     }

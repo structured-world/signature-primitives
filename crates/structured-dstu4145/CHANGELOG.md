@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0](https://github.com/structured-world/signature-primitives/compare/structured-dstu4145-v0.21.5...structured-dstu4145-v0.22.0) - 2026-11-13
+
+### Added
+
+- *(cms)* open password-protected containers ([#308](https://github.com/structured-world/signature-primitives/pull/308))
+- *(cms)* import traditional OpenSSL keys ([#307](https://github.com/structured-world/signature-primitives/pull/307))
+- *(base64)* add strict JOSE profiles ([#304](https://github.com/structured-world/signature-primitives/pull/304))
+
+### Other
+
+- *(pkix)* [**breaking**] rename the effective path key ([#305](https://github.com/structured-world/signature-primitives/pull/305))
+
 ## [0.21.5](https://github.com/structured-world/signature-primitives/compare/structured-dstu4145-v0.21.4...structured-dstu4145-v0.21.5) - 2026-11-13
 
 ### Added

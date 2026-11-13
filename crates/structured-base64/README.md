@@ -1,5 +1,24 @@
 # structured-base64
 
+For complete values, `URL_SAFE_NO_PAD` implements the strict JWS base64url
+profile and `STANDARD` implements canonical padded Base64 for JOSE `x5c`.
+Both provide exact encoding lengths and caller-buffer operations.
+Enable `alloc` for fallible `encode` and `decode` methods returning a
+`String` and `Vec<u8>` respectively. Callers bound input and output sizes
+before invoking the allocating helpers.
+
+```rust
+use structured_base64::URL_SAFE_NO_PAD;
+
+let mut encoded = [0; 4];
+let len = URL_SAFE_NO_PAD.encode_slice(&[251, 255], &mut encoded)?;
+assert_eq!(&encoded[..len], b"-_8");
+let mut decoded = [0; 2];
+assert_eq!(URL_SAFE_NO_PAD.decode_slice(&encoded[..len], &mut decoded)?, 2);
+assert_eq!(decoded, [251, 255]);
+# Ok::<(), structured_base64::Base64Error>(())
+```
+
 Resumable Base64 for caller-provided buffers. The codec uses only `core`, with
 no allocator or runtime dependencies. Each successful call consumes its whole
 input and returns the output length. Store the six public state fields between

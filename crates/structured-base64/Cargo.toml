@@ -11,5 +11,8 @@ keywords = ["base64", "streaming", "no-std"]
 categories = ["encoding", "no-std"]
 include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
 
+[features]
+alloc = []
+
 [lints]
 workspace = true

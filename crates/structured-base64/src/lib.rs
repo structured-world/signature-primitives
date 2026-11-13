@@ -3,6 +3,14 @@
 
 use core::fmt;
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+mod strict;
+#[cfg(feature = "alloc")]
+pub use strict::OwnedError;
+pub use strict::{Profile, STANDARD, URL_SAFE_NO_PAD};
+
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Failure of a Base64 stream operation.

@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 use structured_asn1::memory::{MemoryError, Work};
 use structured_cms::timestamp::{BoundUncertainty, Evidence};
 use structured_pkix::temporal::{Instant, LeapTable};
-use structured_pkix::{Certificate, path::WorkingKey};
+use structured_pkix::{Certificate, path::EffectiveKey};
 
 mod obligation;
 pub use obligation::{
@@ -59,7 +59,7 @@ pub struct Verified<N, D, G, I> {
 pub struct CheckedActor<'certificate, 'document, N, D, G, I> {
     verified: Verified<N, D, G, I>,
     certificate: &'certificate Certificate<'document>,
-    key: WorkingKey<'document>,
+    key: EffectiveKey<'document>,
 }
 
 impl<'certificate, 'document, N, D, G, I> CheckedActor<'certificate, 'document, N, D, G, I> {
@@ -71,7 +71,7 @@ impl<'certificate, 'document, N, D, G, I> CheckedActor<'certificate, 'document, 
         _issuer: I,
         verified: Verified<N, D, G, I>,
         certificate: &'certificate Certificate<'document>,
-        key: WorkingKey<'document>,
+        key: EffectiveKey<'document>,
     ) -> Self {
         Self {
             verified,
@@ -88,7 +88,7 @@ impl<'certificate, 'document, N, D, G, I> CheckedActor<'certificate, 'document, 
 
     /// Actual effective parameters supplied to that same selected provider.
     #[must_use]
-    pub fn key(&self) -> WorkingKey<'document> {
+    pub fn key(&self) -> EffectiveKey<'document> {
         self.key
     }
 

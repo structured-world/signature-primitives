@@ -66,7 +66,7 @@ impl path::Verify for Provider {
     fn verify(
         &self,
         algorithm: &AlgorithmIdentifier<'_>,
-        key: path::WorkingKey<'_>,
+        key: path::EffectiveKey<'_>,
         data: &[u8],
         signature: SignatureValue<'_>,
         execution: &Memory,
@@ -198,7 +198,7 @@ fn real_crl_signature_keeps_tbs_and_rejects_corruption_and_wrong_issuer_key() {
         parsed
             .authenticate(
                 &issuer,
-                path::WorkingKey::standing(issuer.tbs().public_key()),
+                path::EffectiveKey::standing(issuer.tbs().public_key()),
                 &provider,
                 &execution
             )
@@ -213,7 +213,7 @@ fn real_crl_signature_keeps_tbs_and_rejects_corruption_and_wrong_issuer_key() {
         parsed
             .authenticate(
                 &issuer,
-                path::WorkingKey::standing(issuer.tbs().public_key()),
+                path::EffectiveKey::standing(issuer.tbs().public_key()),
                 &provider,
                 &execution
             )
@@ -237,7 +237,7 @@ fn real_crl_signature_keeps_tbs_and_rejects_corruption_and_wrong_issuer_key() {
         parsed
             .authenticate(
                 &other,
-                path::WorkingKey::standing(other.tbs().public_key()),
+                path::EffectiveKey::standing(other.tbs().public_key()),
                 &provider,
                 &execution
             )
@@ -376,7 +376,7 @@ fn real_ocsp_sha1_identity_and_signature_are_scoped_to_actual_issuer() {
     let parsed = response(&parser, &bytes);
     assert_eq!(parsed.signed_bytes(), data);
     let provider = Provider::new();
-    let working = path::WorkingKey::standing(issuer.tbs().public_key());
+    let working = path::EffectiveKey::standing(issuer.tbs().public_key());
     let ocsp::SignatureAuthentication::Signed(proof) = parsed
         .authenticate_signature(&issuer, working, &provider, &provider, &execution)
         .unwrap()
@@ -473,7 +473,7 @@ fn real_delegate_authority_cannot_be_substituted_or_inferred_from_signature() {
         watch: &(),
         recognizer: &(),
     };
-    let issuing = path::WorkingKey::standing(issuer.tbs().public_key());
+    let issuing = path::EffectiveKey::standing(issuer.tbs().public_key());
     let ocsp::Delegation::Accepted(facts) =
         ocsp::check_delegate(&responder, &issuer, issuing, &context).unwrap()
     else {
@@ -585,7 +585,7 @@ fn evaluated_evidence_carries_not_issued_status_and_the_archive_cutoff() {
         let target = Certificate::read(&parser, &target_bytes, 300).unwrap();
         let parsed = response(&parser, &bytes);
         let provider = Provider::new();
-        let working = path::WorkingKey::standing(issuer.tbs().public_key());
+        let working = path::EffectiveKey::standing(issuer.tbs().public_key());
         let ocsp::SignatureAuthentication::Signed(proof) = parsed
             .authenticate_signature(&issuer, working, &provider, &provider, &execution)
             .unwrap()

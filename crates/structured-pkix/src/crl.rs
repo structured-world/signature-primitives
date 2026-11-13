@@ -8,7 +8,7 @@ use crate::algorithm::{self, AlgorithmIdentifier};
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extensions};
 use crate::name::{self, Name};
-use crate::path::{Verified, Verify, WorkingKey};
+use crate::path::{EffectiveKey, Verified, Verify};
 use crate::time::{self, Time};
 use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{BitString, Element, Integer, Parser, Reader, Span, Tag, universal};
@@ -62,7 +62,7 @@ pub enum AuthenticationFailure {
 pub struct Authenticated<'r, 'a> {
     crl: &'r CertificateList<'a>,
     issuer: &'r crate::Certificate<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
 }
 
 impl<'r, 'a> Authenticated<'r, 'a> {
@@ -78,7 +78,7 @@ impl<'r, 'a> Authenticated<'r, 'a> {
     }
     /// Effective key, bound to this issuer's original SPKI.
     #[must_use]
-    pub fn key(self) -> WorkingKey<'a> {
+    pub fn key(self) -> EffectiveKey<'a> {
         self.key
     }
 }
@@ -270,7 +270,7 @@ impl<'a> CertificateList<'a> {
     pub fn authenticate<'r, V: Verify<E>, E: Work>(
         &'r self,
         issuer: &'r crate::Certificate<'a>,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         verifier: &V,
         execution: &E,
     ) -> crate::error::CallbackResult<Authentication<'r, 'a>, V::Error> {

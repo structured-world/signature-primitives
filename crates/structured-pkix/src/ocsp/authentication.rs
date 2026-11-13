@@ -3,7 +3,7 @@
 use super::{BasicResponse, ResponderMatch};
 use crate::algorithm::digest::AsnDigest;
 use crate::error::CallbackError;
-use crate::path::{Verified, Verify, WorkingKey};
+use crate::path::{EffectiveKey, Verified, Verify};
 use crate::{Certificate, Error};
 use core::fmt;
 use structured_asn1::memory::{MemoryError, Work};
@@ -66,7 +66,7 @@ pub enum SignatureFailure {
 pub struct SignedResponse<'r, 'a> {
     response: &'r BasicResponse<'a>,
     signer: &'r Certificate<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
 }
 
 impl<'r, 'a> SignedResponse<'r, 'a> {
@@ -82,7 +82,7 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
     }
     /// Effective key bound to that certificate's original SPKI.
     #[must_use]
-    pub fn key(self) -> WorkingKey<'a> {
+    pub fn key(self) -> EffectiveKey<'a> {
         self.key
     }
 }
@@ -108,7 +108,7 @@ impl<'a> BasicResponse<'a> {
     pub fn authenticate_signature<'r, 'd, V: Verify<E>, D: AsnDigest<'d> + ?Sized, E: Work>(
         &'r self,
         signer: &'r Certificate<'a>,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         verifier: &V,
         digest: &'d D,
         execution: &E,

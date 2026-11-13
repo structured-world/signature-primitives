@@ -1068,7 +1068,7 @@ fn nested_signature_timestamp_math_binds_child_signature_value() {
     // Real TSP signature/hash checks over synthetic XML framing. A token over
     // the root value must not establish a timestamp for a nested child value.
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     use structured_xades::{prepare, timestamp, unsigned};
@@ -1107,7 +1107,7 @@ fn nested_signature_timestamp_math_binds_child_signature_value() {
             let context = structured_cms::timestamp::CheckContext {
                 certificate: &certificate,
                 certificate_parent: &operation,
-                key: WorkingKey::standing(certificate.tbs().public_key()),
+                key: EffectiveKey::standing(certificate.tbs().public_key()),
                 requested: None,
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -2370,7 +2370,7 @@ pub(super) fn with_original_delta_statuses(
     use structured_ltv::pki;
     use structured_pkix::{
         crl,
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     let (base_bytes, delta_bytes) = super::timestamp_oracle::crl_pair();
@@ -2381,7 +2381,7 @@ pub(super) fn with_original_delta_statuses(
     let verifier = super::timestamp_oracle::PathOracle {
         calls: Cell::new(0),
     };
-    let key = WorkingKey::standing(issuer.tbs().public_key());
+    let key = EffectiveKey::standing(issuer.tbs().public_key());
     let crl::Authentication::Authenticated(base) =
         base.authenticate(issuer, key, &verifier, memory).unwrap()
     else {
@@ -2491,7 +2491,7 @@ fn with_prepared_inputs<'document>(
         &structured_xades::credential::ParticipantCredentials<'_, 'document, usize, usize, u8, u8>,
     ),
 ) {
-    use structured_pkix::path::WorkingKey;
+    use structured_pkix::path::EffectiveKey;
     use structured_xades::{certificate, credential};
     let access = Access::new(xml, xml.snapshot(), memory);
     let digest = Oracle::new(Mode::Ready);
@@ -2509,7 +2509,7 @@ fn with_prepared_inputs<'document>(
             .unwrap();
     let anchor = structured_pkix::path::EffectiveAnchor::bind(
         credential_anchor,
-        WorkingKey::standing(credential_anchor.key()),
+        EffectiveKey::standing(credential_anchor.key()),
         memory,
     )
     .unwrap()
@@ -2712,7 +2712,7 @@ fn participant_archive_material_keeps_direct_anchor_coverage_and_late_refusal() 
     // Actual CRL pair, root/counter/credential paths and TSP math are composed
     // without treating metadata XML/credential oracles as B-LTA qualification.
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     use structured_xades::{prepare, timestamp, unsigned};
@@ -2741,7 +2741,7 @@ fn participant_archive_material_keeps_direct_anchor_coverage_and_late_refusal() 
             let context = structured_cms::timestamp::CheckContext {
                 certificate: &tsa,
                 certificate_parent: &operation,
-                key: WorkingKey::standing(tsa.tbs().public_key()),
+                key: EffectiveKey::standing(tsa.tbs().public_key()),
                 requested: None,
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -2935,7 +2935,7 @@ fn whole_participant_census_refuses_root_only_timestamp_requirements() {
     // have no timestamp obligations. Even this zero-child-token fixture needs
     // the complete source census; no caller-written successful subset is used.
     use structured_ltv::{pki, timestamp::TimestampPathBinding};
-    use structured_pkix::path::{EffectiveAnchor, WorkingKey};
+    use structured_pkix::path::{EffectiveAnchor, EffectiveKey};
     use structured_xades::{
         certificate, credential, pki::bind_counters, prepare, timestamp, unsigned,
     };
@@ -2946,7 +2946,7 @@ fn whole_participant_census_refuses_root_only_timestamp_requirements() {
         let counters = bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
         let anchor = EffectiveAnchor::bind(
             path.anchor(),
-            WorkingKey::standing(path.anchor().key()),
+            EffectiveKey::standing(path.anchor().key()),
             memory,
         )
         .unwrap()
@@ -3919,7 +3919,7 @@ pub(super) fn assert_participant_nodes<'document>(
     let anchor = path.anchor();
     let anchor = structured_pkix::path::EffectiveAnchor::bind(
         anchor,
-        structured_pkix::path::WorkingKey::standing(anchor.key()),
+        structured_pkix::path::EffectiveKey::standing(anchor.key()),
         memory,
     )
     .unwrap()
@@ -4022,7 +4022,7 @@ fn archive_participant_requirements_derive_signer_counters_credentials_and_direc
         assert!(signer.is_bound());
         let counters = bind_counters(prepared.bound(), &access, |_, _| Ok::<_, ()>(path)).unwrap();
         let anchor = path.anchor();
-        let key = structured_pkix::path::WorkingKey::standing(anchor.key());
+        let key = structured_pkix::path::EffectiveKey::standing(anchor.key());
         let anchor = structured_pkix::path::EffectiveAnchor::bind(anchor, key, memory)
             .unwrap()
             .unwrap();
@@ -4167,7 +4167,7 @@ fn archive_participants_require_the_actual_earlier_tsa_and_exclude_own_and_later
     use structured_ltv::pki;
     use structured_ltv::timestamp::{TimestampPathBinding, TimestampPathFailure};
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     use structured_xades::{certificate, credential, pki::bind_counters, timestamp};
@@ -4190,7 +4190,7 @@ fn archive_participants_require_the_actual_earlier_tsa_and_exclude_own_and_later
         let anchor = path.anchor();
         let anchor = structured_pkix::path::EffectiveAnchor::bind(
             anchor,
-            WorkingKey::standing(anchor.key()),
+            EffectiveKey::standing(anchor.key()),
             memory,
         )
         .unwrap()
@@ -4213,7 +4213,7 @@ fn archive_participants_require_the_actual_earlier_tsa_and_exclude_own_and_later
         let context = structured_cms::timestamp::CheckContext {
             certificate: &tsa,
             certificate_parent: &parent,
-            key: WorkingKey::standing(tsa.tbs().public_key()),
+            key: EffectiveKey::standing(tsa.tbs().public_key()),
             requested: None,
             utc: &utc,
             reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -4319,7 +4319,7 @@ impl<W: Work> structured_pkix::path::Verify<W> for MetadataSignature {
     fn verify(
         &self,
         _algorithm: &structured_pkix::AlgorithmIdentifier<'_>,
-        _key: structured_pkix::path::WorkingKey<'_>,
+        _key: structured_pkix::path::EffectiveKey<'_>,
         signed: &[u8],
         signature: structured_pkix::signature::SignatureValue<'_>,
         work: &W,
@@ -4336,7 +4336,7 @@ fn selected_key_binding_receives_inherited_original_parameters() {
     // does. Reconstructing standing here would lose the selected-key contract.
     use structured_ltv::pki;
     use structured_pkix::path::{
-        Anchor, Interval, ValidationBounds, ValidationContext, WorkingKey,
+        Anchor, EffectiveKey, Interval, ValidationBounds, ValidationContext,
     };
     use structured_xades::{binding, certificate, container};
     let leaf_bytes = inheritance_certificate(false);
@@ -4346,7 +4346,7 @@ fn selected_key_binding_receives_inherited_original_parameters() {
     let leaf = structured_pkix::Certificate::read(&parser, &leaf_bytes, 400).unwrap();
     let root = structured_pkix::Certificate::read(&parser, &root_bytes, 1200).unwrap();
     assert_eq!(
-        WorkingKey::standing(leaf.tbs().public_key()).parameters(),
+        EffectiveKey::standing(leaf.tbs().public_key()).parameters(),
         None
     );
     let context = ValidationContext {
@@ -4387,7 +4387,7 @@ fn selected_key_binding_receives_inherited_original_parameters() {
     );
     assert_ne!(
         xml.key_projection.get(),
-        Some(super::KeyProjection::of(WorkingKey::standing(
+        Some(super::KeyProjection::of(EffectiveKey::standing(
             leaf.tbs().public_key()
         )))
     );
@@ -4469,7 +4469,7 @@ fn signature_time_binding_keeps_role_source_key_and_full_static_interval() {
     // Real timestamp math cannot replace a different selected source/role,
     // an unproven XML key, or a path checked only at another instant.
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     use structured_xades::{binding, certificate, container, timestamp};
@@ -4515,7 +4515,7 @@ fn signature_time_binding_keeps_role_source_key_and_full_static_interval() {
             let context = structured_cms::timestamp::CheckContext {
                 certificate: &tsa,
                 certificate_parent: &parent,
-                key: WorkingKey::standing(tsa.tbs().public_key()),
+                key: EffectiveKey::standing(tsa.tbs().public_key()),
                 requested: None,
                 utc: &utc,
                 reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -4605,7 +4605,7 @@ fn nonce_freshness_cannot_supply_an_unstated_signature_time_accuracy() {
     // A real live nonce can establish freshness and mathematical token facts,
     // but it cannot invent the endpoint needed for certificate-time coverage.
     use structured_cms::timestamp::{BoundUncertainty, CheckContext, Request, Requested};
-    use structured_pkix::{path::WorkingKey, temporal::LeapTable};
+    use structured_pkix::{path::EffectiveKey, temporal::LeapTable};
     use structured_xades::{binding, certificate, container, timestamp};
     with_checked_path(|path, leaf, root, memory| {
         let (mut xml, node, provider, tsa, request) =
@@ -4632,7 +4632,7 @@ fn nonce_freshness_cannot_supply_an_unstated_signature_time_accuracy() {
         let context = CheckContext {
             certificate: &tsa,
             certificate_parent: &parent,
-            key: WorkingKey::standing(tsa.tbs().public_key()),
+            key: EffectiveKey::standing(tsa.tbs().public_key()),
             requested: Some(Requested {
                 request: &request,
                 parent: &original,

@@ -11,7 +11,7 @@ use structured_cms::attribute_certificate::validation::authentication::{
 };
 use structured_cms::attribute_certificate::validation::{Reason, Revocation};
 use structured_pkix::algorithm::{digest, signature};
-use structured_pkix::path::{Interval, Verified, Verify, WorkingKey};
+use structured_pkix::path::{EffectiveKey, Interval, Verified, Verify};
 use structured_pkix::signature::{DssValue, SignatureValue};
 use structured_pkix::temporal::Instant;
 use structured_pkix::{AlgorithmIdentifier, Certificate, oid};
@@ -85,8 +85,8 @@ fn signed(info: &[u8], outer: &[u8], key: &SigningKey) -> Vec<u8> {
 fn interval() -> Interval {
     Interval::at(1_790_000_000)
 }
-fn key_of<'a>(c: &Certificate<'a>) -> WorkingKey<'a> {
-    WorkingKey::standing(c.tbs().public_key())
+fn key_of<'a>(c: &Certificate<'a>) -> EffectiveKey<'a> {
+    EffectiveKey::standing(c.tbs().public_key())
 }
 fn read_spki<'a>(p: &'a Parser, bytes: &'a [u8]) -> structured_pkix::PublicKeyInfo<'a> {
     let mut reader = p.read(bytes, 400).unwrap();
@@ -241,7 +241,7 @@ impl<W: Work> Verify<W> for Oracle {
     fn verify(
         &self,
         algorithm: &AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         input: &[u8],
         signature: SignatureValue<'_>,
         work: &W,
@@ -1233,7 +1233,7 @@ fn independently_parsed_equal_spki_pays_its_own_source_before_byte_comparison() 
         },
         generous(),
     );
-    let key = WorkingKey::standing(read_spki(&kp, &encoded));
+    let key = EffectiveKey::standing(read_spki(&kp, &encoded));
     let aa_bytes = authority(&encoded, b"Authority", &validity(), &[], &[]);
     let p = Parser::der(generous());
     let aa = read_pkc(&p, &aa_bytes);

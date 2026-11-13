@@ -760,7 +760,7 @@ fn with_authenticated_ocsp(
         let SignatureAuthentication::Signed(signed) = basic
             .authenticate_signature(
                 &certificate,
-                structured_pkix::path::WorkingKey::standing(certificate.tbs().public_key()),
+                structured_pkix::path::EffectiveKey::standing(certificate.tbs().public_key()),
                 &verifier,
                 &verifier,
                 &original.execution(),

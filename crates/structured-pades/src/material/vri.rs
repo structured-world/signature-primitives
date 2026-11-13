@@ -105,7 +105,7 @@ pub enum TimestampError<'a, P, R> {
 pub struct Time<'q, 'certificate, D, G> {
     checks: structured_cms::timestamp::CheckedTimestamp<'q>,
     certificate: &'q structured_pkix::Certificate<'certificate>,
-    key: structured_pkix::path::WorkingKey<'certificate>,
+    key: structured_pkix::path::EffectiveKey<'certificate>,
     snapshot: structured_ltv::source::Snapshot<D, G>,
     root: crate::timestamp::Node,
     property: crate::timestamp::Node,

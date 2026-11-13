@@ -3,7 +3,7 @@
 use super::Token;
 use crate::{Error, ErrorCode, binding::Scope, prepare, provider::SignatureProvider, verify};
 use structured_asn1::{Reader, memory::Work};
-use structured_pkix::path::WorkingKey;
+use structured_pkix::path::EffectiveKey;
 
 /// Arithmetic/content facts, without ESS, certificate trust or timestamp proof.
 pub enum TokenSignature<'a> {
@@ -45,7 +45,7 @@ impl<'a> Token<'a> {
     pub fn check_signature<'check, P: SignatureProvider<'check>>(
         &'check self,
         provider: &'check P,
-        key: WorkingKey<'check>,
+        key: EffectiveKey<'check>,
         parent: &Reader<'check>,
     ) -> Result<TokenSignature<'check>, SignatureError<P::Error>>
     where

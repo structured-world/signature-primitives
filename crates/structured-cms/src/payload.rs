@@ -6,7 +6,7 @@ use crate::digest::{DigestBatch, DigestError, DigestMemo, DigestOutput};
 use crate::provider::{SignatureAnswer, SignatureProvider};
 use crate::stream::{self, Sink, Source, StreamError};
 use structured_asn1::memory::{OwnedVec, Work};
-use structured_pkix::path::WorkingKey;
+use structured_pkix::path::EffectiveKey;
 
 /// A raw challenge already resolved by this operation's selected provider.
 ///
@@ -17,7 +17,7 @@ pub struct RawRequest<'a, P: SignatureProvider<'a>> {
     /// Fully resolved signature identity from the selected provider.
     pub identity: P::SignatureIdentity,
     /// Original effective key, including inherited parameters.
-    pub key: WorkingKey<'a>,
+    pub key: EffectiveKey<'a>,
     /// Original logical signature octets, without concatenation or re-encoding.
     pub signature: &'a Octets<'a>,
 }

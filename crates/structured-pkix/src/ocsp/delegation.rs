@@ -3,8 +3,8 @@
 use crate::error::{Located, Result};
 use crate::extension::{Extension, Recognizer};
 use crate::path::{
-    self, Anchor, BuildResult, EffectiveAnchor, Validation, ValidationContext, Verify, Watch,
-    WorkingKey,
+    self, Anchor, BuildResult, EffectiveAnchor, EffectiveKey, Validation, ValidationContext,
+    Verify, Watch,
 };
 use crate::{Certificate, oid};
 use structured_asn1::memory::Work;
@@ -48,8 +48,8 @@ pub enum DelegationFailure {
 pub struct DelegateFacts<'a> {
     responder: &'a Certificate<'a>,
     issuer: &'a Certificate<'a>,
-    issuing_key: WorkingKey<'a>,
-    key: WorkingKey<'a>,
+    issuing_key: EffectiveKey<'a>,
+    key: EffectiveKey<'a>,
     revocation: ResponderRevocation,
 }
 
@@ -68,12 +68,12 @@ impl<'a> DelegateFacts<'a> {
     /// Inherited parameters keep their original source; rebuilding a standing
     /// key from `issuer()` would lose this validated-path association.
     #[must_use]
-    pub fn issuing_key(self) -> WorkingKey<'a> {
+    pub fn issuing_key(self) -> EffectiveKey<'a> {
         self.issuing_key
     }
     /// Responder effective key projected by the common path processor.
     #[must_use]
-    pub fn key(self) -> WorkingKey<'a> {
+    pub fn key(self) -> EffectiveKey<'a> {
         self.key
     }
     /// Revocation exemption or unresolved checking requirement.
@@ -113,7 +113,7 @@ pub enum Delegation<'a> {
 pub fn check_delegate<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>(
     responder: &'a Certificate<'a>,
     issuer: &'a Certificate<'a>,
-    issuing_key: WorkingKey<'a>,
+    issuing_key: EffectiveKey<'a>,
     context: &ValidationContext<'a, '_, V, W, R, E>,
 ) -> BuildResult<Delegation<'a>, V::Error, R::Error> {
     let execution = context.execution;

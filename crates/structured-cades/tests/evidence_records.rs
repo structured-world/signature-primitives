@@ -19,7 +19,7 @@ use structured_cms::{
 };
 use structured_pkix::{
     Certificate,
-    path::WorkingKey,
+    path::EffectiveKey,
     temporal::{Instant, LeapTable},
 };
 use support::{Oracle, certificate, memory, message, signer, tlv};
@@ -1310,7 +1310,7 @@ impl<'d> Authorities<'d> for Authority<'_> {
         Ok(Selection {
             certificate: self.certificate,
             certificate_parent: self.parent,
-            key: WorkingKey::standing(self.certificate.tbs().public_key()),
+            key: EffectiveKey::standing(self.certificate.tbs().public_key()),
             policy_accuracy: None,
         })
     }

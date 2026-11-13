@@ -9,7 +9,7 @@ use crate::signer::SignerInfo;
 use crate::stream::{self, RangesError, Sink, Source, StreamError};
 use crate::{Error, ErrorCode};
 use structured_asn1::memory::{OwnedVec, Work};
-use structured_pkix::path::WorkingKey;
+use structured_pkix::path::EffectiveKey;
 
 mod document;
 pub use document::{ContentMode, DocumentBatch, DocumentChecks};
@@ -51,7 +51,7 @@ pub enum ContentAgreement {
 /// Facts for one original signer, without SID, path or application acceptance.
 pub struct Checked<'a> {
     signer: &'a SignerInfo<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     content: ContentAgreement,
     signature: Option<SignatureAnswer>,
 }
@@ -65,7 +65,7 @@ impl<'a> Checked<'a> {
         self,
     ) -> (
         &'a SignerInfo<'a>,
-        WorkingKey<'a>,
+        EffectiveKey<'a>,
         ContentAgreement,
         Option<SignatureAnswer>,
     ) {
@@ -79,7 +79,7 @@ impl<'a> Checked<'a> {
     /// The exact effective key supplied to this signature challenge, including
     /// inherited parameters. This descriptor is not a certificate trust verdict.
     #[must_use]
-    pub fn key(&self) -> WorkingKey<'a> {
+    pub fn key(&self) -> EffectiveKey<'a> {
         self.key
     }
     /// Actual content binding, independently of signature arithmetic.
@@ -109,7 +109,7 @@ enum Challenge<'a, P: SignatureProvider<'a>> {
 
 struct Pending<'a, P: SignatureProvider<'a>> {
     signer: &'a SignerInfo<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     binding: ResolvedBinding<'a>,
     challenge: Challenge<'a, P>,
 }
@@ -343,7 +343,7 @@ fn finish<'a, P: SignatureProvider<'a>, SE, W: Work>(
 fn check<'a, P: SignatureProvider<'a>, W: Work>(
     provider: &'a P,
     signer: &'a SignerInfo<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     binding: &ResolvedBinding<'a>,
     challenge: Challenge<'a, P>,
     completed: &crate::payload::Completed<'a, P>,

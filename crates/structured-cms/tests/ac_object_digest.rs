@@ -14,7 +14,7 @@ use structured_cms::attribute_certificate::validation::digest::{
 };
 use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 use structured_pkix::key::effective::{EffectiveSpki, Part, VisitError};
-use structured_pkix::path::WorkingKey;
+use structured_pkix::path::EffectiveKey;
 use structured_pkix::{Certificate, PublicKeyInfo, oid};
 
 fn memory(cap: usize, work: usize) -> Memory {
@@ -100,12 +100,12 @@ fn assertion(object: u8, expected: &[u8]) -> Vec<u8> {
 fn read_ac<'a>(p: &'a Parser, b: &'a [u8]) -> AttributeCertificate<'a> {
     AttributeCertificate::read(&mut p.read(b, 700).unwrap()).unwrap()
 }
-fn read_key<'a>(p: &'a Parser, b: &'a [u8]) -> WorkingKey<'a> {
+fn read_key<'a>(p: &'a Parser, b: &'a [u8]) -> EffectiveKey<'a> {
     let mut r = p.read(b, 400).unwrap();
     let e = r.next_element().unwrap().unwrap();
-    WorkingKey::standing(PublicKeyInfo::read_element(&r, &e, "key").unwrap())
+    EffectiveKey::standing(PublicKeyInfo::read_element(&r, &e, "key").unwrap())
 }
-fn collect(key: WorkingKey<'_>, work: &impl Work) -> Vec<u8> {
+fn collect(key: EffectiveKey<'_>, work: &impl Work) -> Vec<u8> {
     let der = EffectiveSpki::read(key, work).unwrap();
     assert!(core::ptr::eq(
         der.key().key().as_bytes().as_ptr(),
@@ -275,7 +275,7 @@ impl AsnDigest<'_> for Oracle {
 impl ObjectDigestProvider<'_> for Oracle {
     fn validate_public_key<W: Work>(
         &self,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         w: &W,
     ) -> Result<Resolution<()>, Cause> {
         self.call("key", Fault::KeyError, w)?;
@@ -535,7 +535,7 @@ fn ber_parameter_der_check_admits_scratch_and_preserves_original_depth() {
         let element = reader.next_element().unwrap().unwrap();
         if let Ok(info) = PublicKeyInfo::read_element(&reader, &element, "key") {
             // The smallest depth that admits the original parse must admit this same walk.
-            assert!(EffectiveSpki::read(WorkingKey::standing(info), &generous()).is_ok());
+            assert!(EffectiveSpki::read(EffectiveKey::standing(info), &generous()).is_ok());
             exact_depth = Some(depth);
             break;
         }

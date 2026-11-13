@@ -4,7 +4,7 @@ use std::sync::Arc;
 use structured_asn1::memory::{Memory, MemoryAccount, Work};
 use structured_asn1::{Encoding, ErrorCode as Asn1, Limits, Parser};
 use structured_pkix::key::{dsa, ec, rsa};
-use structured_pkix::path::WorkingKey;
+use structured_pkix::path::EffectiveKey;
 use structured_pkix::{Certificate, ErrorCode, PublicKeyInfo, oid};
 
 const PRIME256V1: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
@@ -235,7 +235,7 @@ fn readers_refuse_unfunded_work_before_reading() {
     let error = rsa::read(info(&source, &rsa_der), &spent).unwrap_err();
     assert!(error.is_resource());
     assert_eq!(error.offset(), 2);
-    let error = ec::read(WorkingKey::standing(info(&source, &ec_der)), &spent).unwrap_err();
+    let error = ec::read(EffectiveKey::standing(info(&source, &ec_der)), &spent).unwrap_err();
     assert!(error.is_resource());
     assert_eq!(error.offset(), 2);
     assert_eq!(spent.work_used(), 0);
@@ -273,7 +273,7 @@ fn ec_named_curve_and_point_forms_borrow_the_original_octets() {
     let parser = Parser::der(memory(100_000));
     let uncompressed = [0x04, 1, 2, 3, 4];
     let der = ec_spki(Some(&named()), &uncompressed);
-    let read = ec::read(WorkingKey::standing(info(&parser, &der)), parser.memory()).unwrap();
+    let read = ec::read(EffectiveKey::standing(info(&parser, &der)), parser.memory()).unwrap();
     let ec::Curve::Named(curve) = read.curve() else {
         panic!("named curve expected");
     };
@@ -289,7 +289,7 @@ fn ec_named_curve_and_point_forms_borrow_the_original_octets() {
     assert_eq!(read.offset(), position(&der, &uncompressed));
 
     let der = ec_spki(Some(&named()), &[0x02, 9, 9, 9]);
-    let read = ec::read(WorkingKey::standing(info(&parser, &der)), parser.memory()).unwrap();
+    let read = ec::read(EffectiveKey::standing(info(&parser, &der)), parser.memory()).unwrap();
     assert!(matches!(
         read.point(),
         ec::Point::Compressed {
@@ -306,7 +306,7 @@ fn ec_reports_implicit_and_specified_curves_instead_of_refusing_them() {
     let parser = Parser::der(memory(100_000));
     let implicit = ec_spki(Some(&[0x05, 0x00]), &[0x04, 1, 2]);
     let read = ec::read(
-        WorkingKey::standing(info(&parser, &implicit)),
+        EffectiveKey::standing(info(&parser, &implicit)),
         parser.memory(),
     )
     .unwrap();
@@ -316,7 +316,7 @@ fn ec_reports_implicit_and_specified_curves_instead_of_refusing_them() {
     let domain = seq(&[tlv(0x02, &[1])]);
     let specified = ec_spki(Some(&domain), &[0x04, 1, 2]);
     let read = ec::read(
-        WorkingKey::standing(info(&parser, &specified)),
+        EffectiveKey::standing(info(&parser, &specified)),
         parser.memory(),
     )
     .unwrap();
@@ -333,7 +333,7 @@ fn ec_structural_refusals_are_typed_and_located() {
     let refusal = |der: &[u8]| {
         let parser = Parser::der(memory(100_000));
         let error =
-            ec::read(WorkingKey::standing(info(&parser, der)), parser.memory()).unwrap_err();
+            ec::read(EffectiveKey::standing(info(&parser, der)), parser.memory()).unwrap_err();
         assert!(!error.is_resource());
         (error.code(), error.offset())
     };
@@ -393,7 +393,7 @@ fn ec_inherits_the_authority_curve_from_its_own_certificate() {
     let root = Certificate::read(&root_parser, &root_der, 0).unwrap();
     let leaf = Certificate::read(&leaf_parser, &leaf_der, 0).unwrap();
     let current = memory(100_000);
-    let key = WorkingKey::standing(root.tbs().public_key())
+    let key = EffectiveKey::standing(root.tbs().public_key())
         .subject(&leaf, &current)
         .unwrap();
     let read = ec::read(key, &current).unwrap();
@@ -413,7 +413,7 @@ fn ec_inherits_the_authority_curve_from_its_own_certificate() {
     ));
 
     // Without the transition the leaf alone has no curve in force.
-    let error = ec::read(WorkingKey::standing(leaf.tbs().public_key()), &current).unwrap_err();
+    let error = ec::read(EffectiveKey::standing(leaf.tbs().public_key()), &current).unwrap_err();
     assert_eq!(error.code(), ErrorCode::MissingField);
 }
 
@@ -446,10 +446,10 @@ fn unknown_key_identity_requires_original_source_work_before_refusal() {
     let current = memory(100_000);
     for error in [
         rsa::read(key, &current).map(|_| ()).unwrap_err(),
-        dsa::read(WorkingKey::standing(key), &current)
+        dsa::read(EffectiveKey::standing(key), &current)
             .map(|_| ())
             .unwrap_err(),
-        ec::read(WorkingKey::standing(key), &current)
+        ec::read(EffectiveKey::standing(key), &current)
             .map(|_| ())
             .unwrap_err(),
     ] {
@@ -469,7 +469,7 @@ fn inherited_ec_cannot_read_a_key_after_its_own_source_work_is_exhausted() {
     let root = Certificate::read(&root_source, &root_der, 400).unwrap();
     let leaf = Certificate::read(&leaf_source, &leaf_der, 9000).unwrap();
     let current = memory(100_000);
-    let key = WorkingKey::standing(root.tbs().public_key())
+    let key = EffectiveKey::standing(root.tbs().public_key())
         .subject(&leaf, &current)
         .unwrap();
     exhaust_source(&leaf_source);
@@ -491,7 +491,7 @@ fn inherited_ec_point_decision_requires_its_last_source_unit() {
             let root = Certificate::read(&root_source, &root_der, 400).unwrap();
             let leaf = Certificate::read(&leaf_source, &leaf_der, 9000).unwrap();
             let current = memory(100_000);
-            let key = WorkingKey::standing(root.tbs().public_key())
+            let key = EffectiveKey::standing(root.tbs().public_key())
                 .subject(&leaf, &current)
                 .unwrap();
             let original = leaf_source.execution_in(leaf_source.memory());
@@ -531,8 +531,8 @@ impl KeyReader {
     fn read<W: Work>(self, key: PublicKeyInfo<'_>, work: &W) -> structured_pkix::Result<()> {
         match self {
             Self::Rsa => rsa::read(key, work).map(|_| ()),
-            Self::Dsa => dsa::read(WorkingKey::standing(key), work).map(|_| ()),
-            Self::Ec => ec::read(WorkingKey::standing(key), work).map(|_| ()),
+            Self::Dsa => dsa::read(EffectiveKey::standing(key), work).map(|_| ()),
+            Self::Ec => ec::read(EffectiveKey::standing(key), work).map(|_| ()),
         }
     }
     fn mismatch_cost(self) -> usize {
@@ -640,7 +640,7 @@ fn inherited_curve_retains_its_own_source_refusal_and_location() {
     let root = Certificate::read(&root_source, &root_der, 400).unwrap();
     let leaf = Certificate::read(&leaf_source, &leaf_der, 9000).unwrap();
     let current = memory(100_000);
-    let key = WorkingKey::standing(root.tbs().public_key())
+    let key = EffectiveKey::standing(root.tbs().public_key())
         .subject(&leaf, &current)
         .unwrap();
     exhaust_source(&root_source);
@@ -662,7 +662,7 @@ fn padded_ec_point_framing_is_admitted_before_returning_malformed() {
         let root = Certificate::read(&root_source, &root_der, 400).unwrap();
         let leaf = Certificate::read(&leaf_source, &leaf_der, 9000).unwrap();
         let current = memory(100_000);
-        let key = WorkingKey::standing(root.tbs().public_key())
+        let key = EffectiveKey::standing(root.tbs().public_key())
             .subject(&leaf, &current)
             .unwrap();
         let original = leaf_source.execution_in(leaf_source.memory());

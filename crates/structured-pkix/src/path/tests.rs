@@ -258,7 +258,7 @@ impl Verify for Ecdsa {
     fn verify(
         &self,
         algorithm: &crate::AlgorithmIdentifier<'_>,
-        key: super::WorkingKey<'_>,
+        key: super::EffectiveKey<'_>,
         signed: &[u8],
         signature: crate::signature::SignatureValue<'_>,
         _execution: &structured_asn1::memory::Memory,
@@ -300,7 +300,7 @@ impl Verify for Curved {
     fn verify(
         &self,
         algorithm: &crate::AlgorithmIdentifier<'_>,
-        key: super::WorkingKey<'_>,
+        key: super::EffectiveKey<'_>,
         signed: &[u8],
         signature: crate::signature::SignatureValue<'_>,
         _execution: &structured_asn1::memory::Memory,
@@ -792,7 +792,7 @@ fn inheritance_local_refusal_precedes_shared_work_admission() {
         let execution = structured_asn1::memory::Memory::new(alloc::sync::Arc::new(
             structured_asn1::memory::MemoryAccount::new(0, work),
         ));
-        let result = super::WorkingKey::standing(read[2].tbs().public_key()).below(
+        let result = super::EffectiveKey::standing(read[2].tbs().public_key()).below(
             &read[1],
             &execution,
             &mut Stopped,
@@ -813,7 +813,7 @@ fn public_subject_projection_borrows_effective_parameters_without_key_catalogue(
     let execution = structured_asn1::memory::Memory::new(alloc::sync::Arc::new(
         structured_asn1::memory::MemoryAccount::new(0, 1_000_000),
     ));
-    let root = super::WorkingKey::standing(read[2].tbs().public_key());
+    let root = super::EffectiveKey::standing(read[2].tbs().public_key());
     let projected = root.subject(&read[1], &execution).unwrap();
     assert_eq!(
         projected.key().as_bytes().as_ptr(),
@@ -842,7 +842,7 @@ fn inherited_algorithm_matching_is_admitted_at_the_current_certificate() {
         fn verify(
             &self,
             _algorithm: &crate::AlgorithmIdentifier<'_>,
-            _key: super::WorkingKey<'_>,
+            _key: super::EffectiveKey<'_>,
             _signed: &[u8],
             _signature: crate::signature::SignatureValue<'_>,
             execution: &structured_asn1::memory::Memory,
@@ -1206,7 +1206,7 @@ fn a_verifier_failure_preserves_the_provider_cause() {
         fn verify(
             &self,
             _: &crate::AlgorithmIdentifier<'_>,
-            _: super::WorkingKey<'_>,
+            _: super::EffectiveKey<'_>,
             _: &[u8],
             _: crate::signature::SignatureValue<'_>,
             execution: &structured_asn1::memory::Memory,
@@ -5304,7 +5304,7 @@ fn effective_local_anchor_preserves_inherited_parameters() {
     let execution = crate::fixtures::memory();
     let parser = Parser::der(execution.clone());
     let read = parse(&parser, &ders);
-    let key = super::WorkingKey::standing(read[2].tbs().public_key())
+    let key = super::EffectiveKey::standing(read[2].tbs().public_key())
         .subject(&read[1], &execution)
         .unwrap();
     assert!(key.parameters().is_some());
@@ -5378,7 +5378,7 @@ fn unrestricted_pss_subject_does_not_inherit_parent_restrictions() {
     let parser = Parser::der(execution.clone());
     let root = Certificate::read(&parser, &root_bytes, 100).unwrap();
     let child = Certificate::read(&parser, &child_bytes, 500).unwrap();
-    let prior = super::WorkingKey::standing(root.tbs().public_key());
+    let prior = super::EffectiveKey::standing(root.tbs().public_key());
     assert_eq!(prior.parameters(), Some([48, 0].as_slice()));
     let projected = prior.subject(&child, &execution).unwrap();
     assert_eq!(projected.parameters(), None);
@@ -5409,7 +5409,7 @@ fn null_pss_subject_keeps_invalid_original_parameters_for_provider_refusal() {
     let parser = Parser::der(execution.clone());
     let root = Certificate::read(&parser, &root_bytes, 100).unwrap();
     let child = Certificate::read(&parser, &child_bytes, 500).unwrap();
-    let projected = super::WorkingKey::standing(root.tbs().public_key())
+    let projected = super::EffectiveKey::standing(root.tbs().public_key())
         .subject(&child, &execution)
         .unwrap();
     assert_eq!(projected.parameters(), None);
@@ -5431,7 +5431,7 @@ impl Verify for Recording<'_> {
     fn verify(
         &self,
         _algorithm: &crate::AlgorithmIdentifier<'_>,
-        key: super::WorkingKey<'_>,
+        key: super::EffectiveKey<'_>,
         _signed: &[u8],
         _signature: crate::signature::SignatureValue<'_>,
         _execution: &structured_asn1::memory::Memory,
@@ -5803,7 +5803,7 @@ impl Verify for Registered {
     fn verify(
         &self,
         _algorithm: &crate::AlgorithmIdentifier<'_>,
-        key: super::WorkingKey<'_>,
+        key: super::EffectiveKey<'_>,
         signed: &[u8],
         signature: crate::signature::SignatureValue<'_>,
         _execution: &structured_asn1::memory::Memory,

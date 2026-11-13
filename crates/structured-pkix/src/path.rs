@@ -136,6 +136,9 @@ pub enum Verified {
 /// The key a certificate's signature is checked with, and the parameters
 /// that are in force for it.
 ///
+/// During path validation this is the `working_public_key` and its
+/// effective parameters from [RFC 5280 section 6.1.2(d)](https://www.rfc-editor.org/rfc/rfc5280.html#section-6.1.2).
+///
 /// "If the public key algorithm parameters are absent, the working public key
 /// parameters are inherited" from the certificate above (RFC 5280 6.1.2 (c)
 /// and 6.1.4 (e)). A key written without them is not a key anything can be
@@ -148,7 +151,7 @@ pub enum Verified {
 /// nothing is inherited. This is the ordinary case: a named curve, an RSA
 /// modulus, an Edwards key.
 #[derive(Debug, Clone, Copy)]
-pub struct WorkingKey<'a> {
+pub struct EffectiveKey<'a> {
     key: PublicKeyInfo<'a>,
     /// The authority's written parameters this key stands in, readable where
     /// they were written, after the transition admitted and established
@@ -156,7 +159,7 @@ pub struct WorkingKey<'a> {
     inherited: Option<crate::algorithm::Nested<'a>>,
 }
 
-impl<'a> WorkingKey<'a> {
+impl<'a> EffectiveKey<'a> {
     /// A key that stands on its own, which is what a trust anchor's is: there
     /// is nothing above it to inherit from.
     #[must_use]
@@ -311,7 +314,7 @@ pub trait Verify<E: Work = Memory> {
     /// The original policy, provider or resource failure of this implementation.
     type Error;
 
-    /// Whether the signature over `signed` is the one the key in `key`
+    /// Whether the signature over `signed` is the one the `effective_key`
     /// makes under `algorithm`.
     ///
     /// The key arrives with the parameters in force rather than as the
@@ -335,7 +338,7 @@ pub trait Verify<E: Work = Memory> {
     fn verify(
         &self,
         algorithm: &AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        effective_key: EffectiveKey<'_>,
         signed: &[u8],
         signature: SignatureValue<'_>,
         execution: &E,
@@ -348,7 +351,7 @@ impl<E: Work> Verify<E> for () {
     fn verify(
         &self,
         _algorithm: &AlgorithmIdentifier<'_>,
-        _key: WorkingKey<'_>,
+        _effective_key: EffectiveKey<'_>,
         _signed: &[u8],
         _signature: SignatureValue<'_>,
         _execution: &E,
@@ -891,7 +894,7 @@ impl<'a, V: Verify, W: Watch, R: Recognizer> validation::Driver<'a, R> for Searc
     fn verified(
         &mut self,
         certificate: &'a Certificate<'a>,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
     ) -> BuildResult<Option<Verified>, V::Error, R::Error> {
         Self::verified(self, certificate, key)
     }
@@ -983,7 +986,7 @@ impl<V: Verify, W: Watch, R: Recognizer> Search<'_, '_, V, W, R> {
     fn verified(
         &mut self,
         certificate: &Certificate<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
     ) -> BuildResult<Option<Verified>, V::Error, R::Error> {
         // The parameters are part of what was asked, not only the key: one
         // key standing in two different sets of inherited parameters is two
@@ -1725,7 +1728,7 @@ fn next_issuer<'a, V: Verify, W: Watch, R: Recognizer>(
         // whole budget before the one that signed this certificate is
         // reached. What tells the two apart is the registry's answer, and
         // the registry is who this asks.
-        let key = WorkingKey::standing(candidate.tbs().public_key());
+        let key = EffectiveKey::standing(candidate.tbs().public_key());
         let Some(answer) = search.verified(certificate, key)? else {
             break;
         };
@@ -1913,7 +1916,7 @@ fn properties<'a, V: Verify, W: Watch, R: Recognizer>(
         && publishes_anchor(search, certificate)?
         && search.verified(
             certificate,
-            WorkingKey::standing(certificate.tbs().public_key()),
+            EffectiveKey::standing(certificate.tbs().public_key()),
         )? == Some(Verified::Yes);
     let known = Properties {
         facts,

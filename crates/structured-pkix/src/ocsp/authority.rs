@@ -4,7 +4,7 @@ use super::{DelegateFacts, Lookup, ResponderRevocation, SignedResponse};
 use crate::Certificate;
 use crate::algorithm::digest::AsnDigest;
 use crate::error::{CallbackResult, Error, Result};
-use crate::path::WorkingKey;
+use crate::path::EffectiveKey;
 use structured_asn1::memory::{MemoryError, Work};
 
 /// How the caller-bound signer is related to the selected target issuer.
@@ -44,7 +44,7 @@ pub struct ScopedResponse<'r, 'a> {
     // Keep the actual input SPKI provenance as well as inherited parameters.
     // Rebuilding from an equal issuer certificate could change parser/source
     // identity and its lazy-reading ceilings, even if its DER bytes agree.
-    issuing_key: Option<WorkingKey<'a>>,
+    issuing_key: Option<EffectiveKey<'a>>,
     source: AuthoritySource,
 }
 
@@ -63,7 +63,7 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
     /// authentication. Explicit configured-responder trust does not run that
     /// operation and honestly returns None, never a fabricated standing key.
     #[must_use]
-    pub fn issuing_key(self) -> Option<WorkingKey<'a>> {
+    pub fn issuing_key(self) -> Option<EffectiveKey<'a>> {
         self.issuing_key
     }
     /// Explicit scope source, including unresolved delegated revocation.
@@ -114,8 +114,8 @@ fn equal_bytes<E: Work>(left: &[u8], right: &[u8], execution: &E, at: u64) -> Re
 }
 
 fn equal_key<E: Work>(
-    left: WorkingKey<'_>,
-    right: WorkingKey<'_>,
+    left: EffectiveKey<'_>,
+    right: EffectiveKey<'_>,
     execution: &E,
     at: u64,
 ) -> Result<bool> {
@@ -148,7 +148,7 @@ impl<'r, 'a> SignedResponse<'r, 'a> {
     pub fn bind_issuer<E: Work>(
         self,
         issuer: &'r Certificate<'a>,
-        issuing_key: WorkingKey<'a>,
+        issuing_key: EffectiveKey<'a>,
         execution: &E,
     ) -> Result<AuthorityBinding<'r, 'a>> {
         let at = self.response().span().start;

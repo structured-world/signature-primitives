@@ -607,7 +607,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
         mut checked: tsp::CheckedTimestamp<'_>,
         restriction: PathRestriction,
         certificate: &'p structured_pkix::Certificate<'d>,
-        key: structured_pkix::path::WorkingKey<'d>,
+        key: structured_pkix::path::EffectiveKey<'d>,
     ) -> Checked<'m, 'd, 'p> {
         let actor = match checked.take_evidence() {
             Some(evidence)

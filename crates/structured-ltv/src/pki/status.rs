@@ -4,7 +4,7 @@ use super::{CheckedPath, exact};
 use structured_asn1::memory::{MemoryError, Work};
 use structured_pkix::{
     ocsp::{AuthoritySource, BoundEvidence},
-    path::WorkingKey,
+    path::EffectiveKey,
 };
 
 /// Completed source mismatch, not malformed XML or an unsuccessful OCSP lookup.
@@ -115,7 +115,7 @@ impl<'document> CheckedPath<'document> {
         }
         execution.charge_work(1).map_err(resource)?;
         let expected = if member == 0 {
-            WorkingKey::standing(self.anchor.key())
+            EffectiveKey::standing(self.anchor.key())
         } else {
             self.members[member - 1].key()
         };

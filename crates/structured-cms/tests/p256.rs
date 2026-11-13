@@ -11,7 +11,7 @@ use structured_asn1::{Encoding, Parser, Reader};
 use structured_cms::provider::{Prehash, SignatureAnswer, SignatureMode, SignatureProvider};
 use structured_cms::{Octets, binding, oid, prepare, signer::SignerInfo, verify};
 use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
-use structured_pkix::{AlgorithmIdentifier, PublicKeyInfo, path::WorkingKey};
+use structured_pkix::{AlgorithmIdentifier, PublicKeyInfo, path::EffectiveKey};
 
 const SHA256: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 1];
 const ECDSA_SHA256: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 4, 3, 2];
@@ -106,7 +106,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
         &'a self,
         identifier: AlgorithmIdentifier<'a>,
         (): &(),
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         _encoding: Encoding,
         parent: &Reader<'a>,
     ) -> Result<Resolution<SignatureMode<()>>, Fault> {
@@ -145,7 +145,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
     fn start_raw<W: Work>(
         &'a self,
         (): &(),
-        _key: WorkingKey<'a>,
+        _key: EffectiveKey<'a>,
         _signature: &'a Octets<'a>,
         _work: &W,
     ) -> Result<(), Fault> {
@@ -160,7 +160,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
     fn verify_prehashed<W: Work>(
         &'a self,
         (): &(),
-        _key: WorkingKey<'a>,
+        _key: EffectiveKey<'a>,
         signature: &Octets<'a>,
         digest: Prehash<'_, '_, Self, ()>,
         work: &W,
@@ -284,7 +284,7 @@ fn original_document_batch_keeps_one_payload_pass_and_actual_result_identity() {
         let prepare::Preparation::Ready(request) = prepare::resolve(
             &oracle,
             signer,
-            WorkingKey::standing(key),
+            EffectiveKey::standing(key),
             &parent,
             binding::Scope::Content(oid::DATA),
         )
@@ -337,7 +337,7 @@ fn document_mode_is_checked_before_states_and_detached_input_is_explicit() {
         let prepare::Preparation::Ready(ready) = prepare::resolve(
             &oracle,
             &data.signers()[0],
-            WorkingKey::standing(key),
+            EffectiveKey::standing(key),
             &parent,
             binding::Scope::Content(oid::DATA),
         )
@@ -430,7 +430,7 @@ fn check(message: &[u8], null: bool) -> SignatureAnswer {
     let prepare::Preparation::Ready(ready) = prepare::resolve(
         &provider,
         &signer,
-        WorkingKey::standing(key),
+        EffectiveKey::standing(key),
         &reader,
         binding::Scope::Content(oid::DATA),
     )

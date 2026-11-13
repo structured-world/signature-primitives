@@ -5,8 +5,8 @@ use std::sync::Arc;
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, Work};
 use structured_asn1::{Oid, Parser};
 use structured_pkix::path::{
-    self, Anchor, BuildError, ConstraintSource, Interval, Policy, RejectionReason, Truncation,
-    Validation, ValidationBounds, ValidationContext, Verified, Verify, WorkingKey,
+    self, Anchor, BuildError, ConstraintSource, EffectiveKey, Interval, Policy, RejectionReason,
+    Truncation, Validation, ValidationBounds, ValidationContext, Verified, Verify,
 };
 use structured_pkix::signature::SignatureValue;
 use structured_pkix::{AlgorithmIdentifier, Certificate, ErrorCode, oid};
@@ -90,7 +90,7 @@ impl<E: Work> Verify<E> for ScopedProvider {
     fn verify(
         &self,
         _: &AlgorithmIdentifier<'_>,
-        _: WorkingKey<'_>,
+        _: EffectiveKey<'_>,
         _: &[u8],
         _: SignatureValue<'_>,
         execution: &E,
@@ -292,7 +292,7 @@ impl Verify for Provider<'_> {
     fn verify(
         &self,
         _algorithm: &AlgorithmIdentifier<'_>,
-        _key: WorkingKey<'_>,
+        _key: EffectiveKey<'_>,
         signed: &[u8],
         _signature: SignatureValue<'_>,
         _execution: &Memory,

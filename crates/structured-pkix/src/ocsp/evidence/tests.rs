@@ -4,7 +4,7 @@ use crate::fixtures::{
     CertificateParts, bits, context, extension, generalized_time, octets, seq, tlv,
 };
 use crate::ocsp::{AuthorityBinding, AuthoritySource, SignatureAuthentication};
-use crate::path::{Verified, Verify, WorkingKey};
+use crate::path::{EffectiveKey, Verified, Verify};
 use crate::signature::SignatureValue;
 use core::cell::Cell;
 use core::cmp::Ordering;
@@ -100,7 +100,7 @@ impl Verify for Provider<'_> {
     fn verify(
         &self,
         _: &crate::AlgorithmIdentifier<'_>,
-        _: WorkingKey<'_>,
+        _: EffectiveKey<'_>,
         signed: &[u8],
         _: SignatureValue<'_>,
         _: &Memory,
@@ -170,7 +170,7 @@ fn inspect(
         hashes: Cell::new(0),
         fail: Cell::new(false),
     };
-    let key = WorkingKey::standing(issuer.tbs().public_key());
+    let key = EffectiveKey::standing(issuer.tbs().public_key());
     let SignatureAuthentication::Signed(signed) = response
         .authenticate_signature(&issuer, key, &provider, &provider, &execution)
         .unwrap()

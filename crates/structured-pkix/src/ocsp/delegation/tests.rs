@@ -23,7 +23,7 @@ fn delegation_retains_the_actual_inherited_issuing_parameters() {
         fn verify(
             &self,
             _: &crate::AlgorithmIdentifier<'_>,
-            key: WorkingKey<'_>,
+            key: EffectiveKey<'_>,
             _: &[u8],
             _: SignatureValue<'_>,
             _: &Memory,
@@ -55,7 +55,7 @@ fn delegation_retains_the_actual_inherited_issuing_parameters() {
     let parent = Certificate::read(&parser, &parent_bytes, 100).unwrap();
     let issuer = Certificate::read(&parser, &issuer_bytes, 700).unwrap();
     let responder = Certificate::read(&parser, &responder_bytes, 1300).unwrap();
-    let key = WorkingKey::standing(parent.tbs().public_key())
+    let key = EffectiveKey::standing(parent.tbs().public_key())
         .subject(&issuer, &memory)
         .unwrap();
     let expected = parent.tbs().public_key().algorithm().parameters().unwrap();
@@ -83,7 +83,7 @@ fn delegation_retains_the_actual_inherited_issuing_parameters() {
         issuer.tbs().public_key().as_bytes()
     );
     assert!(
-        WorkingKey::standing(facts.issuer().tbs().public_key())
+        EffectiveKey::standing(facts.issuer().tbs().public_key())
             .parameters()
             .is_none()
     );
@@ -93,7 +93,7 @@ impl Verify for VerifiedBy<'_> {
     fn verify(
         &self,
         _: &crate::AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         _: &[u8],
         _: SignatureValue<'_>,
         _: &Memory,
@@ -144,7 +144,7 @@ fn inspect_extensions(
         check_delegate(
             &responder,
             &issuer,
-            WorkingKey::standing(issuer.tbs().public_key()),
+            EffectiveKey::standing(issuer.tbs().public_key()),
             &context,
         ),
         provider.calls.get(),
@@ -268,7 +268,7 @@ fn direct_delegation_checks_purpose_current_validity_and_null_exemption() {
         watch: &(),
         recognizer: &(),
     };
-    let key = WorkingKey::standing(issuer.tbs().public_key());
+    let key = EffectiveKey::standing(issuer.tbs().public_key());
     let purpose = |kind| extension(oid::EXT_KEY_USAGE, true, &seq(&[encoded_oid(kind)]));
     let bytes = CertificateParts {
         extensions: Some(seq(&[
@@ -300,7 +300,7 @@ fn direct_delegation_checks_purpose_current_validity_and_null_exemption() {
         check_delegate(
             &responder,
             &issuer,
-            WorkingKey::standing(other.tbs().public_key()),
+            EffectiveKey::standing(other.tbs().public_key()),
             &context
         )
         .unwrap(),
@@ -310,7 +310,7 @@ fn direct_delegation_checks_purpose_current_validity_and_null_exemption() {
         check_delegate(
             &responder,
             &other,
-            WorkingKey::standing(other.tbs().public_key()),
+            EffectiveKey::standing(other.tbs().public_key()),
             &context
         )
         .unwrap(),

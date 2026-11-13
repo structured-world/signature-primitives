@@ -13,7 +13,7 @@ use structured_asn1::memory::Work;
 use structured_pkix::Certificate;
 use structured_pkix::algorithm::digest::{self as algorithms, AsnDigest};
 use structured_pkix::key::effective::{EffectiveSpki, VisitError};
-use structured_pkix::path::WorkingKey;
+use structured_pkix::path::EffectiveKey;
 
 const FIELD: &str = "attributeCertificate.holder.objectDigestInfo";
 
@@ -31,7 +31,7 @@ pub trait ObjectDigestProvider<'p>: AsnDigest<'p> {
     /// Check algorithm-specific wire representation and effective parameters.
     fn validate_public_key<W: Work>(
         &self,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         work: &W,
     ) -> Result<Resolution<()>, Self::Error>;
 }
@@ -42,7 +42,7 @@ pub enum Object<'c, 'a> {
     /// Entire original DER certificate, including its signature.
     Certificate(&'c Certificate<'a>),
     /// Effective public key, including any inherited parameter source.
-    PublicKey(WorkingKey<'a>),
+    PublicKey(EffectiveKey<'a>),
 }
 
 /// A hash comparison bound to this original AC and this explicitly supplied object.

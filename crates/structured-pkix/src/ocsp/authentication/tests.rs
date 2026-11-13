@@ -66,7 +66,7 @@ impl Verify for Provider<'_> {
     fn verify(
         &self,
         _: &crate::AlgorithmIdentifier<'_>,
-        _: WorkingKey<'_>,
+        _: EffectiveKey<'_>,
         signed: &[u8],
         signature: SignatureValue<'_>,
         execution: &Memory,
@@ -179,7 +179,7 @@ fn issuer_binding_enforces_object_signing_key_usage() {
         let mut reader = parser.read(&bytes, 700).unwrap();
         let root = reader.next_element().unwrap().unwrap();
         let response = super::super::read_basic(&reader, &root).unwrap();
-        let key = WorkingKey::standing(issuer.tbs().public_key());
+        let key = EffectiveKey::standing(issuer.tbs().public_key());
         let provider = Provider {
             key: issuer.tbs().public_key().key().as_bytes(),
             signed: response.signed_bytes(),
@@ -237,7 +237,7 @@ fn actual_signer_precedes_hash_and_original_response_data_verification() {
     let mut reader = parser.read(&bytes, 700).unwrap();
     let element = reader.next_element().unwrap().unwrap();
     let response = super::super::read_basic(&reader, &element).unwrap();
-    let key = WorkingKey::standing(signer.tbs().public_key());
+    let key = EffectiveKey::standing(signer.tbs().public_key());
     let mut provider = Provider {
         key: signer.tbs().public_key().key().as_bytes(),
         signed: response.signed_bytes(),

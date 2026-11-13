@@ -17,7 +17,7 @@ use structured_cms::{
     provider::{Prehash, SignatureAnswer, SignatureMode, SignatureProvider},
 };
 use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
-use structured_pkix::{AlgorithmIdentifier, path::WorkingKey};
+use structured_pkix::{AlgorithmIdentifier, path::EffectiveKey};
 
 const SHA256: &[u8] = &[0x60, 0x86, 0x48, 1, 0x65, 3, 4, 2, 1];
 const ECDSA: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 4, 3, 2];
@@ -101,7 +101,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
         &'a self,
         algorithm: AlgorithmIdentifier<'a>,
         (): &(),
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         _encoding: Encoding,
         reader: &Reader<'a>,
     ) -> Result<Resolution<SignatureMode<()>>, Failure> {
@@ -128,7 +128,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
     fn start_raw<W: Work>(
         &'a self,
         (): &(),
-        _key: WorkingKey<'a>,
+        _key: EffectiveKey<'a>,
         _signature: &'a Octets<'a>,
         _work: &W,
     ) -> Result<(), Failure> {
@@ -143,7 +143,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
     fn verify_prehashed<W: Work>(
         &'a self,
         (): &(),
-        _key: WorkingKey<'a>,
+        _key: EffectiveKey<'a>,
         signature: &Octets<'a>,
         digest: Prehash<'_, '_, Self, ()>,
         work: &W,
@@ -720,7 +720,7 @@ impl<W: Work> structured_pkix::path::Verify<W> for PathOracle {
     fn verify(
         &self,
         algorithm: &AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         signed: &[u8],
         signature: structured_pkix::signature::SignatureValue<'_>,
         work: &W,

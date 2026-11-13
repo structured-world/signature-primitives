@@ -31,7 +31,7 @@ use structured_pkix::{
         dstu4145::{self, Profile},
         signature,
     },
-    path::WorkingKey,
+    path::EffectiveKey,
 };
 
 struct Provider<'a> {
@@ -42,7 +42,7 @@ struct Provider<'a> {
 }
 
 impl<'a> Provider<'a> {
-    fn selected<W: Work>(&self, key: WorkingKey<'a>, work: &W) -> Result<&Key<'a>, Failure> {
+    fn selected<W: Work>(&self, key: EffectiveKey<'a>, work: &W) -> Result<&Key<'a>, Failure> {
         key.key()
             .algorithm()
             .execution_origin()
@@ -124,7 +124,7 @@ impl<'a> SignatureProvider<'a> for Provider<'a> {
     fn resolve_signature_digest(
         &'a self,
         id: AlgorithmIdentifier<'a>,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         parent: &Reader<'a>,
     ) -> Result<Resolution<Identity<'a>>, SignatureDigestError<Failure>> {
         let call = self.calls.get() + 1;
@@ -148,7 +148,7 @@ impl<'a> SignatureProvider<'a> for Provider<'a> {
         &'a self,
         id: AlgorithmIdentifier<'a>,
         digest: &Identity<'a>,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         _: Encoding,
         parent: &Reader<'a>,
     ) -> Result<Resolution<SignatureMode<Profile>>, Failure> {
@@ -190,7 +190,7 @@ impl<'a> SignatureProvider<'a> for Provider<'a> {
     fn start_raw<W: Work>(
         &'a self,
         _: &Profile,
-        _: WorkingKey<'a>,
+        _: EffectiveKey<'a>,
         _: &'a Octets<'a>,
         _: &W,
     ) -> Result<Infallible, Failure> {
@@ -208,7 +208,7 @@ impl<'a> SignatureProvider<'a> for Provider<'a> {
     fn verify_prehashed<W: Work>(
         &'a self,
         profile: &Profile,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         signature: &Octets<'a>,
         hash: Prehash<'_, '_, Self, Identity<'a>>,
         w: &W,
@@ -327,7 +327,7 @@ fn mixed_key_dke_signers_share_one_source_pass() {
         let Preparation::Ready(ready) = prepare::resolve(
             &provider,
             &signer,
-            WorkingKey::standing(key),
+            EffectiveKey::standing(key),
             &reader,
             Scope::Content(structured_cms::oid::DATA),
         )
@@ -391,7 +391,7 @@ fn protected_digest_hook_and_preflight_gates() {
         let result = prepare::resolve(
             &provider,
             &signer,
-            WorkingKey::standing(key),
+            EffectiveKey::standing(key),
             &reader,
             Scope::Content(structured_cms::oid::DATA),
         );

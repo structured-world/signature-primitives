@@ -316,7 +316,7 @@ impl<W: Work> structured_pkix::path::Verify<W> for Inspect {
     fn verify(
         &self,
         _: &structured_pkix::AlgorithmIdentifier<'_>,
-        _: structured_pkix::path::WorkingKey<'_>,
+        _: structured_pkix::path::EffectiveKey<'_>,
         _: &[u8],
         signature: SignatureValue<'_>,
         work: &W,
@@ -333,7 +333,7 @@ impl<W: Work> structured_pkix::path::Verify<W> for Exhaust {
     fn verify(
         &self,
         _: &structured_pkix::AlgorithmIdentifier<'_>,
-        _: structured_pkix::path::WorkingKey<'_>,
+        _: structured_pkix::path::EffectiveKey<'_>,
         _: &[u8],
         signature: SignatureValue<'_>,
         work: &W,
@@ -404,7 +404,7 @@ fn crl_authentication_dispatches_original_signature_context() {
     let answer = crl
         .authenticate(
             &issuer,
-            structured_pkix::path::WorkingKey::standing(issuer.tbs().public_key()),
+            structured_pkix::path::EffectiveKey::standing(issuer.tbs().public_key()),
             &verifier,
             &current,
         )
@@ -500,7 +500,7 @@ fn callback_decode_failures_stay_errors_for_path_and_crl_authentication() {
     let error = crl
         .authenticate(
             &root,
-            path::WorkingKey::standing(root.tbs().public_key()),
+            path::EffectiveKey::standing(root.tbs().public_key()),
             &verifier,
             &current,
         )
@@ -531,7 +531,7 @@ fn callback_decode_failures_stay_errors_for_path_and_crl_authentication() {
     let error = crl
         .authenticate(
             &root,
-            path::WorkingKey::standing(root.tbs().public_key()),
+            path::EffectiveKey::standing(root.tbs().public_key()),
             &Exhaust,
             &current,
         )

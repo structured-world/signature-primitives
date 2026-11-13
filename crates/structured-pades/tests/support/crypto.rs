@@ -21,7 +21,7 @@ use structured_cms::{
 use structured_pkix::{
     AlgorithmIdentifier,
     algorithm::digest::{Algorithm, AsnDigest},
-    path::{Verified, Verify, WorkingKey},
+    path::{EffectiveKey, Verified, Verify},
 };
 
 pub const ECDSA: &[u8] = &[42, 134, 72, 206, 61, 4, 3, 2];
@@ -389,7 +389,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
         &'a self,
         id: AlgorithmIdentifier<'a>,
         (): &(),
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         _: Encoding,
         parent: &Reader<'a>,
     ) -> Result<Resolution<SignatureMode<()>>, Fault> {
@@ -422,7 +422,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
     fn start_raw<W: Work>(
         &'a self,
         (): &(),
-        _: WorkingKey<'a>,
+        _: EffectiveKey<'a>,
         _: &'a Octets<'a>,
         _: &W,
     ) -> Result<(), Fault> {
@@ -437,7 +437,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
     fn verify_prehashed<W: Work>(
         &'a self,
         (): &(),
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         signature: &Octets<'a>,
         digest: Prehash<'_, '_, Self, ()>,
         work: &W,
@@ -478,7 +478,7 @@ impl<W: Work> Verify<W> for Oracle {
     fn verify(
         &self,
         algorithm: &AlgorithmIdentifier<'_>,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         signed: &[u8],
         signature: structured_pkix::signature::SignatureValue<'_>,
         work: &W,

@@ -9,7 +9,7 @@ use structured_cms::Octets;
 use structured_cms::provider::{Prehash, SignatureAnswer, SignatureMode, SignatureProvider};
 use structured_cms::signer::SignerInfo;
 use structured_pkix::algorithm::digest::{self, Algorithm, AsnDigest};
-use structured_pkix::path::WorkingKey;
+use structured_pkix::path::EffectiveKey;
 use structured_pkix::{AlgorithmIdentifier, PublicKeyInfo};
 
 #[derive(Default)]
@@ -31,7 +31,7 @@ struct Digest(u8, PhantomData<Rc<()>>);
 struct Frame<'a> {
     provider: &'a Provider,
     signature: &'a Octets<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     sum: u8,
     marker: PhantomData<Rc<()>>,
 }
@@ -137,7 +137,7 @@ impl<'a> SignatureProvider<'a> for Provider {
         &'a self,
         identifier: AlgorithmIdentifier<'a>,
         _digest: &(),
-        _key: WorkingKey<'a>,
+        _key: EffectiveKey<'a>,
         _encoding: Encoding,
         parent: &Reader<'a>,
     ) -> Result<Resolution<SignatureMode<()>>, MemoryError> {
@@ -166,7 +166,7 @@ impl<'a> SignatureProvider<'a> for Provider {
     fn start_raw<W: Work>(
         &'a self,
         _identity: &(),
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         signature: &'a Octets<'a>,
         execution: &W,
     ) -> Result<Frame<'a>, MemoryError> {
@@ -219,7 +219,7 @@ impl<'a> SignatureProvider<'a> for Provider {
     fn verify_prehashed<W: Work>(
         &'a self,
         _identity: &(),
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         signature: &Octets<'a>,
         digest: Prehash<'_, '_, Self, ()>,
         execution: &W,
@@ -240,7 +240,7 @@ impl<'a> SignatureProvider<'a> for Provider {
 fn operation<'a>(
     provider: &'a Provider,
     signer: &'a SignerInfo<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     parent: &Reader<'a>,
 ) -> SignatureAnswer {
     // The descriptor is passed by value. The native-like frame borrows the
@@ -287,7 +287,7 @@ fn raw_frame_borrows_stack_local_decoded_signer_without_self_reference_or_copy()
     let provider = Provider::default();
     let held = memory.used();
     assert_eq!(
-        operation(&provider, &signer, WorkingKey::standing(key), &reader),
+        operation(&provider, &signer, EffectiveKey::standing(key), &reader),
         SignatureAnswer::Valid
     );
     assert_eq!(provider.raw_updates.get(), 2);
@@ -342,7 +342,7 @@ impl structured_cms::stream::Source for Chunks {
 fn prepare_payload<'a>(
     provider: &'a Provider,
     signer: &'a SignerInfo<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     parent: &Reader<'a>,
 ) -> structured_cms::payload::PayloadBatch<'a, Provider> {
     use structured_cms::digest::DigestBatch;
@@ -421,7 +421,7 @@ fn malformed_signer_algorithms_refuse_before_any_provider_callback() {
         let spki = [0x30, 9, 0x30, 3, 6, 1, 42, 3, 2, 0, 7];
         let mut key_reader = parser.read(&spki, 900).unwrap();
         let element = key_reader.next_element().unwrap().unwrap();
-        let key = WorkingKey::standing(
+        let key = EffectiveKey::standing(
             PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap(),
         );
         let provider = Provider::default();
@@ -483,7 +483,7 @@ fn shared_pass_finishes_raw_and_digest_once_only_after_complete_eof() {
     let mut key_reader = parser.read(&spki, 900).unwrap();
     let element = key_reader.next_element().unwrap().unwrap();
     let key =
-        WorkingKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
+        EffectiveKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
     let provider = Provider::default();
     let held = memory.used();
     let batch = prepare_payload(&provider, &signer, key, &reader);
@@ -538,7 +538,7 @@ fn shared_pass_finishes_raw_and_digest_once_only_after_complete_eof() {
 fn assert_refusals_release_every_unfinished_state<'a>(
     provider: &'a Provider,
     signer: &'a SignerInfo<'a>,
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     reader: &Reader<'a>,
     memory: &Memory,
 ) {
@@ -612,7 +612,7 @@ fn preflight_resolves_inputs_but_keeps_unsupported_and_resource_distinct() {
     let mut key_reader = parser.read(&spki, 900).unwrap();
     let element = key_reader.next_element().unwrap().unwrap();
     let key =
-        WorkingKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
+        EffectiveKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
     let provider = Provider::default();
     let Preparation::Ready(ready) = prepare::resolve(
         &provider,
@@ -724,7 +724,7 @@ fn copied_registered_attributes_still_refuse_strict_preparation_before_provider(
     let mut key_reader = parser.read(&spki, 900).unwrap();
     let element = key_reader.next_element().unwrap().unwrap();
     let key =
-        WorkingKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
+        EffectiveKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
     let mut content_type = vec![6, 9];
     content_type.extend(structured_cms::oid::CONTENT_TYPE.as_bytes());
     content_type.extend([0x31, 11, 6, 9]);
@@ -781,7 +781,7 @@ fn empty_signed_or_unsigned_attributes_refuse_before_every_provider_callback() {
     let mut key_reader = parser.read(&spki, 900).unwrap();
     let element = key_reader.next_element().unwrap().unwrap();
     let key =
-        WorkingKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
+        EffectiveKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
     for (signed, unsigned) in [(true, false), (false, true), (true, true)] {
         let mut fields = vec![2, 1, 3, 0x80, 1, 7];
         fields.extend_from_slice(&DIGEST);
@@ -830,7 +830,7 @@ fn syntax_and_fixed_impossible_imprint_width_refuse_before_states_or_payload() {
     let mut key_reader = parser.read(&spki, 900).unwrap();
     let element = key_reader.next_element().unwrap().unwrap();
     let key =
-        WorkingKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
+        EffectiveKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
     let provider = Provider::default();
     for (include_digest, code, resolutions) in [
         (false, structured_cms::ErrorCode::MissingField, 0),
@@ -872,7 +872,7 @@ fn protection_uses_selected_semantics_and_never_downgrades_raw_to_prehash() {
     let mut key_reader = parser.read(&spki, 900).unwrap();
     let element = key_reader.next_element().unwrap().unwrap();
     let key =
-        WorkingKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
+        EffectiveKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
     for protected in [43, 44, 45] {
         let provider = Provider::default();
         let encoded = binding_fixture(Some(&[195]), Some(protected));
@@ -962,7 +962,8 @@ fn prepared_duplicate_comparison_uses_resolved_identities_without_resolution_or_
     let spki = [0x30, 9, 0x30, 3, 6, 1, 42, 3, 2, 0, 7];
     let mut parent = parser.read(&spki, 1000).unwrap();
     let element = parent.next_element().unwrap().unwrap();
-    let key = WorkingKey::standing(PublicKeyInfo::read_element(&parent, &element, "key").unwrap());
+    let key =
+        EffectiveKey::standing(PublicKeyInfo::read_element(&parent, &element, "key").unwrap());
     let provider = Provider::default();
     let other = Provider::default();
     let ready = ready_requests(&provider, &signers, key, &parent);
@@ -1046,7 +1047,7 @@ fn attrs_case(signature: u8, expected: u8) -> Vec<u8> {
 fn ready_requests<'a>(
     provider: &'a Provider,
     signers: &'a [SignerInfo<'a>],
-    key: WorkingKey<'a>,
+    key: EffectiveKey<'a>,
     parent: &Reader<'a>,
 ) -> structured_asn1::memory::OwnedVec<structured_cms::prepare::ResolvedSigner<'a, Provider>> {
     let mut requests = parent.execution().vector();
@@ -1097,7 +1098,7 @@ fn selected_driver_separates_four_inputs_and_shares_only_the_payload_digest() {
     let key = PublicKeyInfo::read_element(&reader, &element, "key").unwrap();
     let provider = Provider::default();
     let held = memory.used();
-    let requests = ready_requests(&provider, &signers, WorkingKey::standing(key), &reader);
+    let requests = ready_requests(&provider, &signers, EffectiveKey::standing(key), &reader);
     assert_eq!(provider.digest_starts.get(), 0);
     assert_eq!(provider.raw_starts.get(), 0);
     let batch = structured_cms::verify::Batch::prepare(
@@ -1163,7 +1164,7 @@ fn selected_driver_refuses_partial_payload_without_finishing_any_state() {
     let key = PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap();
     let provider = Provider::default();
     let held = memory.used();
-    let requests = ready_requests(&provider, &signers, WorkingKey::standing(key), &reader);
+    let requests = ready_requests(&provider, &signers, EffectiveKey::standing(key), &reader);
     let batch = structured_cms::verify::Batch::prepare(
         &provider,
         requests,
@@ -1206,7 +1207,7 @@ fn selected_driver_keeps_imprint_mismatch_and_refusal_out_of_signature_answers()
     let mut key_reader = parser.read(&spki, 900).unwrap();
     let element = key_reader.next_element().unwrap().unwrap();
     let key =
-        WorkingKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
+        EffectiveKey::standing(PublicKeyInfo::read_element(&key_reader, &element, "key").unwrap());
     let provider = Provider::default();
     let foreign = Provider::default();
     let held = memory.used();
@@ -1317,7 +1318,7 @@ fn counter_visitor_executes_operation_local_provider_without_escaping_child() {
         let Preparation::Ready(ready) = structured_cms::prepare::resolve(
             &provider,
             signer,
-            WorkingKey::standing(key),
+            EffectiveKey::standing(key),
             producing,
             Scope::CounterSignature,
         )
@@ -1382,7 +1383,7 @@ fn foreign_preparation_is_processing_before_any_provider_callback() {
     let error = prepare::resolve(
         &provider,
         &signer,
-        WorkingKey::standing(key),
+        EffectiveKey::standing(key),
         &other,
         structured_cms::binding::Scope::CounterSignature,
     )

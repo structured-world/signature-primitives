@@ -233,7 +233,7 @@ fn replace_at(der: &[u8], path: &[usize], replacement: &impl Fn(&[u8]) -> Vec<u8
 #[test]
 fn root_actor_uses_the_cms_pool_encoding_for_unordered_certificates() {
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     // Reorder only the unsigned certificate set. The actual ECDSA signature,
@@ -258,7 +258,7 @@ fn root_actor_uses_the_cms_pool_encoding_for_unordered_certificates() {
     let context = CheckContext {
         certificate: &certificate,
         certificate_parent: &operation,
-        key: WorkingKey::standing(certificate.tbs().public_key()),
+        key: EffectiveKey::standing(certificate.tbs().public_key()),
         requested: None,
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
@@ -347,7 +347,7 @@ fn cms_envelope_does_not_relax_signed_attributes_or_inner_tstinfo_der() {
         let context = CheckContext {
             certificate: &certificate,
             certificate_parent: &operation,
-            key: structured_pkix::path::WorkingKey::standing(certificate.tbs().public_key()),
+            key: structured_pkix::path::EffectiveKey::standing(certificate.tbs().public_key()),
             requested: None,
             utc: &utc,
             reference: None,
@@ -485,7 +485,7 @@ fn ber_token_keeps_actual_signature_carried_material_and_archive_input() {
     // A real P256/ESS/imprint check over the same XML input must survive only
     // the outer BER spelling. Neither validation material nor coverage is rebuilt.
     use structured_pkix::{
-        path::WorkingKey,
+        path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
     let mut xml = preparation_tree();
@@ -509,7 +509,7 @@ fn ber_token_keeps_actual_signature_carried_material_and_archive_input() {
     let context = CheckContext {
         certificate: &certificate,
         certificate_parent: &operation,
-        key: WorkingKey::standing(certificate.tbs().public_key()),
+        key: EffectiveKey::standing(certificate.tbs().public_key()),
         requested: None,
         utc: &utc,
         reference: Some(Instant::new(1_800_000_000, 0).unwrap()),

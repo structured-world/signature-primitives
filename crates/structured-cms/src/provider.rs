@@ -11,7 +11,7 @@ use structured_asn1::memory::Work;
 use structured_asn1::{Encoding, Reader, Span};
 use structured_pkix::AlgorithmIdentifier;
 use structured_pkix::algorithm::digest::{self as asn_digest, Algorithm, AsnDigest};
-use structured_pkix::path::WorkingKey;
+use structured_pkix::path::EffectiveKey;
 mod session;
 pub use session::ProviderSession;
 
@@ -302,7 +302,7 @@ pub trait SignatureProvider<'a>: AsnDigest<'a> + Sized {
     fn resolve_signature_digest(
         &'a self,
         identifier: AlgorithmIdentifier<'a>,
-        _key: WorkingKey<'a>,
+        _key: EffectiveKey<'a>,
         parent: &Reader<'a>,
     ) -> core::result::Result<Resolution<Self::Identity>, SignatureDigestError<Self::Error>> {
         asn_digest::resolve(self, &identifier, &parent.execution())
@@ -314,7 +314,7 @@ pub trait SignatureProvider<'a>: AsnDigest<'a> + Sized {
         &'a self,
         identifier: AlgorithmIdentifier<'a>,
         digest: &Self::Identity,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         encoding: Encoding,
         parent: &Reader<'a>,
     ) -> core::result::Result<Resolution<SignatureMode<Self::SignatureIdentity>>, Self::Error>;
@@ -329,7 +329,7 @@ pub trait SignatureProvider<'a>: AsnDigest<'a> + Sized {
     fn start_raw<W: Work>(
         &'a self,
         identity: &Self::SignatureIdentity,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         signature: &'a Octets<'a>,
         execution: &W,
     ) -> core::result::Result<Self::RawState, Self::Error>;
@@ -350,7 +350,7 @@ pub trait SignatureProvider<'a>: AsnDigest<'a> + Sized {
     fn verify_prehashed<W: Work>(
         &'a self,
         identity: &Self::SignatureIdentity,
-        key: WorkingKey<'a>,
+        key: EffectiveKey<'a>,
         signature: &Octets<'a>,
         digest: Prehash<'_, '_, Self, Self::Identity>,
         execution: &W,

@@ -32,7 +32,7 @@ fn holder_path<'p, 'a>(
     work: &Memory,
 ) -> HolderPath<'p, 'a> {
     let anchor = Anchor::from_certificate(root);
-    let anchor = EffectiveAnchor::bind(anchor, WorkingKey::standing(anchor.key()), work)
+    let anchor = EffectiveAnchor::bind(anchor, EffectiveKey::standing(anchor.key()), work)
         .unwrap()
         .unwrap();
     let HolderValidation::Accepted(path) =
@@ -135,7 +135,7 @@ impl structured_cms::attribute_certificate::validation::digest::ObjectDigestProv
 {
     fn validate_public_key<W: Work>(
         &self,
-        key: WorkingKey<'_>,
+        key: EffectiveKey<'_>,
         work: &W,
     ) -> Result<Resolution<()>, Cause> {
         structured_pkix::key::rfc8410::read(key.key(), work)?;
@@ -194,7 +194,7 @@ fn object_digest_receipts_bind_the_same_ac_and_require_paths_for_certificate_obj
             let super::Outcome::Authenticated(facts) = original
                 .authenticate(
                     &aa,
-                    WorkingKey::standing(aa.tbs().public_key()),
+                    EffectiveKey::standing(aa.tbs().public_key()),
                     path.interval(),
                     &crypto,
                     &work,
@@ -251,7 +251,7 @@ fn holder_paths_preserve_incomplete_negative_and_callback_outcomes() {
     let c = Crypto::new();
     let refs = [&holder];
     let anchor = Anchor::from_certificate(&root);
-    let anchor = EffectiveAnchor::bind(anchor, WorkingKey::standing(anchor.key()), &q)
+    let anchor = EffectiveAnchor::bind(anchor, EffectiveKey::standing(anchor.key()), &q)
         .unwrap()
         .unwrap();
     let mut ctx = context(&q, &c, &());
@@ -316,7 +316,7 @@ fn object_certificate_receipt_metadata_keeps_its_original_source_ceiling() {
     let super::Outcome::Authenticated(facts) = ac
         .authenticate(
             &aa,
-            WorkingKey::standing(aa.tbs().public_key()),
+            EffectiveKey::standing(aa.tbs().public_key()),
             path.interval(),
             &crypto,
             &work,
@@ -372,7 +372,7 @@ fn membership_errors_and_unknown_answers_never_mint_checked_use() {
     let super::Outcome::Authenticated(facts) = ac
         .authenticate(
             &aa,
-            WorkingKey::standing(aa.tbs().public_key()),
+            EffectiveKey::standing(aa.tbs().public_key()),
             path.interval(),
             &crypto,
             &w,
@@ -459,7 +459,7 @@ fn status_authority<'r, 'a>(
     work: &Memory,
 ) -> structured_pkix::ocsp::ScopedResponse<'r, 'a> {
     use structured_pkix::ocsp;
-    let key = WorkingKey::standing(aa.tbs().public_key());
+    let key = EffectiveKey::standing(aa.tbs().public_key());
     let ocsp::SignatureAuthentication::Signed(signed) = response
         .authenticate_signature(aa, key, crypto, crypto, work)
         .unwrap()
@@ -495,7 +495,7 @@ fn full_use_consumes_actual_ocsp_binding_without_rehash_and_refuses_bad_nonce() 
     let mut ctx = context(&work, &crypto, &());
     ctx.interval = Interval::at_instant(now);
     let anchor = Anchor::from_certificate(&root);
-    let anchor = EffectiveAnchor::bind(anchor, WorkingKey::standing(anchor.key()), &work)
+    let anchor = EffectiveAnchor::bind(anchor, EffectiveKey::standing(anchor.key()), &work)
         .unwrap()
         .unwrap();
     let refs = [&holder];
@@ -506,7 +506,7 @@ fn full_use_consumes_actual_ocsp_binding_without_rehash_and_refuses_bad_nonce() 
     let super::Outcome::Authenticated(facts) = ac
         .authenticate(
             &aa,
-            WorkingKey::standing(aa.tbs().public_key()),
+            EffectiveKey::standing(aa.tbs().public_key()),
             ctx.interval,
             &crypto,
             &work,
@@ -621,7 +621,7 @@ fn direct_trust_and_holder_path_produce_original_complete_use_facts() {
     let super::Outcome::Authenticated(facts) = ac
         .authenticate(
             &aa,
-            WorkingKey::standing(aa.tbs().public_key()),
+            EffectiveKey::standing(aa.tbs().public_key()),
             path.interval(),
             &crypto,
             &work,
@@ -701,7 +701,7 @@ fn use_refuses_wrong_direct_trust_holder_time_and_missing_status() {
         let super::Outcome::Authenticated(facts) = ac
             .authenticate(
                 &aa,
-                WorkingKey::standing(aa.tbs().public_key()),
+                EffectiveKey::standing(aa.tbs().public_key()),
                 Interval::between(1_789_000_000, 1_791_000_000),
                 &crypto,
                 &work,
@@ -778,7 +778,7 @@ fn target_and_proxy_constraints_run_for_every_required_protocol_participant() {
         let super::Outcome::Authenticated(facts) = ac
             .authenticate(
                 &aa,
-                WorkingKey::standing(aa.tbs().public_key()),
+                EffectiveKey::standing(aa.tbs().public_key()),
                 path.interval(),
                 &crypto,
                 &w,
@@ -928,7 +928,7 @@ fn zero_work_and_capacity_cannot_return_successful_partial_catalogues() {
     let super::Outcome::Authenticated(facts) = ac
         .authenticate(
             &aa,
-            WorkingKey::standing(aa.tbs().public_key()),
+            EffectiveKey::standing(aa.tbs().public_key()),
             path.interval(),
             &c,
             &q,
@@ -980,7 +980,7 @@ fn exact_current_work_succeeds_and_one_unit_less_rolls_back() {
     let super::Outcome::Authenticated(facts) = ac
         .authenticate(
             &aa,
-            WorkingKey::standing(aa.tbs().public_key()),
+            EffectiveKey::standing(aa.tbs().public_key()),
             path.interval(),
             &crypto,
             &setup,

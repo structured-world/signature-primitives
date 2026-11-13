@@ -17,7 +17,7 @@ use structured_cms::{
 };
 use structured_pkix::{
     Certificate,
-    path::WorkingKey,
+    path::EffectiveKey,
     temporal::{Instant, LeapTable},
 };
 use structured_xades::{
@@ -213,7 +213,7 @@ impl<'d> Authorities<'d> for Authority<'_> {
             policy_accuracy: None,
             certificate: self.certificate,
             certificate_parent: self.parent,
-            key: WorkingKey::standing(self.certificate.tbs().public_key()),
+            key: EffectiveKey::standing(self.certificate.tbs().public_key()),
         })
     }
 }
@@ -544,7 +544,7 @@ fn native_detached_cades_checks_all_original_roots_and_exact_payload_in_one_pass
             let Preparation::Ready(request) = prepare::resolve(
                 &provider,
                 signer,
-                WorkingKey::standing(cert.tbs().public_key()),
+                EffectiveKey::standing(cert.tbs().public_key()),
                 &parent,
                 Scope::Content(oid::DATA),
             )
@@ -672,7 +672,7 @@ fn native_time_assertion_binds_actual_token_and_complete_original_input() {
             policy_accuracy: None,
             certificate: &cert,
             certificate_parent: &cert_parser.read(&[], 100).unwrap(),
-            key: WorkingKey::standing(cert.tbs().public_key()),
+            key: EffectiveKey::standing(cert.tbs().public_key()),
             requested: None,
             utc: &utc,
             reference: None,

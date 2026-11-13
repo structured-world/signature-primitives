@@ -422,7 +422,7 @@ impl<W: Work> structured_pkix::path::Verify<W> for Inspect<'_> {
     fn verify(
         &self,
         algorithm: &AlgorithmIdentifier<'_>,
-        key: structured_pkix::path::WorkingKey<'_>,
+        key: structured_pkix::path::EffectiveKey<'_>,
         signed: &[u8],
         signature: SignatureValue<'_>,
         execution: &W,

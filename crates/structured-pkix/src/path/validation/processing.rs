@@ -2,7 +2,7 @@
 
 use super::super::name_space::{Admission, NameSpace};
 use super::super::{
-    BuildError, BuildResult, Meter, Truncation, Verified, WorkingKey, cost, policy,
+    BuildError, BuildResult, EffectiveKey, Meter, Truncation, Verified, cost, policy,
 };
 use super::{
     CertificateFacts, Chain, ConstraintSource, Decoded, Driver, EffectiveAnchor,
@@ -73,7 +73,7 @@ fn read<T, V, R>(
 struct Processing<'a, E: Work> {
     policies: policy::Processing<'a, E>,
     space: NameSpace<'a, ConstraintSource, E>,
-    working: WorkingKey<'a>,
+    working: EffectiveKey<'a>,
     issuer: &'a Name<'a>,
     issuer_certificate: Option<&'a Certificate<'a>>,
     allowed: u32,

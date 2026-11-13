@@ -3,7 +3,7 @@
 use super::{FIELD, OcspRequest};
 use crate::error::{CallbackError, Error};
 use crate::general_name::{self, GeneralName};
-use crate::path::{Verified, Verify, WorkingKey};
+use crate::path::{EffectiveKey, Verified, Verify};
 use crate::{Certificate, revocation::RevocationTarget};
 use core::fmt;
 use structured_asn1::memory::Work;
@@ -36,7 +36,7 @@ pub enum RequestorBinding {
 pub struct SignedRequest<'q, 'a, 'c, 'cert> {
     request: &'q OcspRequest<'a>,
     signer: &'c Certificate<'cert>,
-    key: WorkingKey<'cert>,
+    key: EffectiveKey<'cert>,
     name: RequestorBinding,
 }
 impl<'q, 'a, 'c, 'cert> SignedRequest<'q, 'a, 'c, 'cert> {
@@ -52,7 +52,7 @@ impl<'q, 'a, 'c, 'cert> SignedRequest<'q, 'a, 'c, 'cert> {
     }
     /// Same effective key passed to the selected verifier.
     #[must_use]
-    pub fn key(self) -> WorkingKey<'cert> {
+    pub fn key(self) -> EffectiveKey<'cert> {
         self.key
     }
     /// Separate declared-name binding, not certificate path/server permission.
@@ -94,7 +94,7 @@ impl<'a> OcspRequest<'a> {
     pub fn authenticate_signature<'q, 'c, 'cert, V: Verify<E>, E: Work>(
         &'q self,
         signer: &'c Certificate<'cert>,
-        key: WorkingKey<'cert>,
+        key: EffectiveKey<'cert>,
         verifier: &V,
         execution: &E,
     ) -> core::result::Result<

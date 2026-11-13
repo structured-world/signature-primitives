@@ -145,7 +145,7 @@ fn live_response_is_bound_to_the_actual_proposed_input_and_append_generation() {
             let context = CheckContext {
                 certificate: &tsa,
                 certificate_parent: &operation,
-                key: WorkingKey::standing(tsa.tbs().public_key()),
+                key: EffectiveKey::standing(tsa.tbs().public_key()),
                 requested: Some(Requested {
                     request: &request,
                     parent: &request_reader,

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use structured_asn1::memory::{Memory, MemoryAccount};
 use structured_asn1::{Encoding, Limits, Parser};
-use structured_pkix::{Certificate, ErrorCode, PublicKeyInfo, key::dsa, path::WorkingKey};
+use structured_pkix::{Certificate, ErrorCode, PublicKeyInfo, key::dsa, path::EffectiveKey};
 
 const DSA: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x38, 0x04, 0x01];
 
@@ -54,7 +54,11 @@ fn components_keep_unsigned_bytes_sign_octets_and_physical_spans() {
     // magnitude given to a backend. No encoded key or component is copied.
     let bytes = spki(Some(&parms()), &integer(&[0, 0x80]));
     let parser = Parser::der(memory(4096, 10000));
-    let key = dsa::read(WorkingKey::standing(info(&parser, &bytes)), parser.memory()).unwrap();
+    let key = dsa::read(
+        EffectiveKey::standing(info(&parser, &bytes)),
+        parser.memory(),
+    )
+    .unwrap();
     let params = key.parameters().unwrap();
     assert!(!params.is_inherited());
     assert_eq!(params.p().as_bytes(), [0x83]);
@@ -77,14 +81,22 @@ fn absent_parameters_and_zero_are_inspection_not_usable_key_facts() {
     // Neither fabricate a default group nor silently accept a zero DSA key.
     let bytes = spki(None, &integer(&[0]));
     let parser = Parser::der(memory(4096, 10000));
-    let key = dsa::read(WorkingKey::standing(info(&parser, &bytes)), parser.memory()).unwrap();
+    let key = dsa::read(
+        EffectiveKey::standing(info(&parser, &bytes)),
+        parser.memory(),
+    )
+    .unwrap();
     assert!(key.parameters().is_none());
     assert_eq!(key.y().as_bytes(), [0]);
     let bytes = spki(
         Some(&seq(&[integer(&[0]), integer(&[0]), integer(&[0])])),
         &integer(&[0]),
     );
-    let key = dsa::read(WorkingKey::standing(info(&parser, &bytes)), parser.memory()).unwrap();
+    let key = dsa::read(
+        EffectiveKey::standing(info(&parser, &bytes)),
+        parser.memory(),
+    )
+    .unwrap();
     let params = key.parameters().unwrap();
     assert_eq!(
         [
@@ -111,8 +123,11 @@ fn written_null_wrong_arity_and_negative_components_refuse() {
     ] {
         let bytes = spki(Some(&parameters), &integer(&[7]));
         let parser = Parser::der(memory(4096, 10000));
-        let error =
-            dsa::read(WorkingKey::standing(info(&parser, &bytes)), parser.memory()).unwrap_err();
+        let error = dsa::read(
+            EffectiveKey::standing(info(&parser, &bytes)),
+            parser.memory(),
+        )
+        .unwrap_err();
         assert_eq!(error.field(), "subjectPublicKeyInfo.algorithm.parameters");
         assert!(!error.is_resource());
         assert!(error.offset() >= 400);
@@ -121,9 +136,12 @@ fn written_null_wrong_arity_and_negative_components_refuse() {
     let bytes = spki(None, &integer(&[0x80]));
     let parser = Parser::der(memory(4096, 10000));
     assert_eq!(
-        dsa::read(WorkingKey::standing(info(&parser, &bytes)), parser.memory())
-            .unwrap_err()
-            .code(),
+        dsa::read(
+            EffectiveKey::standing(info(&parser, &bytes)),
+            parser.memory()
+        )
+        .unwrap_err()
+        .code(),
         ErrorCode::MalformedValue
     );
 }
@@ -141,8 +159,11 @@ fn key_integer_is_der_even_in_ber_spki_and_has_no_trailing_value() {
     ] {
         let bytes = spki(None, &value);
         let parser = Parser::ber(memory(4096, 10000));
-        let error =
-            dsa::read(WorkingKey::standing(info(&parser, &bytes)), parser.memory()).unwrap_err();
+        let error = dsa::read(
+            EffectiveKey::standing(info(&parser, &bytes)),
+            parser.memory(),
+        )
+        .unwrap_err();
         assert!(!error.is_resource());
         assert_eq!(error.field(), "subjectPublicKey.dsa");
         assert_eq!(parser.memory().used(), 0);
@@ -157,7 +178,11 @@ fn large_components_stay_borrowed_without_backend_width_limits() {
     let parameters = seq(&[integer(&wide), integer(&[3]), integer(&[2])]);
     let bytes = spki(Some(&parameters), &integer(&wide));
     let parser = Parser::der(memory(4096, 10000));
-    let key = dsa::read(WorkingKey::standing(info(&parser, &bytes)), parser.memory()).unwrap();
+    let key = dsa::read(
+        EffectiveKey::standing(info(&parser, &bytes)),
+        parser.memory(),
+    )
+    .unwrap();
     assert_eq!(key.parameters().unwrap().p().as_bytes(), wide);
     assert_eq!(key.y().as_bytes(), wide);
     assert!(key.y().integer().as_u64().is_none());
@@ -168,7 +193,7 @@ fn run(current_work: usize, capacity: usize) -> (Result<(), structured_pkix::Err
     let parser = Parser::der(memory(4096, 10000));
     let info = info(&parser, &bytes);
     let current = memory(capacity, current_work);
-    let result = dsa::read(WorkingKey::standing(info), &current).map(|_| ());
+    let result = dsa::read(EffectiveKey::standing(info), &current).map(|_| ());
     assert_eq!(current.used(), 0);
     (result, current.work_used())
 }
@@ -206,12 +231,12 @@ fn spent_current_query_is_terminal_and_short_borrow_does_not_escape() {
         memory(4096, 10000),
     );
     let query = current.read(&[], 900).unwrap();
-    let error = dsa::read(WorkingKey::standing(info), &query.execution()).unwrap_err();
+    let error = dsa::read(EffectiveKey::standing(info), &query.execution()).unwrap_err();
     assert!(error.is_resource());
     let key;
     {
         let current = memory(4096, 10000);
-        key = dsa::read(WorkingKey::standing(info), &current).unwrap();
+        key = dsa::read(EffectiveKey::standing(info), &current).unwrap();
         assert_eq!(current.used(), 0);
     }
     assert_eq!(key.y().as_bytes(), [7]);
@@ -246,7 +271,7 @@ fn effective_parameters_retain_issuer_source_and_explicit_null_is_not_repaired()
     let leaf = Certificate::read(&leaf_parser, &leaf_bytes, 900).unwrap();
     let null = Certificate::read(&leaf_parser, &null_bytes, 1900).unwrap();
     let current = memory(8192, 100_000);
-    let parent = WorkingKey::standing(root.tbs().public_key());
+    let parent = EffectiveKey::standing(root.tbs().public_key());
     let key = dsa::read(parent.subject(&leaf, &current).unwrap(), &current).unwrap();
     let parameters = key.parameters().unwrap();
     assert!(parameters.is_inherited());
@@ -279,7 +304,7 @@ fn explicit_parameters_override_inheritance_and_algorithm_change_clears_it() {
     let other = Certificate::read(&parser, &foreign_bytes, 1900).unwrap();
     let last = Certificate::read(&parser, &last_bytes, 2900).unwrap();
     let current = memory(4096, 100_000);
-    let root = WorkingKey::standing(root.tbs().public_key());
+    let root = EffectiveKey::standing(root.tbs().public_key());
     let key = dsa::read(root.subject(&leaf, &current).unwrap(), &current).unwrap();
     let parameters = key.parameters().unwrap();
     assert!(!parameters.is_inherited());
@@ -303,7 +328,7 @@ fn source_local_work_and_current_depth_are_not_reset_by_deferred_reading() {
         let parser = Parser::der(memory(4096, 10000));
         let info = info(&parser, &bytes);
         let initial = parser.memory().work_used();
-        dsa::read(WorkingKey::standing(info), parser.memory()).unwrap();
+        dsa::read(EffectiveKey::standing(info), parser.memory()).unwrap();
         (initial, parser.memory().work_used())
     };
     let run_source = |allowance: usize| {
@@ -317,7 +342,7 @@ fn source_local_work_and_current_depth_are_not_reset_by_deferred_reading() {
         );
         let info = info(&parser, &bytes);
         let current = memory(4096, 10000);
-        dsa::read(WorkingKey::standing(info), &current).map(|_| ())
+        dsa::read(EffectiveKey::standing(info), &current).map(|_| ())
     };
     // Selector work belongs to current Work, whereas nested source work
     // also spends the producing parser. Measure that boundary separately
@@ -349,7 +374,7 @@ fn source_local_work_and_current_depth_are_not_reset_by_deferred_reading() {
     );
     let query = operation.read(&[], 900).unwrap();
     assert!(
-        dsa::read(WorkingKey::standing(info), &query.execution())
+        dsa::read(EffectiveKey::standing(info), &query.execution())
             .unwrap_err()
             .is_resource()
     );
@@ -364,7 +389,7 @@ fn padded_key_bits_refuse_before_integer_inspection() {
     bytes[end - 4] = 1;
     let parser = Parser::der(memory(4096, 10000));
     let info = info(&parser, &bytes);
-    let error = dsa::read(WorkingKey::standing(info), parser.memory()).unwrap_err();
+    let error = dsa::read(EffectiveKey::standing(info), parser.memory()).unwrap_err();
     assert_eq!(error.code(), ErrorCode::MalformedValue);
     assert_eq!(error.offset(), info.key_offset());
 }

@@ -67,6 +67,46 @@ pub struct Cost {
     pub output: usize,
 }
 
+/// Structural KDF cost for application policy before password acquisition.
+///
+/// These quantities describe the algorithm parameters. Use [`Cost`] for
+/// execution work and total buffer admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum KdfCost {
+    /// RFC 8018 PBKDF2.
+    #[non_exhaustive]
+    Pbkdf2 {
+        /// Iterations per output block.
+        iterations: u32,
+        /// Derived key length rounded up to a whole PRF output block.
+        blocks: usize,
+    },
+    /// RFC 7292 Appendix B.2.
+    #[non_exhaustive]
+    Pkcs12 {
+        /// Iterations per output block.
+        iterations: u32,
+        /// Digest output blocks required for the encryption or MAC key.
+        key_blocks: usize,
+        /// Digest output blocks required for the IV, zero for a MAC.
+        iv_blocks: usize,
+    },
+    /// RFC 7914 scrypt.
+    #[non_exhaustive]
+    Scrypt {
+        /// CPU/memory cost parameter.
+        n: u64,
+        /// Block size parameter.
+        r: u64,
+        /// Parallelization parameter.
+        p: u64,
+        /// Bytes for B, V and T, with V and T reused across lanes.
+        /// Use [`Cost::scratch`] to include any other temporary storage.
+        workspace_bytes: usize,
+    },
+}
+
 /// Password input in the encoding selected by the plan.
 #[derive(Clone, Copy)]
 pub enum Password<'a> {
@@ -184,6 +224,12 @@ impl<'s, 'a> Decryption<'s, 'a> {
             iv,
             ciphertext,
         })
+    }
+
+    /// Structural KDF quantities for application policy.
+    pub fn kdf_cost(&self) -> Result<KdfCost, Error> {
+        self.kdf
+            .policy_cost(self.cipher.key_len(), self.legacy_iv())
     }
 
     /// Cost before acquiring a password, including the ciphertext-sized output.
@@ -339,6 +385,11 @@ impl<'s, 'a> Authentication<'s, 'a> {
             safe,
             expected: &mac.digest,
         }))
+    }
+
+    /// Structural KDF quantities for application policy.
+    pub fn kdf_cost(&self) -> Result<KdfCost, Error> {
+        self.kdf.policy_cost(self.key_len, 0)
     }
 
     /// Cost before acquiring a password. The derived MAC key lives in scratch.

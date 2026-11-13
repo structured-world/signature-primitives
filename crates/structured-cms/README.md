@@ -55,7 +55,9 @@ and PBES2 with PBKDF2 or scrypt and AES-CBC or Triple DES-CBC.
 Prepare a `personal::password::Authentication` or `Decryption` plan from
 the parsed model. Check `cost` before requesting the password, then check
 `password_cost` for the actual password octets. The caller applies policy
-and supplies accounted scratch. Decryption can write into caller storage
+using `kdf_cost` for structural quantities such as PBKDF2 iteration and
+block counts or scrypt's N, r and p. Use `cost` for engine work and buffers.
+Supply accounted scratch. Decryption can write into caller storage
 or return the accounted wiping `personal::Plaintext` expected by
 `personal::Backend`. CBC padding alone provides no authentication.
 

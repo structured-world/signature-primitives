@@ -72,8 +72,8 @@ structured-dstu4145 = "0.20" # optional Ukrainian verification backend
 ```
 
 Rust 1.92 or newer. The signature and container crates work with `no_std + alloc`;
-enable their `std` feature in ordinary applications. `structured-base64` uses only
-`core` and has no feature flags.
+enable their `std` feature in ordinary applications. `structured-base64` uses
+only `core` by default. Its optional `alloc` feature adds owned output.
 
 ## Quick start
 

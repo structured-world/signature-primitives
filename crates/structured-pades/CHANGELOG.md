@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.2](https://github.com/structured-world/signature-primitives/compare/structured-pades-v0.22.1...structured-pades-v0.22.2) - 2026-11-14
+
+### Added
+
+- *(cms)* expose OpenSSL envelope KDF cost ([#311](https://github.com/structured-world/signature-primitives/pull/311))
+
 ## [0.22.1](https://github.com/structured-world/signature-primitives/compare/structured-pades-v0.22.0...structured-pades-v0.22.1) - 2026-11-14
 
 ### Added

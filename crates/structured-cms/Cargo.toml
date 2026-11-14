@@ -25,8 +25,8 @@ openssl = [
 ]
 
 [dependencies]
-structured-asn1 = { version = "0.22.1", path = "../structured-asn1", default-features = false }
-structured-pkix = { version = "0.22.1", path = "../structured-pkix", default-features = false }
+structured-asn1 = { version = "0.22.2", path = "../structured-asn1", default-features = false }
+structured-pkix = { version = "0.22.2", path = "../structured-pkix", default-features = false }
 zeroize = { version = "1.9.1", default-features = false }
 ctutils = { version = "0.4", default-features = false, optional = true }
 hmac = { version = "0.13", default-features = false, features = ["zeroize"], optional = true }

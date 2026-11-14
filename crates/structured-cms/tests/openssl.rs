@@ -32,40 +32,55 @@ fn openssl_envelope_vectors() {
     // OpenSSL 4.0.3 enc -<cipher> -provider default -provider legacy
     // -md md5 -S 0102030405060708 -iv <iv> -pass pass:test.
     let vectors = [
-        ("AES-128-CBC", IV_AES, AES128),
+        ("AES-128-CBC", IV_AES, AES128, 1),
         (
             "AES-192-CBC",
             IV_AES,
             "df8c20e204909995e8ff03a883698d18316abfcc5eb69fcc9784952c00e78438",
+            2,
         ),
         (
             "AES-256-CBC",
             IV_AES,
             "ba999ba37150c78010f2ad58e95e5a576f58114a6002a6ab38bca3325fde6809",
+            2,
         ),
         (
             "DES-CBC",
             IV_DES,
             "0216fd6c09dd246ef545f779c4bf7368782ee346d998ce9602109c977dd226d2",
+            1,
         ),
         (
             "DES-EDE-CBC",
             IV_DES,
             "f9318952866b982269e99ed5ae3e3c248b346b68476348cc14270e08adcd0089",
+            1,
         ),
         (
             "DES-EDE3-CBC",
             IV_DES,
             "caee3a3699b531b51508aa75252d6bbe73e683b0b1c253471190c50974600abb",
+            2,
         ),
     ];
-    let work = work(4096);
-    for (cipher, iv, ciphertext) in vectors {
+    let parse_work = work(4096);
+    for (cipher, iv, ciphertext, blocks) in vectors {
         let headers = format!("Proc-Type: 4,ENCRYPTED\r\nDEK-Info: {cipher},{iv}\r\n");
-        let envelope = Envelope::read(&headers, &work).unwrap().unwrap();
+        let envelope = Envelope::read(&headers, &parse_work).unwrap().unwrap();
+        let cost = envelope.kdf_cost();
+        assert_eq!((cost.rounds, cost.blocks), (1, blocks), "{cipher}");
         let mut buffer = Zeroizing::new(hex(ciphertext));
+        // The structural query is separate from the exact execution charge.
+        let required = (b"test".len() + 24) * blocks + buffer.len();
+        assert_eq!(
+            envelope.decrypt_in_place(&mut buffer, Some(b"test"), &work(required - 1)),
+            Err(Error::Resource(MemoryError::WorkExceeded)),
+            "{cipher}"
+        );
+        assert_eq!(*buffer, hex(ciphertext), "{cipher}");
         let length = envelope
-            .decrypt_in_place(&mut buffer, Some(b"test"), &work)
+            .decrypt_in_place(&mut buffer, Some(b"test"), &work(required))
             .unwrap();
         assert_eq!(&buffer[..length], b"traditional envelope test");
         assert!(buffer[length..].iter().all(|&byte| byte == 0));

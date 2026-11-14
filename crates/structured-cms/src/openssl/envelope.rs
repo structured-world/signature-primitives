@@ -5,6 +5,18 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::{Error, charge};
 
+const MD5_OUTPUT_LEN: usize = 16;
+
+/// Structural `EVP_BytesToKey` cost for application policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct KdfCost {
+    /// MD5 rounds per derived key block.
+    pub rounds: u32,
+    /// MD5 output blocks needed to fill the cipher key.
+    pub blocks: usize,
+}
+
 /// A validated traditional PEM password envelope.
 #[derive(Clone, Copy)]
 pub struct Envelope {
@@ -60,6 +72,18 @@ impl Envelope {
         Ok(Some(Self { cipher, iv }))
     }
 
+    /// Report KDF rounds and blocks before acquiring a password.
+    ///
+    /// Traditional PEM derives only the key. The IV comes from the header.
+    /// Decryption separately charges work for processing the password and body.
+    #[must_use]
+    pub fn kdf_cost(&self) -> KdfCost {
+        KdfCost {
+            rounds: 1,
+            blocks: self.cipher.key_len().div_ceil(MD5_OUTPUT_LEN),
+        }
+    }
+
     /// Replace decoded ciphertext with plaintext and return its unpadded length.
     ///
     /// Use wiping storage for `buffer` and for the caller-owned password. On
@@ -81,7 +105,7 @@ impl Envelope {
         let hash_work = password
             .len()
             .checked_add(24)
-            .and_then(|length| length.checked_mul(key_len.div_ceil(16)))
+            .and_then(|length| length.checked_mul(self.kdf_cost().blocks))
             .ok_or(structured_asn1::memory::MemoryError::WorkExceeded)?;
         charge(work, hash_work)?;
         charge(work, buffer.len())?;

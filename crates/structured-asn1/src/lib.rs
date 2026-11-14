@@ -52,6 +52,8 @@ extern crate alloc;
 pub mod digest;
 pub mod error;
 pub mod hash;
+#[cfg(feature = "hmac")]
+pub mod hmac;
 pub mod inflate;
 pub mod length;
 pub mod limits;

@@ -11,6 +11,10 @@ their exact byte ranges. Useful for format parsers that must verify digital
 signatures over the bytes received. Nested readers share depth, element, length
 and work limits; resource exhaustion is distinct from malformed input.
 
+Enable `hmac` for the incremental `structured_asn1::hmac` API with SHA-1
+and SHA-2. Enable `legacy-hmac` for MD5 and RIPEMD-160 as well. Both feature
+sets support `no_std` and require neither CMS nor PKIX.
+
 **`no_std + alloc` by default · Rust 1.92+ · No cryptographic backend or I/O**
 
 ## Install

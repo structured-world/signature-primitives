@@ -981,9 +981,16 @@ version = "0.22.2"
 dependencies = [
  "allocator-api2 0.2.21",
  "allocator-api2 0.4.0",
+ "ctutils",
  "foldhash",
  "hashbrown",
+ "hmac",
+ "md-5",
  "miniz_oxide",
+ "ripemd",
+ "sha1",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]
@@ -1010,7 +1017,6 @@ dependencies = [
  "aes-kw",
  "cbc",
  "crypto-bigint",
- "ctutils",
  "der",
  "des",
  "ed25519-dalek",
@@ -1021,7 +1027,6 @@ dependencies = [
  "p521",
  "pbkdf2",
  "pkcs8",
- "ripemd",
  "sec1",
  "sha1",
  "sha2",

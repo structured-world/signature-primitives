@@ -5,14 +5,14 @@
 //! State and tags use fixed storage.
 //!
 //! ```
-//! use structured_cms::hmac::{Algorithm, Mac};
+//! use structured_asn1::hmac::{Algorithm, Mac};
 //!
 //! let mut mac = Mac::begin(Algorithm::Sha256, b"example key")?;
 //! mac.update(b"message ");
 //! mac.update(b"chunks");
 //! let tag = mac.finalize();
 //! assert_eq!(tag.as_bytes().len(), 32);
-//! # Ok::<(), structured_cms::hmac::Error>(())
+//! # Ok::<(), structured_asn1::hmac::Error>(())
 //! ```
 
 use ::hmac::{KeyInit, Mac as _};

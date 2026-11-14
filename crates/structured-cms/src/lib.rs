@@ -25,7 +25,7 @@ pub mod error;
 pub mod ess;
 pub mod evidence;
 #[cfg(feature = "hmac")]
-pub mod hmac;
+pub use structured_asn1::hmac;
 pub mod mime;
 pub mod octets;
 pub mod oid;

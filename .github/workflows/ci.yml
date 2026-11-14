@@ -62,6 +62,7 @@ jobs:
       - run: cargo +stable check --locked --workspace --no-default-features --features alloc --target ${{ matrix.target }}
       - run: cargo +stable check --locked -p structured-cms --no-default-features --features alloc,legacy-hmac,openssl,password-protection --target ${{ matrix.target }}
       - run: cargo +stable check --locked -p structured-base64 --no-default-features --target ${{ matrix.target }}
+      - run: cargo +stable check --locked -p structured-asn1 --no-default-features --features legacy-hmac --target ${{ matrix.target }}
 
   msrv:
     # Preserve the required GitHub check identifier; validate current stable.

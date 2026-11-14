@@ -28,8 +28,7 @@ macro_rules! with_hash {
                 type $digest = sha2::Sha512;
                 $body
             }
-            #[cfg(feature = "legacy-hmac")]
-            Algorithm::Md5 | Algorithm::Ripemd160 => return Err(Error::Unsupported),
+            _ => return Err(Error::Unsupported),
         }
     };
 }

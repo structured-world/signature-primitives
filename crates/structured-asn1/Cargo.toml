@@ -15,8 +15,17 @@ include = ["src/**", "tests/**", "benches/**", "Cargo.toml", "README.md", "LICEN
 default = []
 std = []
 alloc = []
+hmac = ["dep:ctutils", "dep:hmac", "dep:sha1", "dep:sha2", "dep:thiserror"]
+legacy-hmac = ["hmac", "dep:md-5", "dep:ripemd"]
 
 [dependencies]
+ctutils = { version = "0.4", default-features = false, optional = true }
+hmac = { version = "0.13", default-features = false, features = ["zeroize"], optional = true }
+sha1 = { version = "0.11", default-features = false, features = ["zeroize"], optional = true }
+sha2 = { version = "0.11", default-features = false, features = ["zeroize"], optional = true }
+md-5 = { version = "0.11", default-features = false, features = ["zeroize"], optional = true }
+ripemd = { version = "0.2", default-features = false, features = ["zeroize"], optional = true }
+thiserror = { version = "2", default-features = false, optional = true }
 # The adapter relies on this Global implementation returning exact Layout size.
 allocator-api2 = { version = "0.4.0", default-features = false, features = ["alloc"] }
 # hashbrown's published Allocator trait still belongs to the 0.2 API family.

@@ -7,7 +7,7 @@
 mod envelope;
 mod key;
 
-pub use envelope::Envelope;
+pub use envelope::{Envelope, KdfCost};
 pub use key::{Key, KeyFamily};
 
 use structured_asn1::memory::{MemoryError, Work};

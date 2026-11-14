@@ -3,12 +3,12 @@
 
 use std::sync::Arc;
 use structured_asn1::{
-    Parser, Reader,
+    Encoding, Limits, Parser, Reader,
     memory::{Memory, MemoryAccount, MemoryError},
 };
 use structured_cms::personal::{
     self, Backend, Bag, Decision, Integrity, Pfx, Plaintext, PrivateKey, Safe, ShroudedKey, Source,
-    password::{Authentication, Cost, Decryption, Error, Password},
+    password::{Authentication, Cost, Decryption, Error, KdfCost, Password},
 };
 
 const CLEAR: &[u8] = include_bytes!("fixtures/password/plain.der");
@@ -38,6 +38,15 @@ fn encrypted_pkcs8_matches_openssl() {
         let mut scratch = scratch(base, plan.password_cost(PASSWORD).unwrap());
         if input == SCRYPT {
             assert_eq!(base.scratch, 128 * 2 * (16 + 2 + 1));
+        } else {
+            assert!(matches!(
+                plan.kdf_cost().unwrap(),
+                KdfCost::Pbkdf2 {
+                    iterations: 8,
+                    blocks: 1,
+                    ..
+                }
+            ));
         }
         let mut output = vec![0xa5; base.output + 1];
         let count = plan
@@ -48,6 +57,57 @@ fn encrypted_pkcs8_matches_openssl() {
         assert_eq!(output[base.output], 0xa5);
         assert!(scratch.iter().all(|&byte| byte == 0));
     }
+}
+
+#[test]
+fn openssl_default_scrypt_uses_structural_policy_units() {
+    // The consumer's 10M-unit KDF policy admits the OpenSSL default.
+    // The engine still requires its full, separately accounted execution work.
+    let input = include_bytes!("fixtures/password/scrypt-default.der");
+    let parser = Parser::new(
+        Encoding::Der,
+        Limits {
+            max_work: 1 << 29,
+            ..Limits::default()
+        },
+        memory(1 << 29),
+    );
+    let mut query = parser.read(input, 0).unwrap();
+    let element = query.next_element().unwrap().unwrap();
+    let key = ShroudedKey::read(&query, &element).unwrap();
+    let plan = Decryption::key(&key, &query).unwrap();
+    let KdfCost::Scrypt {
+        n,
+        r,
+        p,
+        workspace_bytes,
+        ..
+    } = plan.kdf_cost().unwrap()
+    else {
+        panic!("OpenSSL default must select scrypt");
+    };
+    assert_eq!((n, r, p), (16_384, 8, 1));
+    assert_eq!(workspace_bytes, 16_779_264);
+    let base = plan.cost().unwrap();
+    assert_eq!(base.scratch, workspace_bytes);
+    let policy_work = n * r * p;
+    assert_eq!(policy_work, 131_072);
+    assert!(policy_work < 10_000_000);
+    assert!(base.work > 10_000_000);
+    let mut workspace = scratch(base, plan.password_cost(PASSWORD).unwrap());
+    let mut output = vec![0xa5; base.output];
+    let admitted = query.with_execution(&memory(10_000_000));
+    assert!(matches!(
+        plan.decrypt(PASSWORD, &mut output, &mut workspace, &admitted),
+        Err(Error::Resource(MemoryError::WorkExceeded))
+    ));
+    assert!(output.iter().chain(&workspace).all(|&byte| byte == 0xa5));
+    let full = admitted.with_execution(&memory(1 << 29));
+    let count = plan
+        .decrypt(PASSWORD, &mut output, &mut workspace, &full)
+        .unwrap();
+    assert_eq!(&output[..count], CLEAR);
+    assert!(workspace.iter().all(|&byte| byte == 0));
 }
 
 #[test]
@@ -90,6 +150,17 @@ fn password(legacy: bool) -> Password<'static> {
 }
 
 fn decrypt(plan: &Decryption<'_, '_>, query: &Reader<'_>) -> Result<Plaintext, Error> {
+    if plan.uses_legacy_password() {
+        assert!(matches!(
+            plan.kdf_cost()?,
+            KdfCost::Pkcs12 {
+                iterations: 8,
+                key_blocks: 2,
+                iv_blocks: 1,
+                ..
+            }
+        ));
+    }
     let password = password(plan.uses_legacy_password());
     let mut workspace = scratch(plan.cost()?, plan.password_cost(password)?);
     let result = plan.decrypt_owned(password, &mut workspace, query);
@@ -162,6 +233,27 @@ fn pfx_authenticates_and_imports_both_privacy_layers() {
         let plan = Authentication::prepare(pfx.integrity(), &query)
             .unwrap()
             .unwrap();
+        let cost = plan.kdf_cost().unwrap();
+        if plan.uses_legacy_password() {
+            assert!(matches!(
+                cost,
+                KdfCost::Pkcs12 {
+                    iterations: 8,
+                    key_blocks: 1,
+                    iv_blocks: 0,
+                    ..
+                }
+            ));
+        } else {
+            assert!(matches!(
+                cost,
+                KdfCost::Pbkdf2 {
+                    iterations: 8,
+                    blocks: 1,
+                    ..
+                }
+            ));
+        }
         let wrong = if plan.uses_legacy_password() {
             Password::Legacy(b"\0x\0\0")
         } else {

@@ -3,7 +3,7 @@ use sha2::Digest;
 use structured_asn1::memory::MemoryError;
 use zeroize::Zeroize;
 
-use super::{Algorithm, Cost, Error, Kdf, Octets, Password, add, copy, mul, scan, units};
+use super::{Algorithm, Cost, Error, Kdf, KdfCost, Octets, Password, add, copy, mul, scan, units};
 
 macro_rules! with_hash {
     ($hash:expr, $digest:ident, $body:expr) => {
@@ -56,6 +56,21 @@ fn legacy_blocks(length: usize, iv: usize, hash: Algorithm) -> Result<u64, Error
 }
 
 impl Kdf<'_, '_> {
+    pub(super) fn policy_cost(&self, length: usize, iv: usize) -> Result<KdfCost, Error> {
+        Ok(match *self {
+            Self::Pbkdf2 { hash, rounds, .. } => KdfCost::Pbkdf2 {
+                iterations: rounds,
+                blocks: length.div_ceil(hash.output_len()),
+            },
+            Self::Legacy { hash, rounds, .. } => KdfCost::Pkcs12 {
+                iterations: rounds,
+                key_blocks: length.div_ceil(hash.output_len()),
+                iv_blocks: iv.div_ceil(hash.output_len()),
+            },
+            Self::Scrypt(ref params) => return params.policy_cost(),
+        })
+    }
+
     pub(super) fn cost(
         &self,
         length: usize,

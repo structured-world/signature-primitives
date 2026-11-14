@@ -3,7 +3,7 @@ use structured_pkix::AlgorithmIdentifier;
 use zeroize::Zeroizing;
 
 use super::{
-    Error, Octets, add,
+    Error, KdfCost, Octets, add,
     derive::{join, joined_len, pbkdf2},
     key_length, mul, protection, scan, units,
 };
@@ -62,7 +62,7 @@ impl<'a> Params<'a> {
         Ok((params, length))
     }
 
-    pub(super) fn cost(&self, length: usize) -> Result<(u64, usize), Error> {
+    fn workspace(&self) -> Result<(usize, usize), Error> {
         let b = self
             .lane
             .checked_mul(self.lanes)
@@ -71,10 +71,27 @@ impl<'a> Params<'a> {
             .lane
             .checked_mul(self.n)
             .ok_or(MemoryError::LimitExceeded)?;
-        let scratch = b
+        let total = b
             .checked_add(v)
             .and_then(|size| size.checked_add(self.lane))
-            .and_then(|size| size.checked_add(joined_len(&self.salt)))
+            .ok_or(MemoryError::LimitExceeded)?;
+        Ok((b, total))
+    }
+
+    pub(super) fn policy_cost(&self) -> Result<KdfCost, Error> {
+        let (_, workspace_bytes) = self.workspace()?;
+        Ok(KdfCost::Scrypt {
+            n: units(self.n)?,
+            r: units(self.lane / 128)?,
+            p: units(self.lanes)?,
+            workspace_bytes,
+        })
+    }
+
+    pub(super) fn cost(&self, length: usize) -> Result<(u64, usize), Error> {
+        let (b, workspace) = self.workspace()?;
+        let scratch = workspace
+            .checked_add(joined_len(&self.salt))
             .ok_or(MemoryError::LimitExceeded)?;
         let first = units(b / 32)?;
         let last = units(length.div_ceil(32))?;

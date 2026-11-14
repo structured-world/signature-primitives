@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1](https://github.com/structured-world/signature-primitives/compare/structured-asic-v0.22.0...structured-asic-v0.22.1) - 2026-11-14
+
+### Added
+
+- *(cms)* expose structural KDF costs ([#309](https://github.com/structured-world/signature-primitives/pull/309))
+
 ## [0.22.0](https://github.com/structured-world/signature-primitives/compare/structured-asic-v0.21.5...structured-asic-v0.22.0) - 2026-11-13
 
 ### Added

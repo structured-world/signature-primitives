@@ -70,11 +70,11 @@ impl Base64Codec {
         }
     }
 
-    /// Upper bound for encoding a chunk and finalizing, including spare room
+    /// Upper bound for encoding a fresh stream and finalizing, including spare room
     /// for a caller's terminator. Returns `None` on arithmetic overflow.
     #[must_use]
     pub fn encoded_capacity(columns: usize, size: usize) -> Option<usize> {
-        let symbols = (size.checked_mul(4)? / 3).checked_add(4)?;
+        let symbols = size.div_ceil(3).checked_mul(4)?;
         let with_breaks = if let Some(breaks) = symbols.checked_div(columns) {
             symbols.checked_add(breaks)?.checked_add(4)?
         } else {
@@ -83,11 +83,11 @@ impl Base64Codec {
         with_breaks.checked_add(1)
     }
 
-    /// Upper bound for decoding a chunk, including spare room to consume
-    /// padding. Returns `None` on arithmetic overflow.
+    /// Upper bound for decoding a chunk, including compatibility slack.
+    /// Returns `None` on arithmetic overflow.
     #[must_use]
     pub fn decoded_capacity(size: usize) -> Option<usize> {
-        (size.checked_mul(3)? / 4).checked_add(8)
+        size.div_ceil(4).checked_mul(3)?.checked_add(8)
     }
 
     /// Consume all input and return the number of output bytes written.
@@ -109,8 +109,9 @@ impl Base64Codec {
 
     /// Complete the stream, writing any final encoded characters and padding.
     ///
-    /// A nonempty output slice is required. Encoding leaves one spare byte
-    /// for the caller. Decoding returns zero and rejects an incomplete group.
+    /// When encoding has a pending tail, the output must also have one spare
+    /// byte for the caller. A call that emits nothing accepts an empty slice.
+    /// Decoding returns zero and rejects an incomplete group.
     /// After an error, discard the stream and any output from this call.
     /// A successful call closes the stream.
     ///
@@ -120,12 +121,12 @@ impl Base64Codec {
     /// or [`Base64Error::Truncated`] for an incomplete decoder group.
     pub fn finish(&mut self, output: &mut [u8]) -> Result<usize, Base64Error> {
         self.validate()?;
-        let (_, output) = output.split_last_mut().ok_or(Base64Error::OutputFull)?;
         let mut written = 0;
         if self.position != 0 {
             if !self.encode {
                 return Err(Base64Error::Truncated);
             }
+            let (_, output) = output.split_last_mut().ok_or(Base64Error::OutputFull)?;
             let shift = if self.position == 1 { 4 } else { 2 };
             self.emit(
                 ALPHABET[usize::from((self.carry << shift) & 63)],
@@ -235,11 +236,6 @@ impl Base64Codec {
         for &byte in input {
             if matches!(byte, b' ' | b'\t' | b'\r' | b'\n') {
                 continue;
-            }
-            // libxmlsec 1.3.13 stops decoding at a full output buffer before
-            // inspecting another non-space byte, including padding.
-            if written == output.len() {
-                return Err(Base64Error::OutputFull);
             }
             if byte == b'=' {
                 self.position = match (self.finished, self.position) {

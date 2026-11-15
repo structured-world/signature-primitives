@@ -62,6 +62,10 @@ fn update_boundary(state: &mut Base64Codec, input: &[u8], minimum: usize, expect
 }
 
 fn finish_boundary(mut state: Base64Codec, expected: &[u8]) {
+    if expected.is_empty() {
+        assert_eq!(state.finish(&mut []), Ok(0));
+        return;
+    }
     let mut out = [SENTINEL; 32];
     for len in 0..=expected.len() {
         assert_eq!(
@@ -111,7 +115,7 @@ fn encode_splits_with_wrapping() {
     }
 }
 
-// A sextet with no output and a padding byte still require one free byte.
+// Only sextets that emit a byte require output capacity.
 #[test]
 fn decode_splits_across_padding_and_whitespace() {
     let input = b" Zm\t9v\r\nYmE= ";
@@ -120,18 +124,11 @@ fn decode_splits_across_padding_and_whitespace() {
     for split in 0..=input.len() {
         let mut state = Base64Codec::new(false, 23);
         let first = counts[split];
-        let first_slack = usize::from(matches!(split, 2 | 9 | 12 | 13));
-        update_boundary(
-            &mut state,
-            &input[..split],
-            first + first_slack,
-            &plain[..first],
-        );
-        let second_slack = usize::from(split < 12);
+        update_boundary(&mut state, &input[..split], first, &plain[..first]);
         update_boundary(
             &mut state,
             &input[split..],
-            plain.len() - first + second_slack,
+            plain.len() - first,
             &plain[first..],
         );
         finish_boundary(state, b"");
@@ -151,7 +148,7 @@ fn decode_padding_and_invalid_bytes() {
         restore(state).update(b"A", &mut out),
         Err(Base64Error::Invalid)
     );
-    update_boundary(&mut state, b"\r=\n", 1, b"");
+    update_boundary(&mut state, b"\r=\n", 0, b"");
     assert_eq!(state.update(b"Z", &mut out), Err(Base64Error::Invalid));
     assert_eq!(Base64Codec::new(false, 0).update(b"Zm9=", &mut out), Ok(2));
     assert_eq!(&out[..2], b"fo");
@@ -167,18 +164,18 @@ fn decode_padding_and_invalid_bytes() {
     for len in 1..4 {
         let mut state = Base64Codec::new(false, 0);
         assert_eq!(state.update(&b"AAAA"[..len], &mut out), Ok(len - 1));
-        assert_eq!(state.finish(&mut out), Err(Base64Error::Truncated));
+        assert_eq!(state.finish(&mut []), Err(Base64Error::Truncated));
     }
 }
 
-// Finalization needs caller spare capacity even when the output is empty.
+// A final call with no bytes to emit can use an empty slice.
 #[test]
 fn empty_and_closed_streams() {
     for encode in [false, true] {
         let mut state = Base64Codec::new(encode, 4);
         assert_eq!(state.update(b"", &mut []), Ok(0));
         finish_boundary(state, b"");
-        assert_eq!(state.finish(&mut [SENTINEL]), Ok(0));
+        assert_eq!(state.finish(&mut []), Ok(0));
         assert_eq!(
             state.update(b"A", &mut [SENTINEL]),
             Err(Base64Error::Invalid)
@@ -190,7 +187,7 @@ fn empty_and_closed_streams() {
     );
     assert_eq!(
         Base64Codec::new(false, 0).update(b"?", &mut []),
-        Err(Base64Error::OutputFull)
+        Err(Base64Error::Invalid)
     );
 }
 
@@ -287,8 +284,20 @@ fn counter_and_capacity_overflow() {
     assert_eq!(state.update(b"\0", &mut out), Ok(3));
     assert_eq!(&out[..3], b"A\nA");
     assert_eq!(state.line_position, 1);
-    assert_eq!(Base64Codec::encoded_capacity(0, usize::MAX / 4 + 1), None);
-    assert_eq!(Base64Codec::decoded_capacity(usize::MAX / 3 + 1), None);
-    assert!(Base64Codec::encoded_capacity(0, usize::MAX / 4).is_some());
-    assert!(Base64Codec::decoded_capacity(usize::MAX / 3).is_some());
+    let largest = (usize::MAX / 4) * 3;
+    assert_eq!(Base64Codec::encoded_capacity(0, largest + 1), None);
+    assert_eq!(
+        Base64Codec::encoded_capacity(0, largest),
+        Some(usize::MAX - 2)
+    );
+    assert_eq!(Base64Codec::encoded_capacity(2, largest), None);
+    assert_eq!(
+        Base64Codec::decoded_capacity(usize::MAX),
+        Some((usize::MAX / 4 + 1) * 3 + 8)
+    );
+    assert_eq!(Base64Codec::encoded_capacity(0, 0), Some(1));
+    assert_eq!(Base64Codec::encoded_capacity(0, 3), Some(5));
+    assert_eq!(Base64Codec::encoded_capacity(1, 3), Some(13));
+    assert_eq!(Base64Codec::encoded_capacity(2, 4), Some(17));
+    assert_eq!(Base64Codec::decoded_capacity(5), Some(14));
 }

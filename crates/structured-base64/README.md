@@ -39,16 +39,16 @@ assert_eq!(&out[..end + last], b"Zm9v\nYmE=");
 
 The codec uses the [RFC 4648 §4 alphabet](https://www.rfc-editor.org/rfc/rfc4648.html#section-4)
 and emits padding with zero unused bits. The compatibility profile follows
-[libxmlsec 1.3.13](https://github.com/lsh123/xmlsec/blob/e4b8614fb678ee545b70ab419d4c5418f2ce4885/src/base64.c).
+[libxmlsec's streaming buffer behavior](https://github.com/lsh123/xmlsec/blob/90b3d51a25c734c667d5d37896586d3d60b862ff/src/base64.c).
 Line breaks are optional and occur before the next character after a full line.
 Decoding skips space, tab, CR and LF and accepts nonzero unused padding bits.
 Padding must appear in the final group and data may not follow it.
 
-A short buffer is a terminal error for that stream. The decoder needs output
-room before consuming a non-space byte, including padding. Finalization
-requires a nonempty slice and the encoder leaves one spare byte. Capacity
-helpers include this slack and refuse arithmetic overflow. The codec does
-not write a NUL terminator. ABI adapters own layout, pointer checks, NUL
+A short buffer is a terminal error for that stream. The decoder needs room
+only when it emits a byte. Finalization accepts an empty slice when there
+is nothing to write. An encoder with a pending tail leaves one spare byte.
+Capacity helpers include compatibility slack and refuse arithmetic overflow.
+ABI adapters own layout, pointer checks, NUL
 termination and the external error mapping.
 
 Callers with a work budget admit the input scan and output writes before each

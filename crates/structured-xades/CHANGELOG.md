@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.1](https://github.com/structured-world/signature-primitives/compare/structured-xades-v0.23.0...structured-xades-v0.23.1) - 2026-11-15
+
+### Fixed
+
+- *(base64)* align streaming buffer boundaries ([#316](https://github.com/structured-world/signature-primitives/pull/316))
+
 ## [0.23.0](https://github.com/structured-world/signature-primitives/compare/structured-xades-v0.22.2...structured-xades-v0.23.0) - 2026-11-14
 
 ### Other

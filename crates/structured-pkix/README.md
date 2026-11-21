@@ -62,6 +62,16 @@ with its parent reader to preserve the envelope's shared limits and offsets.
 
 ## Parsing and path validation
 
+`key::dh` reads ANSI X9.42 `dhpublicnumber` SPKI (RFC 3279 section 2.3.3).
+`is_algorithm` provides resource-accounted dispatch; `read` exposes original
+nonnegative INTEGERs p, g, q, optional j, the public value y, and optional seed /
+generation-counter evidence. Components borrow their original bytes and retain
+source spans. Required parameters are not inherited or replaced with defaults.
+The carried public value is checked as DER. Success establishes structure only,
+not primality, subgroup membership, strength or suitability for key agreement.
+`key::effective::EffectiveSpki` can stream the original key as DER. Private
+PKCS#8 decoding is available through `structured-cms::personal::PrivateKey`.
+
 Parsing exposes certificate facts; it does not establish application trust.
 For certification-path processing, supply the certificates, trust anchors,
 validation interval, resource limits and a `path::Verify` implementation.

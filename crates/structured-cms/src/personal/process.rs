@@ -239,13 +239,13 @@ pub enum Cause<E> {
     Callback(E),
 }
 impl<E> Failure<E> {
-    fn processing(error: Error) -> Self {
+    pub(super) fn processing(error: Error) -> Self {
         Self {
             cause: Cause::Processing(error),
             origins: core::array::from_fn(|_| None),
         }
     }
-    fn callback(error: E) -> Self {
+    pub(super) fn callback(error: E) -> Self {
         Self {
             cause: Cause::Callback(error),
             origins: core::array::from_fn(|_| None),
@@ -493,7 +493,7 @@ fn bags<B: Backend>(
     clippy::result_large_err,
     reason = "preserve independently owned source chain with the original callback cause"
 )]
-fn nested<R, E>(
+pub(super) fn nested<R, E>(
     octets: &Octets<'_>,
     parent: &Reader<'_>,
     origin: &Source<'_>,

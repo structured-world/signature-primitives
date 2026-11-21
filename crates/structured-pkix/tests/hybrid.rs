@@ -22,6 +22,9 @@ const CERT_INPUT: &[u8] = include_bytes!("data/hybrid/certificate-preimage.der")
 const CRL_INPUT: &[u8] = include_bytes!("data/hybrid/crl-preimage.der");
 const REQUEST_INPUT: &[u8] = include_bytes!("data/hybrid/request-preimage.der");
 
+#[path = "hybrid/classical_target.rs"]
+mod classical_target;
+
 fn memory(bytes: usize, work: usize) -> Memory {
     Memory::new(Arc::new(MemoryAccount::new(bytes, work)))
 }

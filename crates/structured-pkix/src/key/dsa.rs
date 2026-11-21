@@ -18,7 +18,7 @@ const PARAMETERS: &str = "subjectPublicKeyInfo.algorithm.parameters";
 
 /// A nonnegative component with its original INTEGER and location.
 ///
-/// Zero is inspectable, not a valid DSA component. Group and range validation
+/// Zero is inspectable, not proof of a usable key. Group and range validation
 /// belongs to the selected backend, before arithmetic or key acceptance.
 #[derive(Debug, Clone, Copy)]
 pub struct Component<'a> {
@@ -218,7 +218,7 @@ fn component<'a>(reader: &mut ScopedReader<'a, '_>, field: &'static str) -> Resu
     unsigned(reader, element, field)
 }
 
-fn unsigned<'a>(
+pub(super) fn unsigned<'a>(
     reader: &ScopedReader<'a, '_>,
     element: Element<'a>,
     field: &'static str,

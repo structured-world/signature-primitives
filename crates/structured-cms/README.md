@@ -32,6 +32,14 @@ key-length requirement and ignored outer legacy fields are handled before
 provider work. `legacy_password` provides the paid BMP conversion only where
 that legacy layer calls for it; PBMAC1/PBES2 use UTF-8 instead.
 
+`PrivateKey::with_dh` exposes X9.42 `dhpublicnumber` parameters and the private
+INTEGER through `structured_pkix::key::dh`, for both PKCS#8 and RFC 5958 v2.
+Pass the current reader and container `Source` (including a decryption boundary
+when applicable). DER secrets remain borrowed. Fragmented BER secrets use the
+existing accounted, wiping scoped buffer; callbacks and failures preserve the
+fragment source chain. Group validity, private-value range and DH arithmetic
+belong to the selected backend. PKCS#3 `dhKeyAgreement` is a different format.
+
 The backend owns password acquisition, supported algorithms, KDF/cipher costs,
 key selection and trust. A missing MAC needs its explicit acceptance and never
 becomes proof of authentication merely by parsing. Every returned `Plaintext`

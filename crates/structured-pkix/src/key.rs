@@ -1,7 +1,7 @@
 //! The public key a certificate carries.
 //!
 //! The key stays as it was encoded: re-encoding it here would change what a
-//! key identifier is computed over. [`rsa`], [`ec`], [`dsa`] and [`rfc8410`]
+//! key identifier is computed over. [`rsa`], [`ec`], [`dsa`], [`dh`] and [`rfc8410`]
 //! read its structure in place; whether a key is usable remains the algorithm
 //! registry's decision.
 
@@ -10,6 +10,7 @@ use crate::error::{Error, ErrorCode, Located, Result};
 use structured_asn1::memory::Work;
 use structured_asn1::{BitString, Element, Oid, ScopedReader, Tag, universal};
 
+pub mod dh;
 pub mod dsa;
 pub mod dstu4145;
 pub mod ec;

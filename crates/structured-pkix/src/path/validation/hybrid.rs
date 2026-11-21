@@ -153,31 +153,44 @@ impl<'a, N: Verify<E>, W: Watch, R: Recognizer<E>, A: AlternativeVerifier<E>, E:
             .components
             .take()
             .expect("shared facts precede signature verification");
-        let alternative =
-            match crate::hybrid::prepare_certificate_components(certificate, &components, work) {
-                Ok((prepared, child_key)) => {
-                    let verified = match prepared.verify(self.working, self.verifier, work) {
-                        Ok(answer) => Alternative::Verified(answer),
-                        Err(crate::error::CallbackError::Processing(error))
-                            if !crate::hybrid::terminal(&error) =>
-                        {
-                            Alternative::Nonconforming(Fault::of(&error))
-                        }
-                        Err(crate::error::CallbackError::Processing(error)) => {
-                            return Err(BuildError::Processing(error));
-                        }
-                        Err(crate::error::CallbackError::Callback(error)) => {
-                            return Err(BuildError::Verification(CheckError::Alternative(error)));
-                        }
-                    };
+        // X.509 (2019) sections 7.2.2 and 9.8 distinguish full-profile
+        // conformance from issuer-signature mathematics. This explicit path
+        // API also accepts classical-only targets; issuing nodes still need
+        // their own alternative key for the next certificate below them.
+        // https://www.itu.int/rec/T-REC-X.509-201910-I/en
+        let prepared = if self.next == 0 {
+            crate::hybrid::prepare_certificate_signature_components(certificate, &components, work)
+                .map(|prepared| (prepared, None))
+        } else {
+            crate::hybrid::prepare_certificate_components(certificate, &components, work)
+                .map(|(prepared, key)| (prepared, Some(key)))
+        };
+        let alternative = match prepared {
+            Ok((prepared, child_key)) => {
+                let verified = match prepared.verify(self.working, self.verifier, work) {
+                    Ok(answer) => Alternative::Verified(answer),
+                    Err(crate::error::CallbackError::Processing(error))
+                        if !crate::hybrid::terminal(&error) =>
+                    {
+                        Alternative::Nonconforming(Fault::of(&error))
+                    }
+                    Err(crate::error::CallbackError::Processing(error)) => {
+                        return Err(BuildError::Processing(error));
+                    }
+                    Err(crate::error::CallbackError::Callback(error)) => {
+                        return Err(BuildError::Verification(CheckError::Alternative(error)));
+                    }
+                };
+                if let Some(child_key) = child_key {
                     self.working = child_key;
-                    verified
                 }
-                Err(error) if crate::hybrid::terminal(&error) => {
-                    return Err(BuildError::Processing(error));
-                }
-                Err(error) => Alternative::Nonconforming(Fault::of(&error)),
-            };
+                verified
+            }
+            Err(error) if crate::hybrid::terminal(&error) => {
+                return Err(BuildError::Processing(error));
+            }
+            Err(error) => Alternative::Nonconforming(Fault::of(&error)),
+        };
         let signatures = Signatures {
             native,
             alternative,
@@ -236,6 +249,11 @@ impl<'a, N: Verify<E>, W: Watch, R: Recognizer<E>, A: AlternativeVerifier<E>, E:
 /// signatures never fall back to native success. All ordinary validity, CA/KU,
 /// name, critical-extension, policy and resource checks share the native core.
 /// Native mathematics still runs and remains visible when only PQ is required.
+/// The target (position zero) may have only a native subject key, provided its
+/// issuer's required alternative signature verifies. This explicitly permits
+/// targets outside X.509 (2019) §7.2.2's all-three-extension profile. Every
+/// certificate issuing another path certificate still needs an alternative
+/// key. Present malformed keys and unknown critical key algorithms are refused.
 pub fn validate<
     'a,
     N: Verify<E>,

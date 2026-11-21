@@ -226,6 +226,9 @@ pub fn inspect_certificate<'a, W: Work>(
 }
 
 /// Prepare the X.509 §7.2.2 preTBSCertificate, requiring all three components.
+/// The subject's alternative key is validated for this complete-profile entry
+/// point, although it is not used to verify the issuer's signature. For just
+/// that signature, use [`prepare_certificate_signature`].
 pub fn prepare_certificate<'a, W: Work>(
     certificate: &crate::Certificate<'a>,
     work: &W,
@@ -250,18 +253,40 @@ pub(crate) fn prepare_certificate_components<'a, W: Work>(
     work: &W,
 ) -> Result<(Prepared<'a>, PublicKeyInfo<'a>)> {
     let key = components.key.require()?;
-    validate_key(key, work)?;
+    let prepared = prepare_certificate_signature_components(certificate, components, work)?;
+    Ok((prepared, key))
+}
+
+/// Prepare only the issuer's alternative signature, without requiring a subject
+/// alternative key. A present subject key must still be well formed. This is
+/// not complete-profile conformance: X.509 (2019) §7.2.2 requires all three
+/// extensions. Critical-extension understanding belongs to path processing.
+/// The returned input uses exactly the same preTBS transformation as
+/// [`prepare_certificate`]; verification uses the issuer's authenticated key.
+pub fn prepare_certificate_signature<'a, W: Work>(
+    certificate: &crate::Certificate<'a>,
+    work: &W,
+) -> Result<Prepared<'a>> {
+    let components = inspect_certificate(certificate, work)?;
+    prepare_certificate_signature_components(certificate, &components, work)
+}
+
+pub(crate) fn prepare_certificate_signature_components<'a, W: Work>(
+    certificate: &crate::Certificate<'a>,
+    components: &Components<'a>,
+    work: &W,
+) -> Result<Prepared<'a>> {
+    if let Some(key) = components.key.reading().map_err(Fault::error)? {
+        validate_key(key, work)?;
+    }
     let (algorithm, signature, remove) = components.signature_fields()?;
     let reader = certificate.tbs().reader_scoped(work)?;
     let preimage = preimage::extensions(reader, certificate.tbs().signature(), 3, remove)?;
-    Ok((
-        Prepared {
-            algorithm,
-            signature,
-            preimage,
-        },
-        key,
-    ))
+    Ok(Prepared {
+        algorithm,
+        signature,
+        preimage,
+    })
 }
 
 pub(crate) fn critical_key_understood<W: Work, R: crate::Recognizer<W>>(
@@ -347,6 +372,9 @@ pub(crate) fn terminal(error: &Error) -> bool {
 }
 
 /// Check both mathematical signatures without short-circuiting on native No or Unsupported.
+/// Like [`prepare_certificate`], this complete-profile check requires the
+/// subject's alternative key. Use [`prepare_certificate_signature`] followed by
+/// [`Prepared::verify`] for an issuer signature on a classical-only subject.
 pub fn check_certificate<W: Work, N: Verify<W>, A: AlternativeVerifier<W>>(
     certificate: &crate::Certificate<'_>,
     native_key: EffectiveKey<'_>,

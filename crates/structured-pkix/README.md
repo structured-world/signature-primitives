@@ -15,13 +15,13 @@ is supplied through `path::Verify`, so applications choose their crypto provider
 
 ## Install
 
-These snippets target the coordinated 0.8 API family. Earlier releases keep
+These snippets target the coordinated 0.23 API family. Earlier releases keep
 their versioned guides on [docs.rs](https://docs.rs/crate/structured-pkix/latest).
 
 ```toml
 [dependencies]
-structured-asn1 = "0.20"
-structured-pkix = "0.20"
+structured-asn1 = "0.23"
+structured-pkix = "0.23"
 ```
 
 `structured-asn1` supplies the parser and shared resource account used below.
@@ -90,6 +90,10 @@ located missing/malformed components. `prepare_certificate` and `prepare_crl`
 stream the X.509 (2019) preTBS input, excluding both the inner native signature
 algorithm and the alternative-value extension. Retained extensions keep their
 original order and bytes; only enclosing DER lengths are regenerated.
+`prepare_certificate` requires all three extensions under X.509 (2019)
+section 7.2.2. `prepare_certificate_signature` instead prepares just the issuer's
+signature and allows an absent subject alternative key; present malformed keys
+still fail. The signature-only result is not complete-profile conformance.
 
 `hybrid::request::Request` reads DER PKCS#10 and its original attributes.
 Its alternative proof covers the request info without the complete
@@ -112,6 +116,16 @@ check does not block a required alternative check; missing or invalid required
 alternative evidence never falls back to native success. Direct certificate,
 CRL and request checks likewise return independent results. CRL issuer usage,
 scope, freshness and revocation decisions remain separate from its mathematics.
+
+The terminal path certificate (position zero) may hold only a classical subject
+key while both required issuer signatures verify. Issuing certificates still
+need an alternative subject key for the next certificate below them. Present
+malformed keys and unrecognized critical key algorithms remain refusals. This
+explicit target allowance is outside the all-three-extension profile of X.509
+(2019) section 7.2.2; it does not weaken `prepare_certificate` or the standalone
+complete-profile `check_certificate`. For signature-only mathematics, use
+`prepare_certificate_signature` and `Prepared::verify` with an authenticated
+issuer alternative key. Native-only path validation is unchanged.
 
 ### Signature algorithm structure
 

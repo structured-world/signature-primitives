@@ -32,7 +32,7 @@ the long-term validation core.
 | [**structured-dstu4145**](crates/structured-dstu4145/README.md) | Fixed-storage DSTU 4145 verification, explicit-DKE GOST 34.311 and streaming Kupyna | [![version](https://img.shields.io/crates/v/structured-dstu4145)](https://crates.io/crates/structured-dstu4145) | [![docs.rs](https://img.shields.io/docsrs/structured-dstu4145)](https://docs.rs/structured-dstu4145) |
 | [**structured-base64**](crates/structured-base64/README.md) | Resumable Base64 in caller-provided buffers, using only `core` | [![version](https://img.shields.io/crates/v/structured-base64)](https://crates.io/crates/structured-base64) | [![docs.rs](https://img.shields.io/docsrs/structured-base64)](https://docs.rs/structured-base64) |
 
-Each crate builds on the ones above it:
+The signature-format crates share these layers:
 
 ```text
 structured-asn1 → structured-pkix → structured-cms → structured-ltv
@@ -46,6 +46,7 @@ Use only as much of the stack as you need: certificate parsing alone needs just
 `structured-asn1` and `structured-pkix`.
 The optional DSTU backend also builds on those two crates and implements their
 digest/work contracts; it introduces no format-specific provider dispatcher.
+`structured-base64` is independent of this stack and has no default dependencies.
 
 ## Install
 
@@ -60,15 +61,16 @@ polling process. The next release PR is prepared only after publication finishes
 
 ```toml
 [dependencies]
-structured-asn1 = "0.20"
-structured-pkix = "0.20"   # certificates, paths, CRL, OCSP
-structured-cms = "0.20"    # CMS signatures, RFC 3161 timestamps, ERS
-structured-ltv = "0.20"    # long-term validation
-structured-xades = "0.20"  # XAdES
-structured-cades = "0.20"  # CAdES
-structured-pades = "0.20"  # PDF signatures and PAdES
-structured-asic = "0.20"   # ASiC containers
-structured-dstu4145 = "0.20" # optional Ukrainian verification backend
+structured-asn1 = "0.23"
+structured-pkix = "0.23"   # certificates, paths, CRL, OCSP
+structured-cms = "0.23"    # CMS signatures, RFC 3161 timestamps, ERS
+structured-ltv = "0.23"    # long-term validation
+structured-xades = "0.23"  # XAdES
+structured-cades = "0.23"  # CAdES
+structured-pades = "0.23"  # PDF signatures and PAdES
+structured-asic = "0.23"   # ASiC containers
+structured-dstu4145 = "0.23" # optional Ukrainian verification backend
+structured-base64 = "0.23" # core-only streaming Base64 and strict base64url
 ```
 
 Rust 1.92 or newer. The signature and container crates work with `no_std + alloc`;
@@ -113,6 +115,10 @@ for certificates, CRLs and two-key PKCS#10 requests. They retain independent
 native/alternative results and stream the exact transformed DER input to an
 injected verifier, including pure ML-DSA. Explicit hybrid path validation
 reuses the ordinary constraints processor and caller-selected trust anchors.
+Its terminal certificate may hold only a classical subject key while carrying
+both issuer signatures. Intermediate issuers still need alternative keys.
+Strict complete-profile preparation and signature-only preparation are separate:
+this terminal case is not full X.509 (2019) section 7.2.2 conformance.
 
 - **The signed bytes stay exact.** ASN.1 values (certificates, CRLs, OCSP, CMS,
   timestamps) borrow the original input, so their signatures are checked over
@@ -136,23 +142,33 @@ reuses the ordinary constraints processor and caller-selected trust anchors.
 
 ## Implemented mechanisms
 
-The coordinated `0.20.0` release provides these public mechanisms. Detailed
-contracts and examples live in each crate's README and API documentation.
+This checkout targets the coordinated `0.23.2` release. Registry badges above
+show the versions currently published. Detailed contracts and examples live
+in each crate's README and API documentation.
 
 | Area | Available mechanisms |
 | --- | --- |
-| [ASN.1 and resources](crates/structured-asn1/README.md) | Borrowed BER/DER readers, original spans, scoped nested and lazy reads, fallible accounted containers, streaming digest contracts and asynchronous original-range sources |
-| [PKIX](crates/structured-pkix/README.md) | Certificates and supplied/built certification paths, names and constraints, certificate policies, CRL/delta-CRL and OCSP, algorithm/key/signature profiles and separate strict/inspection outcomes |
-| [Alternative signatures](https://docs.rs/structured-pkix/0.20.0/structured_pkix/hybrid/) | Certificate, CRL and two-key PKCS#10 components; exact streamed alternative signing inputs; independent native/alternative results and explicit hybrid path requirements, including pure ML-DSA profiles |
-| [CMS and personal containers](crates/structured-cms/README.md) | SignedData, signed/unsigned attributes, ESS certificate binding, countersignatures, envelope recipient mechanisms, attribute certificates and credentials, PKCS#12/PKCS#8 processing and retained wiping plaintext ownership |
-| [RFC 3161 timestamps](https://docs.rs/structured-cms/0.20.0/structured_cms/timestamp/) | Request/response and token inspection, original source maps, imprint and selected-TSA checks, synchronous/asynchronous execution, token accuracy and explicit caller-authenticated TSA-policy accuracy |
+| [ASN.1 and resources](crates/structured-asn1/README.md) | Borrowed BER/DER readers, original spans, scoped nested and lazy reads, fallible accounted containers, streaming digest contracts, asynchronous original-range sources, seeded table hashing and opt-in fixed-storage HMAC |
+| [PKIX](crates/structured-pkix/README.md) | Certificates and supplied/built certification paths, names and constraints, certificate policies, CRL/delta-CRL and OCSP, algorithm/key/signature profiles, borrowed X9.42 DH keys and separate strict/inspection outcomes |
+| [Alternative signatures](https://docs.rs/structured-pkix/latest/structured_pkix/hybrid/) | Certificate, CRL and two-key PKCS#10 components; exact streamed alternative signing inputs; independent native/alternative results, pure ML-DSA profiles and hybrid paths with classical-only targets |
+| [CMS and personal containers](crates/structured-cms/README.md) | SignedData, ESS certificate binding, countersignatures, envelopes, attribute certificates, PKCS#12/PKCS#8 and X9.42 DH private keys, retained wiping plaintext, password-protection plans and traditional OpenSSL key import |
+| [RFC 3161 timestamps](https://docs.rs/structured-cms/latest/structured_cms/timestamp/) | Request/response and token inspection, original source maps, imprint and selected-TSA checks, synchronous/asynchronous execution, token accuracy and explicit caller-authenticated TSA-policy accuracy |
 | [Long-term validation](crates/structured-ltv/README.md) | Complete participant and timestamp census, path/status closure, exact validation-material indexing, incorporation, proof/time intervals and archive-material coverage |
 | [CAdES](crates/structured-cades/README.md) | Source-bound B-B/B-T/B-LT/B-LTA composition, original content/signature/archive inputs, historical archive forms, credential/material obligations and ERS binding |
-| [Evidence records](https://docs.rs/structured-cms/0.20.0/structured_cms/evidence/) | RFC 4998 reduced hash trees, proof of existence, timestamp/hash-tree renewal, original object and validation-material binding, and CAdES evidence-record composition |
+| [Evidence records](https://docs.rs/structured-cms/latest/structured_cms/evidence/) | RFC 4998 reduced hash trees, proof of existence, timestamp/hash-tree renewal, original object and validation-material binding, and CAdES evidence-record composition |
 | [XAdES](crates/structured-xades/README.md) | B-B/B-T/B-LT/B-LTA composition over caller-owned XML, countersignatures and nested timestamps, authenticated references, credential/status/material checks and original archive input selection |
 | [PDF and PAdES](crates/structured-pades/README.md) | Asynchronous range-based PDF reading, classic/stream/hybrid xrefs, object streams, structural filters, incremental revisions, exact ByteRange/Contents, revision-bound DSS/VRI, document timestamps, baseline composition and normative DocMDP/FieldMDP permission facts |
 | [ASiC](crates/structured-asic/README.md) | ASiC-S/E, ZIP/ZIP64, bounded stored/DEFLATE member decoding with CRC, complete member/manifest census, producing XML/member identity, CAdES/XAdES/timestamp/ERS binding, archive predecessor graphs and ODF/OCF package facts |
 | [Ukrainian cryptography](crates/structured-dstu4145/README.md) | Verification-only DSTU 4145, polynomial/optimal-normal-basis domains, compressed public-key validation, raw/prehashed verification, explicit-DKE streaming GOST 34.311 and streaming Kupyna 256/384/512 or explicit output widths |
+| [Base64](crates/structured-base64/README.md) | Core-only caller-buffer streaming, checked compatibility capacities, strict JWS base64url and padded JOSE x5c encodings, with optional fallible allocating helpers |
+
+`structured-asn1/hmac` provides incremental SHA-family HMAC and constant-time
+bit-prefix tag verification. `legacy-hmac` adds MD5 and RIPEMD-160; the same API
+is re-exported by `structured_cms::hmac`, without requiring CMS for HMAC users.
+`structured-cms/password-protection` provides admitted PBKDF2, scrypt, PKCS#12
+KDF/MAC, PBMAC1 and CBC operations with wiping storage. The optional `openssl`
+feature handles traditional PEM protection and SEC1 EC / OpenSSL DSA conversion
+to PKCS#8. Policy minima, password acquisition and key inventory stay external.
 
 XAdES timestamp pools require an explicit `TokenProfile::{Cms,Etsi}`.
 `Cms` reads BER envelopes while separately preserving the XML encoding

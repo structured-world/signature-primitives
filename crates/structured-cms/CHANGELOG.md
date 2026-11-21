@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.2](https://github.com/structured-world/signature-primitives/compare/v0.23.1...v0.23.2) - 2026-11-21
+
+### Added
+
+- *(pkix)* read X9.42 DH key containers ([#321](https://github.com/structured-world/signature-primitives/pull/321))
+
+### Fixed
+
+- *(pkix)* validate classical-only hybrid targets ([#323](https://github.com/structured-world/signature-primitives/pull/323))
+
 ## [0.23.1](https://github.com/structured-world/signature-primitives/compare/v0.23.0...v0.23.1) - 2026-11-15
 
 ### Fixed

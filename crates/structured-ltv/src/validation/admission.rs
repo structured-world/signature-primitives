@@ -40,7 +40,7 @@ pub(super) fn admit(
         work.charge_work(32)?;
         let members = add(
             mul(path.authorities.len(), 2)?,
-            mul(path.revocation_issuers.len(), 4)?,
+            mul(path.revocation_issuers.len(), 8)?,
         )?;
         work.charge_work(add(
             members,

@@ -635,7 +635,7 @@ fn decide(
     {
         // §5.5.4 steps 4(a), 6 and 7 recover the named temporal finding.
         // They do not establish status for any other path member.
-        recovered_authorities(path, &facts.paths[path], *best, verdict)?;
+        recovered_path(path, facts, signer, *best, verdict)?;
     }
     // §§5.5.4 steps 8 to 10 reapply own crypto at best time and path
     // crypto at current time, including a path recovered from revocation.
@@ -645,24 +645,44 @@ fn decide(
     }
     if recovered {
         path_crypto(path, &facts.paths[path], facts.now, &policy.crypto)?;
+        issuer_validity(path, &facts.paths[path], facts.now)?;
     }
     Ok(())
 }
 
-fn recovered_authorities(
+fn recovered_path(
     path: usize,
-    facts: &Path<'_>,
+    facts: &Facts<'_>,
+    signer: Signer,
     best: Instant,
     original: Verdict,
 ) -> Result<(), Verdict> {
-    for (index, &status) in facts.authorities.iter().enumerate() {
+    let selected = &facts.paths[path];
+    for (index, &status) in selected.authorities.iter().enumerate() {
         let basis = Basis::Authority { path, index };
         if original.sub == SubIndication::TryLater && original.basis == basis {
             continue;
         }
         authority(status, best).map_err(|sub| Verdict::on(sub, basis))?;
     }
-    Ok(())
+    // EN 319 102-1 V1.4.1 §5.2.6.4 steps 4(b) to 5 still apply
+    // after clearing the particular failure under §5.5.4.
+    let resumed_signer_status = original.sub == SubIndication::TryLater
+        && matches!(original.basis, Basis::SignerRevocation | Basis::Path(_));
+    if !resumed_signer_status {
+        signer_status_at(signer.revocation, best, facts.content_timestamp)?;
+    }
+    if best < signer.not_before || best > signer.not_after {
+        return Err(Verdict::on(
+            if best < signer.not_before && best < facts.now {
+                SubIndication::NotYetValid
+            } else {
+                SubIndication::OutOfBoundsNotRevoked
+            },
+            Basis::SignerValidity,
+        ));
+    }
+    chain_constraints(path, selected)
 }
 
 fn with_time(facts: &Facts<'_>) -> bool {
@@ -765,6 +785,12 @@ fn compare_times(
             }
             Sub::CryptoConstraintsFailureNoPoe if matches!(verdict.basis, Basis::Material(_)) => {
                 acceptance(facts, best, policy)?;
+                // §5.5.4 step 4(c) recovers algorithm acceptance. The
+                // earlier proof still has to satisfy the issuance boundary
+                // from step 4(b) before it can support the signature.
+                if best < signer.not_before {
+                    return Err(not_yet);
+                }
             }
             Sub::TryLater => {
                 if let Basis::Authority { path, .. } | Basis::Path(path) = verdict.basis {
@@ -934,12 +960,7 @@ fn judge(
     ) {
         return Err(Verdict::on(SubIndication::TryLater, Basis::Path(index)));
     }
-    if path.chain == Chain::ConstraintsFailure {
-        return Err(Verdict::on(
-            SubIndication::ChainConstraintsFailure,
-            Basis::Path(index),
-        ));
-    }
+    chain_constraints(index, path)?;
     // 5.2.6.4 step 6 and 5.5.4 step 10, at the current time. Both clauses
     // name CRYPTO_CONSTRAINTS_FAILURE_NO_POE for this material, whatever the
     // shortfall: nothing here proves when it was made.
@@ -952,6 +973,20 @@ fn judge(
     {
         return Ok(());
     }
+    issuer_validity(index, path, now)
+}
+
+fn chain_constraints(index: usize, path: &Path<'_>) -> Result<(), Verdict> {
+    if path.chain == Chain::ConstraintsFailure {
+        return Err(Verdict::on(
+            SubIndication::ChainConstraintsFailure,
+            Basis::Path(index),
+        ));
+    }
+    Ok(())
+}
+
+fn issuer_validity(index: usize, path: &Path<'_>, now: Instant) -> Result<(), Verdict> {
     // EN 319 102-1 V1.4.1 5.2.6.4 step 8: the revocation-data issuer's
     // certificate must be valid at validation time, including both endpoints.
     for (position, issuer) in path.revocation_issuers.iter().enumerate() {
@@ -1083,30 +1118,20 @@ fn revocation(status: Status) -> Option<Instant> {
 
 /// Basic X.509 result and content-timestamp upgrades (§5.3.4 step 4).
 fn basic_certificate(facts: &Facts<'_>, signer: Signer) -> Result<(), Verdict> {
-    let signer_status = |sub| Verdict::on(sub, Basis::SignerRevocation);
     let validity = |sub| Verdict::on(sub, Basis::SignerValidity);
-    if let Some(at) = revocation(signer.revocation).filter(|&at| at <= facts.now) {
-        return Err(signer_status(
-            if facts.content_timestamp.is_some_and(|bound| bound > at) {
-                SubIndication::Revoked
-            } else {
-                SubIndication::RevokedNoPoe
-            },
-        ));
-    }
-    match signer.revocation {
-        Status::NotIssued { .. } => {
-            return Err(signer_status(SubIndication::Custom(
-                Custom::CertificateNotIssued,
-            )));
-        }
-        Status::OnHold { .. } => return Err(signer_status(SubIndication::TryLater)),
-        _ => {}
-    }
-    let not_revoked = matches!(
+    let status = signer_status_at(signer.revocation, facts.now, facts.content_timestamp);
+    if matches!(
+        status,
+        Err(Verdict {
+            sub: SubIndication::Revoked | SubIndication::RevokedNoPoe,
+            ..
+        })
+    ) || matches!(
         signer.revocation,
-        Status::NotRevoked { .. } | Status::Revoked { .. }
-    );
+        Status::NotIssued { .. } | Status::OnHold { .. }
+    ) {
+        return status;
+    }
     if facts.now < signer.not_before || facts.now > signer.not_after {
         return Err(validity(
             if facts
@@ -1114,17 +1139,29 @@ fn basic_certificate(facts: &Facts<'_>, signer: Signer) -> Result<(), Verdict> {
                 .is_some_and(|at| at > signer.not_after)
             {
                 SubIndication::Expired
-            } else if not_revoked {
+            } else if status.is_ok() {
                 SubIndication::OutOfBoundsNotRevoked
             } else {
                 SubIndication::OutOfBoundsNoPoe
             },
         ));
     }
-    if not_revoked {
+    status
+}
+
+fn signer_status_at(status: Status, at: Instant, content: Option<Instant>) -> Result<(), Verdict> {
+    if let Some(revoked) = revocation(status) {
+        if revoked <= at {
+            let sub = if content.is_some_and(|bound| bound > revoked) {
+                SubIndication::Revoked
+            } else {
+                SubIndication::RevokedNoPoe
+            };
+            return Err(Verdict::on(sub, Basis::SignerRevocation));
+        }
         return Ok(());
     }
-    pending(signer.revocation).map_err(signer_status)
+    pending(status).map_err(|sub| Verdict::on(sub, Basis::SignerRevocation))
 }
 
 fn integrity(facts: &Facts<'_>) -> Integrity {

@@ -734,6 +734,79 @@ fn content_timestamp_does_not_upgrade_an_attribute_algorithm_failure() {
     );
 }
 
+/// Step 4(a) recovers only the named CA finding; the signer remains checked.
+#[test]
+fn ca_recovery_does_not_clear_earlier_signer_revocation() {
+    let authorities = [revoked_at(When::NotProvablyAfter, b"\x17\x0d260701000000Z")];
+    let paths = [Path {
+        authorities: &authorities,
+        ..GOOD
+    }];
+    let mut input = Facts {
+        paths: &paths,
+        ..facts()
+    };
+    input.signer.as_mut().unwrap().revocation = revoked(When::NotProvablyAfter);
+    let outcome = run(&input);
+    assert_eq!(outcome.sub, Some(SubIndication::RevokedNoPoe));
+    assert_eq!(outcome.basis, Some(Basis::SignerRevocation));
+}
+
+/// Recovering a temporal finding cannot bypass the remaining X.509 checks.
+#[test]
+fn temporal_recovery_enforces_deferred_chain_constraints_and_issuer_validity() {
+    let mut input = facts();
+    let Status::Revoked { revoked, .. } =
+        revoked_at(When::NotProvablyAfter, b"\x17\x0d260701000000Z")
+    else {
+        unreachable!();
+    };
+    input.signer.as_mut().unwrap().revocation = Status::NotRevoked {
+        basis: 0,
+        later: Some(revoked),
+    };
+    let paths = [Path {
+        chain: Chain::ConstraintsFailure,
+        ..GOOD
+    }];
+    input.paths = &paths;
+    assert_eq!(
+        run(&input).sub,
+        Some(SubIndication::ChainConstraintsFailure)
+    );
+    let issuers = [RevocationIssuer {
+        not_before: day(2026, 1, 1),
+        not_after: day(2026, 8, 1),
+    }];
+    let paths = [Path {
+        revocation_issuers: &issuers,
+        ..GOOD
+    }];
+    input.paths = &paths;
+    assert_eq!(
+        run(&input).sub,
+        Some(SubIndication::RevocationOutOfBoundsNoPoe)
+    );
+}
+
+/// Applying §5.5.4 step 4(c) cannot validate a signature before issuance.
+#[test]
+fn crypto_recovery_preserves_the_certificate_issuance_bound() {
+    let own = [SHA256_RSA2048];
+    let input = Facts {
+        materials: &own,
+        now: day(2027, 6, 1),
+        time: Time {
+            before: Some(day(2024, 12, 31)),
+            after: None,
+        },
+        ..facts()
+    };
+    let outcome = run(&input);
+    assert_eq!(outcome.sub, Some(SubIndication::NotYetValid));
+    assert_eq!(outcome.basis, Some(Basis::SignerValidity));
+}
+
 /// Recovering one authority does not clear another authority already revoked.
 #[test]
 fn temporal_recovery_checks_the_remaining_authorities() {

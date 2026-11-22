@@ -117,6 +117,8 @@ fn the_default_suite_matrix_matches_table_4() {
         Family::RsaPss,
         Family::Dsa,
         Family::Ecdsa,
+        Family::Ed25519,
+        Family::Ed448,
         Family::Other,
     ] {
         for hash in [
@@ -147,7 +149,7 @@ fn the_default_suite_matrix_matches_table_4() {
                         | Hash::Sha3_384
                         | Hash::Sha3_512
                 ),
-                Family::Other => false,
+                Family::Ed25519 | Family::Ed448 | Family::Other => false,
             };
             let mut material = rsa(family, if family == Family::Ecdsa { 256 } else { 3072 });
             material.hash = Some(hash);

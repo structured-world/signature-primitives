@@ -138,6 +138,53 @@ fn sub(facts: &Facts<'_>) -> Option<&'static str> {
     run(facts).sub.map(SubIndication::as_str)
 }
 
+/// Pure `EdDSA` has an intrinsic hash. Allowlisting one variant admits neither
+/// the other variant nor unknown methods.
+#[test]
+fn fixed_eddsa_variants_are_separately_selectable() {
+    let rules = [crate::validation::SchemeRule {
+        family: Family::Ed25519,
+        min_bits: 0,
+        min_subgroup_bits: 0,
+        until: None,
+    }];
+    let selected = Policy {
+        crypto: Constraints {
+            schemes: &rules,
+            ..ETSI_TS_119_312_V2_1_1.crypto
+        },
+        ..ETSI_TS_119_312_V2_1_1
+    };
+    for family in [Family::Ed25519, Family::Ed448, Family::Other] {
+        let material = [Material {
+            hash: None,
+            scheme: Some(Scheme {
+                family,
+                bits: 0,
+                exponent_bits: None,
+                subgroup_bits: None,
+            }),
+        }];
+        let path = [Path {
+            materials: &[],
+            ..GOOD
+        }];
+        let input = Facts {
+            materials: &material,
+            paths: &path,
+            ..facts()
+        };
+        assert_eq!(
+            validate(&input, &selected).indication == Indication::TotalPassed,
+            family == Family::Ed25519
+        );
+        assert_eq!(
+            run(&input).indication == Indication::TotalPassed,
+            family != Family::Other
+        );
+    }
+}
+
 /// The decision keeps no storage and succeeds with an exact traversal budget.
 /// One less unit must refuse instead of producing an indication.
 #[test]

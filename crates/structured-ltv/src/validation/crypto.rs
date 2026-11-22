@@ -33,7 +33,7 @@ pub enum Hash {
     Other,
 }
 
-/// A signature algorithm family whose strength is its key size.
+/// A signature algorithm family or fixed-parameter signature variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Family {
     /// RSA under PKCS#1 v1.5.
@@ -44,6 +44,10 @@ pub enum Family {
     Dsa,
     /// ECDSA, sized by its curve's order.
     Ecdsa,
+    /// Pure Ed25519 (RFC 8032), with its intrinsic SHA-512.
+    Ed25519,
+    /// Pure Ed448 (RFC 8032) with empty context and intrinsic SHAKE256.
+    Ed448,
     /// One the caller could identify but no variant above names.
     Other,
 }
@@ -54,7 +58,8 @@ pub struct Scheme {
     /// The algorithm family.
     pub family: Family,
     /// The key size in bits: the modulus for RSA, p for DSA, the curve for
-    /// ECDSA.
+    /// ECDSA. Use a zero minimum in the rule for a fixed-parameter variant
+    /// whose acceptance is based on identity alone.
     pub bits: u32,
     /// For RSA, the bit length of the public exponent, which the registry
     /// only accepts odd. `None` for other families, and for an RSA key whose
@@ -78,7 +83,8 @@ pub struct Bits {
 /// Either is absent where the object does not use one separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Material {
-    /// The hash the signed digest was taken with.
+    /// The separately selected hash, if any. Leave this unset for pure
+    /// Ed25519 and Ed448; their intrinsic hash is part of the scheme identity.
     pub hash: Option<Hash>,
     /// The scheme the signature value was made with.
     pub scheme: Option<Scheme>,

@@ -182,7 +182,7 @@ const HASHES: [HashRule; 10] = [
 /// PSS, DSA with p >= 3000 and q >= 250 (8.4 Table 7), and ECDSA at 256
 /// bits and above are recommended with no end. DSA's discontinued 1024-bit
 /// tier retains q >= 160 (TS 102 176-1 V2.0.0 6.1.2.2 and Table D.2 here).
-const SCHEMES: [SchemeRule; 17] = [
+const SCHEMES: [SchemeRule; 19] = [
     SchemeRule {
         family: Family::RsaPkcs1,
         min_bits: 786,
@@ -285,6 +285,20 @@ const SCHEMES: [SchemeRule; 17] = [
         min_subgroup_bits: 0,
         until: None,
     },
+    // Clauses 6.2.2.4 and 7.3 Table 4: EdDSA variants are fixed and
+    // recommended; their intrinsic hashes are not separate suite inputs.
+    SchemeRule {
+        family: Family::Ed25519,
+        min_bits: 0,
+        min_subgroup_bits: 0,
+        until: None,
+    },
+    SchemeRule {
+        family: Family::Ed448,
+        min_bits: 0,
+        min_subgroup_bits: 0,
+        until: None,
+    },
 ];
 
 // TS 119 312 V2.1.1 7.3 Table 4, for the families represented by Material.
@@ -344,7 +358,8 @@ const SUITES: [SuiteRule<'static>; 4] = [
 /// Named cryptographic constraints from ETSI TS 119 312 V2.1.1
 /// (2026-06), as ETSI EN 319 102-1 V1.4.1 5.1.4.3 points to through
 /// TS 119 172-1 Table A.2 row p.
-/// This catalogue is never selected implicitly by the evaluator.
+/// Covers the mechanisms represented by this module. The evaluator never
+/// selects the catalogue implicitly.
 pub const ETSI_TS_119_312_V2_1_1: Constraints<'static> = Constraints {
     hashes: &HASHES,
     schemes: &SCHEMES,

@@ -789,6 +789,56 @@ fn an_element_is_charged_to_the_count_once_not_once_per_pass() {
     assert_eq!(sequence.contents(), &[] as &[u8]);
 }
 
+/// An overlong indefinite container must stop before scanning later children.
+#[test]
+fn indefinite_length_is_refused_before_scanning_later_children() {
+    let mut input = alloc::vec![0x30, 0x80];
+    for _ in 0..100 {
+        input.extend_from_slice(&[0x05, 0x00]);
+    }
+    input.extend_from_slice(&[0x00, 0x00]);
+    let parser = Parser::new(
+        Encoding::Ber,
+        Limits {
+            max_element_length: 8,
+            max_work: 40,
+            ..Limits::default()
+        },
+        crate::test_memory(),
+    );
+    let mut reader = parser.read(&input, 17).unwrap();
+    let error = reader.next_element().unwrap_err();
+    assert_eq!(error.code(), ErrorCode::LimitExceeded(Limit::ElementLength));
+    assert_eq!(error.offset(), 17);
+}
+
+/// A nested marker belongs to the outer contents, but its own marker does not.
+#[test]
+fn an_indefinite_contents_limit_excludes_only_its_own_marker() {
+    let input = [0x30, 0x80, 0x30, 0x80, 0, 0, 0, 0];
+    for limit in [3, 4] {
+        let parser = Parser::new(
+            Encoding::Ber,
+            Limits {
+                max_element_length: limit,
+                ..Limits::default()
+            },
+            crate::test_memory(),
+        );
+        let mut reader = parser.read(&input, 17).unwrap();
+        if limit == 4 {
+            assert_eq!(
+                reader.next_element().unwrap().unwrap().contents(),
+                &input[2..6]
+            );
+        } else {
+            let error = reader.next_element().unwrap_err();
+            assert_eq!(error.code(), ErrorCode::LimitExceeded(Limit::ElementLength));
+            assert_eq!(error.offset(), 17);
+        }
+    }
+}
+
 #[test]
 fn a_fault_inside_nested_indefinite_contents_names_where_it_is() {
     // SEQUENCE (indef) { SEQUENCE (indef) { <malformed tag> } }

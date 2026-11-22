@@ -658,6 +658,39 @@ fn inherited_public_key_reports_its_missing_chain_before_verification() {
     assert_eq!(run(&input).sub, Some(SubIndication::HashFailure));
 }
 
+/// Recovering one authority's freshness must not lend its retry time to another finding.
+#[test]
+fn retry_hint_follows_the_deciding_authority() {
+    let authorities = [Status::NotFresh { basis: 0 }, Status::NotFresh { basis: 1 }];
+    let retry_at = day(2026, 12, 1);
+    let boundary = day(2026, 7, 1);
+    let paths = [Path {
+        authorities: &authorities,
+        revocation_retry: Some(RevocationRetry::Freshness {
+            fresh_before: Some(boundary),
+            retry_at: Some(retry_at),
+        }),
+        ..GOOD
+    }];
+    let mut input = Facts {
+        paths: &paths,
+        ..facts()
+    };
+    let recovered = run(&input);
+    assert_eq!(recovered.sub, Some(SubIndication::TryLater));
+    assert_eq!(
+        recovered.basis,
+        Some(Basis::Authority { path: 0, index: 1 })
+    );
+    assert_eq!(recovered.retry_at, None);
+
+    input.time.before = Some(boundary);
+    let original = run(&input);
+    assert_eq!(original.sub, Some(SubIndication::TryLater));
+    assert_eq!(original.basis, Some(Basis::Authority { path: 0, index: 0 }));
+    assert_eq!(original.retry_at, Some(retry_at));
+}
+
 /// The step 4(a) route uses the actual revocation time and excludes notAfter.
 #[test]
 fn ca_revocation_recovery_keeps_its_path_and_checks_the_expiry_boundary() {

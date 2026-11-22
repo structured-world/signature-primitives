@@ -368,6 +368,8 @@ pub enum Stage {
     Timestamp(usize),
     /// Historical signature verification decided the result.
     PastSignature,
+    /// Recovered proof predates the signing certificate.
+    SignerValidity,
     /// The timestamp ordering check decided the result.
     TimestampOrder,
     /// The final timestamp delay check decided the result.
@@ -653,6 +655,17 @@ pub fn validate<W: Work>(
     report.decision = past.decision;
     report.stage = Stage::PastSignature;
     if past.decision != Decision::Passed {
+        return Ok(report);
+    }
+    // Earlier archival proof can contradict a validity check that passed at
+    // the preliminary bound, including when only delay originally failed.
+    if inputs
+        .current
+        .signer
+        .is_some_and(|signer| report.best_signature_time < signer.not_before)
+    {
+        report.stage = Stage::SignerValidity;
+        report.decision = Decision::Finding(SubIndication::NotYetValid);
         return Ok(report);
     }
     if let Err(failure) = super::validate::timestamp_order(inputs.current.order) {

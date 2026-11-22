@@ -570,6 +570,145 @@ fn past_result(signature: Signature<'_>, sub: SubIndication, proofs: &[Proof]) -
     .unwrap()
 }
 
+/// Authority compromise is a key compromise in the chain model too.
+#[test]
+fn authority_compromise_limits_historical_chain_model() {
+    let sub = SubIndication::RevokedCaNoPoe;
+    for reason in [
+        Reason::AuthorityCompromise,
+        Reason::AttributeAuthorityCompromise,
+    ] {
+        let revocations = [RevocationData {
+            status: Revocation::Revoked {
+                at: at(24),
+                reason: Some(reason),
+            },
+            ..REV
+        }];
+        let members = [Member {
+            revocations: &revocations,
+            ..MEMBER
+        }];
+        let candidates = [Candidate {
+            members: &members,
+            ..CANDIDATE
+        }];
+        let signature = Signature {
+            model: ValidityModel::Chain,
+            candidates: &candidates,
+            revocations: &revocations,
+            revoked_ca_at: Some(at(31)),
+            ..INITIAL_SIGNATURE
+        };
+        let report = past_result(signature, sub, HISTORICAL);
+        assert_eq!(report.signature_poe, Some(false), "{reason:?}");
+        assert_eq!(report.decision, Decision::Finding(sub));
+    }
+}
+
+/// A recoverable delay cannot make evidence from before issuance valid.
+#[test]
+fn delay_recovery_rechecks_signer_not_before() {
+    let utc = structured_pkix::temporal::LeapTable::new(0, 200, &[]).unwrap();
+    let mut current = facts();
+    let signer = current.signer.as_mut().unwrap();
+    signer.not_before = at(50);
+    signer.not_after = at(110);
+    current.time.before = Some(at(90));
+    current.signature_timestamp = true;
+    current.claimed_signing_time = Some(at(20));
+    current.utc = Some(&utc);
+    let requirements = Requirements {
+        timestamp_delay: Some(core::time::Duration::from_secs(10)),
+        ..REQUIREMENTS
+    };
+    let mut input = inputs(&current);
+    input.signature.validity = Validity {
+        not_before: at(50),
+        not_after: at(110),
+    };
+    let report = run(&input, &requirements);
+    assert_eq!(
+        report.current.basis,
+        Some(crate::validation::Basis::TimestampDelay)
+    );
+    assert_eq!(
+        report.decision,
+        Decision::Finding(SubIndication::NotYetValid)
+    );
+}
+
+/// A newer record with no reliable historical proof cannot mask an older one.
+#[test]
+fn unusable_newer_revocation_does_not_mask_older_evidence() {
+    let hashes = [
+        crate::validation::HashRule {
+            hash: Hash::Sha1,
+            until: Some(at(40)),
+        },
+        crate::validation::HashRule {
+            hash: Hash::Sha256,
+            until: None,
+        },
+    ];
+    let requirements = Requirements {
+        crypto: crate::validation::Constraints {
+            hashes: &hashes,
+            ..REQUIREMENTS.crypto
+        },
+        ..REQUIREMENTS
+    };
+    let weak = [CryptoObject {
+        object: DIGEST,
+        material: Material {
+            hash: Some(Hash::Sha1),
+            scheme: None,
+        },
+    }];
+    let newer = RevocationData {
+        object: DIGEST,
+        issued: at(45),
+        crypto: &weak,
+        ..REV
+    };
+    let records = [REV, newer];
+    let members = [Member {
+        revocations: &records,
+        ..MEMBER
+    }];
+    let candidates = [Candidate {
+        members: &members,
+        ..CANDIDATE
+    }];
+    let current = facts();
+    let mut input = inputs(&current);
+    input.signature.candidates = &candidates;
+    let proofs = [
+        HISTORICAL[0],
+        HISTORICAL[1],
+        HISTORICAL[2],
+        HISTORICAL[3],
+        Proof {
+            object: DIGEST,
+            at: at(46),
+        },
+    ];
+    input.initial = &proofs;
+    assert_eq!(run(&input, &requirements).decision, Decision::Passed);
+}
+
+/// Historical evidence can supply the required issuer proof independently of
+/// the current chain's status catalogue.
+#[test]
+fn issuer_proof_comes_from_the_selected_historical_target_record() {
+    let current = facts();
+    let mut input = inputs(&current);
+    input.signature.revocations = &[];
+    let report = run(&input, &REQUIREMENTS);
+    assert_eq!(report.past.unwrap().revocation_poe, Some(true));
+    assert_eq!(report.decision, Decision::Passed);
+}
+
 /// A valid path whose horizon precedes the signature proof must not mask a
 /// later candidate that actually covers it.
 #[test]

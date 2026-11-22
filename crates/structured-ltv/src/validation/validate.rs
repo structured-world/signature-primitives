@@ -557,7 +557,8 @@ fn verify(facts: &Facts<'_>) -> Result<(), Verdict> {
     }
 }
 
-/// 5.2.6.4 steps 2 to 6 over every built path: the first path that passes is
+/// 5.2.6.4 over the built paths: the first path that passes or returns a
+/// terminal signer finding is
 /// used, and if none does, the status of the last one tried is reported
 /// (step 2a).
 fn select(facts: &Facts<'_>, constraints: &Constraints<'_>) -> Result<usize, Verdict> {
@@ -629,6 +630,14 @@ fn judge(
                 },
                 unmet: Some(unmet),
             })?;
+    }
+    // EN 319 102-1 V1.4.1 5.2.6.4 step 7 returns this chain before
+    // inspecting the revocation-data issuers. Apply the final indication
+    // in certificate(), where 5.5.4 can reconsider it using a time proof.
+    if let Some(signer) = signer
+        && (now < signer.not_before || now > signer.not_after)
+    {
+        return Ok(());
     }
     // EN 319 102-1 V1.4.1 5.2.6.4 step 8: the revocation-data issuer's
     // certificate must be valid at validation time, including both endpoints.
@@ -747,7 +756,9 @@ fn certificate(facts: &Facts<'_>, signer: Signer, best: Instant) -> Result<(), V
         Status::OnHold { .. } => return Err(revocation(SubIndication::TryLater)),
         _ => {}
     }
-    if best < signer.not_before {
+    // EN 319 102-1 V1.4.1 5.5.4 step 4b/d requires proof the signature
+    // already existed before issuance. The current time is not that proof.
+    if best < signer.not_before && facts.time.before.is_some() {
         return Err(validity(SubIndication::NotYetValid));
     }
     // A content timestamp at or after notAfter proves the signature made
@@ -759,14 +770,20 @@ fn certificate(facts: &Facts<'_>, signer: Signer, best: Instant) -> Result<(), V
     {
         return Err(validity(SubIndication::Expired));
     }
-    if best > signer.not_after {
-        return Err(validity(
-            if matches!(signer.revocation, Status::NotRevoked { .. }) {
-                SubIndication::OutOfBoundsNotRevoked
-            } else {
-                SubIndication::OutOfBoundsNoPoe
-            },
-        ));
+    let not_revoked = matches!(signer.revocation, Status::NotRevoked { .. });
+    let outside_now = facts.now < signer.not_before || facts.now > signer.not_after;
+    // Step 4d recovers a step-7 result only when revocation is clear and the
+    // proof predates expiration. Step 4b leaves OUT_OF_BOUNDS_NO_POE intact
+    // unless the proof places the signature before issuance.
+    if best < signer.not_before
+        || best > signer.not_after
+        || (outside_now && (!not_revoked || best == signer.not_after))
+    {
+        return Err(validity(if not_revoked {
+            SubIndication::OutOfBoundsNotRevoked
+        } else {
+            SubIndication::OutOfBoundsNoPoe
+        }));
     }
     pending(signer.revocation).map_err(revocation)
 }

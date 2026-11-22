@@ -306,9 +306,10 @@ const SCHEMES: [SchemeRule; 19] = [
 // function's end in Table D.1 enforced by HASHES. Its signature bindings are
 // RFC 3279 2.2.1/2.2.2/2.2.3 and RFC 4055 3.1. Other standalone hash rules
 // do not implicitly authorize a signature suite absent from this list.
-const SUITES: [SuiteRule<'static>; 4] = [
+const SUITES: [SuiteRule<'static>; 7] = [
     SuiteRule {
         family: Family::RsaPkcs1,
+        key_bits: None,
         hashes: &[
             Hash::Sha1,
             Hash::Sha224,
@@ -319,6 +320,7 @@ const SUITES: [SuiteRule<'static>; 4] = [
     },
     SuiteRule {
         family: Family::RsaPss,
+        key_bits: None,
         hashes: &[
             Hash::Sha1,
             Hash::Sha256,
@@ -331,6 +333,7 @@ const SUITES: [SuiteRule<'static>; 4] = [
     },
     SuiteRule {
         family: Family::Dsa,
+        key_bits: None,
         hashes: &[
             Hash::Sha1,
             Hash::Sha256,
@@ -343,15 +346,25 @@ const SUITES: [SuiteRule<'static>; 4] = [
     },
     SuiteRule {
         family: Family::Ecdsa,
-        hashes: &[
-            Hash::Sha1,
-            Hash::Sha256,
-            Hash::Sha384,
-            Hash::Sha512,
-            Hash::Sha3_256,
-            Hash::Sha3_384,
-            Hash::Sha3_512,
-        ],
+        key_bits: None,
+        hashes: &[Hash::Sha1],
+    },
+    // TS 119 312 V2.1.1 clause 7.3 requires matching hash output and
+    // curve key sizes for its recommended ECDSA combinations.
+    SuiteRule {
+        family: Family::Ecdsa,
+        key_bits: Some(Bits { min: 256, max: 256 }),
+        hashes: &[Hash::Sha256, Hash::Sha3_256],
+    },
+    SuiteRule {
+        family: Family::Ecdsa,
+        key_bits: Some(Bits { min: 384, max: 384 }),
+        hashes: &[Hash::Sha384, Hash::Sha3_384],
+    },
+    SuiteRule {
+        family: Family::Ecdsa,
+        key_bits: Some(Bits { min: 512, max: 512 }),
+        hashes: &[Hash::Sha512, Hash::Sha3_512],
     },
 ];
 

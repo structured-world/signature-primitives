@@ -140,7 +140,7 @@ fn the_default_suite_matrix_matches_table_4() {
                     hash,
                     Hash::Sha224 | Hash::Sha256 | Hash::Sha384 | Hash::Sha512
                 ),
-                Family::RsaPss | Family::Dsa | Family::Ecdsa => matches!(
+                Family::RsaPss | Family::Dsa => matches!(
                     hash,
                     Hash::Sha256
                         | Hash::Sha384
@@ -149,6 +149,7 @@ fn the_default_suite_matrix_matches_table_4() {
                         | Hash::Sha3_384
                         | Hash::Sha3_512
                 ),
+                Family::Ecdsa => matches!(hash, Hash::Sha256 | Hash::Sha3_256),
                 Family::Ed25519 | Family::Ed448 | Family::Other => false,
             };
             let mut material = rsa(family, if family == Family::Ecdsa { 256 } else { 3072 });
@@ -189,8 +190,12 @@ fn discontinued_sizes_follow_table_d2() {
     assert!(!holds(rsa(Family::RsaPkcs1, 1024), day_of(2019, 10, 1)));
     assert!(!holds(rsa(Family::RsaPkcs1, 1536), day_of(2019, 10, 1)));
     assert!(!holds(rsa(Family::RsaPkcs1, 512), day_of(2000, 1, 1)));
-    assert!(holds(rsa(Family::Ecdsa, 224), day_of(2021, 9, 30)));
-    assert!(!holds(rsa(Family::Ecdsa, 224), day_of(2021, 10, 1)));
+    let legacy_curve = Material {
+        hash: None,
+        ..rsa(Family::Ecdsa, 224)
+    };
+    assert!(holds(legacy_curve, day_of(2021, 9, 30)));
+    assert!(!holds(legacy_curve, day_of(2021, 10, 1)));
     assert!(holds(rsa(Family::Ecdsa, 256), day_of(2100, 1, 1)));
     assert!(!holds(dsa(1024, Some(160)), day_of(2015, 12, 1)));
 }

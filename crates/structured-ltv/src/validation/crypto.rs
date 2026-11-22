@@ -123,6 +123,8 @@ pub struct SchemeRule {
 pub struct SuiteRule<'a> {
     /// The signature family.
     pub family: Family,
+    /// Inclusive key size range, or `None` to rely on the scheme rules alone.
+    pub key_bits: Option<Bits>,
     /// Its permitted message hash functions. An empty list permits none.
     pub hashes: &'a [Hash],
 }
@@ -250,6 +252,11 @@ impl Constraints<'_> {
             // the Cartesian product of independently suitable components.
             for rule in self.suites {
                 if rule.family != scheme.family {
+                    continue;
+                }
+                if let Some(bits) = rule.key_bits
+                    && (scheme.bits < bits.min || scheme.bits > bits.max)
+                {
                     continue;
                 }
                 for permitted in rule.hashes {

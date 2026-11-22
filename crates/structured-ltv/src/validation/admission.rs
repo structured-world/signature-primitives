@@ -35,7 +35,7 @@ pub(super) fn admit(
     for suite in constraints.suites {
         // Admit this metadata visit before following its nested slice.
         work.charge_work(1)?;
-        per_material = add(per_material, add(2, mul(suite.hashes.len(), 2)?)?)?;
+        per_material = add(per_material, add(5, mul(suite.hashes.len(), 2)?)?)?;
     }
     work.charge_work(mul(facts.references.len(), 4)?)?;
     work.charge_work(mul(facts.materials.len(), per_material)?)?;

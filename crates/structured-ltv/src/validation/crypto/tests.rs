@@ -45,6 +45,7 @@ const CONSTRAINTS: Constraints<'static> = Constraints {
     schemes: &SCHEMES,
     suites: &[SuiteRule {
         family: Family::RsaPkcs1,
+        key_bits: None,
         hashes: &[Hash::Sha1, Hash::Sha256],
     }],
     rsa_exponent_bits: Some(Bits { min: 17, max: 256 }),
@@ -254,6 +255,7 @@ fn an_rsa_exponent_outside_the_range_is_not_reliable() {
     let curves = Constraints {
         suites: &[SuiteRule {
             family: Family::Ecdsa,
+            key_bits: None,
             hashes: &[Hash::Sha256],
         }],
         schemes: &[SchemeRule {
@@ -287,6 +289,7 @@ fn dsa_rules_with_equal_p_choose_the_strongest_reached_q() {
             schemes: &rules,
             suites: &[SuiteRule {
                 family: Family::Dsa,
+                key_bits: None,
                 hashes: &[Hash::Sha256],
             }],
             ..CONSTRAINTS

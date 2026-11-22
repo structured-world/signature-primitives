@@ -249,6 +249,7 @@ fn admission_covers_nested_constraints_and_path_fanout() {
     let hashes = [Hash::Sha256; 64];
     let suites = [crate::validation::SuiteRule {
         family: Family::RsaPkcs1,
+        key_bits: None,
         hashes: &hashes,
     }; 8];
     let requirements = Policy {
@@ -676,6 +677,81 @@ fn a_signature_proven_before_the_certificate_is_not_yet_valid() {
     assert_eq!(outcome.sub, Some(SubIndication::NotYetValid));
     assert_eq!(outcome.basis, Some(Basis::SignerValidity));
     assert_eq!(outcome.axes.validity, Some(Coverage::Outside));
+}
+
+/// Basic validation has no authenticated upper bound for signing time.
+#[test]
+fn basic_validation_reports_out_of_bounds_before_issuance() {
+    let mut input = facts();
+    input.time.before = None;
+    input.signature_timestamp = false;
+    input.signer.as_mut().unwrap().not_before = day(2027, 1, 1);
+    let outcome = run(&input);
+    assert_eq!(outcome.process, Process::Basic);
+    assert_eq!(outcome.indication, Indication::Indeterminate);
+    assert_eq!(outcome.sub, Some(SubIndication::OutOfBoundsNotRevoked));
+    input.signer.as_mut().unwrap().revocation = Status::NoEvidence;
+    assert_eq!(run(&input).sub, Some(SubIndication::OutOfBoundsNoPoe));
+}
+
+/// Step 7 stops certificate validation before step 8. With-time can recover
+/// that step-7 result using established proof inside the signer's validity.
+#[test]
+fn signer_validity_precedes_revocation_issuer_validity() {
+    let issuers = [RevocationIssuer {
+        not_before: day(2025, 1, 1),
+        not_after: day(2027, 12, 31),
+    }];
+    let paths = [Path {
+        revocation_issuers: &issuers,
+        ..GOOD
+    }];
+    let mut input = Facts {
+        now: day(2030, 1, 1),
+        paths: &paths,
+        ..facts()
+    };
+    assert_eq!(run(&input).indication, Indication::TotalPassed);
+    input.time.before = None;
+    input.signature_timestamp = false;
+    let outcome = run(&input);
+    assert_eq!(outcome.sub, Some(SubIndication::OutOfBoundsNotRevoked));
+    assert_eq!(outcome.basis, Some(Basis::SignerValidity));
+    assert_eq!(outcome.path, Some(0));
+}
+
+/// The named catalogue admits matching curve and digest strengths only.
+#[test]
+fn ecdsa_suite_matches_the_curve_size() {
+    for (bits, accepted, rejected) in [
+        (256, Hash::Sha256, Hash::Sha384),
+        (384, Hash::Sha384, Hash::Sha256),
+        (512, Hash::Sha512, Hash::Sha384),
+    ] {
+        for (hash, expected) in [
+            (accepted, None),
+            (rejected, Some(SubIndication::CryptoConstraintsFailureNoPoe)),
+        ] {
+            let materials = [Material {
+                hash: Some(hash),
+                scheme: Some(Scheme {
+                    family: Family::Ecdsa,
+                    bits,
+                    exponent_bits: None,
+                    subgroup_bits: None,
+                }),
+            }];
+            assert_eq!(
+                run(&Facts {
+                    materials: &materials,
+                    ..facts()
+                })
+                .sub,
+                expected,
+                "{bits}/{hash:?}"
+            );
+        }
+    }
 }
 
 /// Expiry is not retroactive: a signature timestamped inside the validity
@@ -1273,6 +1349,7 @@ fn caller_selected_suites_replace_the_catalogue() {
     let constraints = Constraints {
         suites: &[crate::validation::crypto::SuiteRule {
             family: Family::RsaPkcs1,
+            key_bits: None,
             hashes: &[Hash::Sha256, Hash::Sha3_256],
         }],
         ..ETSI_TS_119_312_V2_1_1.crypto

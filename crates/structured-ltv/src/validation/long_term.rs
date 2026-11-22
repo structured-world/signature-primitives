@@ -70,8 +70,6 @@ pub enum Error {
     ForeignObject(Object),
     /// A proof or timestamp exceeds the supplied current time.
     FutureTime(Instant),
-    /// Timestamp generation times were not supplied newest first.
-    TimestampOrder,
 }
 
 impl From<MemoryError> for Error {
@@ -191,8 +189,17 @@ pub struct Member<'a> {
     pub object: Object,
     /// Cryptographic constraints to check for this certificate's material.
     pub crypto: &'a [CryptoObject],
-    /// Applicable evidence. An empty catalogue cannot establish a proof.
-    pub revocations: &'a [RevocationData<'a>],
+    /// Revocation evidence or an explicit waiver in the selected policy.
+    pub revocations: RevocationCheck<'a>,
+}
+
+/// The selected X.509 revocation constraint for one member.
+#[derive(Debug, Clone, Copy)]
+pub enum RevocationCheck<'a> {
+    /// Authenticated applicable evidence. An empty catalogue cannot pass.
+    Required(&'a [RevocationData<'a>]),
+    /// The selected constraints explicitly waive revocation for this member.
+    Waived,
 }
 
 /// One caller-established historical candidate path.
@@ -241,9 +248,17 @@ pub struct EvidenceRecord<'a> {
 #[derive(Debug, Clone, Copy)]
 pub enum RetryCause<'a> {
     /// A signer suspension was established.
-    Suspension,
+    Suspension {
+        /// Retry time carried by the deciding status evidence.
+        retry_at: Option<Instant>,
+    },
     /// These exact status facts failed freshness at the current time.
-    Freshness(&'a RevocationData<'a>),
+    Freshness {
+        /// Status evidence to check again at best-signature-time.
+        record: &'a RevocationData<'a>,
+        /// Retry time carried by the deciding status evidence.
+        retry_at: Option<Instant>,
+    },
     /// No historical recovery rule for the supplied finding.
     Other,
 }
@@ -274,8 +289,10 @@ pub struct Signature<'a> {
 pub struct Timestamp<'a> {
     /// Original timestamp token protected by subsequent evidence.
     pub object: Object,
-    /// Generation-time upper bound.
+    /// Generation-time upper bound, including any RFC 3161 accuracy.
     pub generated: Instant,
+    /// Proven generation-time lower bound, if known.
+    pub not_before: Option<Instant>,
     /// Hash used in messageImprint.
     pub imprint: Hash,
     /// Clause 5.4 result established by the producer.
@@ -305,7 +322,8 @@ pub struct Inputs<'a> {
     pub signature: Signature<'a>,
     /// Completed Evidence Record checks in caller order.
     pub records: &'a [EvidenceRecord<'a>],
-    /// Timestamp attributes in non-increasing generation order.
+    /// Timestamp attributes in the producer's newest-first processing order.
+    /// Use established generation order, rather than sorting accuracy bounds.
     pub timestamps: &'a [Timestamp<'a>],
     /// Whether there are long-term availability attributes, including any
     /// unavailable or invalid ones recorded by the caller.
@@ -330,6 +348,8 @@ pub enum PastCertificate {
         sub: SubIndication,
         /// Candidate index, if a candidate was examined.
         path: Option<usize>,
+        /// Exact signed object needing proof, when a candidate exposed one.
+        missing_proof: Option<Object>,
     },
 }
 
@@ -344,6 +364,8 @@ pub struct PastSignature {
     pub signature_poe: Option<bool>,
     /// Whether target revocation evidence has suitable issuer proof.
     pub revocation_poe: Option<bool>,
+    /// Retry suggestion from the deciding evidence if `TRY_LATER` remains.
+    pub retry_at: Option<Instant>,
 }
 
 /// One timestamp's current and historical results in processing order.
@@ -357,6 +379,8 @@ pub struct TimestampAnswer {
     pub past: Option<PastSignature>,
     /// Final attribute result, including imprint reliability or acceptance.
     pub decision: Decision,
+    /// Token needing proof of existence for the deciding `NO_POE`.
+    pub missing_proof: Option<Object>,
 }
 
 /// The building block deciding the long-term indication.
@@ -421,12 +445,7 @@ fn retry_signature(decision: Decision) -> bool {
             retry_timestamp(sub)
                 || matches!(
                     sub,
-                    SubIndication::SigConstraintsFailure
-                        | SubIndication::TryLater
-                        // Clause 5.6.3.4 step 3 omits this case from its list.
-                        // Clause 5.6.2.4.4 step 3 explicitly recovers it using
-                        // historical path facts, as DSS archival validation does.
-                        | SubIndication::NoCertificateChainFoundNoPoe
+                    SubIndication::SigConstraintsFailure | SubIndication::TryLater
                 )
         }
     }
@@ -465,6 +484,7 @@ fn process_timestamp<W: Work>(
         current: timestamp.current,
         past: None,
         decision: timestamp.current,
+        missing_proof: None,
     };
     if let Decision::Finding(sub) = timestamp.current
         && retry_timestamp(sub)
@@ -474,9 +494,11 @@ fn process_timestamp<W: Work>(
         answer.past = Some(historical);
         answer.decision = historical.decision;
         if answer.decision == Decision::Passed {
-            answer.decision = match proofs.earliest(timestamp.object, work)? {
-                Some(at) => accept(timestamp.acceptance, at, None, crypto, work)?,
-                None => Decision::Finding(SubIndication::NoPoe),
+            answer.decision = if let Some(at) = proofs.earliest(timestamp.object, work)? {
+                accept(timestamp.acceptance, at, None, crypto, work)?
+            } else {
+                answer.missing_proof = Some(timestamp.object);
+                Decision::Finding(SubIndication::NoPoe)
             };
         }
     }
@@ -488,11 +510,12 @@ fn process_timestamp<W: Work>(
         if proof.is_some_and(|at| limit.is_some_and(|end| end.admits(at))) {
             proofs.extract(
                 timestamp.covered,
-                timestamp.generated,
+                timestamp.generated.min(now),
                 &requirements.crypto,
                 work,
             )?;
         } else {
+            answer.missing_proof = Some(timestamp.object);
             answer.decision = Decision::Finding(SubIndication::NoPoe);
         }
     }
@@ -611,16 +634,17 @@ pub fn validate<W: Work>(
     let now = inputs.current.now;
     let mut proofs = collect_proofs(inputs, &current, work)?;
     let crypto = poe::Crypto::new(&requirements.crypto, work)?;
-    let mut previous = now;
     for (index, timestamp) in inputs.timestamps.iter().enumerate() {
         work.charge_work(8)?;
-        if timestamp.generated > now {
-            return Err(Error::FutureTime(timestamp.generated));
+        // EN 319 102-1 §5.6.3.4 step 5(a) consumes the established order.
+        // RFC 3161 §2.4.2 accuracy bounds neither establish ordering nor
+        // prove future generation unless the lower bound is in the future.
+        // https://www.rfc-editor.org/rfc/rfc3161#section-2.4.2
+        if let Some(lower) = timestamp.not_before
+            && lower > now
+        {
+            return Err(Error::FutureTime(lower));
         }
-        if timestamp.generated > previous {
-            return Err(Error::TimestampOrder);
-        }
-        previous = timestamp.generated;
         let answer = process_timestamp(
             timestamp,
             index,
@@ -682,22 +706,39 @@ pub fn validate<W: Work>(
         return Ok(report);
     }
     report.stage = Stage::SignatureAcceptance;
-    report.decision = if requirements
+    report.decision = final_acceptance(
+        inputs.current,
+        report.best_signature_time,
+        requirements,
+        &crypto,
+        work,
+    )?;
+    Ok(report)
+}
+
+fn final_acceptance(
+    facts: &Facts<'_>,
+    best: Instant,
+    requirements: &Requirements<'_>,
+    crypto: &poe::Crypto<'_>,
+    work: &impl Work,
+) -> Result<Decision, Error> {
+    // §5.6.3.4 step 9(b) refers to step 7, whose past-signature process
+    // returns an indication (§5.6.2.4.3). NOTE 6 identifies the acceptance
+    // time as best-signature-time, the input to that process. The path's
+    // separate control-time remains in PastCertificate.
+    if requirements
         .elements
-        .first_missing(inputs.current.elements)
+        .first_missing(facts.elements)
         .is_some()
     {
-        Decision::Finding(SubIndication::SigConstraintsFailure)
-    } else {
-        accept(
-            inputs.current.materials,
-            report.best_signature_time,
-            inputs.current.time.after,
-            &crypto,
-            work,
-        )?
-    };
-    Ok(report)
+        return Ok(Decision::Finding(SubIndication::SigConstraintsFailure));
+    }
+    let value = accept(facts.materials, best, facts.content_timestamp, crypto, work)?;
+    if value != Decision::Passed {
+        return Ok(value);
+    }
+    accept(facts.signed_attribute_materials, best, None, crypto, work)
 }
 
 #[cfg(test)]

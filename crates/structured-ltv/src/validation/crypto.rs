@@ -210,16 +210,44 @@ impl Constraints<'_> {
         existed_by: Option<Instant>,
         made_after: Option<Instant>,
     ) -> Result<Option<Instant>, Unmet> {
+        self.resolve_with(material, existed_by, made_after, Err)
+    }
+
+    pub(super) fn inspect(
+        &self,
+        material: Material,
+        existed_by: Instant,
+        made_after: Option<Instant>,
+        mut visit: impl FnMut(Unmet),
+    ) {
+        // This visitor always continues, so resolution cannot terminate.
+        match self.resolve_with(material, Some(existed_by), made_after, |unmet| {
+            visit(unmet);
+            Ok(())
+        }) {
+            Ok(_) => {}
+            Err(unmet) => visit(unmet),
+        }
+    }
+
+    fn resolve_with(
+        &self,
+        material: Material,
+        existed_by: Option<Instant>,
+        made_after: Option<Instant>,
+        mut finding: impl FnMut(Unmet) -> Result<(), Unmet>,
+    ) -> Result<Option<Instant>, Unmet> {
         let mut sunset = None;
         if let Some(hash) = material.hash {
             let mechanism = Mechanism::Hash(hash);
-            let rule = self
-                .hashes
-                .iter()
-                .find(|rule| rule.hash == hash)
-                .ok_or(Unmet::unlisted(mechanism, made_after))?;
-            check(mechanism, rule.until, existed_by, made_after)?;
-            sunset = rule.until;
+            if let Some(rule) = self.hashes.iter().find(|rule| rule.hash == hash) {
+                if let Err(unmet) = check(mechanism, rule.until, existed_by, made_after) {
+                    finding(unmet)?;
+                }
+                sunset = rule.until;
+            } else {
+                finding(Unmet::unlisted(mechanism, made_after))?;
+            }
         }
         if let Some(scheme) = material.scheme {
             let mechanism = Mechanism::Scheme(scheme);
@@ -252,7 +280,9 @@ impl Constraints<'_> {
                 }
                 selected = Some(candidate);
             }
-            let rule = selected.ok_or(Unmet::unlisted(mechanism, made_after))?;
+            if selected.is_none() {
+                finding(Unmet::unlisted(mechanism, made_after))?;
+            }
             // TS 119 312 V2.1.1 clause 6.2.2.1: 2^16 < e < 2^256.
             if let (Family::RsaPkcs1 | Family::RsaPss, Some(range)) =
                 (scheme.family, self.rsa_exponent_bits)
@@ -260,11 +290,15 @@ impl Constraints<'_> {
                     .exponent_bits
                     .is_some_and(|bits| range.min <= bits && bits <= range.max)
             {
-                return Err(Unmet::unlisted(Mechanism::Exponent(scheme), made_after));
+                finding(Unmet::unlisted(Mechanism::Exponent(scheme), made_after))?;
             }
-            check(mechanism, rule.until, existed_by, made_after)?;
-            if let Some(end) = rule.until {
-                sunset = Some(sunset.map_or(end, |previous| previous.min(end)));
+            if let Some(rule) = selected {
+                if let Err(unmet) = check(mechanism, rule.until, existed_by, made_after) {
+                    finding(unmet)?;
+                }
+                if let Some(end) = rule.until {
+                    sunset = Some(sunset.map_or(end, |previous| previous.min(end)));
+                }
             }
         }
         if let (Some(hash), Some(scheme)) = (material.hash, material.scheme) {
@@ -285,10 +319,10 @@ impl Constraints<'_> {
                     }
                 }
             }
-            return Err(Unmet::unlisted(
+            finding(Unmet::unlisted(
                 Mechanism::Suite { hash, scheme },
                 made_after,
-            ));
+            ))?;
         }
         Ok(sunset)
     }

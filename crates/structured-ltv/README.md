@@ -34,6 +34,11 @@ under the query that performs it; retained facts are never prepaid work.
   `Work`. It returns the standard indication, located fact index, unmet
   constraint and independent integrity/time/revocation/trust/change axes.
   Tables 5 to 7 include retry conditions and `CUSTOM` diagnostics.
+  Individual `SignatureTimestamp` results and path-specific
+  `RevocationRetry` facts retain required-token failures, freshness and
+  suspension bounds, and any evidence-supplied retry time. Use
+  `validate_with_findings` to visit all unmet cryptographic constraints for
+  the deciding material group under the caller's work budget.
   Policy selection, policy identity in reports and trusted-list processing
   belong to the caller. `pki::status::{Status, When, Revoked}` carries supplied
   temporal revocation assessments without acquiring or authenticating evidence.
@@ -42,7 +47,11 @@ under the query that performs it; retained facts are never prepaid work.
   Record, revocation and historical path facts. It keeps the with-time
   result, past certificate and signature results, timestamp decisions and
   final indication independently visible. Proofs are collected newest first
-  for timestamps, with explicit validity and algorithm sunset boundaries.
+  for timestamps in the producer's established processing order, with
+  explicit validity and algorithm sunset boundaries. RFC 3161 accuracy
+  upper bounds are used for proofs. An optional lower bound can establish
+  future generation. Historical members distinguish a policy waiver from
+  missing revocation data and keep their certificate and crypto obligations.
   The report and temporary proof store use accounted, fallible memory.
   `validate_past_signature` can also operate on provisional next-token
   proofs within a format's Evidence Record validation.

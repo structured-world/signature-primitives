@@ -1,6 +1,7 @@
 use super::{
-    Candidate, CryptoObject, Decision, Error, Horizon, Member, PastCertificate, PastSignature,
-    RetryCause, Revocation, RevocationData, Signature, SubIndication as Sub, ValidityModel,
+    Candidate, CryptoObject, Decision, Error, Horizon, Object, PastCertificate, PastSignature,
+    RetryCause, Revocation, RevocationCheck, RevocationData, Signature, SubIndication as Sub,
+    ValidityModel,
     poe::{Crypto, Proofs},
 };
 use crate::validation::Chain;
@@ -43,21 +44,23 @@ impl RecordChoice<'_> {
 }
 
 fn choose<'a, W: Work>(
-    member: &'a Member<'a>,
+    records: &'a [RevocationData<'a>],
     horizon: Horizon,
     target: bool,
     proofs: &Proofs<W>,
     crypto: &Crypto<'_>,
     work: &W,
+    missing: &mut Option<Object>,
 ) -> Result<Option<RecordChoice<'a>>, Error> {
-    if !proofs.by(member.object, horizon, work)? {
-        return Ok(None);
-    }
     let mut selected: Option<RecordChoice<'_>> = None;
     let mut conflict = false;
-    for record in member.revocations {
+    for record in records {
         work.charge_work(16)?;
-        if record.issued >= horizon.time() || !proofs.by(record.object, horizon, work)? {
+        if record.issued >= horizon.time() {
+            continue;
+        }
+        if !proofs.by(record.object, horizon, work)? {
+            missing.get_or_insert(record.object);
             continue;
         }
         // 5.6.2.4.4 step 1 filters target evidence if issuer proof exists.
@@ -71,15 +74,25 @@ fn choose<'a, W: Work>(
         if selected.as_ref().is_some_and(|best| best.rank() > rank) {
             continue;
         }
-        // Only independently reliable records compete for selection. A newer
-        // record without historical proof cannot hide an older usable record.
+        // Historical eligibility requires evidence of reliability (EN 319
+        // 102-1 V1.4.1 §5.6.2.1.1). For a delegated issuer, §5.6.2.2.4
+        // NOTE 5 leaves the combination to the implementation. Require
+        // proof within that issuer's limit before ranking the record.
         if let Some(delegated) = record.delegated {
             if !proofs.by(record.object, delegated, work)? {
+                missing.get_or_insert(record.object);
                 continue;
             }
             candidate.horizon.tighten(delegated);
         }
-        if !slide_crypto(record.crypto, &mut candidate.horizon, proofs, crypto, work)? {
+        if !slide_crypto(
+            record.crypto,
+            &mut candidate.horizon,
+            proofs,
+            crypto,
+            work,
+            missing,
+        )? {
             continue;
         }
         // EN 319 102-1 V1.4.1 §5.6.2.2.4 steps 2(c) and 2(d) select
@@ -101,7 +114,11 @@ fn choose<'a, W: Work>(
         selected = Some(candidate);
         conflict = false;
     }
-    Ok(if conflict { None } else { selected })
+    if conflict {
+        *missing = None;
+        return Ok(None);
+    }
+    Ok(selected)
 }
 
 fn slide_crypto<W: Work>(
@@ -110,6 +127,7 @@ fn slide_crypto<W: Work>(
     proofs: &Proofs<W>,
     crypto: &Crypto<'_>,
     work: &W,
+    missing: &mut Option<Object>,
 ) -> Result<bool, Error> {
     for item in objects {
         match crypto.sunset(item.material, work)? {
@@ -118,6 +136,7 @@ fn slide_crypto<W: Work>(
                 // 5.6.2.1.1: the authenticated bound for this exact
                 // object has to predate loss of reliability.
                 if !proofs.by(item.object, limit, work)? {
+                    missing.get_or_insert(item.object);
                     return Ok(false);
                 }
                 horizon.tighten(limit);
@@ -138,29 +157,48 @@ fn slide<W: Work>(
     proofs: &Proofs<W>,
     crypto: &Crypto<'_>,
     work: &W,
-) -> Result<Option<(Horizon, bool)>, Error> {
+    missing: &mut Option<Object>,
+) -> Result<Option<(Horizon, Option<bool>)>, Error> {
     let mut horizon = Horizon::Through(now);
     if let Some(sunset) = path.anchor_sunset {
         horizon.tighten(Horizon::Before(sunset));
     }
-    let mut issuer_poe = false;
+    let mut issuer_poe = Some(false);
     for (i, member) in path.members.iter().enumerate() {
         work.charge_work(10)?;
+        if !proofs.by(member.object, horizon, work)? {
+            *missing = Some(member.object);
+            return Ok(None);
+        }
+        // EN 319 102-1 V1.4.1 §5.1.4.1 permits an explicit revocation
+        // waiver. The member still needs proof and cryptographic checks.
+        let RevocationCheck::Required(records) = member.revocations else {
+            issuer_poe = None;
+            if !slide_crypto(member.crypto, &mut horizon, proofs, crypto, work, missing)? {
+                return Ok(None);
+            }
+            continue;
+        };
+        let mut missing_record = None;
         let Some(choice) = choose(
-            member,
+            records,
             horizon,
             i == path.members.len() - 1,
             proofs,
             crypto,
             work,
+            &mut missing_record,
         )?
         else {
+            *missing = missing_record;
             return Ok(None);
         };
         let record = choice.record;
-        issuer_poe = choice.issuer_poe;
+        issuer_poe = Some(choice.issuer_poe);
         match record.status {
             Revocation::Revoked { at, reason } => {
+                // EN 319 102-1 §5.6.2.2.4 step 2(b) refers to key
+                // compromise. RFC 5280 §5.3.1 also names CA and AA causes.
                 if model == ValidityModel::Shell
                     || matches!(
                         reason,
@@ -185,7 +223,7 @@ fn slide<W: Work>(
             }
         }
         horizon.tighten(choice.horizon);
-        if !slide_crypto(member.crypto, &mut horizon, proofs, crypto, work)? {
+        if !slide_crypto(member.crypto, &mut horizon, proofs, crypto, work, missing)? {
             return Ok(None);
         }
     }
@@ -206,15 +244,23 @@ fn certificate<W: Work>(
     let mut result = PastCertificate::Finding {
         sub: Sub::NoCertificateChainFound,
         path: None,
+        missing_proof: None,
     };
-    let mut fallback: Option<(PastCertificate, bool, bool)> = None;
+    let mut fallback: Option<(PastCertificate, Option<bool>, bool)> = None;
     for (index, path) in signature.candidates.iter().enumerate() {
         work.charge_work(6)?;
+        let mut missing_proof = None;
         let sub = if !path.recognized || path.chain == Chain::GeneralFailure {
             Sub::CertificateChainGeneralFailure
-        } else if let Some((horizon, issuer_poe)) =
-            slide(path, now, signature.model, proofs, crypto, work)?
-        {
+        } else if let Some((horizon, issuer_poe)) = slide(
+            path,
+            now,
+            signature.model,
+            proofs,
+            crypto,
+            work,
+            &mut missing_proof,
+        )? {
             if path.chain == Chain::Valid {
                 let candidate = PastCertificate::Passed {
                     path: index,
@@ -222,12 +268,9 @@ fn certificate<W: Work>(
                 };
                 // Historical validity, signature proof and issuer proof are
                 // separate requirements (EN 319 102-1 5.6.2.4.4).
-                let Some(at) = signature_proof else {
-                    return Ok((candidate, Some(issuer_poe)));
-                };
-                let covers = horizon.admits(at);
-                if covers && issuer_poe {
-                    return Ok((candidate, Some(true)));
+                let covers = signature_proof.is_none_or(|at| horizon.admits(at));
+                if covers && issuer_poe != Some(false) {
+                    return Ok((candidate, issuer_poe));
                 }
                 if fallback.is_none_or(|(_, _, covered)| covers && !covered) {
                     fallback = Some((candidate, issuer_poe, covers));
@@ -241,11 +284,10 @@ fn certificate<W: Work>(
         result = PastCertificate::Finding {
             sub,
             path: Some(index),
+            missing_proof,
         };
     }
-    Ok(fallback.map_or((result, None), |(path, issuer_poe, _)| {
-        (path, Some(issuer_poe))
-    }))
+    Ok(fallback.map_or((result, None), |(path, issuer_poe, _)| (path, issuer_poe)))
 }
 
 fn all_algorithm_proofs<W: Work>(
@@ -284,6 +326,31 @@ fn ca_revocation_proof<W: Work>(
     Ok(false)
 }
 
+fn retry_suggestion(retry: RetryCause<'_>, decision: Decision) -> Option<Instant> {
+    if decision != Decision::Finding(Sub::TryLater) {
+        return None;
+    }
+    match retry {
+        RetryCause::Freshness { retry_at, .. } | RetryCause::Suspension { retry_at } => retry_at,
+        RetryCause::Other => None,
+    }
+}
+
+fn recoverable(sub: Sub) -> bool {
+    // EN 319 102-1 §5.6.2.4.4 steps 3 to 6.
+    matches!(
+        sub,
+        Sub::NoCertificateChainFoundNoPoe
+            | Sub::RevokedNoPoe
+            | Sub::RevocationOutOfBoundsNoPoe
+            | Sub::RevokedCaNoPoe
+            | Sub::OutOfBoundsNoPoe
+            | Sub::OutOfBoundsNotRevoked
+            | Sub::CryptoConstraintsFailureNoPoe
+            | Sub::TryLater
+    )
+}
+
 pub(super) fn signature<W: Work>(
     signature: &Signature<'_>,
     current: Decision,
@@ -297,26 +364,25 @@ pub(super) fn signature<W: Work>(
         certificate: None,
         signature_poe: None,
         revocation_poe: None,
+        retry_at: retry_suggestion(signature.retry, current),
     };
     let Decision::Finding(sub) = current else {
         return Ok(report);
     };
-    // Clause 5.6.2.4 has no recovery rule for other findings.
-    if !matches!(
-        sub,
-        Sub::NoCertificateChainFoundNoPoe
-            | Sub::RevokedNoPoe
-            | Sub::RevocationOutOfBoundsNoPoe
-            | Sub::RevokedCaNoPoe
-            | Sub::OutOfBoundsNoPoe
-            | Sub::OutOfBoundsNotRevoked
-            | Sub::CryptoConstraintsFailureNoPoe
-            | Sub::TryLater
-    ) {
+    if !recoverable(sub) {
         return Ok(report);
     }
     let best = proofs.earliest(signature.value, work)?;
-    let (cert, issuer_poe) = certificate(signature, now, best, proofs, crypto, work)?;
+    // EN 319 102-1 V1.4.1 §5.6.2.4.4: steps 4 and 5 have their own
+    // predicates and do not depend on the signature-proof gate at step 3.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf
+    let uses_step_three = sub != Sub::CryptoConstraintsFailureNoPoe
+        && !matches!(
+            (sub, signature.retry),
+            (Sub::TryLater, RetryCause::Freshness { .. })
+        );
+    let path_proof = if uses_step_three { best } else { None };
+    let (cert, issuer_poe) = certificate(signature, now, path_proof, proofs, crypto, work)?;
     report.revocation_poe = issuer_poe;
     report.certificate = Some(cert);
     let PastCertificate::Passed { horizon, .. } = cert else {
@@ -324,30 +390,33 @@ pub(super) fn signature<W: Work>(
     };
     let by_horizon = best.is_some_and(|at| horizon.admits(at));
     report.signature_poe = Some(by_horizon);
-    let Some(best) = best.filter(|_| by_horizon) else {
-        return Ok(report);
-    };
-    let validity = signature.validity;
-    let clear = if issuer_poe == Some(true) {
-        Decision::Passed
-    } else {
+    let clear = if issuer_poe == Some(false) {
         Decision::Finding(Sub::RevocationOutOfBoundsNoPoe)
+    } else {
+        Decision::Passed
     };
     if sub == Sub::CryptoConstraintsFailureNoPoe
-        && validity.contains(best)
         && all_algorithm_proofs(signature.affected_crypto, proofs, crypto, work)?
     {
         report.decision = clear;
         return Ok(report);
     }
     if sub == Sub::TryLater
-        && let RetryCause::Freshness(record) = signature.retry
+        && let RetryCause::Freshness { record, .. } = signature.retry
     {
-        if validity.contains(best) && record.fresh_before.is_some_and(|end| best < end) {
+        if best
+            .zip(record.fresh_before)
+            .is_some_and(|(at, end)| at < end)
+        {
             report.decision = clear;
+            report.retry_at = None;
         }
         return Ok(report);
     }
+    let Some(best) = best.filter(|_| by_horizon) else {
+        return Ok(report);
+    };
+    let validity = signature.validity;
     report.decision = match sub {
         Sub::RevokedCaNoPoe => {
             if !ca_revocation_proof(signature, proofs, work)? {
@@ -364,7 +433,7 @@ pub(super) fn signature<W: Work>(
         | Sub::OutOfBoundsNoPoe
         | Sub::OutOfBoundsNotRevoked
         | Sub::TryLater
-            if sub != Sub::TryLater || matches!(signature.retry, RetryCause::Suspension) =>
+            if sub != Sub::TryLater || matches!(signature.retry, RetryCause::Suspension { .. }) =>
         {
             if best < validity.not_before {
                 Decision::Finding(Sub::NotYetValid)
@@ -384,5 +453,8 @@ pub(super) fn signature<W: Work>(
         }
         _ => current,
     };
+    if report.decision != Decision::Finding(Sub::TryLater) {
+        report.retry_at = None;
+    }
     Ok(report)
 }

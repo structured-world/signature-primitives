@@ -2,7 +2,7 @@
 //! steps of ETSI EN 319 102-1 V1.4.1 clauses 5.3.4 and 5.5.4.
 
 use super::*;
-use crate::pki::status::Revoked;
+use crate::pki::status::{Revoked, When};
 use crate::validation::crypto::{Family, Hash, Mechanism, Scheme};
 use crate::validation::policy::{Element, Requirements as Policy};
 use alloc::sync::Arc;
@@ -29,12 +29,12 @@ fn day(year: i64, month: i64, date: i64) -> Instant {
     Instant::new((era * 146_097 + doe - 719_468) * 86_400, 0).unwrap()
 }
 
-/// A recorded revocation. Its date is never compared here: the revocation
-/// evidence has already placed it against the interval.
+/// A recorded revocation before the fixture's default validation time.
 fn revoked(when: When) -> Status {
-    // Same UTC label as the public RFC 4134 certificate, without importing
-    // an unrelated complete certificate into this arithmetic-only test.
-    let der = b"\x17\x0d990919010847Z";
+    revoked_at(when, b"\x17\x0d260401000000Z")
+}
+
+fn revoked_at(when: When, der: &[u8]) -> Status {
     let memory = Memory::new(Arc::new(MemoryAccount::new(1 << 20, 1_000_000)));
     let parser = Parser::der(memory);
     let mut reader = parser.read(der, 0).unwrap();
@@ -85,6 +85,7 @@ const GOOD: Path<'static> = Path {
     authorities: &[],
     materials: &CERTIFICATE,
     revocation_issuers: &[],
+    revocation_retry: None,
 };
 
 const INTACT: [Reference; 1] = [Reference::Intact];
@@ -108,15 +109,18 @@ fn facts() -> Facts<'static> {
         references: &INTACT,
         value: Value::Verified,
         materials: &OWN,
+        signed_attribute_materials: &[],
         elements: Elements::NONE,
         time: Time {
             after: None,
             before: Some(day(2026, 6, 1)),
         },
+        content_timestamp: None,
         paths: &PATHS,
         truncated: false,
         order: Order::Coherent,
         signature_timestamp: true,
+        signature_timestamps: &[],
         claimed_signing_time: None,
         utc: None,
         changes: Changes::NotApplicable,
@@ -480,8 +484,8 @@ fn timestamp_delay_preserves_time_uncertainty() {
     assert_eq!(validate(&input, &policy).sub, expected);
 }
 
-/// Issuer validity includes both endpoints; every used issuer must pass,
-/// and another fully valid path remains usable after one issuer fails.
+/// Issuer validity includes both endpoints. EN 319 102-1 §5.2.6.4 step 8
+/// returns the issuer-validity finding before a later path can replace it.
 #[test]
 fn revocation_issuer_validity_is_inclusive_and_path_specific() {
     let now = facts().now;
@@ -527,16 +531,367 @@ fn revocation_issuer_validity_is_inclusive_and_path_specific() {
             ..facts()
         })
         .path,
-        Some(1)
+        Some(0)
     );
     assert_eq!(
         run(&Facts {
             paths: &paths,
             ..facts()
         })
-        .indication,
-        Indication::TotalPassed
+        .sub,
+        Some(SubIndication::RevocationOutOfBoundsNoPoe)
     );
+}
+
+/// A content timestamp at notAfter is not after it for §5.3.4 step 4.
+#[test]
+fn content_timestamp_at_expiry_does_not_upgrade_the_basic_result() {
+    let mut input = facts();
+    input.now = day(2029, 1, 1);
+    input.time.before = None;
+    input.time.after = Some(input.signer.unwrap().not_after);
+    input.content_timestamp = input.time.after;
+    assert_eq!(run(&input).sub, Some(SubIndication::OutOfBoundsNotRevoked));
+}
+
+/// Only a bound timestamp can decide step 3(b); step 3(a) discards a mismatch.
+#[test]
+fn required_bound_timestamp_failure_precedes_time_comparisons() {
+    let tokens = [
+        SignatureTimestamp::ImprintMismatch,
+        SignatureTimestamp::Passed(day(2026, 5, 1)),
+        SignatureTimestamp::Finding {
+            sub: SubIndication::SigCryptoFailure,
+            required: true,
+        },
+    ];
+    let mut input = Facts {
+        signature_timestamps: &tokens,
+        order: Order::Violated,
+        ..facts()
+    };
+    let outcome = run(&input);
+    assert_eq!(outcome.sub, Some(SubIndication::SigCryptoFailure));
+    assert_eq!(outcome.basis, Some(Basis::SignatureTimestamp(2)));
+    assert_eq!(outcome.best_signature_time, day(2026, 5, 1));
+    input.signature_timestamps = &tokens[..2];
+    assert_eq!(run(&input).sub, Some(SubIndication::TimestampOrderFailure));
+}
+
+/// Step 4(d) requires an actual proof inside the signer's validity.
+#[test]
+fn failed_optional_timestamp_does_not_recover_a_not_yet_valid_signer() {
+    let tokens = [SignatureTimestamp::Finding {
+        sub: SubIndication::SigCryptoFailure,
+        required: false,
+    }];
+    let mut input = Facts {
+        now: day(2024, 1, 1),
+        signature_timestamps: &tokens,
+        time: Time {
+            before: None,
+            after: None,
+        },
+        ..facts()
+    };
+    assert_eq!(run(&input).sub, Some(SubIndication::OutOfBoundsNotRevoked));
+    let tokens = [SignatureTimestamp::Passed(input.now)];
+    input.signature_timestamps = &tokens;
+    assert_eq!(run(&input).sub, Some(SubIndication::NotYetValid));
+}
+
+/// With-time steps 6 and 7 recheck the exact evidence at the proven bound.
+#[test]
+fn past_freshness_and_suspension_recover_only_before_their_bound() {
+    let boundary = day(2026, 7, 1);
+    let retry_at = Some(day(2026, 12, 1));
+    for (status, retry) in [
+        (
+            Status::NotFresh { basis: 0 },
+            RevocationRetry::Freshness {
+                fresh_before: Some(boundary),
+                retry_at,
+            },
+        ),
+        (
+            Status::OnHold { basis: 0 },
+            RevocationRetry::Suspension {
+                from: boundary,
+                retry_at,
+            },
+        ),
+    ] {
+        let paths = [Path {
+            revocation_retry: Some(retry),
+            ..GOOD
+        }];
+        let mut input = Facts {
+            paths: &paths,
+            ..facts()
+        };
+        input.signer.as_mut().unwrap().revocation = status;
+        let recovered = run(&input);
+        assert_eq!(recovered.indication, Indication::TotalPassed);
+        assert_eq!(recovered.path, Some(0));
+        input.time.before = Some(boundary);
+        let outcome = run(&input);
+        assert_eq!(outcome.sub, Some(SubIndication::TryLater));
+        assert_eq!(outcome.retry_at, retry_at);
+    }
+}
+
+/// The missing-chain exception in §5.3.4 step 4 precedes §5.2.7.
+#[test]
+fn inherited_public_key_reports_its_missing_chain_before_verification() {
+    let references = [Reference::Mismatch];
+    let mut input = Facts {
+        paths: &[],
+        references: &references,
+        value: Value::NeedsChain,
+        ..facts()
+    };
+    assert_eq!(
+        run(&input).sub,
+        Some(SubIndication::NoCertificateChainFound)
+    );
+    input.value = Value::Unsupported;
+    assert_eq!(run(&input).sub, Some(SubIndication::HashFailure));
+}
+
+/// The step 4(a) route uses the actual revocation time and excludes notAfter.
+#[test]
+fn ca_revocation_recovery_keeps_its_path_and_checks_the_expiry_boundary() {
+    let status = revoked_at(When::NotProvablyAfter, b"\x17\x0d260701000000Z");
+    let authorities = [status];
+    let paths = [Path {
+        authorities: &authorities,
+        ..GOOD
+    }];
+    let mut input = Facts {
+        paths: &paths,
+        ..facts()
+    };
+    let recovered = run(&input);
+    assert_eq!(recovered.indication, Indication::TotalPassed);
+    assert_eq!(recovered.path, Some(0));
+    input.signer.as_mut().unwrap().not_after = input.time.before.unwrap();
+    assert_eq!(run(&input).sub, Some(SubIndication::OutOfBoundsNotRevoked));
+    input.time.before = Some(day(2026, 7, 1));
+    assert_eq!(run(&input).sub, Some(SubIndication::RevokedCaNoPoe));
+}
+
+/// Basic SAV can be recoverable at an earlier proof, but step 4(e) still
+/// precedes any further acceptance check at that proof.
+#[test]
+fn time_recovery_observes_order_before_rechecking_acceptance() {
+    let own = [SHA256_RSA2048];
+    let input = Facts {
+        materials: &own,
+        order: Order::Violated,
+        now: day(2027, 6, 1),
+        ..facts()
+    };
+    let policy = Policy {
+        elements: Elements::NONE.with(Element::ContentType),
+        ..ETSI_TS_119_312_V2_1_1
+    };
+    assert_eq!(
+        validate(&input, &policy).sub,
+        Some(SubIndication::TimestampOrderFailure)
+    );
+    let input = Facts {
+        order: Order::Coherent,
+        ..input
+    };
+    assert_eq!(
+        validate(&input, &policy).sub,
+        Some(SubIndication::SigConstraintsFailure)
+    );
+}
+
+/// A content timestamp bounds construction of the `SignatureValue` only.
+#[test]
+fn content_timestamp_does_not_upgrade_an_attribute_algorithm_failure() {
+    let own = [SHA256_RSA2048];
+    let mut input = Facts {
+        signed_attribute_materials: &own,
+        now: day(2027, 6, 1),
+        time: Time {
+            after: Some(day(2027, 5, 1)),
+            before: None,
+        },
+        content_timestamp: Some(day(2027, 5, 1)),
+        ..facts()
+    };
+    assert_eq!(
+        run(&input).sub,
+        Some(SubIndication::CryptoConstraintsFailureNoPoe)
+    );
+    input.materials = &own;
+    assert_eq!(
+        run(&input).sub,
+        Some(SubIndication::CryptoConstraintsFailure)
+    );
+}
+
+/// Step 4(a) recovers only the named CA finding; the signer remains checked.
+#[test]
+fn ca_recovery_does_not_clear_earlier_signer_revocation() {
+    let authorities = [revoked_at(When::NotProvablyAfter, b"\x17\x0d260701000000Z")];
+    let paths = [Path {
+        authorities: &authorities,
+        ..GOOD
+    }];
+    let mut input = Facts {
+        paths: &paths,
+        ..facts()
+    };
+    input.signer.as_mut().unwrap().revocation = revoked(When::NotProvablyAfter);
+    let outcome = run(&input);
+    assert_eq!(outcome.sub, Some(SubIndication::RevokedNoPoe));
+    assert_eq!(outcome.basis, Some(Basis::SignerRevocation));
+}
+
+/// Recovering a temporal finding cannot bypass the remaining X.509 checks.
+#[test]
+fn temporal_recovery_enforces_deferred_chain_constraints_and_issuer_validity() {
+    let mut input = facts();
+    let Status::Revoked { revoked, .. } =
+        revoked_at(When::NotProvablyAfter, b"\x17\x0d260701000000Z")
+    else {
+        unreachable!();
+    };
+    input.signer.as_mut().unwrap().revocation = Status::NotRevoked {
+        basis: 0,
+        later: Some(revoked),
+    };
+    let paths = [Path {
+        chain: Chain::ConstraintsFailure,
+        ..GOOD
+    }];
+    input.paths = &paths;
+    assert_eq!(
+        run(&input).sub,
+        Some(SubIndication::ChainConstraintsFailure)
+    );
+    let issuers = [RevocationIssuer {
+        not_before: day(2026, 1, 1),
+        not_after: day(2026, 8, 1),
+    }];
+    let paths = [Path {
+        revocation_issuers: &issuers,
+        ..GOOD
+    }];
+    input.paths = &paths;
+    assert_eq!(
+        run(&input).sub,
+        Some(SubIndication::RevocationOutOfBoundsNoPoe)
+    );
+}
+
+/// Applying §5.5.4 step 4(c) cannot validate a signature before issuance.
+#[test]
+fn crypto_recovery_preserves_the_certificate_issuance_bound() {
+    let own = [SHA256_RSA2048];
+    let input = Facts {
+        materials: &own,
+        now: day(2027, 6, 1),
+        time: Time {
+            before: Some(day(2024, 12, 31)),
+            after: None,
+        },
+        ..facts()
+    };
+    let outcome = run(&input);
+    assert_eq!(outcome.sub, Some(SubIndication::NotYetValid));
+    assert_eq!(outcome.basis, Some(Basis::SignerValidity));
+}
+
+/// Recovering one authority does not clear another authority already revoked.
+#[test]
+fn temporal_recovery_checks_the_remaining_authorities() {
+    let authorities = [
+        revoked_at(When::NotProvablyAfter, b"\x17\x0d260701000000Z"),
+        revoked(When::Before),
+    ];
+    let paths = [Path {
+        authorities: &authorities,
+        ..GOOD
+    }];
+    let outcome = run(&Facts {
+        paths: &paths,
+        ..facts()
+    });
+    assert_eq!(outcome.sub, Some(SubIndication::RevokedCaNoPoe));
+    assert_eq!(outcome.basis, Some(Basis::Authority { path: 0, index: 1 }));
+}
+
+/// EN 319 102-1 Table 6 retains each material constraint and missing element.
+#[test]
+fn table_six_findings_retain_all_unmet_constraints_with_source_indices() {
+    let materials = [
+        Material {
+            hash: Some(Hash::Md5),
+            scheme: Some(rsa(512)),
+        },
+        Material {
+            hash: Some(Hash::Md5),
+            scheme: None,
+        },
+    ];
+    let input = Facts {
+        materials: &materials,
+        ..facts()
+    };
+    let work = Memory::new(Arc::new(MemoryAccount::new(0, 100_000)));
+    let mut found = vec![];
+    let outcome = crate::validation::validate_with_findings(
+        &input,
+        &ETSI_TS_119_312_V2_1_1,
+        &work,
+        |basis, failure| {
+            found.push((basis, failure.mechanism));
+        },
+    )
+    .unwrap();
+    assert_eq!(outcome, run(&input));
+    assert_eq!(
+        found,
+        [
+            (Basis::Material(0), Mechanism::Hash(Hash::Md5)),
+            (Basis::Material(0), Mechanism::Scheme(rsa(512))),
+            (
+                Basis::Material(0),
+                Mechanism::Suite {
+                    hash: Hash::Md5,
+                    scheme: rsa(512)
+                }
+            ),
+            (Basis::Material(1), Mechanism::Hash(Hash::Md5)),
+        ]
+    );
+    let short = Memory::new(Arc::new(MemoryAccount::new(0, work.work_used() - 1)));
+    let mut called = false;
+    assert!(
+        crate::validation::validate_with_findings(
+            &input,
+            &ETSI_TS_119_312_V2_1_1,
+            &short,
+            |_, _| called = true,
+        )
+        .is_err()
+    );
+    assert!(!called);
+
+    let policy = Policy {
+        elements: Elements::NONE
+            .with(Element::ContentType)
+            .with(Element::CommitmentType),
+        ..ETSI_TS_119_312_V2_1_1
+    };
+    let outcome = validate(&facts(), &policy);
+    assert_eq!(outcome.basis, Some(Basis::Element(Element::ContentType)));
+    assert_eq!(outcome.missing_elements, policy.elements);
 }
 
 /// The ordinary signature passes at its timestamp, as 5.5.4 decides it,
@@ -592,6 +947,7 @@ fn the_axes_and_the_process_follow_what_is_proven_about_time() {
 
     let mut basic = facts();
     basic.time.before = None;
+    basic.signature_timestamp = false;
     let outcome = run(&basic);
     assert_eq!(outcome.indication, Indication::TotalPassed);
     assert_eq!(outcome.process, Process::Basic);
@@ -774,7 +1130,9 @@ fn expiry_is_judged_at_best_signature_time() {
     assert_eq!(sub(&facts), Some("OUT_OF_BOUNDS_NO_POE"));
 
     let mut facts = self::facts();
-    facts.time.after = Some(day(2027, 12, 31));
+    facts.now = day(2028, 2, 1);
+    facts.time.after = Some(day(2028, 1, 1));
+    facts.content_timestamp = facts.time.after;
     facts.time.before = Some(day(2028, 1, 2));
     let outcome = run(&facts);
     assert_eq!(outcome.indication, Indication::TotalFailed);
@@ -790,7 +1148,7 @@ fn a_revocation_is_judged_against_best_signature_time() {
     let signer = facts.signer.as_mut().unwrap();
     signer.revocation = Status::NotRevoked {
         basis: 0,
-        later: match revoked(When::NotProvablyAfter) {
+        later: match revoked_at(When::NotProvablyAfter, b"\x17\x0d260701000000Z") {
             Status::Revoked { revoked, .. } => Some(revoked),
             _ => unreachable!(),
         },
@@ -804,6 +1162,7 @@ fn a_revocation_is_judged_against_best_signature_time() {
     assert_eq!(outcome.basis, Some(Basis::SignerRevocation));
 
     facts.signer.as_mut().unwrap().revocation = revoked(When::Before);
+    facts.content_timestamp = Some(day(2026, 5, 1));
     let outcome = run(&facts);
     assert_eq!(outcome.indication, Indication::TotalFailed);
     assert_eq!(outcome.sub, Some(SubIndication::Revoked));
@@ -971,6 +1330,7 @@ fn the_signatures_algorithms_are_judged_at_best_signature_time() {
     assert_eq!(outcome.axes.crypto, Some((Basis::Material(0), unmet)));
 
     facts.time.after = Some(day(2027, 2, 1));
+    facts.content_timestamp = facts.time.after;
     facts.time.before = Some(day(2027, 3, 1));
     assert_eq!(sub(&facts), Some("CRYPTO_CONSTRAINTS_FAILURE"));
 }
@@ -1043,7 +1403,18 @@ fn signer_revocation_precedes_later_path_constraints() {
             let mut facts = facts();
             facts.paths = &paths;
             facts.now = day(2027, 6, 1);
-            facts.time.after = Some(day(2026, 1, 1));
+            facts.time.after = Some(day(2026, 5, 1));
+            facts.content_timestamp = if matches!(
+                status,
+                Status::Revoked {
+                    when: When::Before,
+                    ..
+                }
+            ) {
+                facts.time.after
+            } else {
+                None
+            };
             facts.signer.as_mut().unwrap().revocation = status;
             let outcome = run(&facts);
             assert_eq!(outcome.sub, Some(expected), "{chain:?}, {status:?}");
@@ -1125,6 +1496,7 @@ fn never_secure_material_fails_outright_only_when_proven_made_after() {
     ] {
         let outcome = run(&Facts {
             materials: &own,
+            content_timestamp: after,
             time: Time {
                 after,
                 before: Some(day(2026, 6, 1)),

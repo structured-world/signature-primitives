@@ -2,21 +2,18 @@
 //! 5.5.4, over facts that other stages established.
 //!
 //! The clauses are followed in their order, which decides which of several
-//! findings is the one reported. What the signature itself depends on is
-//! compared with best-signature-time, the upper bound proven for it or the
-//! current time where none is (5.5.4 step 1): its certificate's validity
-//! and revocation and its own algorithms. What the chain depends on, the
-//! anchor's trust and the algorithms of the certificates and revocation data,
-//! is compared with the current time, as the basic validation of 5.5.4 step
-//! 2 compares it and nothing later in the clause revisits. What held across
-//! the whole interval is reported in [`Axes`] and never changes the
-//! indication.
+//! findings is reported. Basic validation assesses the chain and signature
+//! at current time. The with-time process keeps that decision until a clause
+//! 5.5.4 recovery rule applies at the earliest proven signature time. Path
+//! material is assessed at current time. [`Axes`] separately describes the
+//! evidence across the whole interval.
 
 use super::Recognition as Conclusion;
 use super::crypto::{Constraints, Material, Unmet};
 use super::indication::{Custom, Indication, SubIndication};
 use super::policy::{Element, Elements, Requirements};
-use crate::pki::status::{Status, When};
+use crate::pki::status::Status;
+use structured_asn1::memory::{MemoryError, Work};
 use structured_pkix::temporal::{Instant, LeapTable};
 
 /// The caller's validation-context initialization (EN 319 102-1 5.2.4.4).
@@ -68,6 +65,43 @@ pub enum Value {
     Mismatch,
     /// Its algorithm is not one this build computes, so it was not checked.
     Unsupported,
+    /// Verification needs inherited key parameters from a certification chain.
+    NeedsChain,
+}
+
+/// Format-established outcome for one original signature timestamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureTimestamp {
+    /// The imprint did not bind this signature, and the token is discarded.
+    ImprintMismatch,
+    /// The token validated and proves signature existence by this instant.
+    Passed(Instant),
+    /// The bound token failed its validation.
+    Finding {
+        /// The token's validation finding.
+        sub: SubIndication,
+        /// Whether the selected constraints mandate its validity.
+        required: bool,
+    },
+}
+
+/// Status evidence to re-evaluate at best-signature-time (5.5.4 steps 6 and 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevocationRetry {
+    /// The status was stale at the original check time.
+    Freshness {
+        /// Exclusive upper bound supplied by the selected freshness rule.
+        fresh_before: Option<Instant>,
+        /// Next update or equivalent retry suggestion.
+        retry_at: Option<Instant>,
+    },
+    /// The signer was suspended at the original check time.
+    Suspension {
+        /// Beginning of the authenticated suspension.
+        from: Instant,
+        /// Next update or equivalent retry suggestion.
+        retry_at: Option<Instant>,
+    },
 }
 
 /// What is proven about when the signature was made.
@@ -133,6 +167,8 @@ pub struct Path<'a> {
     /// including the signing certificate's revocation data. These are checked
     /// at the current validation time (EN 319 102-1 5.2.6.4 step 8).
     pub revocation_issuers: &'a [RevocationIssuer],
+    /// Evidence belonging to this path's current `TRY_LATER` result.
+    pub revocation_retry: Option<RevocationRetry>,
 }
 
 /// Whether the timestamps respect their ordering (5.5.4 step 4e).
@@ -174,13 +210,19 @@ pub struct Facts<'a> {
     /// The signature value.
     pub value: Value,
     /// The signature value and its signed attributes, judged at
-    /// best-signature-time.
+    /// current time during basic validation and best-signature-time later.
+    /// This slice holds the signature value's own mechanisms.
     pub materials: &'a [Material],
+    /// Independent cryptography used by signed attributes.
+    pub signed_attribute_materials: &'a [Material],
     /// The signature elements it carries in a form that passed their own
     /// checks, for the policy's element constraints (5.2.8.4).
     pub elements: Elements,
     /// What is proven about when it was made.
     pub time: Time,
+    /// Authenticated lower generation bound of a content timestamp
+    /// for EN 319 102-1 §5.3.4 steps 4 and 6.
+    pub content_timestamp: Option<Instant>,
     /// Every path built, in the order they were built.
     pub paths: &'a [Path<'a>],
     /// Whether the path builder stopped before trying every candidate.
@@ -190,6 +232,8 @@ pub struct Facts<'a> {
     /// Whether a signature time-stamp token is present. A proof supplied by
     /// the application or another kind of token does not imply this.
     pub signature_timestamp: bool,
+    /// Individual signature timestamp results, in source order.
+    pub signature_timestamps: &'a [SignatureTimestamp],
     /// The signed claimed signing time, kept separate from proven bounds.
     pub claimed_signing_time: Option<Instant>,
     /// Caller-approved UTC corrections for the time-stamp delay calculation.
@@ -201,6 +245,12 @@ pub struct Facts<'a> {
     pub changes: Changes,
     /// The current time, from the caller's clock.
     pub now: Instant,
+}
+
+impl Facts<'_> {
+    pub(super) fn has_signature_timestamp(&self) -> bool {
+        self.signature_timestamp || !self.signature_timestamps.is_empty()
+    }
 }
 
 /// Which validation process was used (5.1.3).
@@ -254,12 +304,15 @@ pub enum Basis {
     SignerRevocation,
     /// The signing certificate's validity.
     SignerValidity,
-    /// One piece of the signature's own material, by index.
+    /// Material index into the signature value slice followed by the
+    /// signed-attribute slice.
     Material(usize),
     /// A signature element the policy requires and the signature lacks.
     Element(Element),
     /// The timestamps.
     Timestamps,
+    /// Original signature timestamp by index.
+    SignatureTimestamp(usize),
     /// The configured delay between the claimed signing time and timestamp.
     TimestampDelay,
 }
@@ -322,6 +375,10 @@ pub struct Outcome {
     pub basis: Option<Basis>,
     /// The constraint not met, for the cryptographic sub-indications.
     pub unmet: Option<Unmet>,
+    /// Evaluation time of that constraint.
+    pub crypto_at: Option<Instant>,
+    /// All unmet element constraints when signature elements decided the result.
+    pub missing_elements: Elements,
     /// The path the decision was taken on, where one was.
     pub path: Option<usize>,
     /// The time the status was determined for (5.1.3).
@@ -330,6 +387,8 @@ pub struct Outcome {
     pub process: Process,
     /// Whether the path builder stopped before trying every candidate.
     pub truncated: bool,
+    /// An evidence-supplied time to retry the deciding revocation check.
+    pub retry_at: Option<Instant>,
     /// Each property's own answer.
     pub axes: Axes,
 }
@@ -340,6 +399,7 @@ pub(super) struct Verdict {
     pub(super) sub: SubIndication,
     basis: Basis,
     unmet: Option<Unmet>,
+    crypto_at: Option<Instant>,
 }
 
 impl Verdict {
@@ -348,6 +408,17 @@ impl Verdict {
             sub,
             basis,
             unmet: None,
+            crypto_at: None,
+        }
+    }
+
+    const fn path(self) -> Option<usize> {
+        match self.basis {
+            Basis::Path(path)
+            | Basis::Authority { path, .. }
+            | Basis::PathMaterial { path, .. }
+            | Basis::RevocationIssuer { path, .. } => Some(path),
+            _ => None,
         }
     }
 }
@@ -357,38 +428,23 @@ impl Verdict {
 pub(super) fn compute(facts: &Facts<'_>, policy: &Requirements<'_>) -> Outcome {
     // 5.5.4 step 1: best-signature-time starts as the current time and moves
     // to the earliest proven existence.
-    let best = facts.time.before.unwrap_or(facts.now);
+    let mut best = facts.time.before.map_or(facts.now, |at| at.min(facts.now));
     let constraints = policy.crypto;
     let initialized = initialize(facts.context);
     let selected = initialized.and_then(|()| select(facts, &constraints));
-    // The signature's own material at best-signature-time, a content
-    // timestamp proving it made after; judged once, for the decision and the
-    // axis alike.
-    let own = if initialized.is_ok() {
-        facts
-            .materials
-            .iter()
-            .enumerate()
-            .find_map(|(index, material)| {
-                constraints
-                    .assess(*material, best, facts.time.after)
-                    .err()
-                    .map(|unmet| (Basis::Material(index), unmet))
-            })
+    let decided = decide(facts, &mut best, selected, policy, initialized);
+    let own = if initialized.is_ok() && decided.is_err() {
+        own_failure(facts, best, &constraints).map(|(index, unmet)| (Basis::Material(index), unmet))
     } else {
         None
     };
-    let decided = decide(facts, best, selected, own, policy, initialized);
-    let path = match (decided, selected) {
-        (Err(Verdict { basis, .. }), _) => match basis {
-            Basis::Path(path)
-            | Basis::Authority { path, .. }
-            | Basis::PathMaterial { path, .. }
-            | Basis::RevocationIssuer { path, .. } => Some(path),
-            _ => selected.ok(),
-        },
-        (Ok(()), _) => selected.ok(),
-    };
+    let path = decided
+        .err()
+        .and_then(Verdict::path)
+        .or_else(|| match selected {
+            Ok(path) => Some(path),
+            Err(verdict) => verdict.path(),
+        });
     let axes = Axes {
         integrity: integrity(facts),
         validity: facts.signer.map(|signer| coverage(facts.time, signer)),
@@ -400,37 +456,88 @@ pub(super) fn compute(facts: &Facts<'_>, policy: &Requirements<'_>) -> Outcome {
         crypto: own,
         changes: facts.changes,
     };
-    let (indication, sub, basis, unmet) = match decided {
-        Ok(()) => (Indication::TotalPassed, None, None, None),
+    let (indication, sub, basis, unmet, crypto_at) = match decided {
+        Ok(()) => (Indication::TotalPassed, None, None, None, None),
         Err(verdict) => (
             verdict.sub.indication(),
             Some(verdict.sub),
             Some(verdict.basis),
             verdict.unmet,
+            verdict.crypto_at,
         ),
+    };
+    let retry_at = if sub == Some(SubIndication::TryLater)
+        && !matches!(basis, Some(Basis::SignatureTimestamp(_)))
+    {
+        path.and_then(|index| facts.paths[index].revocation_retry)
+            .and_then(|retry| match retry {
+                RevocationRetry::Freshness { retry_at, .. }
+                | RevocationRetry::Suspension { retry_at, .. } => retry_at,
+            })
+    } else {
+        None
     };
     Outcome {
         indication,
         sub,
         basis,
         unmet,
+        crypto_at,
+        // EN 319 102-1 Table 6 requests the set of unsatisfied elements.
+        missing_elements: if matches!(basis, Some(Basis::Element(_))) {
+            policy.elements.missing_from(facts.elements)
+        } else {
+            Elements::NONE
+        },
         path,
         best_signature_time: best,
-        process: if facts.time.before.is_some() {
+        process: if with_time(facts) {
             Process::WithTime
         } else {
             Process::Basic
         },
         truncated: facts.truncated,
+        retry_at,
         axes,
     }
 }
 
+pub(super) fn visit_findings(
+    facts: &Facts<'_>,
+    policy: &Requirements<'_>,
+    result: &Outcome,
+    execution: &impl Work,
+    mut visit: impl FnMut(Basis, Unmet),
+) -> Result<(), MemoryError> {
+    let (Some(at), Some(basis)) = (result.crypto_at, result.basis) else {
+        return Ok(());
+    };
+    let (value, attributes) = match basis {
+        Basis::Material(_) => (facts.materials, facts.signed_attribute_materials),
+        Basis::PathMaterial { path, .. } => (facts.paths[path].materials, &[][..]),
+        _ => return Ok(()),
+    };
+    let count = (value.len() as u64)
+        .checked_add(attributes.len() as u64)
+        .ok_or(MemoryError::WorkExceeded)?;
+    let cost = super::admission::material_cost(&policy.crypto, execution)?;
+    execution.charge_work(count.checked_mul(cost).ok_or(MemoryError::WorkExceeded)?)?;
+    for (index, &material) in value.iter().chain(attributes).enumerate() {
+        let (source, lower) = match basis {
+            Basis::PathMaterial { path, .. } => (Basis::PathMaterial { path, index }, None),
+            _ => (Basis::Material(index), content_bound(facts, index)),
+        };
+        policy
+            .crypto
+            .inspect(material, at, lower, |unmet| visit(source, unmet));
+    }
+    Ok(())
+}
+
 fn decide(
     facts: &Facts<'_>,
-    best: Instant,
+    best: &mut Instant,
     selected: Result<usize, Verdict>,
-    own: Option<(Basis, Unmet)>,
     policy: &Requirements<'_>,
     initialized: Result<(), Verdict>,
 ) -> Result<(), Verdict> {
@@ -447,27 +554,253 @@ fn decide(
     };
     // EN 319 102-1 V1.4.1 5.3.4 step 3, before cryptographic verification.
     initialized?;
-    // 5.3.4 step 5: a cryptographic verification that did not pass is
-    // reported whatever the certificate validation found.
-    verify(facts)?;
-    // 5.3.4 step 4, with the comparisons of 5.5.4 step 4.
-    selected?;
-    certificate(facts, signer, best)?;
-    // 5.5.4 step 4c, and steps 8 and 9, and 5.3.4 step 6: the signature's own
-    // material at best-signature-time, before the order of step 4e.
-    if let Some((basis, unmet)) = own {
-        return Err(crypto(unmet, basis));
+    // EN 319 102-1 V1.4.1 §5.3.4 step 4 returns before cryptography
+    // when key extraction needs the missing chain (e.g. inherited DSA).
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf#page=58
+    if facts.value == Value::NeedsChain
+        && let Err(verdict) = selected
+        && verdict.sub == SubIndication::NoCertificateChainFound
+    {
+        return Err(verdict);
     }
-    // 5.3.4 step 6 and 5.2.8.4: a required element missing or malformed is
-    // SIG_CONSTRAINTS_FAILURE, which 5.5.4 step 2 returns before step 4e.
+    // §5.3.4 step 5 gives all other verification failures precedence.
+    verify(facts)?;
+    let basic = selected
+        .and_then(|_| basic_certificate(facts, signer))
+        .and_then(|()| acceptance(facts, facts.now, policy))
+        .and_then(|()| elements(facts, policy));
+    if !with_time(facts) {
+        return basic;
+    }
+    // EN 319 102-1 V1.4.1 §5.5.4 steps 2 to 4 preserve the basic
+    // finding until the corresponding temporal rule explicitly recovers it.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf#page=62
+    if let Err(verdict) = basic
+        && !matches!(
+            verdict.sub,
+            SubIndication::CryptoConstraintsFailureNoPoe
+                | SubIndication::RevokedNoPoe
+                | SubIndication::RevokedCaNoPoe
+                | SubIndication::TryLater
+                | SubIndication::OutOfBoundsNoPoe
+                | SubIndication::OutOfBoundsNotRevoked
+        )
+    {
+        return Err(verdict);
+    }
+    let mut proved = facts.time.before.is_some_and(|bound| bound <= facts.now);
+    for (index, token) in facts.signature_timestamps.iter().enumerate() {
+        // §5.5.4 step 3(a) discards imprint mismatches before step 3(b)
+        // enforces validity of the remaining required timestamps.
+        match *token {
+            SignatureTimestamp::Passed(bound) => {
+                *best = (*best).min(bound);
+                proved = true;
+            }
+            SignatureTimestamp::Finding {
+                sub,
+                required: true,
+            } => {
+                return Err(Verdict::on(sub, Basis::SignatureTimestamp(index)));
+            }
+            SignatureTimestamp::ImprintMismatch
+            | SignatureTimestamp::Finding {
+                required: false, ..
+            } => {}
+        }
+    }
+    let path = compare_times(facts, signer, *best, proved, selected, basic, policy)?;
+    timestamp_order(facts.order)?;
+    timestamp_delay(facts, *best, policy)?;
+    if let Err(verdict) = basic
+        && verdict.sub == SubIndication::TryLater
+    {
+        // §5.5.4 steps 6 and 7 use the exact freshness or suspension facts.
+        let recovered = match facts.paths[path].revocation_retry {
+            Some(RevocationRetry::Freshness { fresh_before, .. }) => {
+                fresh_before.is_some_and(|end| *best < end)
+            }
+            Some(RevocationRetry::Suspension { from, .. }) => *best < from,
+            None => false,
+        };
+        if !recovered {
+            return Err(verdict);
+        }
+    }
+    let recovered = matches!(basic, Err(verdict) if matches!(verdict.sub,
+        SubIndication::TryLater | SubIndication::RevokedCaNoPoe | SubIndication::RevokedNoPoe
+    ));
+    if let Err(verdict) = basic
+        && recovered
+    {
+        // §5.5.4 steps 4(a), 6 and 7 recover the named temporal finding.
+        // They do not establish status for any other path member.
+        recovered_path(path, facts, signer, *best, verdict)?;
+    }
+    // §§5.5.4 steps 8 to 10 reapply own crypto at best time and path
+    // crypto at current time, including a path recovered from revocation.
+    if *best != facts.now || basic.is_err() {
+        acceptance(facts, *best, policy)?;
+        elements(facts, policy)?;
+    }
+    if recovered {
+        path_crypto(path, &facts.paths[path], facts.now, &policy.crypto)?;
+        issuer_validity(path, &facts.paths[path], facts.now)?;
+    }
+    Ok(())
+}
+
+fn recovered_path(
+    path: usize,
+    facts: &Facts<'_>,
+    signer: Signer,
+    best: Instant,
+    original: Verdict,
+) -> Result<(), Verdict> {
+    let selected = &facts.paths[path];
+    for (index, &status) in selected.authorities.iter().enumerate() {
+        let basis = Basis::Authority { path, index };
+        if original.sub == SubIndication::TryLater && original.basis == basis {
+            continue;
+        }
+        authority(status, best).map_err(|sub| Verdict::on(sub, basis))?;
+    }
+    // EN 319 102-1 V1.4.1 §5.2.6.4 steps 4(b) to 5 still apply
+    // after clearing the particular failure under §5.5.4.
+    let resumed_signer_status = original.sub == SubIndication::TryLater
+        && matches!(original.basis, Basis::SignerRevocation | Basis::Path(_));
+    if !resumed_signer_status {
+        signer_status_at(signer.revocation, best, facts.content_timestamp)?;
+    }
+    if best < signer.not_before || best > signer.not_after {
+        return Err(Verdict::on(
+            if best < signer.not_before && best < facts.now {
+                SubIndication::NotYetValid
+            } else {
+                SubIndication::OutOfBoundsNotRevoked
+            },
+            Basis::SignerValidity,
+        ));
+    }
+    chain_constraints(path, selected)
+}
+
+fn with_time(facts: &Facts<'_>) -> bool {
+    facts.time.before.is_some() || facts.has_signature_timestamp()
+}
+
+fn own_failure(
+    facts: &Facts<'_>,
+    at: Instant,
+    constraints: &Constraints<'_>,
+) -> Option<(usize, Unmet)> {
+    facts
+        .materials
+        .iter()
+        .chain(facts.signed_attribute_materials)
+        .enumerate()
+        .find_map(|(index, material)| {
+            // §5.3.4 step 6 upgrades only the signature value's own failure.
+            let lower = content_bound(facts, index);
+            constraints
+                .assess(*material, at, lower)
+                .err()
+                .map(|unmet| (index, unmet))
+        })
+}
+
+fn content_bound(facts: &Facts<'_>, index: usize) -> Option<Instant> {
+    if index < facts.materials.len() {
+        facts.content_timestamp
+    } else {
+        None
+    }
+}
+
+fn acceptance(facts: &Facts<'_>, at: Instant, policy: &Requirements<'_>) -> Result<(), Verdict> {
+    if let Some((index, unmet)) = own_failure(facts, at, &policy.crypto) {
+        return Err(crypto(unmet, Basis::Material(index), at));
+    }
+    Ok(())
+}
+
+fn elements(facts: &Facts<'_>, policy: &Requirements<'_>) -> Result<(), Verdict> {
     if let Some(element) = policy.elements.first_missing(facts.elements) {
         return Err(Verdict::on(
             SubIndication::SigConstraintsFailure,
             Basis::Element(element),
         ));
     }
-    timestamp_order(facts.order)?;
-    timestamp_delay(facts, best, policy)
+    Ok(())
+}
+
+fn compare_times(
+    facts: &Facts<'_>,
+    signer: Signer,
+    best: Instant,
+    proved: bool,
+    selected: Result<usize, Verdict>,
+    basic: Result<(), Verdict>,
+    policy: &Requirements<'_>,
+) -> Result<usize, Verdict> {
+    use SubIndication as Sub;
+    let not_yet = Verdict::on(Sub::NotYetValid, Basis::SignerValidity);
+    let out_of_bounds = Verdict::on(Sub::OutOfBoundsNotRevoked, Basis::SignerValidity);
+    match basic {
+        Ok(()) => {
+            if best < signer.not_before {
+                return Err(not_yet);
+            }
+        }
+        Err(verdict) => match verdict.sub {
+            Sub::RevokedNoPoe | Sub::RevokedCaNoPoe => {
+                let revoked = match verdict.basis {
+                    Basis::Authority { path, index } => {
+                        revocation(facts.paths[path].authorities[index])
+                    }
+                    _ => revocation(signer.revocation),
+                };
+                if revoked.is_none_or(|at| at <= best) {
+                    return Err(verdict);
+                }
+                if best < signer.not_before {
+                    return Err(not_yet);
+                }
+                if best >= signer.not_after {
+                    return Err(out_of_bounds);
+                }
+                if let Basis::Authority { path, .. } | Basis::Path(path) = verdict.basis {
+                    return Ok(path);
+                }
+            }
+            Sub::OutOfBoundsNoPoe | Sub::OutOfBoundsNotRevoked => {
+                // EN 319 102-1 §5.5.4 steps 4(b) and 4(d): a failed
+                // optional token does not prove existence before issuance.
+                if best < signer.not_before {
+                    return Err(if proved { not_yet } else { verdict });
+                }
+                if verdict.sub == Sub::OutOfBoundsNoPoe || best >= signer.not_after {
+                    return Err(verdict);
+                }
+            }
+            Sub::CryptoConstraintsFailureNoPoe if matches!(verdict.basis, Basis::Material(_)) => {
+                acceptance(facts, best, policy)?;
+                // §5.5.4 step 4(c) recovers algorithm acceptance. The
+                // earlier proof still has to satisfy the issuance boundary
+                // from step 4(b) before it can support the signature.
+                if best < signer.not_before {
+                    return Err(not_yet);
+                }
+            }
+            Sub::TryLater => {
+                if let Basis::Authority { path, .. } | Basis::Path(path) = verdict.basis {
+                    return Ok(path);
+                }
+            }
+            _ => return Err(verdict),
+        },
+    }
+    selected
 }
 
 // EN 319 102-1 V1.4.1 5.5.4 step 4e also applies to timestamps retained
@@ -500,7 +833,7 @@ pub(super) fn timestamp_delay(
     best: Instant,
     policy: &Requirements<'_>,
 ) -> Result<(), Verdict> {
-    if !facts.signature_timestamp {
+    if !facts.has_signature_timestamp() {
         return Ok(());
     }
     let Some(delay) = policy.timestamp_delay else {
@@ -556,7 +889,7 @@ fn verify(facts: &Facts<'_>) -> Result<(), Verdict> {
         )),
         // The value was never computed: not a failure of the signature, and
         // not a fact Table 6 names.
-        Value::Unsupported => Err(Verdict::on(
+        Value::Unsupported | Value::NeedsChain => Err(Verdict::on(
             SubIndication::Custom(Custom::UnsupportedAlgorithm),
             Basis::SignatureValue,
         )),
@@ -572,6 +905,10 @@ fn select(facts: &Facts<'_>, constraints: &Constraints<'_>) -> Result<usize, Ver
     for (index, path) in facts.paths.iter().enumerate() {
         match judge(index, path, facts.signer, facts.now, constraints) {
             Ok(()) => return Ok(index),
+            // §5.2.6.4 step 8 returns the validated chain and this status.
+            Err(verdict) if verdict.sub == SubIndication::RevocationOutOfBoundsNoPoe => {
+                return Err(verdict);
+            }
             Err(verdict) => status = verdict,
         }
     }
@@ -595,7 +932,7 @@ fn judge(
         ));
     }
     for (position, status) in path.authorities.iter().enumerate() {
-        authority(*status).map_err(|sub| {
+        authority(*status, now).map_err(|sub| {
             Verdict::on(
                 sub,
                 Basis::Authority {
@@ -609,34 +946,25 @@ fn judge(
     // revoked or held signer, before steps 5-8. Select it for certificate()
     // to report that terminal finding; this does not accept its later limits.
     if let Some(signer) = signer
-        && matches!(
-            signer.revocation,
-            Status::Revoked { .. } | Status::OnHold { .. } | Status::NotIssued { .. }
-        )
+        && (revocation(signer.revocation).is_some_and(|at| at <= now)
+            || matches!(
+                signer.revocation,
+                Status::OnHold { .. } | Status::NotIssued { .. }
+            ))
     {
         return Ok(());
     }
-    if path.chain == Chain::ConstraintsFailure {
-        return Err(Verdict::on(
-            SubIndication::ChainConstraintsFailure,
-            Basis::Path(index),
-        ));
+    if matches!(
+        signer.map(|signer| signer.revocation),
+        Some(Status::NotFresh { .. })
+    ) {
+        return Err(Verdict::on(SubIndication::TryLater, Basis::Path(index)));
     }
+    chain_constraints(index, path)?;
     // 5.2.6.4 step 6 and 5.5.4 step 10, at the current time. Both clauses
     // name CRYPTO_CONSTRAINTS_FAILURE_NO_POE for this material, whatever the
     // shortfall: nothing here proves when it was made.
-    for (position, material) in path.materials.iter().enumerate() {
-        constraints
-            .assess(*material, now, None)
-            .map_err(|unmet| Verdict {
-                sub: SubIndication::CryptoConstraintsFailureNoPoe,
-                basis: Basis::PathMaterial {
-                    path: index,
-                    index: position,
-                },
-                unmet: Some(unmet),
-            })?;
-    }
+    path_crypto(index, path, now, constraints)?;
     // EN 319 102-1 V1.4.1 5.2.6.4 step 7 returns this chain before
     // inspecting the revocation-data issuers. Apply the final indication
     // in certificate(), where 5.5.4 can reconsider it using a time proof.
@@ -645,6 +973,20 @@ fn judge(
     {
         return Ok(());
     }
+    issuer_validity(index, path, now)
+}
+
+fn chain_constraints(index: usize, path: &Path<'_>) -> Result<(), Verdict> {
+    if path.chain == Chain::ConstraintsFailure {
+        return Err(Verdict::on(
+            SubIndication::ChainConstraintsFailure,
+            Basis::Path(index),
+        ));
+    }
+    Ok(())
+}
+
+fn issuer_validity(index: usize, path: &Path<'_>, now: Instant) -> Result<(), Verdict> {
     // EN 319 102-1 V1.4.1 5.2.6.4 step 8: the revocation-data issuer's
     // certificate must be valid at validation time, including both endpoints.
     for (position, issuer) in path.revocation_issuers.iter().enumerate() {
@@ -661,11 +1003,33 @@ fn judge(
     Ok(())
 }
 
+fn path_crypto(
+    index: usize,
+    path: &Path<'_>,
+    now: Instant,
+    constraints: &Constraints<'_>,
+) -> Result<(), Verdict> {
+    for (position, material) in path.materials.iter().enumerate() {
+        constraints
+            .assess(*material, now, None)
+            .map_err(|unmet| Verdict {
+                sub: SubIndication::CryptoConstraintsFailureNoPoe,
+                basis: Basis::PathMaterial {
+                    path: index,
+                    index: position,
+                },
+                unmet: Some(unmet),
+                crypto_at: Some(now),
+            })?;
+    }
+    Ok(())
+}
+
 /// A shortfall of the signature's own material as its sub-indication: the
 /// outright failure where a content timestamp proves it made when the
 /// mechanism was not reliable (5.3.4 step 6), the `_NO_POE` form otherwise
 /// (5.2.8.4.1).
-fn crypto(unmet: Unmet, basis: Basis) -> Verdict {
+fn crypto(unmet: Unmet, basis: Basis, at: Instant) -> Verdict {
     Verdict {
         sub: if unmet.proven_after {
             SubIndication::CryptoConstraintsFailure
@@ -674,6 +1038,7 @@ fn crypto(unmet: Unmet, basis: Basis) -> Verdict {
         },
         basis,
         unmet: Some(unmet),
+        crypto_at: Some(at),
     }
 }
 
@@ -708,10 +1073,12 @@ fn anchor(conclusion: Conclusion) -> Result<(), SubIndication> {
 /// An authority's revocation (5.2.6.4 steps 4a and 4d, 5.5.4 step 4a). The
 /// evidence already compared any revocation with the interval, so one that
 /// is still reported revoked was not provably after the signature.
-fn authority(status: Status) -> Result<(), SubIndication> {
+fn authority(status: Status, now: Instant) -> Result<(), SubIndication> {
+    if revocation(status).is_some_and(|at| at <= now) {
+        return Err(SubIndication::RevokedCaNoPoe);
+    }
     match status {
-        Status::NotRevoked { .. } => Ok(()),
-        Status::Revoked { .. } => Err(SubIndication::RevokedCaNoPoe),
+        Status::NotRevoked { .. } | Status::Revoked { .. } => Ok(()),
         other => pending(other),
     }
 }
@@ -738,60 +1105,63 @@ fn pending(status: Status) -> Result<(), SubIndication> {
     }
 }
 
-/// The signing certificate at best-signature-time (5.2.6.4 steps 4b and 7,
-/// 5.3.4 step 4, 5.5.4 steps 4a, 4b and 4d).
-fn certificate(facts: &Facts<'_>, signer: Signer, best: Instant) -> Result<(), Verdict> {
-    let revocation = |sub| Verdict::on(sub, Basis::SignerRevocation);
+fn revocation(status: Status) -> Option<Instant> {
+    match status {
+        Status::Revoked { revoked, .. }
+        | Status::NotRevoked {
+            later: Some(revoked),
+            ..
+        } => Some(revoked.at.instant()),
+        _ => None,
+    }
+}
+
+/// Basic X.509 result and content-timestamp upgrades (§5.3.4 step 4).
+fn basic_certificate(facts: &Facts<'_>, signer: Signer) -> Result<(), Verdict> {
     let validity = |sub| Verdict::on(sub, Basis::SignerValidity);
-    match signer.revocation {
-        Status::NotIssued { .. } => {
-            return Err(revocation(SubIndication::Custom(
-                Custom::CertificateNotIssued,
-            )));
+    let status = signer_status_at(signer.revocation, facts.now, facts.content_timestamp);
+    if matches!(
+        status,
+        Err(Verdict {
+            sub: SubIndication::Revoked | SubIndication::RevokedNoPoe,
+            ..
+        })
+    ) || matches!(
+        signer.revocation,
+        Status::NotIssued { .. } | Status::OnHold { .. }
+    ) {
+        return status;
+    }
+    if facts.now < signer.not_before || facts.now > signer.not_after {
+        return Err(validity(
+            if facts
+                .content_timestamp
+                .is_some_and(|at| at > signer.not_after)
+            {
+                SubIndication::Expired
+            } else if status.is_ok() {
+                SubIndication::OutOfBoundsNotRevoked
+            } else {
+                SubIndication::OutOfBoundsNoPoe
+            },
+        ));
+    }
+    status
+}
+
+fn signer_status_at(status: Status, at: Instant, content: Option<Instant>) -> Result<(), Verdict> {
+    if let Some(revoked) = revocation(status) {
+        if revoked <= at {
+            let sub = if content.is_some_and(|bound| bound > revoked) {
+                SubIndication::Revoked
+            } else {
+                SubIndication::RevokedNoPoe
+            };
+            return Err(Verdict::on(sub, Basis::SignerRevocation));
         }
-        // Revoked before the signature is proven made: the content timestamp
-        // is after the revocation (5.3.4 step 4).
-        Status::Revoked {
-            when: When::Before, ..
-        } => return Err(revocation(SubIndication::Revoked)),
-        // Revoked, and not provably after best-signature-time (5.5.4 step
-        // 4a.b).
-        Status::Revoked { .. } => return Err(revocation(SubIndication::RevokedNoPoe)),
-        // EN 319 102-1 V1.4.1 5.2.6.4 step 4c precedes the validity
-        // comparison of step 7, just as signer revocation does.
-        Status::OnHold { .. } => return Err(revocation(SubIndication::TryLater)),
-        _ => {}
+        return Ok(());
     }
-    // EN 319 102-1 V1.4.1 5.5.4 step 4b/d requires proof the signature
-    // already existed before issuance. The current time is not that proof.
-    if best < signer.not_before && facts.time.before.is_some() {
-        return Err(validity(SubIndication::NotYetValid));
-    }
-    // A content timestamp at or after notAfter proves the signature made
-    // after the certificate expired (5.3.4 step 4).
-    if facts
-        .time
-        .after
-        .is_some_and(|after| after >= signer.not_after)
-    {
-        return Err(validity(SubIndication::Expired));
-    }
-    let not_revoked = matches!(signer.revocation, Status::NotRevoked { .. });
-    let outside_now = facts.now < signer.not_before || facts.now > signer.not_after;
-    // Step 4d recovers a step-7 result only when revocation is clear and the
-    // proof predates expiration. Step 4b leaves OUT_OF_BOUNDS_NO_POE intact
-    // unless the proof places the signature before issuance.
-    if best < signer.not_before
-        || best > signer.not_after
-        || (outside_now && (!not_revoked || best == signer.not_after))
-    {
-        return Err(validity(if not_revoked {
-            SubIndication::OutOfBoundsNotRevoked
-        } else {
-            SubIndication::OutOfBoundsNoPoe
-        }));
-    }
-    pending(signer.revocation).map_err(revocation)
+    pending(status).map_err(|sub| Verdict::on(sub, Basis::SignerRevocation))
 }
 
 fn integrity(facts: &Facts<'_>) -> Integrity {
@@ -799,7 +1169,7 @@ fn integrity(facts: &Facts<'_>) -> Integrity {
         Integrity::Broken
     } else if facts.references.contains(&Reference::Missing) {
         Integrity::Incomplete
-    } else if facts.value == Value::Unsupported {
+    } else if matches!(facts.value, Value::Unsupported | Value::NeedsChain) {
         Integrity::Unsupported
     } else {
         Integrity::Intact

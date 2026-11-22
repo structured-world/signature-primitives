@@ -82,6 +82,10 @@ fn choose<'a, W: Work>(
         if !slide_crypto(record.crypto, &mut candidate.horizon, proofs, crypto, work)? {
             continue;
         }
+        // EN 319 102-1 V1.4.1 §5.6.2.2.4 steps 2(c) and 2(d) select
+        // the latest eligible clear record and then apply its crypto limit.
+        // A shorter horizon does not make that record ineligible.
+        // https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf
         if let Some(previous) = &selected
             && previous.rank() == rank
         {

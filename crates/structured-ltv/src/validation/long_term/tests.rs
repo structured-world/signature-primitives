@@ -729,6 +729,82 @@ fn unusable_newer_revocation_does_not_mask_older_evidence() {
     assert_eq!(run(&input, &requirements).decision, Decision::Passed);
 }
 
+/// For two eligible clear records, the latest record's crypto limit applies
+/// even if an older record would admit the signature proof.
+#[test]
+fn latest_eligible_clear_revocation_sets_the_crypto_horizon() {
+    let old = RevocationData {
+        fresh_before: Some(at(110)),
+        ..REV
+    };
+    let material = [CryptoObject {
+        object: DIGEST,
+        material: Material {
+            hash: Some(Hash::Sha1),
+            scheme: None,
+        },
+    }];
+    let newer = RevocationData {
+        object: DIGEST,
+        issued: at(45),
+        crypto: &material,
+        ..old
+    };
+    let hashes = [crate::validation::HashRule {
+        hash: Hash::Sha1,
+        until: Some(at(48)),
+    }];
+    let requirements = Requirements {
+        crypto: crate::validation::Constraints {
+            hashes: &hashes,
+            ..REQUIREMENTS.crypto
+        },
+        ..REQUIREMENTS
+    };
+    let proofs = [
+        HISTORICAL[0],
+        HISTORICAL[1],
+        HISTORICAL[2],
+        Proof {
+            object: VALUE,
+            at: at(49),
+        },
+        Proof {
+            object: DIGEST,
+            at: at(46),
+        },
+    ];
+    let current = facts();
+    for records in [&[old][..], &[old, newer][..], &[newer, old][..]] {
+        let members = [Member {
+            revocations: records,
+            ..MEMBER
+        }];
+        let candidates = [Candidate {
+            members: &members,
+            ..CANDIDATE
+        }];
+        let mut input = inputs(&current);
+        input.initial = &proofs;
+        input.signature.candidates = &candidates;
+        let report = run(&input, &requirements);
+        let past = report.past.unwrap();
+        let (horizon, expected) = if records.len() == 1 {
+            (Horizon::Through(at(50)), Decision::Passed)
+        } else {
+            (
+                Horizon::Before(at(48)),
+                Decision::Finding(SubIndication::OutOfBoundsNotRevoked),
+            )
+        };
+        assert_eq!(
+            past.certificate,
+            Some(PastCertificate::Passed { path: 0, horizon })
+        );
+        assert_eq!(report.decision, expected);
+    }
+}
+
 /// Historical evidence can supply the required issuer proof independently of
 /// the current chain's status catalogue.
 #[test]

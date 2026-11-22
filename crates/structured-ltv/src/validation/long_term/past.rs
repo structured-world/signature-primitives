@@ -20,6 +20,12 @@ fn usable<W: Work>(
     )
 }
 
+fn permanent_revocation(status: Revocation) -> bool {
+    // RFC 5280 §5.2.4 permits release from certificateHold. The caller
+    // supplies only authenticated status applicable to this certificate.
+    matches!(status, Revocation::Revoked { reason, .. } if reason != Some(Reason::CertificateHold))
+}
+
 fn choose<'a, W: Work>(
     member: &Member<'a>,
     horizon: Horizon,
@@ -27,14 +33,13 @@ fn choose<'a, W: Work>(
     proofs: &Proofs<W>,
     work: &W,
 ) -> Result<Option<RevocationData<'a>>, Error> {
-    const CLEAR: Revocation = Revocation::Clear;
     if !proofs.by(member.object, horizon, work)? {
         return Ok(None);
     }
     let mut selected: Option<RevocationData<'_>> = None;
     let mut conflict = false;
     for record in member.revocations {
-        work.charge_work(5)?;
+        work.charge_work(7)?;
         if record.issued >= horizon.time()
             || !proofs.by(record.object, horizon, work)?
             || (filter_target && !usable(record, proofs, work)?)
@@ -42,9 +47,12 @@ fn choose<'a, W: Work>(
             continue;
         }
         if let Some(previous) = selected {
-            match (record.status == CLEAR, previous.status == CLEAR) {
-                (true, false) => continue,
-                (false, true) => {}
+            match (
+                permanent_revocation(record.status),
+                permanent_revocation(previous.status),
+            ) {
+                (false, true) => continue,
+                (true, false) => {}
                 _ if previous.issued > record.issued => continue,
                 _ if previous.issued == record.issued => {
                     conflict |= previous.status != record.status;
@@ -274,12 +282,17 @@ pub(super) fn signature<W: Work>(
     let best = proofs.earliest(signature.value, work)?;
     let by_horizon = best.is_some_and(|at| horizon.admits(at));
     report.signature_poe = Some(by_horizon);
+    let Some(best) = best.filter(|_| by_horizon) else {
+        return Ok(report);
+    };
+    let validity = signature.validity;
     let clear = if issuer_poe {
         Decision::Passed
     } else {
         Decision::Finding(Sub::RevocationOutOfBoundsNoPoe)
     };
     if sub == Sub::CryptoConstraintsFailureNoPoe
+        && validity.contains(best)
         && all_algorithm_proofs(signature.affected_crypto, proofs, crypto, work)?
     {
         report.decision = clear;
@@ -288,15 +301,11 @@ pub(super) fn signature<W: Work>(
     if sub == Sub::TryLater
         && let RetryCause::Freshness(record) = signature.retry
     {
-        if best.is_some_and(|at| record.fresh_before.is_some_and(|end| at < end)) {
+        if validity.contains(best) && record.fresh_before.is_some_and(|end| best < end) {
             report.decision = clear;
         }
         return Ok(report);
     }
-    let Some(best) = best.filter(|_| by_horizon) else {
-        return Ok(report);
-    };
-    let validity = signature.validity;
     report.decision = match sub {
         Sub::RevokedCaNoPoe => {
             if !ca_revocation_proof(signature, proofs, work)? {

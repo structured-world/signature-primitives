@@ -570,6 +570,114 @@ fn past_result(signature: Signature<'_>, sub: SubIndication, proofs: &[Proof]) -
     .unwrap()
 }
 
+/// Proof of affected material cannot replace proof of the signature itself.
+#[test]
+fn algorithm_and_freshness_recovery_require_signature_inside_horizon() {
+    let affected = [CryptoObject {
+        object: CERT,
+        material: Material {
+            hash: Some(Hash::Sha256),
+            scheme: None,
+        },
+    }];
+    let record = RevocationData {
+        fresh_before: Some(at(80)),
+        ..REV
+    };
+    let signature = Signature {
+        affected_crypto: &affected,
+        retry: RetryCause::Freshness(&record),
+        ..INITIAL_SIGNATURE
+    };
+    let proofs = [
+        HISTORICAL[0],
+        HISTORICAL[1],
+        HISTORICAL[2],
+        Proof {
+            object: VALUE,
+            at: at(55),
+        },
+    ];
+    for sub in [
+        SubIndication::CryptoConstraintsFailureNoPoe,
+        SubIndication::TryLater,
+    ] {
+        let report = past_result(signature, sub, &proofs);
+        assert_eq!(report.signature_poe, Some(false));
+        assert_eq!(report.decision, Decision::Finding(sub));
+    }
+}
+
+/// Reinstatement replaces an older hold regardless of catalogue order. An
+/// equally dated or older clear status cannot clear the hold.
+#[test]
+fn newer_clear_status_supersedes_hold_but_not_permanent_revocation() {
+    for (reason, clear_time, expected) in [
+        (Reason::CertificateHold, 40, Decision::Passed),
+        (
+            Reason::CertificateHold,
+            30,
+            Decision::Finding(SubIndication::OutOfBoundsNotRevoked),
+        ),
+        (
+            Reason::CertificateHold,
+            29,
+            Decision::Finding(SubIndication::OutOfBoundsNotRevoked),
+        ),
+        (
+            Reason::KeyCompromise,
+            40,
+            Decision::Finding(SubIndication::OutOfBoundsNotRevoked),
+        ),
+    ] {
+        let old = RevocationData {
+            status: Revocation::Revoked {
+                at: at(20),
+                reason: Some(reason),
+            },
+            ..REV
+        };
+        let newer = RevocationData {
+            object: DIGEST,
+            issued: at(clear_time),
+            ..REV
+        };
+        for revocations in [[old, newer], [newer, old]] {
+            let members = [Member {
+                revocations: &revocations,
+                ..MEMBER
+            }];
+            let candidates = [Candidate {
+                members: &members,
+                ..CANDIDATE
+            }];
+            let signature = Signature {
+                candidates: &candidates,
+                revocations: &revocations,
+                ..INITIAL_SIGNATURE
+            };
+            let proofs = [
+                HISTORICAL[0],
+                HISTORICAL[1],
+                HISTORICAL[2],
+                Proof {
+                    object: VALUE,
+                    at: at(40),
+                },
+                Proof {
+                    object: DIGEST,
+                    at: at(42),
+                },
+            ];
+            assert_eq!(
+                past_result(signature, SubIndication::OutOfBoundsNotRevoked, &proofs).decision,
+                expected,
+                "{reason:?}/{clear_time}"
+            );
+        }
+    }
+}
+
 #[test]
 fn past_signature_only_recovers_the_cited_current_findings() {
     use SubIndication as S;

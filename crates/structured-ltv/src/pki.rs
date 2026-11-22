@@ -37,7 +37,7 @@ pub use participants::{
 };
 mod responder;
 pub use reading::{CrlReading, CrlReadingBinding, CrlReadingTarget};
-mod status;
+pub mod status;
 pub use crl::{
     CrlAuthorities, CrlAuthority, CrlBinding, CrlBindingError, CrlBindingFailure, CrlCoverage,
     CrlCoverageBinding, CrlCoverageError, CrlTarget,

@@ -1,4 +1,7 @@
-//! Request/issuer-key association with an actually checked path member.
+//! Caller-established revocation assessments and original-path OCSP association.
+
+mod assessment;
+pub use assessment::{Revoked, Status, When};
 
 use super::{CheckedPath, exact};
 use structured_asn1::memory::{MemoryError, Work};

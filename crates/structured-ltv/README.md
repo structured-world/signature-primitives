@@ -24,6 +24,20 @@ under the query that performs it; retained facts are never prepaid work.
 
 ## Facts
 
+- `validation::validate` implements the basic and with-time indication process
+  of ETSI EN 319 102-1 V1.4.1 clauses 5.3.4 and 5.5.4 over caller-established
+  format, cryptographic, path, revocation, anchor-recognition and time facts.
+  `Requirements` supplies the already selected cryptographic constraints,
+  mandatory signature elements and timestamp delay. The named
+  `ETSI_TS_119_312_V2_1_1` catalogue is optional data, never an implicit policy.
+  Evaluation allocates nothing and admits its bounded traversal through caller
+  `Work`. It returns the standard indication, located fact index, unmet
+  constraint and independent integrity/time/revocation/trust/change axes.
+  Tables 5 to 7 include retry conditions and `CUSTOM` diagnostics. Generic
+  `NO_POE` is represented for past-validation, which this process does not run.
+  Policy selection, policy identity in reports and trusted-list processing
+  belong to the caller. `pki::status::{Status, When, Revoked}` carries supplied
+  temporal revocation assessments without acquiring or authenticating evidence.
 - `timestamp` retains a completed CMS token check as `Verified`, with the
   original token, signature, property and `Purpose` (content, signature,
   validation data or archive). It derives complete generation intervals from

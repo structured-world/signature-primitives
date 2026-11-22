@@ -195,6 +195,22 @@ impl Constraints<'_> {
         existed_by: Instant,
         made_after: Option<Instant>,
     ) -> Result<(), Unmet> {
+        self.resolve(material, Some(existed_by), made_after)
+            .map(|_| ())
+    }
+
+    /// Resolve the common mechanism rules without applying a validation date.
+    pub(super) fn sunset(&self, material: Material) -> Result<Option<Instant>, Unmet> {
+        self.resolve(material, None, None)
+    }
+
+    fn resolve(
+        &self,
+        material: Material,
+        existed_by: Option<Instant>,
+        made_after: Option<Instant>,
+    ) -> Result<Option<Instant>, Unmet> {
+        let mut sunset = None;
         if let Some(hash) = material.hash {
             let mechanism = Mechanism::Hash(hash);
             let rule = self
@@ -203,6 +219,7 @@ impl Constraints<'_> {
                 .find(|rule| rule.hash == hash)
                 .ok_or(Unmet::unlisted(mechanism, made_after))?;
             check(mechanism, rule.until, existed_by, made_after)?;
+            sunset = rule.until;
         }
         if let Some(scheme) = material.scheme {
             let mechanism = Mechanism::Scheme(scheme);
@@ -246,6 +263,9 @@ impl Constraints<'_> {
                 return Err(Unmet::unlisted(Mechanism::Exponent(scheme), made_after));
             }
             check(mechanism, rule.until, existed_by, made_after)?;
+            if let Some(end) = rule.until {
+                sunset = Some(sunset.map_or(end, |previous| previous.min(end)));
+            }
         }
         if let (Some(hash), Some(scheme)) = (material.hash, material.scheme) {
             // TS 119 312 V2.1.1 7.2 and 7.3: only predefined suites, not
@@ -261,7 +281,7 @@ impl Constraints<'_> {
                 }
                 for permitted in rule.hashes {
                     if *permitted == hash {
-                        return Ok(());
+                        return Ok(sunset);
                     }
                 }
             }
@@ -270,7 +290,7 @@ impl Constraints<'_> {
                 made_after,
             ));
         }
-        Ok(())
+        Ok(sunset)
     }
 }
 
@@ -289,13 +309,13 @@ impl Unmet {
 fn check(
     mechanism: Mechanism,
     until: Option<Instant>,
-    existed_by: Instant,
+    existed_by: Option<Instant>,
     made_after: Option<Instant>,
 ) -> Result<(), Unmet> {
     let Some(end) = until else {
         return Ok(());
     };
-    if existed_by < end {
+    if existed_by.is_none_or(|at| at < end) {
         return Ok(());
     }
     Err(Unmet {

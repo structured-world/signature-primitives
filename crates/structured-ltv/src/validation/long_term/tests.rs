@@ -570,6 +570,70 @@ fn past_result(signature: Signature<'_>, sub: SubIndication, proofs: &[Proof]) -
     .unwrap()
 }
 
+/// A valid path whose horizon precedes the signature proof must not mask a
+/// later candidate that actually covers it.
+#[test]
+fn historical_path_selection_continues_until_signature_proof_is_covered() {
+    let restricted = Candidate {
+        anchor_sunset: Some(at(35)),
+        ..CANDIDATE
+    };
+    let later = [RevocationData {
+        object: DIGEST,
+        issued: at(45),
+        ..REV
+    }];
+    let members = [Member {
+        revocations: &later,
+        ..MEMBER
+    }];
+    let extended = Candidate {
+        members: &members,
+        ..CANDIDATE
+    };
+    let proofs = [
+        HISTORICAL[0],
+        HISTORICAL[1],
+        HISTORICAL[2],
+        Proof {
+            object: DIGEST,
+            at: at(46),
+        },
+        Proof {
+            object: VALUE,
+            at: at(40),
+        },
+    ];
+    let sub = SubIndication::OutOfBoundsNotRevoked;
+    for (candidates, expected_path) in [([restricted, extended], 1), ([extended, restricted], 0)] {
+        let signature = Signature {
+            candidates: &candidates,
+            ..INITIAL_SIGNATURE
+        };
+        let report = past_result(signature, sub, &proofs);
+        assert_eq!(report.decision, Decision::Passed);
+        assert_eq!(
+            report.certificate,
+            Some(PastCertificate::Passed {
+                path: expected_path,
+                horizon: Horizon::Through(at(45))
+            })
+        );
+    }
+    let candidates = [restricted];
+    let signature = Signature {
+        candidates: &candidates,
+        ..INITIAL_SIGNATURE
+    };
+    let report = past_result(signature, sub, &proofs);
+    assert_eq!(report.decision, Decision::Finding(sub));
+    assert_eq!(report.signature_poe, Some(false));
+    assert!(matches!(
+        report.certificate,
+        Some(PastCertificate::Passed { path: 0, .. })
+    ));
+}
+
 /// Proof of affected material cannot replace proof of the signature itself.
 #[test]
 fn algorithm_and_freshness_recovery_require_signature_inside_horizon() {

@@ -159,6 +159,7 @@ fn certificate<W: Work>(
     signature: &Signature<'_>,
     filter_target: bool,
     now: Instant,
+    signature_proof: Option<Instant>,
     proofs: &Proofs<W>,
     crypto: &Crypto<'_>,
     work: &W,
@@ -167,6 +168,7 @@ fn certificate<W: Work>(
         sub: Sub::NoCertificateChainFound,
         path: None,
     };
+    let mut first_valid = None;
     for (index, path) in signature.candidates.iter().enumerate() {
         work.charge_work(6)?;
         let sub = if !path.recognized || path.chain == Chain::GeneralFailure {
@@ -181,10 +183,18 @@ fn certificate<W: Work>(
             work,
         )? {
             if path.chain == Chain::Valid {
-                return Ok(PastCertificate::Passed {
+                let candidate = PastCertificate::Passed {
                     path: index,
                     horizon,
-                });
+                };
+                // A path can validate historically yet be unusable for this
+                // signature (EN 319 102-1 5.6.2.4.4 step 3). Keep the first
+                // valid path for diagnostics and try the remaining candidates.
+                if signature_proof.is_none_or(|at| horizon.admits(at)) {
+                    return Ok(candidate);
+                }
+                first_valid.get_or_insert(candidate);
+                continue;
             }
             Sub::ChainConstraintsFailure
         } else {
@@ -195,7 +205,7 @@ fn certificate<W: Work>(
             path: Some(index),
         };
     }
-    Ok(result)
+    Ok(first_valid.unwrap_or(result))
 }
 
 fn all_algorithm_proofs<W: Work>(
@@ -274,12 +284,12 @@ pub(super) fn signature<W: Work>(
         }
     }
     report.revocation_poe = Some(issuer_poe);
-    let cert = certificate(signature, issuer_poe, now, proofs, crypto, work)?;
+    let best = proofs.earliest(signature.value, work)?;
+    let cert = certificate(signature, issuer_poe, now, best, proofs, crypto, work)?;
     report.certificate = Some(cert);
     let PastCertificate::Passed { horizon, .. } = cert else {
         return Ok(report);
     };
-    let best = proofs.earliest(signature.value, work)?;
     let by_horizon = best.is_some_and(|at| horizon.admits(at));
     report.signature_poe = Some(by_horizon);
     let Some(best) = best.filter(|_| by_horizon) else {

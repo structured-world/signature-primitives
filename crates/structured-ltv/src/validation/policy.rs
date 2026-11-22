@@ -68,6 +68,12 @@ impl Elements {
         self.0 & element.bit() != 0
     }
 
+    /// Required elements without a passing supplied result.
+    #[must_use]
+    pub const fn missing_from(self, present: Elements) -> Elements {
+        Elements(self.0 & !present.0)
+    }
+
     /// The first element of `self` missing from `present`, in declaration
     /// order.
     #[must_use]

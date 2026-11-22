@@ -39,7 +39,8 @@ pub use indication::{Custom, Indication, Retry, SubIndication};
 pub use policy::{ETSI_TS_119_312_V2_1_1, Element, Elements, Requirements};
 pub use validate::{
     Anchor, Axes, Basis, Chain, Changes, Context, Coverage, Facts, Format, Integrity, Order,
-    Outcome, Path, Process, Reference, RevocationIssuer, Signer, Time, Value,
+    Outcome, Path, Process, Reference, RevocationIssuer, RevocationRetry, SignatureTimestamp,
+    Signer, Time, Value,
 };
 
 /// Compute the ETSI basic/with-time result from already established facts.
@@ -57,4 +58,24 @@ pub fn validate<W: structured_asn1::memory::Work>(
 ) -> Result<Outcome, structured_asn1::memory::MemoryError> {
     admission::admit(facts, requirements, execution)?;
     Ok(validate::compute(facts, requirements))
+}
+
+/// Compute the same decision and visit every unmet cryptographic constraint
+/// for the deciding material group, as needed for EN 319 102-1 Table 6.
+///
+/// The visitor sees source indices and each failed mechanism. The library
+/// allocates nothing and admits the whole reporting scan before any call.
+/// The visitor is responsible for work and storage it performs itself.
+///
+/// # Errors
+/// Returns the original work refusal before visiting any finding.
+pub fn validate_with_findings<W: structured_asn1::memory::Work>(
+    facts: &Facts<'_>,
+    requirements: &Requirements<'_>,
+    execution: &W,
+    visit: impl FnMut(Basis, Unmet),
+) -> Result<Outcome, structured_asn1::memory::MemoryError> {
+    let result = validate(facts, requirements, execution)?;
+    validate::visit_findings(facts, requirements, &result, execution, visit)?;
+    Ok(result)
 }

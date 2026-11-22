@@ -58,7 +58,7 @@ const REV: RevocationData<'static> = RevocationData {
 const MEMBER: Member<'static> = Member {
     object: CERT,
     crypto: &[],
-    revocations: &[REV],
+    revocations: RevocationCheck::Required(&[REV]),
 };
 const CANDIDATE: Candidate<'static> = Candidate {
     chain: crate::validation::Chain::Valid,
@@ -92,6 +92,7 @@ const CURRENT_PATH: Path<'static> = Path {
     authorities: &[],
     materials: &[],
     revocation_issuers: &[],
+    revocation_retry: None,
 };
 
 fn facts() -> Facts<'static> {
@@ -109,15 +110,18 @@ fn facts() -> Facts<'static> {
         references: &[Reference::Intact],
         value: Value::Verified,
         materials: &[],
+        signed_attribute_materials: &[],
         elements: Elements::NONE,
         time: Time {
             after: None,
             before: None,
         },
+        content_timestamp: None,
         paths: &[CURRENT_PATH],
         truncated: false,
         order: Order::Coherent,
         signature_timestamp: false,
+        signature_timestamps: &[],
         claimed_signing_time: None,
         utc: None,
         changes: Changes::NotApplicable,
@@ -170,6 +174,41 @@ fn old_revocation_reconstructs_a_valid_historical_result() {
     assert_eq!(past.signature_poe, Some(true));
 }
 
+/// EN 319 102-1 §5.6.3.4 step 9 and NOTE 6 assess the signature
+/// at its earliest proof and keep the certificate's horizon independent.
+#[test]
+fn archival_acceptance_keeps_the_signature_proof_time_separate_from_control_time() {
+    let material = [Material {
+        hash: Some(Hash::Sha1),
+        scheme: None,
+    }];
+    let current = Facts {
+        materials: &material,
+        ..facts()
+    };
+    let hashes = [crate::validation::HashRule {
+        hash: Hash::Sha1,
+        until: Some(at(28)),
+    }];
+    let requirements = Requirements {
+        crypto: crate::validation::Constraints {
+            hashes: &hashes,
+            ..REQUIREMENTS.crypto
+        },
+        ..REQUIREMENTS
+    };
+    let report = run(&inputs(&current), &requirements);
+    assert_eq!(report.best_signature_time, at(25));
+    assert_eq!(
+        report.past.unwrap().certificate,
+        Some(PastCertificate::Passed {
+            path: 0,
+            horizon: Horizon::Through(at(30))
+        })
+    );
+    assert_eq!(report.decision, Decision::Passed);
+}
+
 /// Historical recovery cannot hide the independent timestamp ordering check.
 #[test]
 fn historical_recovery_rechecks_timestamp_order_before_delay() {
@@ -193,10 +232,10 @@ fn historical_recovery_rechecks_timestamp_order_before_delay() {
     );
 }
 
-/// Current recognition and recognition of the historical candidate are
-/// separate facts. The archival process must reach the historical candidate.
+/// The outer archival process preserves anchor failure excluded by 5.6.3.4
+/// step 3. The standalone past-signature block has its own recovery list.
 #[test]
-fn archival_process_can_recover_a_sunset_current_anchor() {
+fn only_standalone_past_signature_recovers_a_sunset_current_anchor() {
     let paths = [Path {
         anchor: Anchor {
             current: Recognition::OutsideValidity,
@@ -219,11 +258,19 @@ fn archival_process_can_recover_a_sunset_current_anchor() {
         report.current.sub,
         Some(SubIndication::NoCertificateChainFoundNoPoe)
     );
-    assert_eq!(report.decision, Decision::Passed);
-    input.signature.candidates = &[];
     assert_eq!(
-        run(&input, &REQUIREMENTS).decision,
+        report.decision,
         Decision::Finding(SubIndication::NoCertificateChainFoundNoPoe)
+    );
+    assert!(report.past.is_none());
+    assert_eq!(
+        past_result(
+            input.signature,
+            SubIndication::NoCertificateChainFoundNoPoe,
+            HISTORICAL
+        )
+        .decision,
+        Decision::Passed,
     );
 }
 
@@ -293,7 +340,8 @@ fn missing_certificate_proof_keeps_original_finding_and_exposes_no_poe() {
         past.certificate,
         Some(PastCertificate::Finding {
             sub: SubIndication::NoPoe,
-            path: Some(0)
+            path: Some(0),
+            missing_proof: Some(CERT),
         })
     );
     assert_eq!(SubIndication::NoPoe.retry(), Some(Retry::ProofOfExistence));
@@ -340,7 +388,8 @@ fn path_findings_preserve_identity_and_normative_precedence() {
             run(&input, &REQUIREMENTS).past.unwrap().certificate,
             Some(PastCertificate::Finding {
                 sub: expected,
-                path: Some(0)
+                path: Some(0),
+                missing_proof: None,
             })
         );
     }
@@ -350,7 +399,8 @@ fn path_findings_preserve_identity_and_normative_precedence() {
         run(&input, &REQUIREMENTS).past.unwrap().certificate,
         Some(PastCertificate::Finding {
             sub: SubIndication::NoCertificateChainFound,
-            path: None
+            path: None,
+            missing_proof: None,
         })
     );
 }
@@ -375,6 +425,7 @@ fn current_failures_and_absent_long_term_attributes_stop_recovery() {
 const TIMESTAMP: Timestamp<'static> = Timestamp {
     object: NEW_TOKEN,
     generated: at(40),
+    not_before: None,
     imprint: Hash::Sha256,
     current: Decision::Passed,
     past: None,
@@ -618,7 +669,7 @@ fn authority_compromise_limits_historical_chain_model() {
             ..REV
         }];
         let members = [Member {
-            revocations: &revocations,
+            revocations: RevocationCheck::Required(&revocations),
             ..MEMBER
         }];
         let candidates = [Candidate {
@@ -705,7 +756,7 @@ fn unusable_newer_revocation_does_not_mask_older_evidence() {
     };
     let records = [REV, newer];
     let members = [Member {
-        revocations: &records,
+        revocations: RevocationCheck::Required(&records),
         ..MEMBER
     }];
     let candidates = [Candidate {
@@ -777,7 +828,7 @@ fn latest_eligible_clear_revocation_sets_the_crypto_horizon() {
     let current = facts();
     for records in [&[old][..], &[old, newer][..], &[newer, old][..]] {
         let members = [Member {
-            revocations: records,
+            revocations: RevocationCheck::Required(records),
             ..MEMBER
         }];
         let candidates = [Candidate {
@@ -825,7 +876,7 @@ fn historical_path_selection_prefers_a_covered_path_with_issuer_proof() {
         ..REV
     }];
     let members = [Member {
-        revocations: &records,
+        revocations: RevocationCheck::Required(&records),
         ..MEMBER
     }];
     let no_issuer_proof = Candidate {
@@ -880,7 +931,7 @@ fn historical_path_selection_continues_until_signature_proof_is_covered() {
         ..REV
     }];
     let members = [Member {
-        revocations: &later,
+        revocations: RevocationCheck::Required(&later),
         ..MEMBER
     }];
     let extended = Candidate {
@@ -930,9 +981,9 @@ fn historical_path_selection_continues_until_signature_proof_is_covered() {
     ));
 }
 
-/// Proof of affected material cannot replace proof of the signature itself.
+/// Steps 4 and 5 of EN 319 102-1 §5.6.2.4.4 have independent proof rules.
 #[test]
-fn algorithm_and_freshness_recovery_require_signature_inside_horizon() {
+fn algorithm_and_freshness_recovery_use_their_own_proof_rules() {
     let affected = [CryptoObject {
         object: CERT,
         material: Material {
@@ -946,7 +997,10 @@ fn algorithm_and_freshness_recovery_require_signature_inside_horizon() {
     };
     let signature = Signature {
         affected_crypto: &affected,
-        retry: RetryCause::Freshness(&record),
+        retry: RetryCause::Freshness {
+            record: &record,
+            retry_at: None,
+        },
         ..INITIAL_SIGNATURE
     };
     let proofs = [
@@ -964,8 +1018,18 @@ fn algorithm_and_freshness_recovery_require_signature_inside_horizon() {
     ] {
         let report = past_result(signature, sub, &proofs);
         assert_eq!(report.signature_poe, Some(false));
-        assert_eq!(report.decision, Decision::Finding(sub));
+        assert_eq!(report.decision, Decision::Passed, "{sub:?}");
     }
+    let report = past_result(
+        signature,
+        SubIndication::CryptoConstraintsFailureNoPoe,
+        &proofs[..3],
+    );
+    assert_eq!(report.decision, Decision::Passed);
+    assert_eq!(
+        past_result(signature, SubIndication::TryLater, &proofs[..3]).decision,
+        Decision::Finding(SubIndication::TryLater),
+    );
 }
 
 /// Reinstatement replaces an older hold regardless of catalogue order. An
@@ -1004,7 +1068,7 @@ fn newer_clear_status_supersedes_hold_but_not_permanent_revocation() {
         };
         for revocations in [[old, newer], [newer, old]] {
             let members = [Member {
-                revocations: &revocations,
+                revocations: RevocationCheck::Required(&revocations),
                 ..MEMBER
             }];
             let candidates = [Candidate {
@@ -1092,24 +1156,28 @@ fn stale_status_is_rechecked_at_proven_signing_time_with_strict_freshness() {
         ..REV
     };
     let signature = Signature {
-        retry: RetryCause::Freshness(&record),
+        retry: RetryCause::Freshness {
+            record: &record,
+            retry_at: Some(at(80)),
+        },
         ..INITIAL_SIGNATURE
     };
-    assert_eq!(
-        past_result(signature, sub, HISTORICAL).decision,
-        Decision::Finding(sub)
-    );
+    let report = past_result(signature, sub, HISTORICAL);
+    assert_eq!(report.decision, Decision::Finding(sub));
+    assert_eq!(report.retry_at, Some(at(80)));
     record.fresh_before = Some(at(26));
     let signature = Signature {
-        retry: RetryCause::Freshness(&record),
+        retry: RetryCause::Freshness {
+            record: &record,
+            retry_at: Some(at(80)),
+        },
         ..INITIAL_SIGNATURE
     };
-    assert_eq!(
-        past_result(signature, sub, HISTORICAL).decision,
-        Decision::Passed
-    );
+    let report = past_result(signature, sub, HISTORICAL);
+    assert_eq!(report.decision, Decision::Passed);
+    assert_eq!(report.retry_at, None);
     let signature = Signature {
-        retry: RetryCause::Suspension,
+        retry: RetryCause::Suspension { retry_at: None },
         ..INITIAL_SIGNATURE
     };
     assert_eq!(
@@ -1128,7 +1196,7 @@ fn shell_slides_on_non_compromise_revocation_and_chain_does_not() {
         ..REV
     }];
     let members = [Member {
-        revocations: &revocations,
+        revocations: RevocationCheck::Required(&revocations),
         ..MEMBER
     }];
     let paths = [Candidate {
@@ -1242,7 +1310,7 @@ fn historical_crypto_cutoff_cannot_be_recovered_using_an_unrelated_proof() {
         ..REV
     }];
     let members = [Member {
-        revocations: &revocations,
+        revocations: RevocationCheck::Required(&revocations),
         ..MEMBER
     }];
     let paths = [Candidate {
@@ -1257,7 +1325,8 @@ fn historical_crypto_cutoff_cannot_be_recovered_using_an_unrelated_proof() {
         report.past.unwrap().certificate,
         Some(PastCertificate::Finding {
             sub: SubIndication::NoPoe,
-            path: Some(0)
+            path: Some(0),
+            missing_proof: Some(REVOCATION),
         })
     );
 }
@@ -1279,7 +1348,7 @@ fn issuer_proof_must_fall_inside_its_own_validity() {
 }
 
 #[test]
-fn timestamp_processing_rejects_nonchronological_or_future_inputs() {
+fn timestamp_order_uses_producer_order_and_future_uses_lower_bound() {
     let current = facts();
     let mut input = inputs(&current);
     let timestamps = [
@@ -1290,17 +1359,62 @@ fn timestamp_processing_rejects_nonchronological_or_future_inputs() {
         },
     ];
     input.timestamps = &timestamps;
-    assert!(matches!(
-        validate(&input, &REQUIREMENTS, &memory(1 << 20, 1_000_000)),
-        Err(Error::TimestampOrder)
-    ));
+    let report = run(&input, &REQUIREMENTS);
+    assert_eq!(report.timestamps().len(), 2);
     let future = [Timestamp {
         generated: at(101),
+        not_before: Some(at(99)),
         ..TIMESTAMP
     }];
     input.timestamps = &future;
-    assert!(matches!(
-        validate(&input, &REQUIREMENTS, &memory(1 << 20, 1_000_000)),
-        Err(Error::FutureTime(_))
-    ));
+    assert_eq!(run(&input, &REQUIREMENTS).timestamps().len(), 1);
+    let future = [Timestamp {
+        not_before: Some(at(101)),
+        ..future[0]
+    }];
+    input.timestamps = &future;
+    assert!(
+        matches!(validate(&input, &REQUIREMENTS, &memory(1 << 20, 1_000_000)), Err(Error::FutureTime(at)) if at == future[0].generated)
+    );
+}
+
+/// An explicit waiver leaves the certificate's own proof obligation intact.
+#[test]
+fn historical_revocation_waiver_is_distinct_from_missing_evidence() {
+    let sub = SubIndication::OutOfBoundsNotRevoked;
+    let members = [Member {
+        revocations: RevocationCheck::Waived,
+        ..MEMBER
+    }];
+    let candidates = [Candidate {
+        members: &members,
+        ..CANDIDATE
+    }];
+    let signature = Signature {
+        candidates: &candidates,
+        ..INITIAL_SIGNATURE
+    };
+    let report = past_result(signature, sub, HISTORICAL);
+    assert_eq!(report.decision, Decision::Passed);
+    assert_eq!(report.revocation_poe, None);
+    assert_eq!(
+        past_result(signature, sub, &HISTORICAL[1..]).decision,
+        Decision::Finding(sub)
+    );
+    let members = [Member {
+        revocations: RevocationCheck::Required(&[]),
+        ..MEMBER
+    }];
+    let candidates = [Candidate {
+        members: &members,
+        ..CANDIDATE
+    }];
+    let signature = Signature {
+        candidates: &candidates,
+        ..signature
+    };
+    assert_eq!(
+        past_result(signature, sub, HISTORICAL).decision,
+        Decision::Finding(sub)
+    );
 }

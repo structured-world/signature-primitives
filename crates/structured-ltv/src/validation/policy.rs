@@ -1,7 +1,7 @@
 //! Caller-selected requirements and an explicit cryptographic constraint catalogue.
 //!
-//! Catalogue source: [ETSI TS 119 312 V2.1.1]
-//! (https://www.etsi.org/deliver/etsi_ts/119300_119399/119312/02.01.01_60/ts_119312v020101p.pdf).
+//! Catalogue source: ETSI TS 119 312 V2.1.1:
+//! <https://www.etsi.org/deliver/etsi_ts/119300_119399/119312/02.01.01_60/ts_119312v020101p.pdf>.
 
 use super::crypto::{Bits, Constraints, Family, Hash, HashRule, SchemeRule, SuiteRule};
 use core::time::Duration;

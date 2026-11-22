@@ -466,14 +466,20 @@ fn decide(
             Basis::Element(element),
         ));
     }
-    // 5.5.4 step 4e.
-    if facts.order == Order::Violated {
-        return Err(Verdict::on(
+    timestamp_order(facts.order)?;
+    timestamp_delay(facts, best, policy)
+}
+
+// EN 319 102-1 V1.4.1 5.5.4 step 4e also applies to timestamps retained
+// when past validation lets a signature reach the final time checks.
+pub(super) fn timestamp_order(order: Order) -> Result<(), Verdict> {
+    match order {
+        Order::Coherent => Ok(()),
+        Order::Violated => Err(Verdict::on(
             SubIndication::TimestampOrderFailure,
             Basis::Timestamps,
-        ));
+        )),
     }
-    timestamp_delay(facts, best, policy)
 }
 
 /// EN 319 102-1 V1.4.1 5.2.4.4: acquisition/parsing is the caller's job;

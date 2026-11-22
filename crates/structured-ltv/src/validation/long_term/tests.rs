@@ -170,6 +170,109 @@ fn old_revocation_reconstructs_a_valid_historical_result() {
     assert_eq!(past.signature_poe, Some(true));
 }
 
+/// Historical recovery cannot hide the independent timestamp ordering check.
+#[test]
+fn historical_recovery_rechecks_timestamp_order_before_delay() {
+    let mut current = facts();
+    current.order = Order::Violated;
+    current.signature_timestamp = true;
+    let requirements = Requirements {
+        timestamp_delay: Some(core::time::Duration::from_secs(10)),
+        ..REQUIREMENTS
+    };
+    let report = run(&inputs(&current), &requirements);
+    assert_eq!(
+        report.current.sub,
+        Some(SubIndication::OutOfBoundsNotRevoked)
+    );
+    assert_eq!(report.past.unwrap().decision, Decision::Passed);
+    assert_eq!(report.stage, Stage::TimestampOrder);
+    assert_eq!(
+        report.decision,
+        Decision::Finding(SubIndication::TimestampOrderFailure)
+    );
+}
+
+/// Current recognition and recognition of the historical candidate are
+/// separate facts. The archival process must reach the historical candidate.
+#[test]
+fn archival_process_can_recover_a_sunset_current_anchor() {
+    let paths = [Path {
+        anchor: Anchor {
+            current: Recognition::OutsideValidity,
+            over_interval: Recognition::Recognized,
+        },
+        ..CURRENT_PATH
+    }];
+    let current = Facts {
+        paths: &paths,
+        ..facts()
+    };
+    let mut input = inputs(&current);
+    let historical = [Candidate {
+        anchor_sunset: Some(at(50)),
+        ..CANDIDATE
+    }];
+    input.signature.candidates = &historical;
+    let report = run(&input, &REQUIREMENTS);
+    assert_eq!(
+        report.current.sub,
+        Some(SubIndication::NoCertificateChainFoundNoPoe)
+    );
+    assert_eq!(report.decision, Decision::Passed);
+    input.signature.candidates = &[];
+    assert_eq!(
+        run(&input, &REQUIREMENTS).decision,
+        Decision::Finding(SubIndication::NoCertificateChainFoundNoPoe)
+    );
+}
+
+/// Step 8 uses the archival proof time and preserves a required-element finding.
+#[test]
+fn archival_proof_can_recover_only_a_delay_constraint_failure() {
+    let table = structured_pkix::temporal::LeapTable::new(0, 200, &[]).unwrap();
+    let mut current = facts();
+    current.signer.as_mut().unwrap().not_after = at(110);
+    current.time.before = Some(at(90));
+    current.signature_timestamp = true;
+    current.claimed_signing_time = Some(at(20));
+    current.utc = Some(&table);
+    let requirements = Requirements {
+        timestamp_delay: Some(core::time::Duration::from_secs(10)),
+        ..REQUIREMENTS
+    };
+    let report = run(&inputs(&current), &requirements);
+    assert_eq!(
+        report.current.basis,
+        Some(crate::validation::Basis::TimestampDelay)
+    );
+    assert_eq!(report.best_signature_time, at(25));
+    assert_eq!(report.decision, Decision::Passed);
+
+    let mut late = inputs(&current);
+    late.initial = &HISTORICAL[..3];
+    let report = run(&late, &requirements);
+    assert_eq!(report.stage, Stage::TimestampDelay);
+    assert_eq!(
+        report.decision,
+        Decision::Finding(SubIndication::SigConstraintsFailure)
+    );
+
+    let missing = Requirements {
+        elements: Elements::NONE.with(Element::ContentType),
+        ..requirements
+    };
+    let report = run(&inputs(&current), &missing);
+    assert_eq!(
+        report.current.basis,
+        Some(crate::validation::Basis::Element(Element::ContentType))
+    );
+    assert_eq!(
+        report.decision,
+        Decision::Finding(SubIndication::SigConstraintsFailure)
+    );
+}
+
 #[test]
 fn missing_certificate_proof_keeps_original_finding_and_exposes_no_poe() {
     let current = facts();

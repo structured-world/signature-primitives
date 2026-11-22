@@ -7,7 +7,9 @@
 mod past;
 mod poe;
 
-use super::{Facts, Hash, Indication, Material, Outcome, Requirements, Retry, SubIndication};
+use super::{
+    Basis, Facts, Hash, Indication, Material, Outcome, Requirements, Retry, SubIndication,
+};
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 use structured_pkix::{crl::Reason, temporal::Instant};
 
@@ -366,6 +368,8 @@ pub enum Stage {
     Timestamp(usize),
     /// Historical signature verification decided the result.
     PastSignature,
+    /// The timestamp ordering check decided the result.
+    TimestampOrder,
     /// The final timestamp delay check decided the result.
     TimestampDelay,
     /// Final signature acceptance.
@@ -415,7 +419,12 @@ fn retry_signature(decision: Decision) -> bool {
             retry_timestamp(sub)
                 || matches!(
                     sub,
-                    SubIndication::SigConstraintsFailure | SubIndication::TryLater
+                    SubIndication::SigConstraintsFailure
+                        | SubIndication::TryLater
+                        // Clause 5.6.3.4 step 3 omits this case from its list.
+                        // Clause 5.6.2.4.4 step 3 explicitly recovers it using
+                        // historical path facts, as DSS archival validation does.
+                        | SubIndication::NoCertificateChainFoundNoPoe
                 )
         }
     }
@@ -629,11 +638,26 @@ pub fn validate<W: Work>(
     if let Some(best) = proofs.earliest(inputs.signature.value, work)? {
         report.best_signature_time = best;
     }
-    let past = past::signature(&inputs.signature, decision, now, &proofs, &crypto, work)?;
+    // The preliminary process reaches timestamp delay only after all earlier
+    // checks pass. Clause 5.6.3.4 step 8 checks it with the newly proven time.
+    // Preserve the preliminary finding in the report and keep every other
+    // signature constraint effective during past validation.
+    let past_input = match (decision, current.basis) {
+        (Decision::Finding(SubIndication::SigConstraintsFailure), Some(Basis::TimestampDelay)) => {
+            Decision::Passed
+        }
+        _ => decision,
+    };
+    let past = past::signature(&inputs.signature, past_input, now, &proofs, &crypto, work)?;
     report.past = Some(past);
     report.decision = past.decision;
     report.stage = Stage::PastSignature;
     if past.decision != Decision::Passed {
+        return Ok(report);
+    }
+    if let Err(failure) = super::validate::timestamp_order(inputs.current.order) {
+        report.stage = Stage::TimestampOrder;
+        report.decision = Decision::Finding(failure.sub);
         return Ok(report);
     }
     super::admission::admit_delay(inputs.current, requirements, work)?;

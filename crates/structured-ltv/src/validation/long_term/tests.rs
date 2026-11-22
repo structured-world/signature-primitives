@@ -429,6 +429,38 @@ fn newer_valid_token_protects_the_older_token_before_its_hash_sunset() {
     assert_eq!(report.decision, Decision::Finding(SubIndication::NoPoe));
 }
 
+/// Evidence can prove existence within the timestamp's accuracy interval.
+#[test]
+fn timestamp_proof_can_precede_generation_upper_bound() {
+    let current = facts();
+    let proof_time = Instant::new(23, 500_000_000).unwrap();
+    let initial = [
+        HISTORICAL[0],
+        HISTORICAL[1],
+        HISTORICAL[2],
+        HISTORICAL[3],
+        Proof {
+            object: NEW_TOKEN,
+            at: proof_time,
+        },
+    ];
+    for required in [false, true] {
+        let timestamps = [Timestamp {
+            generated: at(24),
+            covered: &[Covered::Direct(VALUE)],
+            required,
+            ..TIMESTAMP
+        }];
+        let mut input = inputs(&current);
+        input.initial = &initial;
+        input.timestamps = &timestamps;
+        let report = run(&input, &REQUIREMENTS);
+        assert_eq!(report.timestamps()[0].decision, Decision::Passed);
+        assert_eq!(report.decision, Decision::Passed);
+        assert_eq!(report.best_signature_time, at(24));
+    }
+}
+
 #[test]
 fn indirect_reference_needs_later_target_proof_before_digest_sunset() {
     let current = facts();
@@ -707,6 +739,55 @@ fn issuer_proof_comes_from_the_selected_historical_target_record() {
     let report = run(&input, &REQUIREMENTS);
     assert_eq!(report.past.unwrap().revocation_poe, Some(true));
     assert_eq!(report.decision, Decision::Passed);
+}
+
+/// A path lacking issuer proof must not mask one satisfying both proof checks.
+#[test]
+fn historical_path_selection_prefers_a_covered_path_with_issuer_proof() {
+    let records = [RevocationData {
+        issuer: DIGEST,
+        ..REV
+    }];
+    let members = [Member {
+        revocations: &records,
+        ..MEMBER
+    }];
+    let no_issuer_proof = Candidate {
+        members: &members,
+        ..CANDIDATE
+    };
+    let sub = SubIndication::OutOfBoundsNotRevoked;
+    for (candidates, expected_path) in [
+        ([no_issuer_proof, CANDIDATE], 1),
+        ([CANDIDATE, no_issuer_proof], 0),
+    ] {
+        let signature = Signature {
+            candidates: &candidates,
+            ..INITIAL_SIGNATURE
+        };
+        let report = past_result(signature, sub, HISTORICAL);
+        assert_eq!(report.decision, Decision::Passed);
+        assert_eq!(report.revocation_poe, Some(true));
+        assert_eq!(
+            report.certificate,
+            Some(PastCertificate::Passed {
+                path: expected_path,
+                horizon: Horizon::Through(at(30)),
+            })
+        );
+    }
+    let candidates = [no_issuer_proof];
+    let signature = Signature {
+        candidates: &candidates,
+        ..INITIAL_SIGNATURE
+    };
+    let report = past_result(signature, sub, HISTORICAL);
+    assert_eq!(
+        report.decision,
+        Decision::Finding(SubIndication::RevocationOutOfBoundsNoPoe)
+    );
+    assert_eq!(report.signature_poe, Some(true));
+    assert_eq!(report.revocation_poe, Some(false));
 }
 
 /// A valid path whose horizon precedes the signature proof must not mask a

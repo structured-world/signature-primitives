@@ -483,9 +483,9 @@ fn process_timestamp<W: Work>(
     if answer.decision == Decision::Passed {
         let proof = proofs.earliest(timestamp.object, work)?;
         let limit = poe::hash_limit(&requirements.crypto, timestamp.imprint, now, work)?;
-        if proof
-            .is_some_and(|at| timestamp.generated <= at && limit.is_some_and(|end| end.admits(at)))
-        {
+        // EN 319 102-1 5.6.3.4 step 5 tests hash reliability at the proof
+        // time. The generation upper bound can include timestamp accuracy.
+        if proof.is_some_and(|at| limit.is_some_and(|end| end.admits(at))) {
             proofs.extract(
                 timestamp.covered,
                 timestamp.generated,

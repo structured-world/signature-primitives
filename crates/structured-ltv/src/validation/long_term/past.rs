@@ -203,7 +203,7 @@ fn certificate<W: Work>(
         sub: Sub::NoCertificateChainFound,
         path: None,
     };
-    let mut first_valid = None;
+    let mut fallback: Option<(PastCertificate, bool, bool)> = None;
     for (index, path) in signature.candidates.iter().enumerate() {
         work.charge_work(6)?;
         let sub = if !path.recognized || path.chain == Chain::GeneralFailure {
@@ -216,13 +216,18 @@ fn certificate<W: Work>(
                     path: index,
                     horizon,
                 };
-                // A path can validate historically yet be unusable for this
-                // signature (EN 319 102-1 5.6.2.4.4 step 3). Keep the first
-                // valid path for diagnostics and try the remaining candidates.
-                if signature_proof.is_none_or(|at| horizon.admits(at)) {
+                // Historical validity, signature proof and issuer proof are
+                // separate requirements (EN 319 102-1 5.6.2.4.4).
+                let Some(at) = signature_proof else {
                     return Ok((candidate, Some(issuer_poe)));
+                };
+                let covers = horizon.admits(at);
+                if covers && issuer_poe {
+                    return Ok((candidate, Some(true)));
                 }
-                first_valid.get_or_insert((candidate, Some(issuer_poe)));
+                if fallback.is_none_or(|(_, _, covered)| covers && !covered) {
+                    fallback = Some((candidate, issuer_poe, covers));
+                }
                 continue;
             }
             Sub::ChainConstraintsFailure
@@ -234,7 +239,9 @@ fn certificate<W: Work>(
             path: Some(index),
         };
     }
-    Ok(first_valid.unwrap_or((result, None)))
+    Ok(fallback.map_or((result, None), |(path, issuer_poe, _)| {
+        (path, Some(issuer_poe))
+    }))
 }
 
 fn all_algorithm_proofs<W: Work>(

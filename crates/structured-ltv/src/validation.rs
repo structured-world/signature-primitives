@@ -16,8 +16,8 @@
 //!
 //! Evaluation is a pure function of its inputs: the same facts under the same
 //! requirements give the same outcome, and nothing is read from a clock.
-//! Past-validation (clause 5.6) is outside this process; its `NO_POE` token
-//! remains representable without an artificial basic/with-time input.
+//! The separate [long-term process](long_term) uses historical proofs and
+//! reports its own building-block decisions (clause 5.6).
 //!
 //! Normative processing: ETSI EN 319 102-1 V1.4.1, clauses 5.3.4 and 5.5.4:
 //! <https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf>.
@@ -25,6 +25,7 @@
 mod admission;
 pub mod crypto;
 pub mod indication;
+pub mod long_term;
 pub mod policy;
 mod recognition;
 mod validate;

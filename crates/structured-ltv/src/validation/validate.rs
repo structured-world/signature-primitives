@@ -336,8 +336,8 @@ pub struct Outcome {
 
 /// A finding that ends the process, with what it rests on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Verdict {
-    sub: SubIndication,
+pub(super) struct Verdict {
+    pub(super) sub: SubIndication,
     basis: Basis,
     unmet: Option<Unmet>,
 }
@@ -489,7 +489,7 @@ fn initialize(context: Context) -> Result<(), Verdict> {
 
 /// EN 319 102-1 V1.4.1 5.5.4 step 5 follows timestamp ordering. A claim
 /// remains a claim: it never becomes best-signature-time or a proven bound.
-fn timestamp_delay(
+pub(super) fn timestamp_delay(
     facts: &Facts<'_>,
     best: Instant,
     policy: &Requirements<'_>,

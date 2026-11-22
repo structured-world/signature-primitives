@@ -5,7 +5,7 @@
 //! material is assessed once, each path is selected at most once, and references
 //! have at most four passes (verification plus the independent integrity axis).
 
-use super::{Facts, Requirements};
+use super::{Constraints, Facts, Requirements};
 use structured_asn1::memory::{MemoryError, Work};
 
 fn add(left: u64, right: u64) -> Result<u64, MemoryError> {
@@ -24,7 +24,25 @@ pub(super) fn admit(
 ) -> Result<(), MemoryError> {
     // Fixed enum/scalar decisions, element-set checks and result projection.
     work.charge_work(128)?;
-    let constraints = policy.crypto;
+    let per_material = material_cost(&policy.crypto, work)?;
+    work.charge_work(mul(facts.references.len(), 4)?)?;
+    work.charge_work(mul(facts.materials.len(), per_material)?)?;
+    for path in facts.paths {
+        // Includes this preflight and the later path's scalar/enum decisions.
+        work.charge_work(32)?;
+        let members = add(
+            mul(path.authorities.len(), 2)?,
+            mul(path.revocation_issuers.len(), 4)?,
+        )?;
+        work.charge_work(add(members, mul(path.materials.len(), per_material)?)?)?;
+    }
+    admit_delay(facts, policy, work)
+}
+
+pub(super) fn material_cost(
+    constraints: &Constraints<'_>,
+    work: &impl Work,
+) -> Result<u64, MemoryError> {
     let mut per_material = add(
         32,
         add(
@@ -37,17 +55,14 @@ pub(super) fn admit(
         work.charge_work(1)?;
         per_material = add(per_material, add(5, mul(suite.hashes.len(), 2)?)?)?;
     }
-    work.charge_work(mul(facts.references.len(), 4)?)?;
-    work.charge_work(mul(facts.materials.len(), per_material)?)?;
-    for path in facts.paths {
-        // Includes this preflight and the later path's scalar/enum decisions.
-        work.charge_work(32)?;
-        let members = add(
-            mul(path.authorities.len(), 2)?,
-            mul(path.revocation_issuers.len(), 4)?,
-        )?;
-        work.charge_work(add(members, mul(path.materials.len(), per_material)?)?)?;
-    }
+    Ok(per_material)
+}
+
+pub(super) fn admit_delay(
+    facts: &Facts<'_>,
+    policy: &Requirements<'_>,
+    work: &impl Work,
+) -> Result<(), MemoryError> {
     if facts.signature_timestamp
         && policy.timestamp_delay.is_some()
         && let Some(table) = facts.utc

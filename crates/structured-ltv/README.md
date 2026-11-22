@@ -33,11 +33,19 @@ under the query that performs it; retained facts are never prepaid work.
   Evaluation allocates nothing and admits its bounded traversal through caller
   `Work`. It returns the standard indication, located fact index, unmet
   constraint and independent integrity/time/revocation/trust/change axes.
-  Tables 5 to 7 include retry conditions and `CUSTOM` diagnostics. Generic
-  `NO_POE` is represented for past-validation, which this process does not run.
+  Tables 5 to 7 include retry conditions and `CUSTOM` diagnostics.
   Policy selection, policy identity in reports and trusted-list processing
   belong to the caller. `pki::status::{Status, When, Revoked}` carries supplied
   temporal revocation assessments without acquiring or authenticating evidence.
+- `validation::long_term` runs EN 319 102-1 clause 5.6 over proof-of-existence
+  bounds for original objects and caller-established timestamp, Evidence
+  Record, revocation and historical path facts. It keeps the with-time
+  result, past certificate and signature results, timestamp decisions and
+  final indication independently visible. Proofs are collected newest first
+  for timestamps, with explicit validity and algorithm sunset boundaries.
+  The report and temporary proof store use accounted, fallible memory.
+  `validate_past_signature` can also operate on provisional next-token
+  proofs within a format's Evidence Record validation.
 - `timestamp` retains a completed CMS token check as `Verified`, with the
   original token, signature, property and `Purpose` (content, signature,
   validation data or archive). It derives complete generation intervals from

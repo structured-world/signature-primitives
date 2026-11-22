@@ -1,0 +1,735 @@
+use super::*;
+use crate::pki::status::Status;
+use crate::validation::{
+    Anchor, Changes, Context, ETSI_TS_119_312_V2_1_1, Element, Elements, Format, Order, Path,
+    Recognition, Reference, Signer, Time, Value,
+};
+use alloc::sync::Arc;
+use structured_asn1::memory::{Memory, MemoryAccount};
+
+const fn at(seconds: i64) -> Instant {
+    match Instant::new(seconds, 0) {
+        Some(value) => value,
+        None => panic!("whole seconds form an instant"),
+    }
+}
+
+const VALID: Validity = Validity {
+    not_before: at(10),
+    not_after: at(50),
+};
+const CURRENT: Instant = at(100);
+const VALUE: Object = Object(0);
+const CERT: Object = Object(1);
+const ISSUER: Object = Object(2);
+const REVOCATION: Object = Object(3);
+const NEW_TOKEN: Object = Object(4);
+const OLD_TOKEN: Object = Object(5);
+const DIGEST: Object = Object(6);
+const PRESENT: &[Object] = &[VALUE, CERT, ISSUER, REVOCATION, NEW_TOKEN, OLD_TOKEN];
+const HISTORICAL: &[Proof] = &[
+    Proof {
+        object: CERT,
+        at: at(20),
+    },
+    Proof {
+        object: ISSUER,
+        at: at(20),
+    },
+    Proof {
+        object: REVOCATION,
+        at: at(30),
+    },
+    Proof {
+        object: VALUE,
+        at: at(25),
+    },
+];
+const REV: RevocationData<'static> = RevocationData {
+    object: REVOCATION,
+    issuer: ISSUER,
+    issuer_validity: VALID,
+    issued: at(30),
+    fresh_before: Some(at(80)),
+    status: Revocation::Clear,
+    crypto: &[],
+    delegated: None,
+};
+const MEMBER: Member<'static> = Member {
+    object: CERT,
+    crypto: &[],
+    revocations: &[REV],
+};
+const CANDIDATE: Candidate<'static> = Candidate {
+    chain: crate::validation::Chain::Valid,
+    recognized: true,
+    anchor_sunset: None,
+    validity: VALID,
+    members: &[MEMBER],
+};
+const CANDIDATES: &[Candidate<'static>] = &[CANDIDATE];
+const INITIAL_SIGNATURE: Signature<'static> = Signature {
+    value: VALUE,
+    validity: VALID,
+    candidates: CANDIDATES,
+    model: ValidityModel::Shell,
+    revoked_ca_at: None,
+    revocations: &[REV],
+    affected_crypto: &[],
+    retry: RetryCause::Other,
+};
+const REQUIREMENTS: Requirements<'static> = Requirements {
+    crypto: ETSI_TS_119_312_V2_1_1,
+    elements: Elements::NONE,
+    timestamp_delay: None,
+};
+const CURRENT_PATH: Path<'static> = Path {
+    chain: crate::validation::Chain::Valid,
+    anchor: Anchor {
+        current: Recognition::Recognized,
+        over_interval: Recognition::Recognized,
+    },
+    authorities: &[],
+    materials: &[],
+    revocation_issuers: &[],
+};
+
+fn facts() -> Facts<'static> {
+    Facts {
+        format: Format::Conformant,
+        context: Context::Ready,
+        signer: Some(Signer {
+            not_before: VALID.not_before,
+            not_after: VALID.not_after,
+            revocation: Status::NotRevoked {
+                basis: 0,
+                later: None,
+            },
+        }),
+        references: &[Reference::Intact],
+        value: Value::Verified,
+        materials: &[],
+        elements: Elements::NONE,
+        time: Time {
+            after: None,
+            before: None,
+        },
+        paths: &[CURRENT_PATH],
+        truncated: false,
+        order: Order::Coherent,
+        signature_timestamp: false,
+        claimed_signing_time: None,
+        utc: None,
+        changes: Changes::NotApplicable,
+        now: CURRENT,
+    }
+}
+
+fn inputs<'a>(current: &'a Facts<'a>) -> Inputs<'a> {
+    Inputs {
+        object_count: 7,
+        present: PRESENT,
+        initial: HISTORICAL,
+        current,
+        signature: INITIAL_SIGNATURE,
+        records: &[],
+        timestamps: &[],
+        has_long_term_attributes: true,
+        require_long_term_attributes: false,
+    }
+}
+
+fn memory(bytes: usize, work: usize) -> Memory {
+    Memory::new(Arc::new(MemoryAccount::new(bytes, work)))
+}
+
+fn run(input: &Inputs<'_>, requirements: &Requirements<'_>) -> Report<Memory> {
+    validate(input, requirements, &memory(1 << 20, 1_000_000)).unwrap()
+}
+
+#[test]
+fn old_revocation_reconstructs_a_valid_historical_result() {
+    let current = facts();
+    let input = inputs(&current);
+    let report = run(&input, &REQUIREMENTS);
+    assert_eq!(
+        report.current.sub,
+        Some(SubIndication::OutOfBoundsNotRevoked)
+    );
+    assert_eq!(report.decision, Decision::Passed);
+    assert_eq!(report.best_signature_time, at(25));
+    let past = report.past.unwrap();
+    assert_eq!(
+        past.certificate,
+        Some(PastCertificate::Passed {
+            path: 0,
+            horizon: Horizon::Through(at(30))
+        })
+    );
+    assert_eq!(past.revocation_poe, Some(true));
+    assert_eq!(past.signature_poe, Some(true));
+}
+
+#[test]
+fn missing_certificate_proof_keeps_original_finding_and_exposes_no_poe() {
+    let current = facts();
+    let mut input = inputs(&current);
+    let candidates = [Candidate {
+        anchor_sunset: Some(at(50)),
+        ..CANDIDATE
+    }];
+    input.signature.candidates = &candidates;
+    input.initial = &HISTORICAL[1..];
+    let report = run(&input, &REQUIREMENTS);
+    assert_eq!(
+        report.decision,
+        Decision::Finding(SubIndication::OutOfBoundsNotRevoked)
+    );
+    let past = report.past.unwrap();
+    assert_eq!(
+        past.certificate,
+        Some(PastCertificate::Finding {
+            sub: SubIndication::NoPoe,
+            path: Some(0)
+        })
+    );
+    assert_eq!(SubIndication::NoPoe.retry(), Some(Retry::ProofOfExistence));
+}
+
+#[test]
+fn a_poe_before_issuance_is_not_yet_valid() {
+    let current = facts();
+    let mut input = inputs(&current);
+    let complete = [
+        HISTORICAL[0],
+        HISTORICAL[1],
+        HISTORICAL[2],
+        Proof {
+            object: VALUE,
+            at: at(9),
+        },
+    ];
+    input.initial = &complete;
+    assert_eq!(
+        run(&input, &REQUIREMENTS).decision,
+        Decision::Finding(SubIndication::NotYetValid)
+    );
+}
+
+#[test]
+fn path_findings_preserve_identity_and_normative_precedence() {
+    use crate::validation::Chain;
+    let current = facts();
+    for (chain, expected) in [
+        (
+            Chain::GeneralFailure,
+            SubIndication::CertificateChainGeneralFailure,
+        ),
+        (
+            Chain::ConstraintsFailure,
+            SubIndication::ChainConstraintsFailure,
+        ),
+    ] {
+        let candidates = [Candidate { chain, ..CANDIDATE }];
+        let mut input = inputs(&current);
+        input.signature.candidates = &candidates;
+        assert_eq!(
+            run(&input, &REQUIREMENTS).past.unwrap().certificate,
+            Some(PastCertificate::Finding {
+                sub: expected,
+                path: Some(0)
+            })
+        );
+    }
+    let mut input = inputs(&current);
+    input.signature.candidates = &[];
+    assert_eq!(
+        run(&input, &REQUIREMENTS).past.unwrap().certificate,
+        Some(PastCertificate::Finding {
+            sub: SubIndication::NoCertificateChainFound,
+            path: None
+        })
+    );
+}
+
+#[test]
+fn current_failures_and_absent_long_term_attributes_stop_recovery() {
+    let mut current = facts();
+    current.value = Value::Mismatch;
+    let report = run(&inputs(&current), &REQUIREMENTS);
+    assert_eq!(
+        report.decision,
+        Decision::Finding(SubIndication::SigCryptoFailure)
+    );
+    assert_eq!(report.stage, Stage::WithTime);
+    assert!(report.past.is_none());
+    let current = facts();
+    let mut input = inputs(&current);
+    input.has_long_term_attributes = false;
+    assert!(run(&input, &REQUIREMENTS).past.is_none());
+}
+
+const TIMESTAMP: Timestamp<'static> = Timestamp {
+    object: NEW_TOKEN,
+    generated: at(40),
+    imprint: Hash::Sha256,
+    current: Decision::Passed,
+    past: None,
+    acceptance: &[],
+    covered: &[],
+    required: false,
+};
+
+#[test]
+fn newer_valid_token_protects_the_older_token_before_its_hash_sunset() {
+    let current = facts();
+    let rules = [
+        crate::validation::HashRule {
+            hash: Hash::Sha1,
+            until: Some(at(60)),
+        },
+        crate::validation::HashRule {
+            hash: Hash::Sha256,
+            until: None,
+        },
+    ];
+    let requirements = Requirements {
+        crypto: crate::validation::Constraints {
+            hashes: &rules,
+            ..REQUIREMENTS.crypto
+        },
+        ..REQUIREMENTS
+    };
+    let tokens = [
+        Timestamp {
+            covered: &[Covered::Direct(OLD_TOKEN)],
+            ..TIMESTAMP
+        },
+        Timestamp {
+            object: OLD_TOKEN,
+            generated: at(24),
+            imprint: Hash::Sha1,
+            covered: &[Covered::Direct(VALUE)],
+            required: true,
+            ..TIMESTAMP
+        },
+    ];
+    let mut input = inputs(&current);
+    input.timestamps = &tokens;
+    let report = run(&input, &requirements);
+    assert_eq!(report.best_signature_time, at(24));
+    assert_eq!(report.timestamps().len(), 2);
+    assert_eq!(report.timestamps()[1].decision, Decision::Passed);
+    input.timestamps = &tokens[1..];
+    let report = run(&input, &requirements);
+    assert_eq!(report.stage, Stage::Timestamp(0));
+    assert_eq!(report.decision, Decision::Finding(SubIndication::NoPoe));
+}
+
+#[test]
+fn indirect_reference_needs_later_target_proof_before_digest_sunset() {
+    let current = facts();
+    let rules = [crate::validation::HashRule {
+        hash: Hash::Sha256,
+        until: Some(at(50)),
+    }];
+    let requirements = Requirements {
+        crypto: crate::validation::Constraints {
+            hashes: &rules,
+            ..REQUIREMENTS.crypto
+        },
+        ..REQUIREMENTS
+    };
+    let token_proof = Proof {
+        object: NEW_TOKEN,
+        at: at(40),
+    };
+    let token = [Timestamp {
+        generated: at(20),
+        covered: &[Covered::Reference {
+            digest: DIGEST,
+            target: VALUE,
+            hash: Hash::Sha256,
+        }],
+        ..TIMESTAMP
+    }];
+    let mut input = inputs(&current);
+    input.timestamps = &token;
+    let initial = [
+        HISTORICAL[0],
+        HISTORICAL[1],
+        HISTORICAL[2],
+        HISTORICAL[3],
+        token_proof,
+    ];
+    input.initial = &initial;
+    assert_eq!(run(&input, &requirements).best_signature_time, at(20));
+    let mut late = initial;
+    late[3].at = at(50);
+    input.initial = &late;
+    assert_eq!(run(&input, &requirements).best_signature_time, at(50));
+}
+
+#[test]
+fn failed_record_cannot_contribute_proofs() {
+    let current = facts();
+    let mut input = inputs(&current);
+    input.initial = &HISTORICAL[..3];
+    let covered = [VALUE];
+    let records = [EvidenceRecord {
+        decision: Decision::Passed,
+        initial: at(25),
+        covered: &covered,
+    }];
+    input.records = &records;
+    assert_eq!(run(&input, &REQUIREMENTS).decision, Decision::Passed);
+    let rejected = [EvidenceRecord {
+        decision: Decision::Finding(SubIndication::HashFailure),
+        ..records[0]
+    }];
+    input.records = &rejected;
+    assert_eq!(run(&input, &REQUIREMENTS).best_signature_time, CURRENT);
+}
+
+#[test]
+fn final_acceptance_and_required_timestamp_failures_stay_separate() {
+    let current = facts();
+    let mut input = inputs(&current);
+    let token = [Timestamp {
+        current: Decision::Finding(SubIndication::HashFailure),
+        required: true,
+        ..TIMESTAMP
+    }];
+    input.timestamps = &token;
+    let report = run(&input, &REQUIREMENTS);
+    assert_eq!(report.stage, Stage::Timestamp(0));
+    assert_eq!(
+        report.decision,
+        Decision::Finding(SubIndication::HashFailure)
+    );
+    let optional = [Timestamp {
+        required: false,
+        ..token[0]
+    }];
+    input.timestamps = &optional;
+    let requirements = Requirements {
+        elements: Elements::NONE.with(Element::ContentType),
+        ..REQUIREMENTS
+    };
+    // At the current time this case fails on certificate validity before
+    // reaching signature acceptance; historical processing exposes the latter.
+    let report = run(&input, &requirements);
+    assert_eq!(report.stage, Stage::SignatureAcceptance);
+    assert_eq!(
+        report.decision,
+        Decision::Finding(SubIndication::SigConstraintsFailure)
+    );
+    assert_eq!(
+        report.timestamps()[0].decision,
+        Decision::Finding(SubIndication::HashFailure)
+    );
+}
+
+#[test]
+fn invalid_catalogues_and_resource_refusal_are_terminal_errors() {
+    let current = facts();
+    let mut input = inputs(&current);
+    let work = memory(0, 1_000_000);
+    assert!(matches!(
+        validate(&input, &REQUIREMENTS, &work),
+        Err(Error::Resource(_))
+    ));
+    assert_eq!(work.used(), 0);
+    assert!(matches!(
+        validate(&input, &REQUIREMENTS, &memory(1 << 20, 0)),
+        Err(Error::Resource(_))
+    ));
+    let invalid = [Object(7)];
+    input.present = &invalid;
+    assert!(matches!(
+        validate(&input, &REQUIREMENTS, &memory(1 << 20, 1_000_000)),
+        Err(Error::ForeignObject(Object(7)))
+    ));
+}
+
+fn past_result(signature: Signature<'_>, sub: SubIndication, proofs: &[Proof]) -> PastSignature {
+    validate_past_signature(
+        &PastInputs {
+            object_count: 7,
+            proofs,
+            now: CURRENT,
+            current: Decision::Finding(sub),
+            signature,
+        },
+        &REQUIREMENTS,
+        &memory(1 << 20, 1_000_000),
+    )
+    .unwrap()
+}
+
+#[test]
+fn past_signature_only_recovers_the_cited_current_findings() {
+    use SubIndication as S;
+    for sub in [
+        S::NoCertificateChainFoundNoPoe,
+        S::RevokedNoPoe,
+        S::RevocationOutOfBoundsNoPoe,
+        S::OutOfBoundsNotRevoked,
+        S::OutOfBoundsNoPoe,
+    ] {
+        let answer = past_result(INITIAL_SIGNATURE, sub, HISTORICAL);
+        assert_eq!(answer.decision, Decision::Passed, "{sub:?}");
+        assert_eq!(answer.signature_poe, Some(true));
+    }
+    for sub in [
+        S::HashFailure,
+        S::SigConstraintsFailure,
+        S::NoSigningCertificateFound,
+    ] {
+        let answer = past_result(INITIAL_SIGNATURE, sub, HISTORICAL);
+        assert_eq!(answer.decision, Decision::Finding(sub));
+        assert_eq!(answer.certificate, None);
+    }
+}
+
+#[test]
+fn ca_revocation_requires_a_separate_proof_of_target_revocation_data() {
+    let signature = Signature {
+        revoked_ca_at: Some(at(30)),
+        ..INITIAL_SIGNATURE
+    };
+    let sub = SubIndication::RevokedCaNoPoe;
+    assert_eq!(
+        past_result(signature, sub, HISTORICAL).decision,
+        Decision::Passed
+    );
+    let earlier = Signature {
+        revoked_ca_at: Some(at(29)),
+        ..signature
+    };
+    assert_eq!(
+        past_result(earlier, sub, HISTORICAL).decision,
+        Decision::Finding(sub)
+    );
+}
+
+#[test]
+fn stale_status_is_rechecked_at_proven_signing_time_with_strict_freshness() {
+    let sub = SubIndication::TryLater;
+    let mut record = RevocationData {
+        fresh_before: Some(at(25)),
+        ..REV
+    };
+    let signature = Signature {
+        retry: RetryCause::Freshness(&record),
+        ..INITIAL_SIGNATURE
+    };
+    assert_eq!(
+        past_result(signature, sub, HISTORICAL).decision,
+        Decision::Finding(sub)
+    );
+    record.fresh_before = Some(at(26));
+    let signature = Signature {
+        retry: RetryCause::Freshness(&record),
+        ..INITIAL_SIGNATURE
+    };
+    assert_eq!(
+        past_result(signature, sub, HISTORICAL).decision,
+        Decision::Passed
+    );
+    let signature = Signature {
+        retry: RetryCause::Suspension,
+        ..INITIAL_SIGNATURE
+    };
+    assert_eq!(
+        past_result(signature, sub, HISTORICAL).decision,
+        Decision::Passed
+    );
+}
+
+#[test]
+fn shell_slides_on_non_compromise_revocation_and_chain_does_not() {
+    let revocations = [RevocationData {
+        status: Revocation::Revoked {
+            at: at(25),
+            reason: Some(Reason::Superseded),
+        },
+        ..REV
+    }];
+    let members = [Member {
+        revocations: &revocations,
+        ..MEMBER
+    }];
+    let paths = [Candidate {
+        members: &members,
+        ..CANDIDATE
+    }];
+    let signature = Signature {
+        candidates: &paths,
+        revocations: &revocations,
+        ..INITIAL_SIGNATURE
+    };
+    let sub = SubIndication::RevokedNoPoe;
+    let shell = past_result(signature, sub, HISTORICAL);
+    assert_eq!(shell.signature_poe, Some(false));
+    assert_eq!(shell.decision, Decision::Finding(sub));
+    let chain = Signature {
+        model: ValidityModel::Chain,
+        ..signature
+    };
+    assert_eq!(
+        past_result(chain, sub, HISTORICAL).decision,
+        Decision::Passed
+    );
+}
+
+#[test]
+fn every_affected_crypto_object_needs_its_own_proof_before_sunset() {
+    let hashes = [crate::validation::HashRule {
+        hash: Hash::Sha1,
+        until: Some(at(40)),
+    }];
+    let requirements = Requirements {
+        crypto: crate::validation::Constraints {
+            hashes: &hashes,
+            ..REQUIREMENTS.crypto
+        },
+        ..REQUIREMENTS
+    };
+    let affected = [
+        CryptoObject {
+            object: VALUE,
+            material: Material {
+                hash: Some(Hash::Sha1),
+                scheme: None,
+            },
+        },
+        CryptoObject {
+            object: DIGEST,
+            material: Material {
+                hash: Some(Hash::Sha1),
+                scheme: None,
+            },
+        },
+    ];
+    let sub = SubIndication::CryptoConstraintsFailureNoPoe;
+    let current = Decision::Finding(sub);
+    let signature = Signature {
+        affected_crypto: &affected,
+        ..INITIAL_SIGNATURE
+    };
+    let mut proofs = [
+        HISTORICAL[0],
+        HISTORICAL[1],
+        HISTORICAL[2],
+        HISTORICAL[3],
+        Proof {
+            object: DIGEST,
+            at: at(40),
+        },
+    ];
+    for (at, expected) in [(at(40), current), (at(39), Decision::Passed)] {
+        proofs[4].at = at;
+        let result = validate_past_signature(
+            &PastInputs {
+                object_count: 7,
+                proofs: &proofs,
+                now: CURRENT,
+                current,
+                signature,
+            },
+            &requirements,
+            &memory(1 << 20, 1_000_000),
+        )
+        .unwrap();
+        assert_eq!(result.decision, expected);
+    }
+}
+
+#[test]
+fn historical_crypto_cutoff_cannot_be_recovered_using_an_unrelated_proof() {
+    let hashes = [crate::validation::HashRule {
+        hash: Hash::Sha1,
+        until: Some(at(30)),
+    }];
+    let requirements = Requirements {
+        crypto: crate::validation::Constraints {
+            hashes: &hashes,
+            ..REQUIREMENTS.crypto
+        },
+        ..REQUIREMENTS
+    };
+    let material = [CryptoObject {
+        object: REVOCATION,
+        material: Material {
+            hash: Some(Hash::Sha1),
+            scheme: None,
+        },
+    }];
+    let revocations = [RevocationData {
+        crypto: &material,
+        ..REV
+    }];
+    let members = [Member {
+        revocations: &revocations,
+        ..MEMBER
+    }];
+    let paths = [Candidate {
+        members: &members,
+        ..CANDIDATE
+    }];
+    let current = facts();
+    let mut input = inputs(&current);
+    input.signature.candidates = &paths;
+    let report = run(&input, &requirements);
+    assert_eq!(
+        report.past.unwrap().certificate,
+        Some(PastCertificate::Finding {
+            sub: SubIndication::NoPoe,
+            path: Some(0)
+        })
+    );
+}
+
+#[test]
+fn issuer_proof_must_fall_inside_its_own_validity() {
+    let mut proofs = [HISTORICAL[0], HISTORICAL[1], HISTORICAL[2], HISTORICAL[3]];
+    proofs[1].at = VALID.not_before;
+    let result = past_result(
+        INITIAL_SIGNATURE,
+        SubIndication::OutOfBoundsNotRevoked,
+        &proofs,
+    );
+    assert_eq!(result.revocation_poe, Some(false));
+    assert_eq!(
+        result.decision,
+        Decision::Finding(SubIndication::RevocationOutOfBoundsNoPoe)
+    );
+}
+
+#[test]
+fn timestamp_processing_rejects_nonchronological_or_future_inputs() {
+    let current = facts();
+    let mut input = inputs(&current);
+    let timestamps = [
+        TIMESTAMP,
+        Timestamp {
+            generated: at(41),
+            ..TIMESTAMP
+        },
+    ];
+    input.timestamps = &timestamps;
+    assert!(matches!(
+        validate(&input, &REQUIREMENTS, &memory(1 << 20, 1_000_000)),
+        Err(Error::TimestampOrder)
+    ));
+    let future = [Timestamp {
+        generated: at(101),
+        ..TIMESTAMP
+    }];
+    input.timestamps = &future;
+    assert!(matches!(
+        validate(&input, &REQUIREMENTS, &memory(1 << 20, 1_000_000)),
+        Err(Error::FutureTime(_))
+    ));
+}

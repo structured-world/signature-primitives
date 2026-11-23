@@ -156,6 +156,117 @@ pub fn resolve<'uri, W: Work>(
     decoded_name(base, path, part, work)
 }
 
+/// Resolves an internal OPC relationship whose source is the package root.
+pub(crate) fn opc_root<'a, W: Work>(
+    reference: &'a str,
+    target: bool,
+    work: &W,
+) -> Result<Option<MemberName<'a>>, MemoryError> {
+    // ECMA-376-2 §§6.4.1, 6.5.2 and RFC 3986 §5.2.4: resolve lexical
+    // dot segments against the package root before mapping the part name.
+    // §§6.2.2.2 and 7.3.4 preserve escapes in the ASCII ZIP item name.
+    // https://www.ecma-international.org/publications-and-standards/standards/ecma-376/
+    // https://www.rfc-editor.org/rfc/rfc3986#section-5.2.4
+    let reference = reference.as_bytes();
+    let cost = (reference.len() as u64)
+        .checked_mul(12)
+        .and_then(|cost| cost.checked_add(1))
+        .ok_or(MemoryError::WorkExceeded)?;
+    work.charge_work(cost)?;
+    let path = if let Some(path) = reference.strip_prefix(b"/") {
+        path
+    } else if target {
+        reference
+    } else {
+        return Ok(None);
+    };
+    if path.is_empty()
+        || path.starts_with(b"/")
+        || !lexical(path)
+        || path.iter().any(|byte| matches!(byte, b' ' | b'?' | b'#'))
+        || (!reference.starts_with(b"/")
+            && path
+                .split(|&byte| byte == b'/')
+                .next()
+                .is_some_and(|first| first.contains(&b':')))
+    {
+        return Ok(None);
+    }
+    let has_dots = path
+        .split(|&byte| byte == b'/')
+        .any(|part| matches!(part, b"." | b".."));
+    if !has_dots && path.is_ascii() {
+        return Ok(opc_part(path).then_some(MemberName::Borrowed(path)));
+    }
+    if has_dots && (!target || path.ends_with(b"/.") || path.ends_with(b"/..")) {
+        return Ok(None);
+    }
+    let mut name = work.vector();
+    for segment in path.split(|&byte| byte == b'/') {
+        match segment {
+            b"." => continue,
+            b".." => {
+                while let Some(byte) = name.pop() {
+                    if byte == b'/' {
+                        break;
+                    }
+                }
+                continue;
+            }
+            [] => return Ok(None),
+            _ => {}
+        }
+        if !name.is_empty() {
+            name.try_push(b'/')?;
+        }
+        opc_append(&mut name, segment)?;
+    }
+    Ok(if opc_part(&name) {
+        Some(MemberName::Owned(name.into_owned()))
+    } else {
+        None
+    })
+}
+
+fn opc_append<W: Work>(output: &mut OwnedVec<u8, W>, segment: &[u8]) -> Result<(), MemoryError> {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    if segment.is_ascii() {
+        return output.try_extend_from_slice(segment);
+    }
+    for &byte in segment {
+        if byte.is_ascii() {
+            output.try_push(byte)?;
+        } else {
+            output.try_extend_from_slice(&[
+                b'%',
+                HEX[usize::from(byte >> 4)],
+                HEX[usize::from(byte & 15)],
+            ])?;
+        }
+    }
+    Ok(())
+}
+
+fn opc_part(path: &[u8]) -> bool {
+    path.split(|&byte| byte == b'/').all(|segment| {
+        !segment.is_empty()
+            && !segment.ends_with(b".")
+            && !segment.windows(3).any(|escape| {
+                if escape[0] != b'%' {
+                    return false;
+                }
+                match (hex(escape[1]), hex(escape[2])) {
+                    (Some(hi), Some(lo)) => {
+                        let byte = hi * 16 + lo;
+                        byte.is_ascii_alphanumeric()
+                            || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b'\\')
+                    }
+                    _ => true,
+                }
+            })
+    })
+}
+
 fn decoded_name<'uri, W: Work>(
     base: &[u8],
     path: &'uri [u8],

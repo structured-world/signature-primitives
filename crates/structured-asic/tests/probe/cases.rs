@@ -155,6 +155,39 @@ fn xml_prefix_separates_namespace_evidence_and_opaque_dtds() {
 }
 
 #[test]
+fn xref_stream_type_comes_from_the_outer_pdf_dictionary() {
+    // Dictionary entry ordering and intervening PDF objects do not affect Type.
+    for dictionary in [
+        "<< /Type /XRef /DecodeParms << /Columns 4 >> /Length 0 >>",
+        "<< /DecodeParms << /Columns 4 >> /Type /XRef /Length 0 >>",
+        "<< /DecodeParms [ << /Columns 4 >> ] /Note ( >> /Type /Other ) /Type /XRef >>",
+        "<< /Link 6 0 R /Note <3e3e> /Ty#70e /X#52ef >>",
+    ] {
+        let pdf = format!(
+            "%PDF-1.7\n1 0 obj\n{dictionary}\nstream\nendstream\nendobj\nstartxref\n9\n%%EOF\n"
+        );
+        assert!(
+            has(&inspect(pdf.as_bytes()), Format::Pdf, Finding::Framing),
+            "{dictionary}"
+        );
+    }
+    for dictionary in [
+        "<< /Parameters << /Type /XRef >> /Type /Other >>",
+        "<< /Note ( /Type /XRef ) /Type /Other >>",
+        "<< /Other /Type /XRef /Other >>",
+        "<< /Type /XRef /Type /Other >>",
+    ] {
+        let pdf = format!(
+            "%PDF-1.7\n1 0 obj\n{dictionary}\nstream\nendstream\nendobj\nstartxref\n9\n%%EOF\n"
+        );
+        assert!(
+            has(&inspect(pdf.as_bytes()), Format::Pdf, Finding::Incomplete),
+            "{dictionary}"
+        );
+    }
+}
+
+#[test]
 fn actual_zip_markers_distinguish_asic_odf_and_ooxml() {
     // ASiC mimetype is validated as payload and corroborated by a signature role.
     for (format, mime) in [
@@ -212,14 +245,64 @@ fn actual_zip_markers_distinguish_asic_odf_and_ooxml() {
 }
 
 fn office(mode: &str, missing: bool) -> Report<usize, u64> {
+    office_with_target(mode, missing, "word/document.xml")
+}
+
+#[test]
+fn office_relationship_resolves_dot_segments_against_the_package_root() {
+    // The ZIP name and its content-type override use the resolved part name.
+    for target in [
+        "word/../word/document.xml",
+        "./word/./document.xml",
+        "/other/sub/../../word/document.xml",
+        "../word/document.xml",
+    ] {
+        assert!(
+            has(
+                &office_with_target("", false, target),
+                Format::Ooxml,
+                Finding::Framing
+            ),
+            "{target}"
+        );
+    }
+    assert!(has(
+        &office_with_target(" TargetMode='External'", false, "word/../word/document.xml"),
+        Format::Ooxml,
+        Finding::Unsupported
+    ));
+    assert!(has(
+        &office_with_target("", false, "word%2Fdocument.xml"),
+        Format::Ooxml,
+        Finding::Conflicting
+    ));
+    assert!(has(
+        &office_with_part(
+            "",
+            false,
+            "tmp/../word/sample%20file.xml",
+            "word/sample%20file.xml"
+        ),
+        Format::Ooxml,
+        Finding::Framing
+    ));
+}
+
+fn office_with_target(mode: &str, missing: bool, target: &str) -> Report<usize, u64> {
+    office_with_part(mode, missing, target, "word/document.xml")
+}
+
+fn office_with_part(mode: &str, missing: bool, target: &str, part: &str) -> Report<usize, u64> {
     let relationships = format!(
-        "<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'><Relationship Id='rId1' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument' Target='word/document.xml'{mode}/></Relationships>"
+        "<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'><Relationship Id='rId1' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument' Target='{target}'{mode}/></Relationships>"
     );
-    let types = b"<Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'><Override PartName='/word/document.xml' ContentType='application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'/></Types>";
+    let types = format!(
+        "<Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'><Override PartName='/{part}' ContentType='application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'/></Types>"
+    );
     let records = [
         File::stored(b"_rels/.rels", relationships.as_bytes()),
-        File::stored(b"[Content_Types].xml", types),
-        File::stored(b"word/document.xml", b"<document/>"),
+        File::stored(b"[Content_Types].xml", types.as_bytes()),
+        File::stored(part.as_bytes(), b"<document/>"),
     ];
     let count = if missing { 2 } else { 3 };
     inspect(&zip(&records[..count]).bytes)

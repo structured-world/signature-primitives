@@ -1,6 +1,8 @@
 use super::{Candidate, Error, Finding, Format, Limits, acquire::Source, charge};
 use structured_asn1::{Span, memory::Execution, range::RangeSource};
 
+mod pdf_object;
+
 pub(super) const fn at(format: Format, finding: Finding, length: usize) -> Candidate {
     Candidate {
         format,
@@ -339,23 +341,10 @@ async fn pdf_footer<S: RangeSource>(
     };
     let bytes = source.read(xref, work).await?;
     charge(work, xref, 12)?;
-    let mut fields = bytes
-        .split(|&byte| pdf_space(byte))
-        .filter(|field| !field.is_empty());
-    Ok(match (fields.next(), fields.next(), fields.next()) {
-        (Some(b"xref"), Some(start), Some(count))
-            if decimal(start).is_some() && decimal(count).is_some() =>
-        {
-            Finding::Framing
-        }
-        (Some(object), Some(generation), Some(b"obj"))
-            if decimal(object).is_some()
-                && decimal(generation).is_some()
-                && pdf_xref_type(&bytes) =>
-        {
-            Finding::Framing
-        }
-        _ => Finding::Incomplete,
+    Ok(if pdf_object::xref(&bytes) {
+        Finding::Framing
+    } else {
+        Finding::Incomplete
     })
 }
 
@@ -401,26 +390,6 @@ fn trim_pdf(bytes: &[u8]) -> &[u8] {
         .iter()
         .rposition(|&byte| !pdf_space(byte))
         .map_or(&[], |end| &bytes[..=end])
-}
-
-fn pdf_xref_type(bytes: &[u8]) -> bool {
-    // ISO 32000-1 §7.5.8.2: the cross-reference stream dictionary has Type XRef.
-    let dictionary = bytes.split(|&byte| byte == b'>').next().unwrap_or_default();
-    dictionary.windows(5).enumerate().any(|(start, token)| {
-        if token != b"/Type" {
-            return false;
-        }
-        let tail = &dictionary[start + token.len()..];
-        let next = tail
-            .iter()
-            .position(|&byte| !pdf_space(byte))
-            .unwrap_or(tail.len());
-        tail[next..].strip_prefix(b"/XRef").is_some_and(|after| {
-            after
-                .first()
-                .is_none_or(|&byte| pdf_space(byte) || byte == b'/')
-        })
-    })
 }
 
 fn decimal(bytes: &[u8]) -> Option<u64> {

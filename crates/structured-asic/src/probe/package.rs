@@ -7,7 +7,7 @@ use crate::{
     Session,
     error::{Error as ZipError, Syntax},
     layout::{Role, classify},
-    uri::{self, Part, Target},
+    uri,
     zip::{Archive, FaultKind, Member, ReadFailure},
 };
 use structured_asn1::{
@@ -476,12 +476,9 @@ fn office_target<'x, E>(
     let Some(target) = document.attribute(node, "Target", None) else {
         return Ok(Err(Finding::Incomplete));
     };
-    match uri::resolve(b"", target, work).map_err(|cause| Error::Resource { cause, range })? {
-        Target::Member {
-            name,
-            part: Part::Whole,
-        } => Ok(Ok(Some(name))),
-        _ => Ok(Err(Finding::Conflicting)),
+    match uri::opc_root(target, true, work).map_err(|cause| Error::Resource { cause, range })? {
+        Some(name) => Ok(Ok(Some(name))),
+        None => Ok(Err(Finding::Conflicting)),
     }
 }
 
@@ -502,15 +499,8 @@ fn office_type<E>(
         ) else {
             continue;
         };
-        if !name.starts_with('/') {
-            continue;
-        }
-        let value =
-            uri::resolve(b"", name, work).map_err(|cause| Error::Resource { cause, range })?;
-        if let Target::Member {
-            name,
-            part: Part::Whole,
-        } = value
+        if let Some(name) =
+            uri::opc_root(name, false, work).map_err(|cause| Error::Resource { cause, range })?
         {
             let name = name.as_ref();
             charge(work, range_for_cost(range, name.len().min(target.len())), 1)?;

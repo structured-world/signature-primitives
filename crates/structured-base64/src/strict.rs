@@ -6,6 +6,30 @@ pub(super) static STANDARD_VALUES: [u8; 256] = values(ALPHABET);
 static URL_VALUES: [u8; 256] = values(URL_ALPHABET);
 static STANDARD_PAIRS: [u16; 4096] = pairs(ALPHABET);
 static URL_PAIRS: [u16; 4096] = pairs(URL_ALPHABET);
+static STANDARD_WORDS: [[u32; 256]; 4] = words(ALPHABET);
+static URL_WORDS: [[u32; 256]; 4] = words(URL_ALPHABET);
+
+const fn words(alphabet: &[u8; 64]) -> [[u32; 256]; 4] {
+    let mut table = [[1 << 31; 256]; 4];
+    let mut lane = 0;
+    while lane < 4 {
+        let mut n = 0u8;
+        while n < 64 {
+            table[lane][alphabet[n as usize] as usize] = (n as u32) << (18 - lane * 6);
+            n += 1;
+        }
+        lane += 1;
+    }
+    table
+}
+
+#[inline]
+fn word([a, b, c, d]: [u8; 4], table: &[[u32; 256]; 4]) -> u32 {
+    table[0][usize::from(a)]
+        | table[1][usize::from(b)]
+        | table[2][usize::from(c)]
+        | table[3][usize::from(d)]
+}
 
 const fn values(alphabet: &[u8; 64]) -> [u8; 256] {
     let mut table = [INVALID; 256];
@@ -100,23 +124,25 @@ impl Profile {
         let len = decoded_len(symbols.len());
         let output = output.get_mut(..len).ok_or(Base64Error::OutputFull)?;
         let table = self.values();
+        let words = if self.url {
+            &URL_WORDS
+        } else {
+            &STANDARD_WORDS
+        };
         let (blocks, remainder) = symbols.as_chunks::<8>();
         let (head, mut end) = output.split_at_mut(blocks.len() * 6);
         for (index, (input, output)) in blocks.iter().zip(head.as_chunks_mut::<6>().0).enumerate() {
-            let [a, b, c, d, e, f, g, h] = input.map(|byte| table[usize::from(byte)]);
+            let &[a, b, c, d, e, f, g, h] = input;
+            let first = word([a, b, c, d], words);
+            let second = word([e, f, g, h], words);
             // RFC 4648 §3.3 rejects symbols outside the selected alphabet.
             // Valid entries use six bits. The marker's high bit survives OR.
-            if (a | b | c | d | e | f | g | h) & 0x80 != 0 {
+            if (first | second) >> 31 != 0 {
                 return Err(invalid_block(input, table, index * 8));
             }
-            *output = [
-                a << 2 | b >> 4,
-                b << 4 | c >> 2,
-                c << 6 | d,
-                e << 2 | f >> 4,
-                f << 4 | g >> 2,
-                g << 6 | h,
-            ];
+            let [_, a, b, c] = first.to_be_bytes();
+            let [_, d, e, f] = second.to_be_bytes();
+            *output = [a, b, c, d, e, f];
         }
         let mut offset = blocks.len() * 8;
         let mut tail = remainder;

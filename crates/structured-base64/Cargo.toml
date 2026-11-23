@@ -9,10 +9,17 @@ repository.workspace = true
 readme = "README.md"
 keywords = ["base64", "streaming", "no-std"]
 categories = ["encoding", "no-std"]
-include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**", "tests/**", "benches/**", "Cargo.toml", "README.md", "LICENSE"]
 
 [features]
 alloc = []
+
+[dev-dependencies]
+base64 = { version = "0.23", default-features = false, features = ["alloc"] }
+
+[[bench]]
+name = "throughput"
+harness = false
 
 [lints]
 workspace = true

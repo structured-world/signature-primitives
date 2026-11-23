@@ -508,6 +508,94 @@ fn mixed_sources_keep_conflict_never_issued_and_authentication_failures() {
 }
 
 #[test]
+fn competing_evidence_preserves_status_time_revocation_dates_and_reason_defaults() {
+    let (root_key, leaf_key) = keys();
+    let (root_der, leaf_der) = certificates(&root_key, &leaf_key);
+    let account = memory(1 << 20);
+    let parser = Parser::der(account.clone());
+    let root = Certificate::read(&parser, &root_der, 1).unwrap();
+    let leaf = Certificate::read(&parser, &leaf_der, 500).unwrap();
+    let oracle = Oracle {
+        calls: Cell::new(0),
+    };
+    let context = context(&account, &oracle);
+    let path = checked(&root, &leaf, &context);
+    let utc = LeapTable::new(at(1).seconds() - 1, at(11).seconds(), &[]).unwrap();
+    let query = Query {
+        interval: Interval {
+            lower: Some(at(5)),
+            upper: at(6),
+        },
+        ..query(&utc)
+    };
+
+    let responses = [
+        tlv(0x80, &[]),
+        tlv(0xa1, &tlv(0x18, b"20250102000000Z")),
+        tlv(
+            0xa1,
+            &[tlv(0x18, b"20250102000000Z"), tlv(0xa0, &tlv(10, &[0]))].concat(),
+        ),
+    ]
+    .map(|result| signed_response(&root_key, "Root", &root_key, &result, 7, false));
+    let responses = responses.each_ref().map(|bytes| basic(&parser, bytes));
+    let [good, absent, unspecified] = responses.each_ref().map(|response| Source::Ocsp {
+        response,
+        nonce: None,
+        intended_signer: None,
+        responders: &[],
+    });
+    let lists = [
+        List {
+            issued: "250104003000Z",
+            entry: Some(("250102000000Z", 6)),
+            ..List::empty()
+        },
+        List {
+            entry: Some(("250102000000Z", 1)),
+            ..List::empty()
+        },
+        List {
+            issued: "250108000000Z",
+            entry: Some(("250107000000Z", 1)),
+            ..List::empty()
+        },
+    ]
+    .map(|list| list.sign(&root_key));
+    let [hold, early, late] = lists
+        .each_ref()
+        .map(|bytes| CertificateList::read(&parser, bytes, 3000).unwrap());
+    let assess = |sources: [_; 2]| {
+        status::assess(&path, 0, &sources, &query, &context, &oracle, &Hash).unwrap()
+    };
+
+    // A later signature on the OCSP response does not advance its assertion.
+    let mixed = assess([good, crl(&hold)]);
+    // Two permanent revocations straddle the signature's latest possible time.
+    let dates = assess([crl(&early), crl(&late)]);
+    // Equivalent reasons must agree without losing the original encodings.
+    let reasons = assess([absent, unspecified]);
+    assert_eq!(
+        [
+            matches!(mixed.status(), Status::OnHold { .. }),
+            matches!(dates.status(), Status::Conflict { .. }),
+            matches!(reasons.status(), Status::Revoked { .. }),
+        ],
+        [true; 3],
+        "held: {:?}, dates: {:?}, reasons: {:?}",
+        mixed.status(),
+        dates.status(),
+        reasons.status(),
+    );
+    assert!(
+        matches!(reasons.statements()[0].finding, Finding::Revoked(revoked) if revoked.reason.is_none())
+    );
+    assert!(
+        matches!(reasons.statements()[1].finding, Finding::Revoked(revoked) if revoked.reason == Some(Reason::Unspecified))
+    );
+}
+
+#[test]
 fn delta_release_does_not_erase_an_overlapping_hold_or_claim_an_expired_serial() {
     // RFC 5280 §§5.2.4, 5.3.1: a removal bounds the release. An intermediate
     // entry removed after expiry can also have been a permanent revocation.

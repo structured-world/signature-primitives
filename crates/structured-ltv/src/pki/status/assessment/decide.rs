@@ -2,7 +2,10 @@
 
 use super::{Finding, Freshness, Query, Revoked, Statement, Status, When};
 use structured_asn1::memory::{MemoryError, Work};
-use structured_pkix::{Time, crl::Reasons};
+use structured_pkix::{
+    Time,
+    crl::{Reason, Reasons},
+};
 
 type Result<T> = core::result::Result<T, MemoryError>;
 
@@ -248,17 +251,19 @@ fn supersedes(candidate: &Statement<'_>, complete: &Statement<'_>) -> bool {
     complete.sources.base.is_none() && candidate.sources.base == Some(complete.sources.primary)
 }
 
-/// The order deciders are chosen by: issuance, then, between sources issued
-/// at the same moment, the one whose freshness says more. A source that
-/// passes alone must still pass beside another (ETSI EN 319 102-1 V1.4.1
-/// 5.1.3 b), and supply order never decides.
+/// Order the status information by its own issuance time. RFC 6960 §2.4
+/// distinguishes the time the asserted status was known from the time the
+/// responder signed it. ETSI EN 319 102-1 V1.4.1 §5.2.5.4 NOTE 3 preserves
+/// that distinction: later signing does not update the information itself.
+/// <https://www.rfc-editor.org/rfc/rfc6960#section-2.4>
+/// <https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf>
 fn recency(statement: &Statement<'_>) -> (Time, u8) {
     let freshness = match statement.freshness {
         Freshness::Fresh => 2,
         Freshness::Uncertain(_) => 1,
         Freshness::Stale | Freshness::NoNextUpdate | Freshness::ReversedUpdateInterval => 0,
     };
-    (statement.released, freshness)
+    (statement.issued, freshness)
 }
 
 /// The reasons whose decider another source contradicts, and the first such
@@ -281,8 +286,7 @@ fn conflicts<E: Work>(
             if index != basis
                 && statement.knows()
                 && speaks_for(statement, position)
-                && !supersedes(&latest, statement)
-                && (statement.released == latest.released
+                && ((statement.issued == latest.issued && !supersedes(&latest, statement))
                     || dropped_revocation(statement, latest, query))
                 && !agree(statement.finding, latest.finding)
             {
@@ -313,7 +317,11 @@ fn dropped_revocation(statement: &Statement<'_>, latest: Statement<'_>, query: &
         statement.finding,
         Finding::Revoked(revoked)
             if !revoked.on_hold() && revoked.at.instant() <= query.interval.upper
-    ) && !matches!(latest.finding, Finding::Revoked(revoked) if !revoked.on_hold())
+    ) && !matches!(
+        latest.finding,
+        Finding::Revoked(revoked)
+            if !revoked.on_hold() && revoked.at.instant() <= query.interval.upper
+    )
 }
 
 /// A hold a source other than the decider records, when it provably held
@@ -365,8 +373,8 @@ fn outranks(candidate: Ranked, current: Ranked, statements: &[Statement<'_>]) ->
         .then(later(candidate.status).cmp(&later(current.status)))
         .then(
             statements[candidate.basis]
-                .released
-                .cmp(&statements[current.basis].released),
+                .issued
+                .cmp(&statements[current.basis].issued),
         )
         .then(current.basis.cmp(&candidate.basis))
         .is_gt()
@@ -374,7 +382,14 @@ fn outranks(candidate: Ranked, current: Ranked, statements: &[Statement<'_>]) ->
 
 fn agree(left: Finding<'_>, right: Finding<'_>) -> bool {
     match (left, right) {
-        (Finding::Revoked(left), Finding::Revoked(right)) => left == right,
+        // RFC 5280 §6.3.3(i)(2) treats an omitted reason as unspecified.
+        // Apply that default in the comparison and retain each reported value.
+        // https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3
+        (Finding::Revoked(left), Finding::Revoked(right)) => {
+            left.at == right.at
+                && left.reason.unwrap_or(Reason::Unspecified)
+                    == right.reason.unwrap_or(Reason::Unspecified)
+        }
         (left @ Finding::Suspended { .. }, right @ Finding::Suspended { .. })
         | (left @ Finding::HeldOrRevoked { .. }, right @ Finding::HeldOrRevoked { .. }) => {
             left == right

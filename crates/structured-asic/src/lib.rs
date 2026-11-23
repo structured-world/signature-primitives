@@ -18,6 +18,7 @@ pub mod material;
 pub mod media;
 pub mod package;
 pub mod payload;
+pub mod probe;
 pub mod references;
 pub mod session;
 pub mod source;

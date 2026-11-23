@@ -23,6 +23,27 @@ DEFLATE streams enforce complete extent, decoded size and CRC. ZIP64 and signed
 or unsigned descriptors use the same original-source core. There is no OS
 extraction, path normalization, filename case folding or implicit resource fetch.
 
+## Physical format probes
+
+`probe::read` inspects a caller-owned asynchronous `RangeSource` before
+dispatching it to a full format reader. It returns the original source stamp,
+all observed candidates and the actual ranges read. The supported framing
+includes PDF, CMS SignedData, XML, ZIP/ZIP64 and the ASiC-S/E, OpenDocument
+and Office Open XML package forms. Image candidates cover PNG, JPEG, GIF87a,
+GIF89a, classic TIFF, WebP and BMP.
+
+Candidates carry stable codes, source locations and the strength or negative
+result of the bounded inspection. A ZIP family finding can coexist with a
+subtype. Independent formats and duplicate package markers stay visible.
+XML distinguishes the opening tag from its effective namespace when
+unprocessed declarations prevent that namespace from being known.
+
+Pass the original `Session`, current execution, and `probe::Limits` to bound
+original read calls, total requested bytes and selected metadata decoding.
+The result's retained ranges and facts remain on the existing capacity budget.
+The probe uses no filename or external MIME information, never follows external
+references and does not establish full format conformance or trust.
+
 ## Inspection and composition
 
 1. Read the full original archive and `layout::Census`. Select the explicit

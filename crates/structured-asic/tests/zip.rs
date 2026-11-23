@@ -2,6 +2,9 @@
 
 mod support;
 
+#[path = "probe/cases.rs"]
+mod probe_cases;
+
 #[path = "layout/cases.rs"]
 mod layout_cases;
 

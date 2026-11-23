@@ -196,7 +196,7 @@ impl<'v, 's, S: RangeSource> Census<'v, 's, S> {
     }
 }
 
-fn classify(name: &[u8]) -> Role {
+pub(crate) fn classify(name: &[u8]) -> Role {
     if name.ends_with(b"/") {
         return Role::Directory;
     }

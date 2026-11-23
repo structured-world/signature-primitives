@@ -25,6 +25,7 @@ structured-ltv = { version = "0.23.2", path = "../structured-ltv", default-featu
 structured-cades = { version = "0.23.2", path = "../structured-cades", default-features = false }
 structured-xades = { version = "0.23.2", path = "../structured-xades", default-features = false }
 crc32fast = { version = "1.5.3", default-features = false }
+xmlparser = { version = "0.13.6", default-features = false }
 
 [dev-dependencies]
 # Fixed-curve native integration oracle, never a runtime provider.

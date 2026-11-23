@@ -205,6 +205,13 @@ impl<'a> BudgetView<'a> {
         }
         Ok(())
     }
+
+    pub(crate) fn element_length_limit(self) -> u64 {
+        self.origin
+            .limits
+            .max_element_length
+            .min(self.operation().limits.max_element_length)
+    }
 }
 
 impl Budget {

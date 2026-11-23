@@ -400,6 +400,7 @@ pub(super) struct Verdict {
     basis: Basis,
     unmet: Option<Unmet>,
     crypto_at: Option<Instant>,
+    retry_at: Option<Instant>,
 }
 
 impl Verdict {
@@ -409,6 +410,7 @@ impl Verdict {
             basis,
             unmet: None,
             crypto_at: None,
+            retry_at: None,
         }
     }
 
@@ -420,6 +422,22 @@ impl Verdict {
             | Basis::RevocationIssuer { path, .. } => Some(path),
             _ => None,
         }
+    }
+
+    fn bind_revocation_retry(
+        &mut self,
+        paths: &[Path<'_>],
+        selected: Option<usize>,
+    ) -> Option<RevocationRetry> {
+        if self.sub != SubIndication::TryLater {
+            return None;
+        }
+        let retry = paths[self.path().or(selected)?].revocation_retry?;
+        self.retry_at = match retry {
+            RevocationRetry::Freshness { retry_at, .. }
+            | RevocationRetry::Suspension { retry_at, .. } => retry_at,
+        };
+        Some(retry)
     }
 }
 
@@ -456,26 +474,16 @@ pub(super) fn compute(facts: &Facts<'_>, policy: &Requirements<'_>) -> Outcome {
         crypto: own,
         changes: facts.changes,
     };
-    let (indication, sub, basis, unmet, crypto_at) = match decided {
-        Ok(()) => (Indication::TotalPassed, None, None, None, None),
+    let (indication, sub, basis, unmet, crypto_at, retry_at) = match decided {
+        Ok(()) => (Indication::TotalPassed, None, None, None, None, None),
         Err(verdict) => (
             verdict.sub.indication(),
             Some(verdict.sub),
             Some(verdict.basis),
             verdict.unmet,
             verdict.crypto_at,
+            verdict.retry_at,
         ),
-    };
-    let retry_at = if sub == Some(SubIndication::TryLater)
-        && !matches!(basis, Some(Basis::SignatureTimestamp(_)))
-    {
-        path.and_then(|index| facts.paths[index].revocation_retry)
-            .and_then(|retry| match retry {
-                RevocationRetry::Freshness { retry_at, .. }
-                | RevocationRetry::Suspension { retry_at, .. } => retry_at,
-            })
-    } else {
-        None
     };
     Outcome {
         indication,
@@ -565,10 +573,17 @@ fn decide(
     }
     // §5.3.4 step 5 gives all other verification failures precedence.
     verify(facts)?;
-    let basic = selected
+    let mut basic = selected
         .and_then(|_| basic_certificate(facts, signer))
         .and_then(|()| acceptance(facts, facts.now, policy))
         .and_then(|()| elements(facts, policy));
+    // EN 319 102-1 V1.4.1 §5.2.6.4 step 4 and §5.5.4 steps 6–7:
+    // retry facts belong to the original revocation finding of this path.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf#page=63
+    let basic_retry = basic
+        .as_mut()
+        .err()
+        .and_then(|verdict| verdict.bind_revocation_retry(facts.paths, selected.ok()));
     if !with_time(facts) {
         return basic;
     }
@@ -616,7 +631,7 @@ fn decide(
         && verdict.sub == SubIndication::TryLater
     {
         // §5.5.4 steps 6 and 7 use the exact freshness or suspension facts.
-        let recovered = match facts.paths[path].revocation_retry {
+        let recovered = match basic_retry {
             Some(RevocationRetry::Freshness { fresh_before, .. }) => {
                 fresh_before.is_some_and(|end| *best < end)
             }
@@ -1020,6 +1035,7 @@ fn path_crypto(
                 },
                 unmet: Some(unmet),
                 crypto_at: Some(now),
+                retry_at: None,
             })?;
     }
     Ok(())
@@ -1039,6 +1055,7 @@ fn crypto(unmet: Unmet, basis: Basis, at: Instant) -> Verdict {
         basis,
         unmet: Some(unmet),
         crypto_at: Some(at),
+        retry_at: None,
     }
 }
 

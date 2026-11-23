@@ -927,15 +927,7 @@ impl<'a: 'operation, 'operation> ScopedReader<'a, 'operation> {
                     return Err(self.fail_at(ErrorCode::WrongConstruction, header.start));
                 }
                 let contents_len =
-                    self.scan_to_end_of_contents(contents_at, contents_start, self.next_index)?;
-
-                // An indefinite element declares no length, so nothing has held
-                // it to one yet. Its size is what the scan just measured, and a
-                // container assembled from many small children would otherwise
-                // pass a budget its declared-length siblings could not.
-                self.budget()
-                    .length(contents_len as u64)
-                    .map_err(|limit| self.fail_at(ErrorCode::LimitExceeded(limit), header.start))?;
+                    self.scan_to_end_of_contents(contents_at, header, self.next_index)?;
 
                 // Two further bytes for the end-of-contents marker, which is
                 // exactly two: the scan refuses any other spelling of it.
@@ -984,9 +976,11 @@ impl<'a: 'operation, 'operation> ScopedReader<'a, 'operation> {
     fn scan_to_end_of_contents(
         &self,
         from: usize,
-        from_offset: u64,
+        container: Header,
         own_index: u32,
     ) -> Result<usize> {
+        let from_offset = container.start + container.len as u64;
+        let length_limit = self.budget().element_length_limit();
         let mut cursor = from;
         let mut offset = from_offset;
 
@@ -1029,7 +1023,9 @@ impl<'a: 'operation, 'operation> ScopedReader<'a, 'operation> {
             let inner_length = header.length;
             let header_len = header.len;
 
-            if inner_tag.is_end_of_contents() {
+            let end_of_contents = inner_tag.is_end_of_contents();
+            let enters_container = matches!(inner_length, Length::Indefinite);
+            let step = if end_of_contents {
                 // Exactly two octets. A zero length written the long way reads
                 // as a zero length, and taking it for the marker would end the
                 // element short and leave the rest of the marker to be read as
@@ -1047,36 +1043,23 @@ impl<'a: 'operation, 'operation> ScopedReader<'a, 'operation> {
                             .ok_or_else(|| spent(Limit::Elements, offset, &trail))?;
                     }
                 }
-                cursor += header_len;
-                offset += header_len as u64;
-                continue;
-            }
-
-            let step = match inner_length {
-                Length::Indefinite => {
-                    if !inner_tag.is_constructed() {
+                header_len
+            } else {
+                match inner_length {
+                    Length::Indefinite if !inner_tag.is_constructed() => {
                         return Err(fail(ErrorCode::WrongConstruction, offset, &trail));
                     }
-                    // The index this container itself sits at, so a fault
-                    // inside it is reported under it rather than beside it.
-                    trail
-                        .try_push(index)
-                        .map_err(|reason| Error::resource(reason, offset))?;
-                    index = 0;
-                    header_len
-                }
-                Length::Definite(length) => {
-                    self.budget()
-                        .length(length)
-                        .map_err(|limit| spent(limit, offset, &trail))?;
-                    let length = usize::try_from(length)
-                        .map_err(|_| fail(ErrorCode::LengthTooLarge, offset, &trail))?;
-                    index = index
-                        .checked_add(1)
-                        .ok_or_else(|| spent(Limit::Elements, offset, &trail))?;
-                    header_len
-                        .checked_add(length)
-                        .ok_or_else(|| fail(ErrorCode::LengthTooLarge, offset, &trail))?
+                    Length::Indefinite => header_len,
+                    Length::Definite(length) => {
+                        if length > length_limit {
+                            return Err(spent(Limit::ElementLength, offset, &trail));
+                        }
+                        let length = usize::try_from(length)
+                            .map_err(|_| fail(ErrorCode::LengthTooLarge, offset, &trail))?;
+                        header_len
+                            .checked_add(length)
+                            .ok_or_else(|| fail(ErrorCode::LengthTooLarge, offset, &trail))?
+                    }
                 }
             };
 
@@ -1085,6 +1068,26 @@ impl<'a: 'operation, 'operation> ScopedReader<'a, 'operation> {
                 .ok_or_else(|| fail(ErrorCode::LengthTooLarge, offset, &trail))?;
             if cursor > self.data.len() {
                 return Err(fail(ErrorCode::UnexpectedEnd, offset, &trail));
+            }
+            // X.690 §§8.1.3.6 and 8.1.5: child framing is part of these
+            // contents, while the container's own marker closes them above.
+            // https://www.itu.int/rec/T-REC-X.690-202102-I/en
+            if (cursor - from) as u64 > length_limit {
+                return Err(self.fail_at(
+                    ErrorCode::LimitExceeded(Limit::ElementLength),
+                    container.start,
+                ));
+            }
+            if enters_container {
+                // Locate faults inside the child under its own index.
+                trail
+                    .try_push(index)
+                    .map_err(|reason| Error::resource(reason, offset))?;
+                index = 0;
+            } else if !end_of_contents {
+                index = index
+                    .checked_add(1)
+                    .ok_or_else(|| spent(Limit::Elements, offset, &trail))?;
             }
             offset += step as u64;
         }

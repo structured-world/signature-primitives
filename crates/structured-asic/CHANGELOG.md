@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0](https://github.com/structured-world/signature-primitives/compare/structured-asic-v0.24.0...structured-asic-v0.25.0) - 2026-11-23
+
+### Added
+
+- *(base64)* [**breaking**] add located decoding and faster strict profiles ([#338](https://github.com/structured-world/signature-primitives/pull/338))
+
 ## [0.24.0](https://github.com/structured-world/signature-primitives/compare/structured-asic-v0.23.2...structured-asic-v0.24.0) - 2026-11-23
 
 ### Added

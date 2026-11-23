@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0](https://github.com/structured-world/signature-primitives/compare/structured-ltv-v0.23.2...structured-ltv-v0.24.0) - 2026-11-23
+
+### Added
+
+- *(ltv)* assess supplied revocation evidence ([#336](https://github.com/structured-world/signature-primitives/pull/336))
+- *(ltv)* validate signatures with archival proof ([#330](https://github.com/structured-world/signature-primitives/pull/330))
+- *(ltv)* add ETSI validation process ([#328](https://github.com/structured-world/signature-primitives/pull/328))
+- *(asic)* probe physical formats ([#334](https://github.com/structured-world/signature-primitives/pull/334))
+
+### Fixed
+
+- retain retry origin and enforce BER limits ([#332](https://github.com/structured-world/signature-primitives/pull/332))
+- *(ltv)* [**breaking**] reconcile ETSI validation procedures ([#331](https://github.com/structured-world/signature-primitives/pull/331))
+
 ## [0.23.2](https://github.com/structured-world/signature-primitives/compare/structured-ltv-v0.23.1...structured-ltv-v0.23.2) - 2026-11-21
 
 ### Added

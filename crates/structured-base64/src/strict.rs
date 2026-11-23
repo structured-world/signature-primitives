@@ -161,10 +161,11 @@ impl Profile {
             if (first | second | third | fourth) >> 31 != 0 {
                 return Err(invalid_block(input, table, index * 16));
             }
-            let out = output.as_chunks_mut::<4>().0;
-            out[0] = (first | second << 24).to_le_bytes();
-            out[1] = (second >> 8 | third << 16).to_le_bytes();
-            out[2] = (third >> 16 | fourth << 8).to_le_bytes();
+            let low = u64::from(first) | u64::from(second) << 24 | u64::from(third) << 48;
+            let high = third >> 16 | fourth << 8;
+            let (head, tail) = output.split_at_mut(8);
+            head.copy_from_slice(&low.to_le_bytes());
+            tail.copy_from_slice(&high.to_le_bytes());
         }
         let mut offset = blocks.len() * 16;
         let (quads, tail) = remainder.as_chunks::<4>();

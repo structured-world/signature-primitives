@@ -78,6 +78,10 @@ fn errors_keep_the_original_byte_and_offset() {
             profile.decode_slice(b"A", &mut output),
             Err(Base64Error::InvalidLength(1))
         );
+        assert_eq!(
+            profile.decode_slice(b"AAAA\n", &mut output),
+            Err(Base64Error::InvalidByte(4, b'\n'))
+        );
     }
     assert_eq!(
         STANDARD.decode_slice(b"AAAAZh==", &mut output),

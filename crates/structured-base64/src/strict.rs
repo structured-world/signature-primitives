@@ -31,6 +31,13 @@ fn word([a, b, c, d]: [u8; 4], table: &[[u32; 256]; 4]) -> u32 {
         | table[3][usize::from(d)]
 }
 
+#[inline]
+fn encode_group([a, b, c]: [u8; 3], table: &[u16; 4096]) -> [u8; 4] {
+    let [first, second] = table[usize::from(a) << 4 | usize::from(b >> 4)].to_ne_bytes();
+    let [third, fourth] = table[usize::from(b & 15) << 8 | usize::from(c)].to_ne_bytes();
+    [first, second, third, fourth]
+}
+
 const fn values(alphabet: &[u8; 64]) -> [u8; 256] {
     let mut table = [INVALID; 256];
     let mut n = 0u8;
@@ -92,12 +99,20 @@ impl Profile {
         } else {
             &STANDARD_PAIRS
         };
-        let (groups, tail) = input.as_chunks::<3>();
+        let (blocks, remainder) = input.as_chunks::<12>();
+        let (bulk, output) = output.split_at_mut(blocks.len() * 16);
+        for (input, output) in blocks.iter().zip(bulk.as_chunks_mut::<16>().0) {
+            let groups = input.as_chunks::<3>().0;
+            let groups_out = output.as_chunks_mut::<4>().0;
+            groups_out[0] = encode_group(groups[0], pairs);
+            groups_out[1] = encode_group(groups[1], pairs);
+            groups_out[2] = encode_group(groups[2], pairs);
+            groups_out[3] = encode_group(groups[3], pairs);
+        }
+        let (groups, tail) = remainder.as_chunks::<3>();
         let (head, end) = output.split_at_mut(groups.len() * 4);
         for (&[a, b, c], group) in groups.iter().zip(head.as_chunks_mut::<4>().0.iter_mut()) {
-            let [first, second] = pairs[usize::from(a) << 4 | usize::from(b >> 4)].to_ne_bytes();
-            let [third, fourth] = pairs[usize::from(b & 15) << 8 | usize::from(c)].to_ne_bytes();
-            *group = [first, second, third, fourth];
+            *group = encode_group([a, b, c], pairs);
         }
         if let [a, rest @ ..] = tail {
             let b = rest.first().copied().unwrap_or(0);
@@ -181,12 +196,12 @@ impl Profile {
     fn symbols(self, input: &[u8]) -> Result<&[u8], Base64Error> {
         if self.url {
             if input.len() % 4 == 1 {
-                return Err(Base64Error::InvalidLength(input.len()));
+                return Err(self.invalid_length(input));
             }
             return Ok(input);
         }
         if !input.len().is_multiple_of(4) {
-            return Err(Base64Error::InvalidLength(input.len()));
+            return Err(self.invalid_length(input));
         }
         Ok(if let Some(symbols) = input.strip_suffix(b"==") {
             symbols
@@ -195,6 +210,19 @@ impl Profile {
         } else {
             input
         })
+    }
+
+    #[cold]
+    fn invalid_length(self, input: &[u8]) -> Base64Error {
+        // A trailing foreign byte can itself be the reason the length is
+        // invalid. Preserve that byte, e.g. a newline after a complete quad.
+        if let Some((&byte, prefix)) = input.split_last()
+            && (self.url || byte != b'=')
+            && self.values()[usize::from(byte)] == INVALID
+        {
+            return Base64Error::InvalidByte(prefix.len(), byte);
+        }
+        Base64Error::InvalidLength(input.len())
     }
 
     fn values(self) -> &'static [u8; 256] {

@@ -4,8 +4,10 @@ For complete values, `URL_SAFE_NO_PAD` implements the strict JWS base64url
 profile and `STANDARD` implements canonical padded Base64 for JOSE `x5c`.
 Both provide exact encoding lengths and caller-buffer operations.
 Enable `alloc` for fallible `encode` and `decode` methods returning a
-`String` and `Vec<u8>` respectively. Callers bound input and output sizes
-before invoking the allocating helpers.
+`String` and `Vec<u8>` respectively, or `encode_string(input, &mut text)`
+to append after a fallible capacity reservation. Callers bound input and
+output sizes before invoking the allocating helpers. Strict decode errors
+return zero-based byte offsets and the original byte for invalid symbols.
 
 ```rust
 use structured_base64::URL_SAFE_NO_PAD;

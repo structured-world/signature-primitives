@@ -16,21 +16,31 @@ const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 /// Failure of a Base64 stream operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Base64Error {
-    /// Invalid input, a finished encoder given more data, or invalid state.
+    /// A finished encoder given more data, an invalid state, or offset overflow.
     Invalid,
     /// The output buffer is too small for this call.
     OutputFull,
-    /// The decoder reached the end with an incomplete group.
-    Truncated,
+    /// An invalid symbol at its zero-based input offset.
+    InvalidByte(usize, u8),
+    /// A final symbol with nonzero unused bits, at its zero-based input offset.
+    InvalidLastSymbol(usize, u8),
+    /// Incomplete input at the zero-based end offset.
+    InvalidLength(usize),
 }
 
 impl fmt::Display for Base64Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Invalid => "invalid Base64 input or state",
-            Self::OutputFull => "Base64 output buffer is too small",
-            Self::Truncated => "incomplete Base64 group",
-        })
+        match *self {
+            Self::Invalid => f.write_str("invalid Base64 state or input offset"),
+            Self::OutputFull => f.write_str("Base64 output buffer is too small"),
+            Self::InvalidByte(offset, byte) => {
+                write!(f, "invalid Base64 byte {byte:#04x} at {offset}")
+            }
+            Self::InvalidLastSymbol(offset, byte) => {
+                write!(f, "noncanonical final Base64 byte {byte:#04x} at {offset}")
+            }
+            Self::InvalidLength(offset) => write!(f, "incomplete Base64 group at {offset}"),
+        }
     }
 }
 
@@ -54,6 +64,9 @@ pub struct Base64Codec {
     pub line_position: usize,
     /// The stream has finished, or the decoder has started reading padding.
     pub finished: bool,
+    /// Bytes consumed by successful decode calls, including whitespace.
+    /// Set to zero when restoring from a representation without offsets.
+    pub input_offset: usize,
 }
 
 impl Base64Codec {
@@ -67,6 +80,7 @@ impl Base64Codec {
             position: 0,
             line_position: 0,
             finished: false,
+            input_offset: 0,
         }
     }
 
@@ -96,7 +110,8 @@ impl Base64Codec {
     /// A successful call can be followed by another with a different slice.
     ///
     /// # Errors
-    /// Returns [`Base64Error::Invalid`] for invalid input or state, or
+    /// Returns a located error for invalid input, [`Base64Error::Invalid`] for
+    /// invalid state or offset overflow, or
     /// [`Base64Error::OutputFull`] when the output has insufficient space.
     pub fn update(&mut self, input: &[u8], output: &mut [u8]) -> Result<usize, Base64Error> {
         self.validate()?;
@@ -118,13 +133,13 @@ impl Base64Codec {
     /// # Errors
     /// Returns [`Base64Error::Invalid`] for invalid state,
     /// [`Base64Error::OutputFull`] when the output has insufficient space,
-    /// or [`Base64Error::Truncated`] for an incomplete decoder group.
+    /// or [`Base64Error::InvalidLength`] for an incomplete decoder group.
     pub fn finish(&mut self, output: &mut [u8]) -> Result<usize, Base64Error> {
         self.validate()?;
         let mut written = 0;
         if self.position != 0 {
             if !self.encode {
-                return Err(Base64Error::Truncated);
+                return Err(Base64Error::InvalidLength(self.input_offset));
             }
             let (_, output) = output.split_last_mut().ok_or(Base64Error::OutputFull)?;
             let shift = if self.position == 1 { 4 } else { 2 };
@@ -232,8 +247,12 @@ impl Base64Codec {
     }
 
     fn decode_input(&mut self, input: &[u8], output: &mut [u8]) -> Result<usize, Base64Error> {
+        let end = self
+            .input_offset
+            .checked_add(input.len())
+            .ok_or(Base64Error::Invalid)?;
         let mut written = 0;
-        for &byte in input {
+        for (index, &byte) in input.iter().enumerate() {
             if matches!(byte, b' ' | b'\t' | b'\r' | b'\n') {
                 continue;
             }
@@ -241,15 +260,18 @@ impl Base64Codec {
                 self.position = match (self.finished, self.position) {
                     (false, 2) => 3,
                     (_, 3) => 0,
-                    _ => return Err(Base64Error::Invalid),
+                    _ => return Err(Base64Error::InvalidByte(self.input_offset + index, byte)),
                 };
                 self.finished = true;
                 continue;
             }
             if self.finished {
-                return Err(Base64Error::Invalid);
+                return Err(Base64Error::InvalidByte(self.input_offset + index, byte));
             }
-            let value = sextet(byte).ok_or(Base64Error::Invalid)?;
+            let value = strict::STANDARD_VALUES[usize::from(byte)];
+            if value == strict::INVALID {
+                return Err(Base64Error::InvalidByte(self.input_offset + index, byte));
+            }
             if self.position != 0 {
                 let shift = self.position * 2;
                 write_byte(
@@ -261,19 +283,9 @@ impl Base64Codec {
             self.position = (self.position + 1) % 4;
             self.carry = if self.position == 0 { 0 } else { value };
         }
+        self.input_offset = end;
         Ok(written)
     }
-}
-
-fn sextet(byte: u8) -> Option<u8> {
-    Some(match byte {
-        b'A'..=b'Z' => byte - b'A',
-        b'a'..=b'z' => byte - b'a' + 26,
-        b'0'..=b'9' => byte - b'0' + 52,
-        b'+' => 62,
-        b'/' => 63,
-        _ => return None,
-    })
 }
 
 fn write_byte(output: &mut [u8], written: &mut usize, byte: u8) -> Result<(), Base64Error> {

@@ -61,6 +61,34 @@ fn rejects_noncanonical_input() {
     }
 }
 
+// Locate a bad byte in every lane, both full-block widths and padded tails.
+#[test]
+fn errors_keep_the_original_byte_and_offset() {
+    let mut output = [0; 32];
+    for profile in [STANDARD, URL_SAFE_NO_PAD] {
+        for offset in 0..28 {
+            let mut input = *b"AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+            input[offset] = 0xff;
+            assert_eq!(
+                profile.decode_slice(&input, &mut output),
+                Err(Base64Error::InvalidByte(offset, 0xff))
+            );
+        }
+        assert_eq!(
+            profile.decode_slice(b"A", &mut output),
+            Err(Base64Error::InvalidLength(1))
+        );
+    }
+    assert_eq!(
+        STANDARD.decode_slice(b"AAAAZh==", &mut output),
+        Err(Base64Error::InvalidLastSymbol(5, b'h'))
+    );
+    assert_eq!(
+        URL_SAFE_NO_PAD.decode_slice(b"AAAAZm9", &mut output),
+        Err(Base64Error::InvalidLastSymbol(6, b'9'))
+    );
+}
+
 // Encoding checks capacity before writing, including at the integer limit.
 #[test]
 fn capacity_is_checked() {
@@ -87,5 +115,25 @@ fn owned_conveniences() {
         assert_eq!(profile.encode(&[251, 255]).unwrap(), expected);
         assert_eq!(profile.decode(expected.as_bytes()).unwrap(), [251, 255]);
         assert!(profile.decode(b"\n").is_err());
+    }
+}
+
+// Append across scratch boundaries with a non-ASCII prefix and both tails.
+#[cfg(feature = "alloc")]
+#[test]
+fn append_preserves_prefix_and_all_chunk_boundaries() {
+    for profile in [STANDARD, URL_SAFE_NO_PAD] {
+        for len in [0, 1, 2, 3071, 3072, 3073, 6146] {
+            let payload = vec![0xff; len];
+            let mut text = String::from("prefix\u{2603}");
+            text.reserve(profile.encoded_len(len).unwrap());
+            let original_ptr = text.as_ptr();
+            profile.encode_string(&payload, &mut text).unwrap();
+            assert_eq!(text.as_ptr(), original_ptr);
+            assert_eq!(
+                text.strip_prefix("prefix\u{2603}").unwrap(),
+                profile.encode(&payload).unwrap()
+            );
+        }
     }
 }

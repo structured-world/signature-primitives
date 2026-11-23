@@ -42,6 +42,7 @@ fn restore(state: Base64Codec) -> Base64Codec {
         position: state.position,
         line_position: state.line_position,
         finished: state.finished,
+        input_offset: state.input_offset,
     }
 }
 
@@ -143,28 +144,40 @@ fn decode_padding_and_invalid_bytes() {
     let mut state = Base64Codec::new(false, 0);
     assert_eq!(state.update(b"Zh=\t", &mut out), Ok(1));
     assert_eq!(out[0], b'f');
-    assert_eq!(restore(state).finish(&mut out), Err(Base64Error::Truncated));
+    assert_eq!(
+        restore(state).finish(&mut out),
+        Err(Base64Error::InvalidLength(4))
+    );
     assert_eq!(
         restore(state).update(b"A", &mut out),
-        Err(Base64Error::Invalid)
+        Err(Base64Error::InvalidByte(4, b'A'))
     );
     update_boundary(&mut state, b"\r=\n", 0, b"");
-    assert_eq!(state.update(b"Z", &mut out), Err(Base64Error::Invalid));
+    assert_eq!(
+        state.update(b"Z", &mut out),
+        Err(Base64Error::InvalidByte(7, b'Z'))
+    );
     assert_eq!(Base64Codec::new(false, 0).update(b"Zm9=", &mut out), Ok(2));
     assert_eq!(&out[..2], b"fo");
 
-    for input in [
-        b"=AAA", b"A=AA", b"AA=A", b"AAA\0", b"AAA\x0b", b"AAA-", b"AAA_",
+    for (input, offset) in [
+        (b"=AAA", 0),
+        (b"A=AA", 1),
+        (b"AA=A", 3),
+        (b"AAA\0", 3),
+        (b"AAA\x0b", 3),
+        (b"AAA-", 3),
+        (b"AAA_", 3),
     ] {
         assert_eq!(
             Base64Codec::new(false, 0).update(input, &mut out),
-            Err(Base64Error::Invalid)
+            Err(Base64Error::InvalidByte(offset, input[offset]))
         );
     }
     for len in 1..4 {
         let mut state = Base64Codec::new(false, 0);
         assert_eq!(state.update(&b"AAAA"[..len], &mut out), Ok(len - 1));
-        assert_eq!(state.finish(&mut []), Err(Base64Error::Truncated));
+        assert_eq!(state.finish(&mut []), Err(Base64Error::InvalidLength(len)));
     }
 }
 
@@ -178,7 +191,11 @@ fn empty_and_closed_streams() {
         assert_eq!(state.finish(&mut []), Ok(0));
         assert_eq!(
             state.update(b"A", &mut [SENTINEL]),
-            Err(Base64Error::Invalid)
+            Err(if encode {
+                Base64Error::Invalid
+            } else {
+                Base64Error::InvalidByte(0, b'A')
+            })
         );
     }
     assert_eq!(
@@ -187,7 +204,7 @@ fn empty_and_closed_streams() {
     );
     assert_eq!(
         Base64Codec::new(false, 0).update(b"?", &mut []),
-        Err(Base64Error::Invalid)
+        Err(Base64Error::InvalidByte(0, b'?'))
     );
 }
 
@@ -269,6 +286,13 @@ fn invalid_external_states() {
 // resets the counter before the next symbol.
 #[test]
 fn counter_and_capacity_overflow() {
+    let mut decoder = Base64Codec {
+        input_offset: usize::MAX,
+        ..Base64Codec::new(false, 0)
+    };
+    assert_eq!(decoder.update(b" ", &mut []), Err(Base64Error::Invalid));
+    assert_eq!(decoder.input_offset, usize::MAX);
+
     let mut state = Base64Codec {
         position: 2,
         line_position: usize::MAX - 1,

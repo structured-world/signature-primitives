@@ -1,6 +1,31 @@
-use crate::{ALPHABET, Base64Error, sextet};
+use crate::{ALPHABET, Base64Error};
 
 const URL_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+pub(super) const INVALID: u8 = 0xff;
+pub(super) static STANDARD_VALUES: [u8; 256] = values(ALPHABET);
+static URL_VALUES: [u8; 256] = values(URL_ALPHABET);
+static STANDARD_PAIRS: [u16; 4096] = pairs(ALPHABET);
+static URL_PAIRS: [u16; 4096] = pairs(URL_ALPHABET);
+
+const fn values(alphabet: &[u8; 64]) -> [u8; 256] {
+    let mut table = [INVALID; 256];
+    let mut n = 0u8;
+    while n < 64 {
+        table[alphabet[n as usize] as usize] = n;
+        n += 1;
+    }
+    table
+}
+
+const fn pairs(alphabet: &[u8; 64]) -> [u16; 4096] {
+    let mut table = [0; 4096];
+    let mut n = 0;
+    while n < table.len() {
+        table[n] = u16::from_ne_bytes([alphabet[n >> 6], alphabet[n & 63]]);
+        n += 1;
+    }
+    table
+}
 
 /// Strict standard Base64 with canonical padding, as used by JOSE `x5c`.
 pub const STANDARD: Profile = Profile { url: false };
@@ -38,15 +63,17 @@ impl Profile {
             .ok_or(Base64Error::OutputFull)?;
         let output = output.get_mut(..len).ok_or(Base64Error::OutputFull)?;
         let alphabet = if self.url { URL_ALPHABET } else { ALPHABET };
+        let pairs = if self.url {
+            &URL_PAIRS
+        } else {
+            &STANDARD_PAIRS
+        };
         let (groups, tail) = input.as_chunks::<3>();
         let (head, end) = output.split_at_mut(groups.len() * 4);
         for (&[a, b, c], group) in groups.iter().zip(head.as_chunks_mut::<4>().0.iter_mut()) {
-            *group = [
-                alphabet[usize::from(a >> 2)],
-                alphabet[usize::from((a & 3) << 4 | b >> 4)],
-                alphabet[usize::from((b & 15) << 2 | c >> 6)],
-                alphabet[usize::from(c & 63)],
-            ];
+            let [first, second] = pairs[usize::from(a) << 4 | usize::from(b >> 4)].to_ne_bytes();
+            let [third, fourth] = pairs[usize::from(b & 15) << 8 | usize::from(c)].to_ne_bytes();
+            *group = [first, second, third, fourth];
         }
         if let [a, rest @ ..] = tail {
             let b = rest.first().copied().unwrap_or(0);
@@ -66,32 +93,58 @@ impl Profile {
     /// nonzero unused bits are invalid. Discard output on error.
     pub fn decode_slice(self, input: &[u8], output: &mut [u8]) -> Result<usize, Base64Error> {
         let symbols = self.symbols(input)?;
+        self.decode_symbols(symbols, output)
+    }
+
+    fn decode_symbols(self, symbols: &[u8], output: &mut [u8]) -> Result<usize, Base64Error> {
         let len = decoded_len(symbols.len());
         let output = output.get_mut(..len).ok_or(Base64Error::OutputFull)?;
-        let (groups, tail) = symbols.as_chunks::<4>();
-        let (head, end) = output.split_at_mut(groups.len() * 3);
-        for (&[a, b, c, d], group) in groups.iter().zip(head.as_chunks_mut::<3>().0.iter_mut()) {
-            let (a, b, c, d) = (
-                self.value(a)?,
-                self.value(b)?,
-                self.value(c)?,
-                self.value(d)?,
-            );
-            *group = [a << 2 | b >> 4, b << 4 | c >> 2, c << 6 | d];
+        let table = self.values();
+        let (blocks, remainder) = symbols.as_chunks::<8>();
+        let (head, mut end) = output.split_at_mut(blocks.len() * 6);
+        for (index, (input, output)) in blocks.iter().zip(head.as_chunks_mut::<6>().0).enumerate() {
+            let [a, b, c, d, e, f, g, h] = input.map(|byte| table[usize::from(byte)]);
+            // RFC 4648 §3.3 rejects symbols outside the selected alphabet.
+            // Valid entries use six bits. The marker's high bit survives OR.
+            if (a | b | c | d | e | f | g | h) & 0x80 != 0 {
+                return Err(invalid_block(input, table, index * 8));
+            }
+            *output = [
+                a << 2 | b >> 4,
+                b << 4 | c >> 2,
+                c << 6 | d,
+                e << 2 | f >> 4,
+                f << 4 | g >> 2,
+                g << 6 | h,
+            ];
+        }
+        let mut offset = blocks.len() * 8;
+        let mut tail = remainder;
+        if let Some((quad, rest)) = remainder.split_first_chunk::<4>() {
+            let [a, b, c, d] = quad.map(|byte| table[usize::from(byte)]);
+            if (a | b | c | d) & 0x80 != 0 {
+                return Err(invalid_block(quad, table, offset));
+            }
+            end[..3].copy_from_slice(&[a << 2 | b >> 4, b << 4 | c >> 2, c << 6 | d]);
+            end = &mut end[3..];
+            offset += 4;
+            tail = rest;
         }
         if let [a, b, rest @ ..] = tail {
-            let (a, b) = (self.value(*a)?, self.value(*b)?);
-            // RFC 4648 section 3.5 requires unused bits to be zero.
+            let first = value(table, offset, *a)?;
+            let second = value(table, offset + 1, *b)?;
+            // RFC 4648 §3.5 requires unused bits to be zero.
+            // https://www.rfc-editor.org/rfc/rfc4648.html#section-3.5
             if let [c] = rest {
-                let c = self.value(*c)?;
-                if c & 3 != 0 {
-                    return Err(Base64Error::Invalid);
+                let third = value(table, offset + 2, *c)?;
+                if third & 3 != 0 {
+                    return Err(Base64Error::InvalidLastSymbol(offset + 2, *c));
                 }
-                end[1] = b << 4 | c >> 2;
-            } else if b & 15 != 0 {
-                return Err(Base64Error::Invalid);
+                end[1] = second << 4 | third >> 2;
+            } else if second & 15 != 0 {
+                return Err(Base64Error::InvalidLastSymbol(offset + 1, *b));
             }
-            end[0] = a << 2 | b >> 4;
+            end[0] = first << 2 | second >> 4;
         }
         Ok(len)
     }
@@ -99,12 +152,12 @@ impl Profile {
     fn symbols(self, input: &[u8]) -> Result<&[u8], Base64Error> {
         if self.url {
             if input.len() % 4 == 1 {
-                return Err(Base64Error::Truncated);
+                return Err(Base64Error::InvalidLength(input.len()));
             }
             return Ok(input);
         }
         if !input.len().is_multiple_of(4) {
-            return Err(Base64Error::Truncated);
+            return Err(Base64Error::InvalidLength(input.len()));
         }
         Ok(if let Some(symbols) = input.strip_suffix(b"==") {
             symbols
@@ -115,14 +168,31 @@ impl Profile {
         })
     }
 
-    fn value(self, byte: u8) -> Result<u8, Base64Error> {
-        let byte = match (self.url, byte) {
-            (true, b'-') => b'+',
-            (true, b'_') => b'/',
-            (true, b'+' | b'/') => return Err(Base64Error::Invalid),
-            _ => byte,
-        };
-        sextet(byte).ok_or(Base64Error::Invalid)
+    fn values(self) -> &'static [u8; 256] {
+        if self.url {
+            &URL_VALUES
+        } else {
+            &STANDARD_VALUES
+        }
+    }
+}
+
+#[cold]
+fn invalid_block(block: &[u8], table: &[u8; 256], offset: usize) -> Base64Error {
+    for (index, &byte) in block.iter().enumerate() {
+        if table[usize::from(byte)] == INVALID {
+            return Base64Error::InvalidByte(offset + index, byte);
+        }
+    }
+    unreachable!("the block failed its alphabet check")
+}
+
+fn value(table: &[u8; 256], offset: usize, byte: u8) -> Result<u8, Base64Error> {
+    let value = table[usize::from(byte)];
+    if value == INVALID {
+        Err(Base64Error::InvalidByte(offset, byte))
+    } else {
+        Ok(value)
     }
 }
 
@@ -173,11 +243,39 @@ impl Profile {
         alloc::string::String::from_utf8(out).map_err(|_| OwnedError::Codec(Base64Error::Invalid))
     }
 
+    /// Append canonical Base64 to a string, reserving the additional capacity
+    /// fallibly before changing its contents.
+    pub fn encode_string(
+        self,
+        input: &[u8],
+        out: &mut alloc::string::String,
+    ) -> Result<(), OwnedError> {
+        let len = self
+            .encoded_len(input.len())
+            .ok_or(OwnedError::Codec(Base64Error::OutputFull))?;
+        out.try_reserve(len).map_err(OwnedError::Reserve)?;
+        if input.is_empty() {
+            return Ok(());
+        }
+        // Each nonfinal chunk ends at a group boundary. All generated bytes
+        // are ASCII, so no partial UTF-8 sequence crosses into the next chunk.
+        let mut scratch = [0; 4096];
+        for chunk in input.chunks(3072) {
+            let written = self
+                .encode_slice(chunk, &mut scratch)
+                .map_err(OwnedError::Codec)?;
+            let encoded = core::str::from_utf8(&scratch[..written])
+                .map_err(|_| OwnedError::Codec(Base64Error::Invalid))?;
+            out.push_str(encoded);
+        }
+        Ok(())
+    }
+
     /// Decode into a byte vector with fallible allocation.
     pub fn decode(self, input: &[u8]) -> Result<alloc::vec::Vec<u8>, OwnedError> {
         let symbols = self.symbols(input).map_err(OwnedError::Codec)?;
         let mut out = buffer(decoded_len(symbols.len()))?;
-        self.decode_slice(input, &mut out)
+        self.decode_symbols(symbols, &mut out)
             .map_err(OwnedError::Codec)?;
         Ok(out)
     }

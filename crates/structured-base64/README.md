@@ -21,8 +21,9 @@ assert_eq!(decoded, [251, 255]);
 
 Resumable Base64 for caller-provided buffers. The codec uses only `core`, with
 no allocator or runtime dependencies. Each successful call consumes its whole
-input and returns the output length. Store the six public state fields between
-successful calls and restore them before resuming.
+input and returns the output length. Preserve the state fields between calls,
+including `input_offset` for absolute decoder error positions. Offsets count
+all original bytes, including whitespace.
 
 ```rust
 use structured_base64::{Base64Codec, Base64Error};

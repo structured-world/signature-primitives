@@ -40,8 +40,15 @@ under the query that performs it; retained facts are never prepaid work.
   `validate_with_findings` to visit all unmet cryptographic constraints for
   the deciding material group under the caller's work budget.
   Policy selection, policy identity in reports and trusted-list processing
-  belong to the caller. `pki::status::{Status, When, Revoked}` carries supplied
-  temporal revocation assessments without acquiring or authenticating evidence.
+  belong to the caller.
+- `pki::status::assess` evaluates supplied CRLs and OCSP responses for an
+  original member of a checked path. It authenticates source signatures with
+  caller-supplied capabilities, binds the original issuer or responder,
+  validates compatible base/delta pairs, and joins the resulting statements
+  across revocation reasons and the caller's signature interval. An assessment
+  retains source indices, negative findings and the status's deciding basis.
+  Trust anchors, configured responders, acquisition and freshness policy
+  remain explicit caller inputs.
 - `validation::long_term` runs EN 319 102-1 clause 5.6 over proof-of-existence
   bounds for original objects and caller-established timestamp, Evidence
   Record, revocation and historical path facts. It keeps the with-time

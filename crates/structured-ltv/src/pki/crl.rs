@@ -353,7 +353,7 @@ impl<'document> CheckedPath<'document> {
         }))
     }
 
-    fn crl_authority<W: Work>(
+    pub(super) fn crl_authority<W: Work>(
         &self,
         source: Authenticated<'_, 'document>,
         authority: CrlAuthority<'_, 'document>,

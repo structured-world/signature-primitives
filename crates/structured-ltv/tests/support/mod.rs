@@ -34,7 +34,7 @@ pub fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
     result
 }
 
-fn name(common: &str) -> Vec<u8> {
+pub fn name(common: &str) -> Vec<u8> {
     tlv(
         0x30,
         &tlv(
@@ -52,6 +52,27 @@ fn name(common: &str) -> Vec<u8> {
 }
 
 pub fn certificate(subject: &str, issuer: &str, key: &SigningKey, signer: &SigningKey) -> Vec<u8> {
+    certificate_with_extensions(subject, issuer, key, signer, &[])
+}
+
+pub fn certificate_with_extensions(
+    subject: &str,
+    issuer: &str,
+    key: &SigningKey,
+    signer: &SigningKey,
+    extensions: &[u8],
+) -> Vec<u8> {
+    certificate_with_expiry(subject, issuer, key, signer, extensions, b"300101000000Z")
+}
+
+pub fn certificate_with_expiry(
+    subject: &str,
+    issuer: &str,
+    key: &SigningKey,
+    signer: &SigningKey,
+    extensions: &[u8],
+    expires: &[u8],
+) -> Vec<u8> {
     // Trusted DEV fixture writer. Its signatures are checked with the actual
     // issuer public key, not an always-Yes callback or fake RSA payload.
     let algorithm = tlv(0x30, &tlv(6, ECDSA));
@@ -74,11 +95,18 @@ pub fn certificate(subject: &str, issuer: &str, key: &SigningKey, signer: &Signi
     tbs.extend(name(issuer));
     tbs.extend(tlv(
         0x30,
-        &[tlv(0x17, b"250101000000Z"), tlv(0x17, b"300101000000Z")].concat(),
+        &[tlv(0x17, b"250101000000Z"), tlv(0x17, expires)].concat(),
     ));
     tbs.extend(name(subject));
     tbs.extend(spki);
-    let tbs = tlv(0x30, &tbs);
+    if !extensions.is_empty() {
+        tbs.extend(tlv(0xa3, &tlv(0x30, extensions)));
+    }
+    signed(tlv(0x30, &tbs), signer)
+}
+
+pub fn signed(tbs: Vec<u8>, signer: &SigningKey) -> Vec<u8> {
+    let algorithm = tlv(0x30, &tlv(6, ECDSA));
     let signature: Signature = signer.sign_prehash(&Sha256::digest(&tbs)).unwrap();
     let mut bits = vec![0];
     bits.extend(signature.to_der().as_bytes());

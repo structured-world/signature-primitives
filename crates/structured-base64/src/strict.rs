@@ -129,32 +129,35 @@ impl Profile {
         } else {
             &STANDARD_WORDS
         };
-        let (blocks, remainder) = symbols.as_chunks::<8>();
-        let (head, mut end) = output.split_at_mut(blocks.len() * 6);
-        for (index, (input, output)) in blocks.iter().zip(head.as_chunks_mut::<6>().0).enumerate() {
-            let &[a, b, c, d, e, f, g, h] = input;
-            let first = word([a, b, c, d], words);
-            let second = word([e, f, g, h], words);
+        let (blocks, remainder) = symbols.as_chunks::<16>();
+        let (head, mut end) = output.split_at_mut(blocks.len() * 12);
+        for (index, (input, output)) in blocks.iter().zip(head.as_chunks_mut::<12>().0).enumerate()
+        {
+            let quads = input.as_chunks::<4>().0;
+            let first = word(quads[0], words);
+            let second = word(quads[1], words);
+            let third = word(quads[2], words);
+            let fourth = word(quads[3], words);
             // RFC 4648 §3.3 rejects symbols outside the selected alphabet.
-            // Valid entries use six bits. The marker's high bit survives OR.
-            if (first | second) >> 31 != 0 {
-                return Err(invalid_block(input, table, index * 8));
+            // Valid quads use 24 bits. The marker's high bit survives OR.
+            if (first | second | third | fourth) >> 31 != 0 {
+                return Err(invalid_block(input, table, index * 16));
             }
-            let [_, a, b, c] = first.to_be_bytes();
-            let [_, d, e, f] = second.to_be_bytes();
-            *output = [a, b, c, d, e, f];
+            let out = output.as_chunks_mut::<4>().0;
+            out[0] = (first << 8 | second >> 16).to_be_bytes();
+            out[1] = (second << 16 | third >> 8).to_be_bytes();
+            out[2] = (third << 24 | fourth).to_be_bytes();
         }
-        let mut offset = blocks.len() * 8;
-        let mut tail = remainder;
-        if let Some((quad, rest)) = remainder.split_first_chunk::<4>() {
-            let [a, b, c, d] = quad.map(|byte| table[usize::from(byte)]);
-            if (a | b | c | d) & 0x80 != 0 {
+        let mut offset = blocks.len() * 16;
+        let (quads, tail) = remainder.as_chunks::<4>();
+        for quad in quads {
+            let value = word(*quad, words);
+            if value >> 31 != 0 {
                 return Err(invalid_block(quad, table, offset));
             }
-            end[..3].copy_from_slice(&[a << 2 | b >> 4, b << 4 | c >> 2, c << 6 | d]);
+            end[..3].copy_from_slice(&value.to_be_bytes()[1..]);
             end = &mut end[3..];
             offset += 4;
-            tail = rest;
         }
         if let [a, b, rest @ ..] = tail {
             let first = value(table, offset, *a)?;

@@ -64,10 +64,10 @@ fn rejects_noncanonical_input() {
 // Locate a bad byte in every lane, both full-block widths and padded tails.
 #[test]
 fn errors_keep_the_original_byte_and_offset() {
-    let mut output = [0; 32];
+    let mut output = [0; 64];
     for profile in [STANDARD, URL_SAFE_NO_PAD] {
-        for offset in 0..28 {
-            let mut input = *b"AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        for offset in 0..52 {
+            let mut input = [b'A'; 52];
             input[offset] = 0xff;
             assert_eq!(
                 profile.decode_slice(&input, &mut output),

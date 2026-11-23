@@ -15,7 +15,10 @@ const fn words(alphabet: &[u8; 64]) -> [[u32; 256]; 4] {
     while lane < 4 {
         let mut n = 0u8;
         while n < 64 {
-            table[lane][alphabet[n as usize] as usize] = (n as u32) << (18 - lane * 6);
+            // The low three bytes are in output order. Swapping here keeps
+            // byte-order conversion out of the little-endian decode loop.
+            let value = (n as u32) << (18 - lane * 6);
+            table[lane][alphabet[n as usize] as usize] = value.swap_bytes() >> 8;
             n += 1;
         }
         lane += 1;
@@ -159,9 +162,9 @@ impl Profile {
                 return Err(invalid_block(input, table, index * 16));
             }
             let out = output.as_chunks_mut::<4>().0;
-            out[0] = (first << 8 | second >> 16).to_be_bytes();
-            out[1] = (second << 16 | third >> 8).to_be_bytes();
-            out[2] = (third << 24 | fourth).to_be_bytes();
+            out[0] = (first | second << 24).to_le_bytes();
+            out[1] = (second >> 8 | third << 16).to_le_bytes();
+            out[2] = (third >> 16 | fourth << 8).to_le_bytes();
         }
         let mut offset = blocks.len() * 16;
         let (quads, tail) = remainder.as_chunks::<4>();
@@ -170,7 +173,7 @@ impl Profile {
             if value >> 31 != 0 {
                 return Err(invalid_block(quad, table, offset));
             }
-            end[..3].copy_from_slice(&value.to_be_bytes()[1..]);
+            end[..3].copy_from_slice(&value.to_le_bytes()[..3]);
             end = &mut end[3..];
             offset += 4;
         }

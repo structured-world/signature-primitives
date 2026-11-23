@@ -15,7 +15,10 @@ const fn words(alphabet: &[u8; 64]) -> [[u32; 256]; 4] {
     while lane < 4 {
         let mut n = 0u8;
         while n < 64 {
-            table[lane][alphabet[n as usize] as usize] = (n as u32) << (18 - lane * 6);
+            // The low three bytes are in output order. Swapping here keeps
+            // byte-order conversion out of the little-endian decode loop.
+            let value = (n as u32) << (18 - lane * 6);
+            table[lane][alphabet[n as usize] as usize] = value.swap_bytes() >> 8;
             n += 1;
         }
         lane += 1;
@@ -144,10 +147,27 @@ impl Profile {
         } else {
             &STANDARD_WORDS
         };
-        let (blocks, remainder) = symbols.as_chunks::<16>();
+        let (bulk, rest) = symbols.as_chunks::<32>();
+        let (head, output) = output.split_at_mut(bulk.len() * 24);
+        for (index, (input, output)) in bulk.iter().zip(head.as_chunks_mut::<24>().0).enumerate() {
+            let quads = input.as_chunks::<4>().0;
+            let decoded: [u64; 8] =
+                core::array::from_fn(|index| u64::from(word(quads[index], words)));
+            // RFC 4648 §3.3: one invalid marker is sufficient to reject
+            // the block. The cold path locates the first offending byte.
+            if decoded.into_iter().fold(0, |mask, value| mask | value) >> 31 != 0 {
+                return Err(invalid_block(input, table, index * 32));
+            }
+            let out = output.as_chunks_mut::<8>().0;
+            out[0] = (decoded[0] | decoded[1] << 24 | decoded[2] << 48).to_le_bytes();
+            out[1] = (decoded[2] >> 16 | decoded[3] << 8 | decoded[4] << 32 | decoded[5] << 56)
+                .to_le_bytes();
+            out[2] = (decoded[5] >> 8 | decoded[6] << 16 | decoded[7] << 40).to_le_bytes();
+        }
+        let mut offset = bulk.len() * 32;
+        let (blocks, remainder) = rest.as_chunks::<16>();
         let (head, mut end) = output.split_at_mut(blocks.len() * 12);
-        for (index, (input, output)) in blocks.iter().zip(head.as_chunks_mut::<12>().0).enumerate()
-        {
+        for (input, output) in blocks.iter().zip(head.as_chunks_mut::<12>().0) {
             let quads = input.as_chunks::<4>().0;
             let first = word(quads[0], words);
             let second = word(quads[1], words);
@@ -156,21 +176,22 @@ impl Profile {
             // RFC 4648 §3.3 rejects symbols outside the selected alphabet.
             // Valid quads use 24 bits. The marker's high bit survives OR.
             if (first | second | third | fourth) >> 31 != 0 {
-                return Err(invalid_block(input, table, index * 16));
+                return Err(invalid_block(input, table, offset));
             }
-            let out = output.as_chunks_mut::<4>().0;
-            out[0] = (first << 8 | second >> 16).to_be_bytes();
-            out[1] = (second << 16 | third >> 8).to_be_bytes();
-            out[2] = (third << 24 | fourth).to_be_bytes();
+            let low = u64::from(first) | u64::from(second) << 24 | u64::from(third) << 48;
+            let high = third >> 16 | fourth << 8;
+            let (head, tail) = output.split_at_mut(8);
+            head.copy_from_slice(&low.to_le_bytes());
+            tail.copy_from_slice(&high.to_le_bytes());
+            offset += 16;
         }
-        let mut offset = blocks.len() * 16;
         let (quads, tail) = remainder.as_chunks::<4>();
         for quad in quads {
             let value = word(*quad, words);
             if value >> 31 != 0 {
                 return Err(invalid_block(quad, table, offset));
             }
-            end[..3].copy_from_slice(&value.to_be_bytes()[1..]);
+            end[..3].copy_from_slice(&value.to_le_bytes()[..3]);
             end = &mut end[3..];
             offset += 4;
         }

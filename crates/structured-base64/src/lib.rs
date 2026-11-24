@@ -252,6 +252,15 @@ impl Base64Codec {
             .checked_add(input.len())
             .ok_or(Base64Error::Invalid)?;
         let mut written = if self.position == 0 && !self.finished && input.len() >= 4 {
+            // The extra dispatch pays off on AArch64 for long prefixes.
+            // Keep the quartet kernel on x86, where it wins on short inputs.
+            #[cfg(target_arch = "aarch64")]
+            if input.len() >= 1024 && output.len() >= 768 {
+                strict::decode_wide_standard_prefix(input, output)
+            } else {
+                strict::decode_standard_prefix(input, output)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
             strict::decode_standard_prefix(input, output)
         } else {
             0

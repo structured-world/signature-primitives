@@ -1,7 +1,10 @@
 //! Revision-bound DSS/VRI material over actual decoded PDF stream objects.
 
 use crate::arena::{Kind, NodeId};
-use crate::document::{Document, Reading};
+use crate::document::{
+    Document, Reading,
+    resolve::{MemberCache, ResolvedValue},
+};
 use crate::error::{Error, ErrorKind, ReadFailure, Syntax};
 use crate::model::{admit, get};
 use crate::range::{RangeSource, Stamp};
@@ -357,25 +360,22 @@ impl<'s, S: RangeSource> Document<'s, S> {
                     }
                     .into());
                 };
+                let mut cache = MemberCache::default();
                 for ordinal in fields.start..fields.start + fields.length {
                     admit(&work, index_owner.value.root().location(), 1)?;
                     let entry = index_owner.value.arena.fields[ordinal];
-                    let resolved;
-                    let (owner, node) = if let Kind::Reference { number, generation } =
-                        index_owner.value.arena.nodes[entry.value.0].kind
-                    {
-                        resolved = self.object(revision, number, generation, &work).await?;
-                        let Some(owner) = &resolved else { continue };
-                        if matches!(owner.value.arena.nodes[owner.value.root.0].kind, Kind::Null) {
-                            continue;
-                        }
-                        (owner, owner.value.root)
-                    } else {
-                        (&index_owner, entry.value)
+                    let Some(resolved) =
+                        vri_owner(self, &index_owner, entry.value, &mut cache, &work).await?
+                    else {
+                        continue;
                     };
+                    let (owner, node) = resolved.parts();
                     let (name, location) = vri_name(&index_owner.value.arena, entry.key, &work)?;
                     let (certs, crls, ocsp, update, timestamp) =
                         vri_members(self, owner, node, &mut items, &work).await?;
+                    if let ResolvedValue::Owned(owner) = resolved {
+                        cache.recycle(owner);
+                    }
                     if vri_names
                         .try_insert(vri::Name(name), vri.len())
                         .map_err(|cause| Error {
@@ -427,6 +427,32 @@ impl<'s, S: RangeSource> Document<'s, S> {
             incorporated,
         })
     }
+}
+
+async fn vri_owner<'a, 's, S: RangeSource>(
+    document: &Document<'s, S>,
+    index: &'a Reading<'s, S::Document, S::Generation>,
+    node: NodeId,
+    cache: &mut MemberCache,
+    work: &impl Work,
+) -> Result<Option<ResolvedValue<'a, 's, S::Document, S::Generation>>, ReadFailure<S::Error>> {
+    let Kind::Reference { number, generation } = index.value.arena.nodes[node.0].kind else {
+        return Ok(Some(ResolvedValue::Borrowed {
+            reading: index,
+            node,
+        }));
+    };
+    let Some(value) = document
+        .object_with_cache(index.revision, number, generation, Some(cache), work)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if matches!(value.value.arena.nodes[value.value.root.0].kind, Kind::Null) {
+        cache.recycle(value);
+        return Ok(None);
+    }
+    Ok(Some(ResolvedValue::Owned(value)))
 }
 
 fn incorporation<W: Work>(

@@ -111,11 +111,56 @@ impl<'s, D, G> Completion<'s, D, G> {
     }
 }
 
+/// One decoded stream and directory, scoped to one material traversal.
+#[derive(Default)]
+pub(crate) struct MemberCache(Option<CachedDirectory>);
+
+struct CachedDirectory {
+    key: StreamKey,
+    slots: OwnedVec<super::members::Slot>,
+    bytes: Option<OwnedVec<u8>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StreamKey {
+    revision: usize,
+    container: (u64, u16),
+    body: Span,
+}
+
+impl MemberCache {
+    fn retain_for(&mut self, revision: usize, target: Option<Target>) {
+        if let Some(saved) = &self.0
+            && !matches!(target, Some(Target::Compressed { stream, .. }) if (stream, 0) == saved.key.container && revision == saved.key.revision)
+        {
+            self.0 = None;
+        }
+    }
+
+    pub(crate) fn recycle<D: Copy + Eq, G: Copy + Eq>(&mut self, mut reading: Reading<'_, D, G>) {
+        if let Some(entry) = &mut self.0
+            && entry.bytes.is_none()
+        {
+            debug_assert_eq!(
+                reading.value.root().location().source(),
+                crate::source::Source::Decoded {
+                    stream: entry.key.body,
+                    revision: entry.key.revision,
+                    stage: 0,
+                }
+            );
+            entry.bytes = reading.decoded.take();
+        }
+    }
+}
+
 struct Resolution<'a, 'q, 'b, 's, S: RangeSource, W: Work> {
     cursor: &'a mut Cursor<'q, S>,
     frames: &'a mut OwnedVec<Frame<'b, 's, S::Document, S::Generation>, W>,
     completed: &'a mut Option<Completion<'s, S::Document, S::Generation>>,
 }
+
+type MemberSelection<'a> = (Option<(u64, u64)>, Option<&'a mut MemberCache>);
 
 #[derive(Clone, Copy)]
 enum Request<'b, 's, D, G> {
@@ -199,8 +244,25 @@ impl<'s, S: RangeSource> Document<'s, S> {
         generation: u16,
         operation: &W,
     ) -> Result<Option<Reading<'s, S::Document, S::Generation>>, ReadFailure<S::Error>> {
+        self.object_with_cache(revision, number, generation, None, operation)
+            .await
+    }
+
+    pub(crate) async fn object_with_cache<W: Work>(
+        &self,
+        revision: usize,
+        number: u64,
+        generation: u16,
+        cache: Option<&mut MemberCache>,
+        operation: &W,
+    ) -> Result<Option<Reading<'s, S::Document, S::Generation>>, ReadFailure<S::Error>> {
         match self
-            .resolve(revision, Request::Object { number, generation }, operation)
+            .resolve(
+                revision,
+                Request::Object { number, generation },
+                cache,
+                operation,
+            )
             .await?
         {
             Output::Object(value) => Ok(value),
@@ -257,6 +319,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
                     reading,
                     object_stream,
                 },
+                None,
                 operation,
             )
             .await?
@@ -340,7 +403,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
         revision: usize,
         (number, generation): (u64, u16),
         mut controls: super::controls::Controls<'b, 's, S::Document, S::Generation>,
-        selected: Option<(u64, u64)>,
+        (selected, mut cache): MemberSelection<'_>,
         context: Resolution<'_, '_, 'b, 's, S, W>,
         work: &impl Work,
     ) -> Result<Option<Prepared>, ReadFailure<S::Error>> {
@@ -388,6 +451,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
             kind: ErrorKind::Syntax(Syntax::Stream),
             location,
         })?;
+        let container = controls.container.identity();
         let plans = controls.plans();
         let layout = controls.layout;
         if let Some((_, selected)) = selected {
@@ -401,20 +465,28 @@ impl<'s, S: RangeSource> Document<'s, S> {
             }
         }
         if let Some((number, selected)) = selected {
-            let (bytes, _) = crate::stream::execute(reader, body, &plans, revision, true).await?;
-            drop(plans);
-            let (count, first) = layout.expect("object-stream controls");
-            let reading = member(
+            let key = StreamKey {
+                revision,
+                container,
+                body,
+            };
+            let reading = load_member(
                 self,
                 reader,
-                bytes,
-                body,
-                (count, first),
+                Prepared {
+                    plans,
+                    body,
+                    layout,
+                },
+                key,
                 (number, selected),
-                revision,
+                cache.as_deref_mut(),
             )
             .await?;
             if let Some((number, generation)) = reading.value.root().reference() {
+                if let Some(cache) = cache {
+                    cache.0 = None;
+                }
                 frame.state = State::Reference;
                 suspend(frames, frame, (number, generation), self, location, work)?;
                 return Ok(None);
@@ -458,6 +530,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
         &self,
         revision: usize,
         request: Request<'_, 's, S::Document, S::Generation>,
+        mut cache: Option<&mut MemberCache>,
         operation: &W,
     ) -> Result<Output<'s, S::Document, S::Generation>, ReadFailure<S::Error>> {
         let mut cursor = Cursor {
@@ -472,30 +545,30 @@ impl<'s, S: RangeSource> Document<'s, S> {
         let mut completed = None;
         while let Some(frame) = frames.pop() {
             admit(&work, location, 1)?;
+            let root_cache = cache.as_deref_mut().filter(|_| frames.is_empty());
+            let context = Resolution {
+                cursor: &mut cursor,
+                frames: &mut frames,
+                completed: &mut completed,
+            };
             match frame.state {
                 State::Start => {
-                    match self.target(revision, frame.number, frame.generation, &work)? {
-                        None => completed = Some(Completion { object: None }),
+                    let target = self.target(revision, frame.number, frame.generation, &work)?;
+                    if let Some(cache) = root_cache {
+                        cache.retain_for(revision, target);
+                    }
+                    match target {
+                        None => *context.completed = Some(Completion { object: None }),
                         Some(Target::File { offset, .. }) => {
-                            self.load_file(
-                                revision,
-                                frame,
-                                offset,
-                                Resolution {
-                                    cursor: &mut cursor,
-                                    frames: &mut frames,
-                                    completed: &mut completed,
-                                },
-                                &work,
-                            )
-                            .await?;
+                            self.load_file(revision, frame, offset, context, &work)
+                                .await?;
                         }
                         Some(Target::Compressed { stream, index }) => {
                             self.compressed(
                                 revision,
                                 frame,
                                 (stream, index),
-                                &mut frames,
+                                context.frames,
                                 location,
                                 &work,
                             )?;
@@ -507,21 +580,13 @@ impl<'s, S: RangeSource> Document<'s, S> {
                     }
                 }
                 State::Length(pending) => {
-                    completed = Some(Completion::present(
-                        resolved_length(&mut cursor, pending, completed.take(), &work).await?,
+                    *context.completed = Some(Completion::present(
+                        resolved_length(context.cursor, pending, context.completed.take(), &work)
+                            .await?,
                     ));
                 }
                 State::Member { index } => {
-                    member_controls(
-                        frame,
-                        index,
-                        Resolution {
-                            cursor: &mut cursor,
-                            frames: &mut frames,
-                            completed: &mut completed,
-                        },
-                        &work,
-                    )?;
+                    member_controls(frame, index, context, &work)?;
                     continue;
                 }
                 State::Controls {
@@ -533,12 +598,8 @@ impl<'s, S: RangeSource> Document<'s, S> {
                             revision,
                             (frame.number, frame.generation),
                             controls,
-                            selected,
-                            Resolution {
-                                cursor: &mut cursor,
-                                frames: &mut frames,
-                                completed: &mut completed,
-                            },
+                            (selected, root_cache),
+                            context,
                             &work,
                         )
                         .await?
@@ -547,7 +608,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
                     }
                 }
                 State::Reference => {
-                    debug_assert!(completed.is_some());
+                    debug_assert!(context.completed.is_some());
                 }
             }
             if frames.is_empty() {
@@ -723,35 +784,57 @@ async fn finish<'s, S: RangeSource>(
     Ok(pending.reading)
 }
 
-async fn member<'s, S: RangeSource>(
+async fn load_member<'s, S: RangeSource>(
     document: &Document<'s, S>,
     reader: &mut RangeReader<'_, S>,
-    decoded: OwnedVec<u8>,
-    body: Span,
-    (count, first): (u64, u64),
+    prepared: Prepared,
+    key: StreamKey,
     (number, selected): (u64, u64),
-    revision: usize,
+    mut cache: Option<&mut MemberCache>,
 ) -> Result<Reading<'s, S::Document, S::Generation>, ReadFailure<S::Error>> {
-    let work = reader.execution();
-    let location = reader.location(body.start, body.length);
-    if selected >= count || count > first / 4 {
-        return Err(Error {
-            kind: ErrorKind::Syntax(Syntax::Object),
-            location,
-        }
-        .into());
-    }
-    let slots = super::members::directory(
-        document.session,
-        document.stamp,
-        &decoded,
+    let Prepared {
+        plans,
         body,
-        (count, first),
-        revision,
-        &work,
-    )
-    .await
-    .map_err(convert)?;
+        layout,
+    } = prepared;
+    let revision = key.revision;
+    let previous = cache.as_deref_mut().and_then(|cache| cache.0.take());
+    let (count, first) = layout.expect("object-stream controls");
+    let location = reader.location(body.start, body.length);
+    if previous.is_some() {
+        admit(&reader.execution(), location, 5)?;
+    }
+    let (decoded, slots) = match previous {
+        Some(CachedDirectory {
+            key: original,
+            slots,
+            bytes: Some(bytes),
+        }) if original == key => (bytes, slots),
+        _ => {
+            let (decoded, _) = crate::stream::execute(reader, body, &plans, revision, true).await?;
+            drop(plans);
+            if count > first / 4 {
+                return Err(Error {
+                    kind: ErrorKind::Syntax(Syntax::Object),
+                    location,
+                }
+                .into());
+            }
+            let slots = super::members::directory(
+                document.session,
+                document.stamp,
+                &decoded,
+                body,
+                (count, first),
+                revision,
+                &reader.execution(),
+            )
+            .await
+            .map_err(convert)?;
+            (decoded, slots)
+        }
+    };
+    let work = reader.execution();
     let ordinal = usize::try_from(selected).expect("parsed object-stream directory length");
     let slot = &slots[ordinal];
     if slot.number != number {
@@ -772,6 +855,13 @@ async fn member<'s, S: RangeSource>(
     )
     .await
     .map_err(convert)?;
+    if let Some(cache) = cache {
+        cache.0 = Some(CachedDirectory {
+            key,
+            slots,
+            bytes: None,
+        });
+    }
     Ok(Reading {
         value,
         decoded: Some(decoded),

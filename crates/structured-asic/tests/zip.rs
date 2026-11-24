@@ -28,6 +28,36 @@ use structured_asn1::{
 use support::{Descriptor, File, Input, finish, memory, set32, zip};
 
 #[test]
+fn ordered_and_unsorted_names_keep_duplicate_occurrences_in_ordinal_order() {
+    // Skipping the sort must give the same lookup order and duplicate
+    // diagnostics as sorting the original names with the ordinal tie-breaker.
+    for (names, expected) in [
+        ([b"a", b"d", b"d", b"z"], [1, 2]),
+        ([b"d", b"a", b"d", b"z"], [0, 2]),
+    ] {
+        let files = names.map(|name| File::stored(name, b""));
+        let input = Input::new(zip(&files).bytes, 4096);
+        let work = memory();
+        let session = Session::new(Limits::default(), work.clone());
+        let archive = finish(Archive::read(&input, &session, &work)).unwrap();
+        let found = archive.find(b"d", &work).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(
+            [0, 1].map(|index| found.member(index, &work).unwrap().unwrap().id().ordinal()),
+            expected,
+        );
+        let duplicates: Vec<_> = archive
+            .faults(&work)
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|fault| fault.kind == FaultKind::DuplicateName)
+            .map(|fault| fault.member.unwrap())
+            .collect();
+        assert_eq!(duplicates, expected);
+    }
+}
+
+#[test]
 fn stored_deflated_zip64_and_all_descriptors_survive_short_async_reads() {
     // The independent literal encoder covers all local/central size and
     // descriptor spellings, including multi-block raw DEFLATE and empty input.

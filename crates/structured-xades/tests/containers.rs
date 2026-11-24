@@ -112,6 +112,7 @@ struct Tree {
     nodes: Vec<Record>,
     signature_status: Status,
     references: Vec<Reference<'static, usize>>,
+    reference_queries: Cell<usize>,
     target: Target<usize>,
     target_routes: Vec<(usize, Target<usize>)>,
     generation: Cell<u8>,
@@ -308,6 +309,7 @@ impl Tree {
                     coverage: Coverage::ElementContent,
                 },
             ],
+            reference_queries: Cell::new(0),
             target: Target::LocalBareName(0),
             target_routes: Vec::new(),
             nodes: vec![
@@ -649,6 +651,7 @@ impl SignatureXml for Tree {
         visitor: impl for<'view> FnOnce(Reference<'view, usize>) -> R,
     ) -> Result<R, Cause> {
         self.check(snapshot, signature)?;
+        self.reference_queries.set(self.reference_queries.get() + 1);
         if let Some(counter) = self.counter_receipt(signature, execution)? {
             let reference = counter.references.get(ordinal).ok_or(Cause::Source)?;
             return Ok(visitor(*reference));

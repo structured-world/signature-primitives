@@ -185,14 +185,24 @@ pub(super) fn order<E, W: Work>(
     work: &W,
     range: Span,
 ) -> Result<(), Error<E>> {
-    order
-        .try_sort_unstable_by(|left, right| {
-            let a = entries[*left].name.get(names);
-            let b = entries[*right].name.get(names);
-            work.charge_work(a.len().min(b.len()) as u64 + 1)?;
-            Ok::<_, structured_asn1::memory::MemoryError>(a.cmp(b).then_with(|| left.cmp(right)))
-        })
-        .map_err(|cause| resource(range, cause.into()))?;
+    let compare = |left: &usize, right: &usize| {
+        let a = entries[*left].name.get(names);
+        let b = entries[*right].name.get(names);
+        work.charge_work(a.len().min(b.len()) as u64 + 1)?;
+        Ok::<_, structured_asn1::memory::MemoryError>(a.cmp(b).then_with(|| left.cmp(right)))
+    };
+    // Use the same total order for the check and sort, including equal names.
+    // Duplicate reporting below still visits every original occurrence.
+    for pair in order.windows(2) {
+        if compare(&pair[0], &pair[1]).map_err(|cause| resource(range, cause))?
+            == core::cmp::Ordering::Greater
+        {
+            order
+                .try_sort_unstable_by(compare)
+                .map_err(|cause| resource(range, cause.into()))?;
+            break;
+        }
+    }
     let mut duplicate = false;
     for position in 1..order.len() {
         let a = &entries[order[position - 1]];

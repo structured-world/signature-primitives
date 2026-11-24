@@ -212,6 +212,57 @@ fn include(xml: &mut Tree, stamp: usize, link: usize, flag: Boolean) -> usize {
 }
 
 #[test]
+fn archive_indexes_reference_targets_without_reordering_inputs() {
+    // Each original instruction is read once. Two references to one object
+    // stay in the imprint, while that object's element occurs zero times.
+    let mut xml = with_cert_reference(tree());
+    xml.references[0].target = Some(1);
+    xml.validation_uri = Some("#fixture");
+    let certificates = append(&mut xml, 7, XADES_122, "CertificateValues");
+    let revocations = append(&mut xml, 7, XADES_122, "RevocationValues");
+    let archive = append(&mut xml, 7, XADES_122, "ArchiveTimeStamp");
+    let first = append(&mut xml, 0, DS, "Object");
+    let latter = append(&mut xml, 0, DS, "Object");
+    let last = append(&mut xml, 0, DS, "Object");
+    for target in [Some(latter), None, Some(latter), None, None, None, None] {
+        let node = append(&mut xml, 9, DS, "Reference");
+        xml.references.push(Reference {
+            node,
+            target,
+            kind: None,
+            status: Status::Valid,
+            coverage: Coverage::ElementContent,
+        });
+    }
+    let references = xml.references.len();
+    for ordinal in 0..references {
+        include(&mut xml, archive, ordinal, Boolean::Value(true));
+    }
+    let elements = [9, 12, 13, certificates, revocations, first, last];
+    for node in elements {
+        include(&mut xml, archive, node, Boolean::Absent);
+    }
+    append(&mut xml, archive, XADES_122, "EncapsulatedTimeStamp");
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let prepared = legacy::prepare(&access, &layout(&access)).unwrap();
+    let stamp = old::read(&access, &prepared, archive).unwrap();
+    xml.reference_queries.set(0);
+    let mut source = old::input(&access, &prepared, &stamp).unwrap();
+    assert_eq!(xml.reference_queries.get(), references);
+    let mut sink = Collect::new(&work);
+    stream::run(&mut source, &mut sink, &work, "legacy archive", 0).unwrap();
+    let mut expected = Vec::new();
+    for ordinal in 0..references {
+        expected.extend([b'D', u8::try_from(ordinal).unwrap()]);
+    }
+    for node in elements {
+        expected.extend([b'E', u8::try_from(node).unwrap()]);
+    }
+    assert_eq!(sink.bytes(), expected);
+}
+
+#[test]
 fn legacy_signature_timestamp_uses_explicit_include_and_default_method() {
     // §7.3 mandates an Include for the original SignatureValue. A different
     // target cannot be rescued by canonicalizing the expected node anyway.

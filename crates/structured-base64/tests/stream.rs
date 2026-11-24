@@ -194,6 +194,31 @@ fn bulk_decode_resumes_after_wrapping_and_chunk_boundaries() {
     }
 }
 
+#[test]
+fn wrapped_short_tail_matches_the_scalar_decoder() {
+    // After the 76th symbol these tails contain zero to four full quartets.
+    // Splits on either side of the break must leave the same stream state.
+    let plain = [0x5a; 70];
+    for len in 57..=plain.len() {
+        let mut encoder = Base64Codec::new(true, 76);
+        let mut wire = [0; 100];
+        let used = encoder.update(&plain[..len], &mut wire).unwrap();
+        let end = used + encoder.finish(&mut wire[used..]).unwrap();
+        for split in [0, 75, 76, end] {
+            let mut decoder = Base64Codec::new(false, 0);
+            let mut output = [SENTINEL; 71];
+            let used = decoder.update(&wire[..split], &mut output[..len]).unwrap();
+            let tail = decoder
+                .update(&wire[split..end], &mut output[used..len])
+                .unwrap();
+            assert_eq!(used + tail, len);
+            assert_eq!(decoder.finish(&mut []), Ok(0));
+            assert_eq!(output[..len], plain[..len]);
+            assert_eq!(output[len], SENTINEL);
+        }
+    }
+}
+
 // The compatible profile ignores pad bits, but still enforces the group
 // grammar and requires the complete padding across chunk boundaries.
 #[test]

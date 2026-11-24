@@ -251,7 +251,7 @@ impl Base64Codec {
             .input_offset
             .checked_add(input.len())
             .ok_or(Base64Error::Invalid)?;
-        let mut written = if self.position == 0 && !self.finished && input.len() >= 16 {
+        let mut written = if self.position == 0 && !self.finished && input.len() >= 4 {
             strict::decode_standard_prefix(input, output)
         } else {
             0
@@ -279,7 +279,8 @@ impl Base64Codec {
             if value == strict::INVALID {
                 return Err(Base64Error::InvalidByte(self.input_offset + index, byte));
             }
-            if self.position == 0 && input.len() - index >= 16 {
+            // One complete quartet is enough to resume after whitespace.
+            if self.position == 0 && input.len() - index >= 4 {
                 let count = strict::decode_standard_prefix(&input[index..], &mut output[written..]);
                 if count != 0 {
                     // A whole quartet leaves the decoder in the same state.

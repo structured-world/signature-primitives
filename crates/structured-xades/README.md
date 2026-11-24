@@ -10,6 +10,23 @@ providers supply digest and signature operations: digests through the shared
 adding only XML `DigestMethod` resolution and classification. Application code supplies
 trust inputs and decides whether the resulting evidence meets its policy.
 
+## Legacy directly incorporated properties
+
+Use `container::locate_with_syntax` with `Syntaxes::WithTs101903V122` to allow
+the ETSI TS 101 903 V1.2.2 namespace as well as the current EN syntax. The
+selected layout records which grammar applies. The default reader accepts only
+the EN syntax.
+
+For a V1.2.2 layout, `legacy::prepare` checks the original signed-properties
+binding and reads the ordered property sequences. `legacy::check_signer`
+compares the actual candidate to signed certificate digests or a certificate
+in the authenticated `KeyInfo`. `legacy::timestamp` resolves explicit Includes
+and streams the original V1.2.2 imprint input through the XML adapter. Its
+`XMLTimeStamp` branch preserves the original node for inspection.
+
+These entry points expose legacy property, signer and timestamp facts. Current
+EN baseline levels and application trust use their own evidence.
+
 ## Creating and augmenting signatures
 
 `produce` supplies construction and append planning for the EN 319 132-1

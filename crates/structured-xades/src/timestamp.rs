@@ -1323,9 +1323,9 @@ impl<X: TimestampXml> Source for Input<'_, X> {
     }
 }
 
-struct Stop<'a, R: Receiver> {
-    receiver: &'a mut R,
-    refused: bool,
+pub(crate) struct Stop<'a, R: Receiver> {
+    pub(crate) receiver: &'a mut R,
+    pub(crate) refused: bool,
 }
 
 impl<R: Receiver> Receiver for Stop<'_, R> {

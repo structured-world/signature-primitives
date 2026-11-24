@@ -7,6 +7,46 @@ use structured_asn1::memory::Work;
 pub const DS: &str = "http://www.w3.org/2000/09/xmldsig#";
 /// Namespace containing the qualifying-property containers.
 pub const XADES: &str = "http://uri.etsi.org/01903/v1.3.2#";
+/// Namespace specified by ETSI TS 101 903 V1.2.2 §5.
+pub const XADES_122: &str = "http://uri.etsi.org/01903/v1.2.2#";
+
+/// Syntax found in the selected signature's original qualifying container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Syntax {
+    /// EN 319 132-1.
+    En319132,
+    /// TS 101 903 V1.2.2.
+    Ts101903V122,
+}
+
+impl Syntax {
+    /// Exact expanded-name namespace of the qualifying container.
+    #[must_use]
+    pub const fn namespace(self) -> &'static str {
+        match self {
+            Self::En319132 => XADES,
+            Self::Ts101903V122 => XADES_122,
+        }
+    }
+}
+
+/// The caller's authorized set of original direct-incorporation syntaxes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Syntaxes {
+    /// Accept the current EN syntax exclusively.
+    #[default]
+    En319132,
+    /// Also accept the explicitly selected TS 101 903 V1.2.2 syntax.
+    WithTs101903V122,
+}
+
+/// Original layout dispatches to the readers for its actual syntax.
+pub enum Selected<X: Xml> {
+    /// Current baseline property layout.
+    En319132(Layout<X>),
+    /// Legacy qualifying properties, with independent processing rules.
+    Ts101903V122(crate::legacy::Layout<X>),
+}
 
 /// Why a selected signature's direct containers could not be located.
 #[derive(Debug)]
@@ -58,6 +98,7 @@ pub struct Containers<N, D, G> {
     qualifying: N,
     signed: N,
     unsigned: Option<N>,
+    syntax: Syntax,
 }
 
 impl<N: Copy, D: Copy, G: Copy> Containers<N, D, G> {
@@ -91,6 +132,12 @@ impl<N: Copy, D: Copy, G: Copy> Containers<N, D, G> {
     pub fn unsigned(&self) -> Option<N> {
         self.unsigned
     }
+
+    /// Syntax selected by the original qualifying element's expanded name.
+    #[must_use]
+    pub fn syntax(&self) -> Syntax {
+        self.syntax
+    }
 }
 
 /// Locates the direct containers under exactly the selected Signature.
@@ -102,6 +149,27 @@ impl<N: Copy, D: Copy, G: Copy> Containers<N, D, G> {
 pub fn locate<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     signature: X::Id,
+) -> ContainerResult<Layout<X>, X> {
+    locate_in(access, signature, Syntaxes::En319132)
+}
+
+/// Locates an original layout under the caller's expressly selected syntax set.
+pub fn locate_with_syntax<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    allowed: Syntaxes,
+) -> ContainerResult<Selected<X>, X> {
+    let layout = locate_in(access, signature, allowed)?;
+    Ok(match layout.syntax() {
+        Syntax::En319132 => Selected::En319132(layout),
+        Syntax::Ts101903V122 => Selected::Ts101903V122(crate::legacy::Layout::new(layout)),
+    })
+}
+
+fn locate_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    allowed: Syntaxes,
 ) -> ContainerResult<Layout<X>, X> {
     // EN 319 132-1 V1.3.1 §§4.4.1–4.4.2: direct incorporation within one Object,
     // at most one QualifyingProperties and all signed properties in one container.
@@ -125,21 +193,33 @@ pub fn locate<X: Xml, W: Work>(
             // or another Object. Arbitrary nested application payload is not
             // searched or reinterpreted as a protocol property container.
             // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
-            if named(access, node, XADES, "QualifyingPropertiesReference")? {
+            if named(access, node, XADES, "QualifyingPropertiesReference")?
+                || (allowed == Syntaxes::WithTs101903V122
+                    && named(access, node, XADES_122, "QualifyingPropertiesReference")?)
+            {
                 return Err(ContainerError::Unexpected { node });
             }
-            if named(access, node, XADES, "QualifyingProperties")? {
+            let syntax = if named(access, node, XADES, "QualifyingProperties")? {
+                Some(Syntax::En319132)
+            } else if allowed == Syntaxes::WithTs101903V122
+                && named(access, node, XADES_122, "QualifyingProperties")?
+            {
+                Some(Syntax::Ts101903V122)
+            } else {
+                None
+            };
+            if let Some(syntax) = syntax {
                 if selected.is_some() {
                     return Err(ContainerError::Duplicate { node });
                 }
-                selected = Some((object, node));
+                selected = Some((object, node, syntax));
             }
             cursor = access
                 .next_sibling(object, node)
                 .map_err(ContainerError::Access)?;
         }
     }
-    let Some((object, qualifying)) = selected else {
+    let Some((object, qualifying, syntax)) = selected else {
         return Err(ContainerError::Missing {
             parent: signature,
             local: "QualifyingProperties",
@@ -149,7 +229,7 @@ pub fn locate<X: Xml, W: Work>(
     let mut unsigned = None;
     for child in access.children(qualifying) {
         let node = child.map_err(ContainerError::Child)?;
-        if named(access, node, XADES, "SignedProperties")? {
+        if named(access, node, syntax.namespace(), "SignedProperties")? {
             if signed.is_some() {
                 return Err(ContainerError::Duplicate { node });
             }
@@ -157,7 +237,7 @@ pub fn locate<X: Xml, W: Work>(
                 return Err(ContainerError::Order { node });
             }
             signed = Some(node);
-        } else if named(access, node, XADES, "UnsignedProperties")? {
+        } else if named(access, node, syntax.namespace(), "UnsignedProperties")? {
             if unsigned.is_some() {
                 return Err(ContainerError::Duplicate { node });
             }
@@ -172,9 +252,11 @@ pub fn locate<X: Xml, W: Work>(
             local: "SignedProperties",
         });
     };
-    nonempty(access, signed)?;
-    if let Some(unsigned) = unsigned {
-        nonempty(access, unsigned)?;
+    if syntax == Syntax::En319132 {
+        nonempty(access, signed)?;
+        if let Some(unsigned) = unsigned {
+            nonempty(access, unsigned)?;
+        }
     }
     Ok(Containers {
         snapshot: access.snapshot(),
@@ -183,6 +265,7 @@ pub fn locate<X: Xml, W: Work>(
         qualifying,
         signed,
         unsigned,
+        syntax,
     })
 }
 

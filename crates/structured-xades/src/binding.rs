@@ -1,11 +1,13 @@
 //! Selected-signature binding, separate from property validation and path trust.
 
-use crate::container::{Containers, Layout};
+use crate::container::{Containers, Layout, Syntax};
 use crate::xml::{Access, AccessError, Snapshot, Xml};
 use structured_asn1::memory::Work;
 
 /// Required Type of the `SignedInfo` reference protecting `SignedProperties`.
 pub const SIGNED_PROPERTIES: &str = "http://uri.etsi.org/01903#SignedProperties";
+/// Reference Type mandated by TS 101 903 V1.2.2 §6.3.1.
+pub const SIGNED_PROPERTIES_122: &str = "http://uri.etsi.org/01903/v1.2.2#SignedProperties";
 
 /// `XMLDSig` outcome for this exact source generation and selected signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,7 +171,8 @@ pub type BindingResult<T, X> = Result<T, BindingError<<X as Xml>::Error, <X as X
 
 #[derive(Clone, Copy)]
 pub(crate) enum Purpose<N> {
-    Properties(N),
+    Properties(N, Syntax),
+    LegacyKeyInfo(N),
     Counter(N),
 }
 
@@ -195,8 +198,10 @@ pub(crate) fn covering_reference<X: SignatureXml, W: Work>(
         })
         .map_err(BindingError::Access)?;
     let (wanted, minimum) = match purpose {
-        Purpose::Properties(target) => (target, 2),
-        Purpose::Counter(target) => (target, 1),
+        Purpose::Properties(target, Syntax::En319132) => (target, 2),
+        Purpose::Properties(target, Syntax::Ts101903V122)
+        | Purpose::LegacyKeyInfo(target)
+        | Purpose::Counter(target) => (target, 1),
     };
     if count < minimum {
         return Err(BindingError::References { node: signature });
@@ -208,15 +213,21 @@ pub(crate) fn covering_reference<X: SignatureXml, W: Work>(
             .query(signature, |xml, snapshot, work| {
                 xml.reference(snapshot, signature, ordinal, work, |r| {
                     let eligible = match purpose {
-                        Purpose::Properties(_) => match r.kind {
-                            Some(kind) => access.equal(kind, SIGNED_PROPERTIES),
+                        Purpose::Properties(_, syntax) => match r.kind {
+                            Some(kind) => access.equal(
+                                kind,
+                                match syntax {
+                                    Syntax::En319132 => SIGNED_PROPERTIES,
+                                    Syntax::Ts101903V122 => SIGNED_PROPERTIES_122,
+                                },
+                            ),
                             None => Ok(false),
                         },
                         // EN319132-1 §5.2.7.2 requires coverage of the original
                         // SignatureValue. It does not mandate a Type attribute for
                         // this enveloped form or turn it into SignedProperties.
                         // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
-                        Purpose::Counter(_) => Ok(true),
+                        Purpose::LegacyKeyInfo(_) | Purpose::Counter(_) => Ok(true),
                     };
                     (r.node, r.target, r.status, r.coverage, eligible)
                 })
@@ -234,7 +245,7 @@ pub(crate) fn covering_reference<X: SignatureXml, W: Work>(
             None => false,
         };
         if !matches {
-            if let Purpose::Counter(_) = purpose {
+            if !matches!(purpose, Purpose::Properties(..)) {
                 continue;
             }
             return Err(BindingError::Reference { node });
@@ -268,7 +279,7 @@ pub fn bind<X: SignatureXml, W: Work>(
     let (reference, ordinal) = covering_reference(
         access,
         layout.signature(),
-        Purpose::Properties(layout.signed()),
+        Purpose::Properties(layout.signed(), layout.syntax()),
     )?;
     Ok(Bound {
         containers: *layout,

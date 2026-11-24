@@ -585,6 +585,10 @@ fn read_list_extensions<'a>(
     tagged: &Element<'a>,
     version: Version,
 ) -> Result<(Extensions<'a>, ExtensionOrdinals)> {
+    const IDP: u8 = crate::oid::ISSUING_DISTRIBUTION_POINT.as_bytes()[2];
+    const DELTA: u8 = crate::oid::DELTA_CRL_INDICATOR.as_bytes()[2];
+    const NUMBER: u8 = crate::oid::CRL_NUMBER.as_bytes()[2];
+    const AUTHORITY: u8 = crate::oid::AUTHORITY_KEY_IDENTIFIER.as_bytes()[2];
     let at = tagged.span().start;
     if tagged.tag() != Tag::context(true, 0) || version != Version::V2 {
         return Err(Error::new(ErrorCode::UnexpectedField, EXTENSIONS, at));
@@ -595,21 +599,20 @@ fn read_list_extensions<'a>(
     let mut ordinals = ExtensionOrdinals::default();
     let extensions =
         extension::read_with_ordinals(&wrapper, &sequence, EXTENSIONS, |index, kind, span| {
-            // Each of the four fixed OIDs has three octets. Retain the
-            // matching wire ordinal without decoding its value.
+            // One length check, the shared two-byte id-ce prefix, and up to
+            // four comparisons of the remaining subidentifier.
             execution
-                .charge_work(13)
+                .charge_work(7)
                 .map_err(|cause| Error::resource(cause, EXTENSIONS, span.start))?;
-            let slot = if kind == crate::oid::ISSUING_DISTRIBUTION_POINT {
-                &mut ordinals.distribution_point
-            } else if kind == crate::oid::DELTA_CRL_INDICATOR {
-                &mut ordinals.delta_indicator
-            } else if kind == crate::oid::CRL_NUMBER {
-                &mut ordinals.number
-            } else if kind == crate::oid::AUTHORITY_KEY_IDENTIFIER {
-                &mut ordinals.authority
-            } else {
+            let [0x55, 0x1d, extension] = kind.as_bytes() else {
                 return Ok(());
+            };
+            let slot = match *extension {
+                IDP => &mut ordinals.distribution_point,
+                DELTA => &mut ordinals.delta_indicator,
+                NUMBER => &mut ordinals.number,
+                AUTHORITY => &mut ordinals.authority,
+                _ => return Ok(()),
             };
             *slot = NonZeroUsize::new(index + 1);
             Ok(())

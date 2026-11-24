@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0](https://github.com/structured-world/signature-primitives/compare/structured-asic-v0.25.1...structured-asic-v0.26.0) - 2026-11-24
+
+### Fixed
+
+- *(ltv)* [**breaking**] handle direct signer trust and CRLs ([#343](https://github.com/structured-world/signature-primitives/pull/343))
+
+### Other
+
+- remove repeated validation and decoding work ([#345](https://github.com/structured-world/signature-primitives/pull/345))
+
 ## [0.25.1](https://github.com/structured-world/signature-primitives/compare/structured-asic-v0.25.0...structured-asic-v0.25.1) - 2026-11-23
 
 ### Other

@@ -123,6 +123,13 @@ fn candidate_ids<W: Work>(
     work: &W,
 ) -> Result<OwnedVec<usize, W>, MemoryError> {
     let mut ids = work.vector();
+    let count = path.members().len() + usize::from(path.anchor().certificate().is_some());
+    ids.try_reserve_exact(count)?;
+    if count == 1 {
+        work.charge_work(1)?;
+        ids.try_push(0)?;
+        return Ok(ids);
+    }
     let mut index = work.map();
     let mut ordinal = 0;
     while let Some((_, certificate)) = candidate(path, ordinal) {

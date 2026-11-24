@@ -79,6 +79,21 @@ fn many_leading_zeroes_are_refused_by_der_before_the_width_check() {
 }
 
 #[test]
+fn the_wide_ber_prefix_must_be_all_zero_before_the_last_eight_octets() {
+    // The maximum u64 is valid and one significant bit above it is not.
+    let mut input = [0; 12];
+    input[0] = 0x8b;
+    input[4..].fill(0xff);
+    assert_eq!(ber(&input).unwrap(), (Length::Definite(u64::MAX), 12));
+    assert_eq!(
+        der(&[0x88, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]).unwrap(),
+        (Length::Definite(u64::MAX), 9)
+    );
+    input[3] = 1;
+    assert_eq!(ber(&input).unwrap_err(), ErrorCode::LengthTooLarge);
+}
+
+#[test]
 fn truncated_length_is_refused() {
     assert_eq!(der(&[]).unwrap_err(), ErrorCode::UnexpectedEnd);
     assert_eq!(der(&[0x82, 0x01]).unwrap_err(), ErrorCode::UnexpectedEnd);

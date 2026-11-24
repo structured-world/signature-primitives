@@ -227,13 +227,10 @@ impl<'r, 'a> Authenticated<'r, 'a> {
         let at = delta.crl().span().start;
         let base_extensions = self.crl().tbs().extensions();
         let delta_extensions = delta.crl().tbs().extensions();
-        if base_extensions
-            .get(oid::DELTA_CRL_INDICATOR, execution)?
-            .is_some()
-        {
+        if self.crl().tbs().delta_indicator(execution)?.is_some() {
             return Ok(DeltaBinding::Rejected(DeltaFailure::BaseIsDelta));
         }
-        let Some(indicator) = delta_extensions.get(oid::DELTA_CRL_INDICATOR, execution)? else {
+        let Some(indicator) = delta.crl().tbs().delta_indicator(execution)? else {
             return Ok(DeltaBinding::Missing(MissingDeltaField::Indicator));
         };
         if !indicator.is_critical() {
@@ -282,8 +279,8 @@ impl<'r, 'a> Authenticated<'r, 'a> {
         )? {
             return Ok(DeltaBinding::Rejected(DeltaFailure::SigningKey));
         }
-        let base_scope = base_extensions.get(oid::ISSUING_DISTRIBUTION_POINT, execution)?;
-        let delta_scope = delta_extensions.get(oid::ISSUING_DISTRIBUTION_POINT, execution)?;
+        let base_scope = self.crl().tbs().distribution_point(execution)?;
+        let delta_scope = delta.crl().tbs().distribution_point(execution)?;
         if base_scope.is_some_and(|extension| !extension.is_critical())
             || delta_scope.is_some_and(|extension| !extension.is_critical())
         {

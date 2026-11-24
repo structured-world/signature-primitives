@@ -253,32 +253,48 @@ impl<'s, S: RangeSource> Archive<'s, S> {
     ) -> Result<Names<'_, 's, S>, Error<S::Error>> {
         self.admit(work, self.directory)?;
         let execution = self.session.query(work);
+        let compare = |position: usize| -> Result<_, Error<S::Error>> {
+            let other = self.entries[self.order[position]].name.get(&self.names);
+            execution
+                .charge_work(other.len().min(name.len()) as u64 + 1)
+                .map_err(|cause| resource(self.directory, cause))?;
+            Ok(other.cmp(name))
+        };
         let mut lo = 0;
         let mut hi = self.order.len();
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let other = self.entries[self.order[mid]].name.get(&self.names);
-            execution
-                .charge_work(other.len().min(name.len()) as u64 + 1)
-                .map_err(|cause| resource(self.directory, cause))?;
-            if other < name {
+            if compare(mid)? == core::cmp::Ordering::Less {
                 lo = mid + 1;
             } else {
                 hi = mid;
             }
         }
         let first = lo;
+        // A missing name or one unique occurrence needs no upper-bound search.
+        if first == self.order.len() || compare(first)? != core::cmp::Ordering::Equal {
+            return Ok(Names {
+                archive: self,
+                first,
+                end: first,
+            });
+        }
+        lo = first + 1;
+        if lo == self.order.len() || compare(lo)? != core::cmp::Ordering::Equal {
+            return Ok(Names {
+                archive: self,
+                first,
+                end: lo,
+            });
+        }
+        lo += 1;
         hi = self.order.len();
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let other = self.entries[self.order[mid]].name.get(&self.names);
-            execution
-                .charge_work(other.len().min(name.len()) as u64 + 1)
-                .map_err(|cause| resource(self.directory, cause))?;
-            if other <= name {
-                lo = mid + 1;
-            } else {
+            if compare(mid)? == core::cmp::Ordering::Greater {
                 hi = mid;
+            } else {
+                lo = mid + 1;
             }
         }
         Ok(Names {

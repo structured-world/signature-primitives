@@ -21,7 +21,7 @@ pub(super) fn admit(
     facts: &Facts<'_>,
     policy: &Requirements<'_>,
     work: &impl Work,
-) -> Result<(), MemoryError> {
+) -> Result<super::validate::DirectCandidate, MemoryError> {
     // Fixed enum/scalar decisions, element-set checks and result projection.
     work.charge_work(128)?;
     let per_material = material_cost(&policy.crypto, work)?;
@@ -35,7 +35,8 @@ pub(super) fn admit(
         own.checked_mul(mul(4, per_material)?)
             .ok_or(MemoryError::WorkExceeded)?,
     )?;
-    for path in facts.paths {
+    let mut direct = super::validate::DirectCandidate::default();
+    for (index, path) in facts.paths.iter().enumerate() {
         // Includes this preflight and the later path's scalar/enum decisions.
         work.charge_work(32)?;
         let members = add(
@@ -46,8 +47,10 @@ pub(super) fn admit(
             members,
             mul(path.materials.len(), mul(2, per_material)?)?,
         )?)?;
+        direct.consider(index, path);
     }
-    admit_delay(facts, policy, work)
+    admit_delay(facts, policy, work)?;
+    Ok(direct)
 }
 
 pub(super) fn material_cost(

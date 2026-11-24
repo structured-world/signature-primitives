@@ -6,10 +6,11 @@
 
 use crate::algorithm::{self, AlgorithmIdentifier};
 use crate::error::{Error, ErrorCode, Located, Result};
-use crate::extension::{self, Extensions};
+use crate::extension::{self, Extension, Extensions};
 use crate::name::{self, Name};
 use crate::path::{EffectiveKey, Verified, Verify};
 use crate::time::{self, Time};
+use core::num::NonZeroUsize;
 use structured_asn1::memory::{OwnedVec, Work};
 use structured_asn1::{BitString, Element, Integer, Parser, Reader, Span, Tag, universal};
 
@@ -165,6 +166,8 @@ pub struct TbsCertList<'a> {
     next_update: Option<Time>,
     revoked: OwnedVec<RevokedCertificate<'a>>,
     extensions: Extensions<'a>,
+    distribution_point: Option<NonZeroUsize>,
+    delta_indicator: Option<NonZeroUsize>,
     bytes: &'a [u8],
     span: Span,
 }
@@ -228,6 +231,26 @@ impl<'a> TbsCertList<'a> {
     pub fn as_bytes(&self) -> &'a [u8] {
         self.bytes
     }
+
+    fn indexed_extension<W: Work>(
+        &self,
+        slot: Option<NonZeroUsize>,
+        work: &W,
+    ) -> Result<Option<&Extension<'a>>> {
+        self.signature
+            .execution_origin()
+            .charge_work_in(work, 1)
+            .map_err(|cause| Error::resource(cause, EXTENSIONS, self.span.start))?;
+        Ok(slot.and_then(|position| self.extensions.by_ordinal(position.get() - 1)))
+    }
+
+    fn distribution_point<W: Work>(&self, work: &W) -> Result<Option<&Extension<'a>>> {
+        self.indexed_extension(self.distribution_point, work)
+    }
+
+    fn delta_indicator<W: Work>(&self, work: &W) -> Result<Option<&Extension<'a>>> {
+        self.indexed_extension(self.delta_indicator, work)
+    }
     /// Original document location of `TBSCertList`.
     #[must_use]
     pub fn span(&self) -> Span {
@@ -246,6 +269,11 @@ pub struct CertificateList<'a> {
 }
 
 impl<'a> CertificateList<'a> {
+    /// Whether the original list carries a delta indicator. This does not
+    /// authenticate it or validate the extension's value.
+    pub fn has_delta_indicator<W: Work>(&self, work: &W) -> Result<bool> {
+        Ok(self.tbs.delta_indicator(work)?.is_some())
+    }
     /// Borrows the original CRL execution under the current operation without
     /// reading parameters, cloning storage or resetting the producing ceiling.
     #[must_use]
@@ -513,20 +541,10 @@ fn read_tbs<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<TbsCertLis
         }
         next = inside.next_element().field(TBS)?;
     }
-    let mut extensions = Extensions::empty(inside.memory());
-    if let Some(tagged) = next {
-        if tagged.tag() != Tag::context(true, 0) || version != Version::V2 {
-            return Err(Error::new(
-                ErrorCode::UnexpectedField,
-                EXTENSIONS,
-                tagged.span().start,
-            ));
-        }
-        let mut wrapper = inside.enter(&tagged).field(EXTENSIONS)?;
-        let sequence = required(&mut wrapper, EXTENSIONS, tagged.span().start)?;
-        extensions = extension::read(&wrapper, &sequence, EXTENSIONS)?;
-        end(&wrapper, EXTENSIONS, tagged.span().start)?;
-    }
+    let (extensions, distribution_point, delta_indicator) = match next {
+        Some(tagged) => read_list_extensions(&inside, &tagged, version)?,
+        None => (Extensions::empty(inside.memory()), None, None),
+    };
     end(&inside, TBS, element.span().start)?;
     Ok(TbsCertList {
         source_depth: parent.depth(),
@@ -537,9 +555,45 @@ fn read_tbs<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<TbsCertLis
         next_update,
         revoked: revoked.into_owned(),
         extensions,
+        distribution_point,
+        delta_indicator,
         bytes: element.as_bytes(),
         span: element.span(),
     })
+}
+
+type IndexedExtensions<'a> = (Extensions<'a>, Option<NonZeroUsize>, Option<NonZeroUsize>);
+
+fn read_list_extensions<'a>(
+    inside: &Reader<'a>,
+    tagged: &Element<'a>,
+    version: Version,
+) -> Result<IndexedExtensions<'a>> {
+    let at = tagged.span().start;
+    if tagged.tag() != Tag::context(true, 0) || version != Version::V2 {
+        return Err(Error::new(ErrorCode::UnexpectedField, EXTENSIONS, at));
+    }
+    let mut wrapper = inside.enter(tagged).field(EXTENSIONS)?;
+    let sequence = required(&mut wrapper, EXTENSIONS, at)?;
+    let execution = wrapper.execution();
+    let mut distribution_point = None;
+    let mut delta_indicator = None;
+    let extensions =
+        extension::read_with_ordinals(&wrapper, &sequence, EXTENSIONS, |index, kind, span| {
+            // These two fixed-width OIDs are queried repeatedly by scope,
+            // assessment and delta pairing. Keep only their wire ordinals.
+            execution
+                .charge_work(7)
+                .map_err(|cause| Error::resource(cause, EXTENSIONS, span.start))?;
+            if kind == crate::oid::ISSUING_DISTRIBUTION_POINT {
+                distribution_point = NonZeroUsize::new(index + 1);
+            } else if kind == crate::oid::DELTA_CRL_INDICATOR {
+                delta_indicator = NonZeroUsize::new(index + 1);
+            }
+            Ok(())
+        })?;
+    end(&wrapper, EXTENSIONS, at)?;
+    Ok((extensions, distribution_point, delta_indicator))
 }
 
 fn read_entry<'a>(

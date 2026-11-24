@@ -203,6 +203,10 @@ impl<'a> Extensions<'a> {
         self.items.is_empty()
     }
 
+    pub(crate) fn by_ordinal(&self, ordinal: usize) -> Option<&Extension<'a>> {
+        self.items.get(ordinal)
+    }
+
     /// One extension by identifier. There is at most one of each: a
     /// certificate carrying two copies is refused when it is read, because
     /// which of them applies would have no answer.
@@ -555,7 +559,13 @@ impl<'a> Extensions<'a> {
         number: u32,
         field: &'static str,
     ) -> Result<Self> {
-        read_tagged(parent, element, Tag::context(true, number), field)
+        read_tagged(
+            parent,
+            element,
+            Tag::context(true, number),
+            field,
+            |_, _, _| Ok(()),
+        )
     }
 
     typed_accessors! {
@@ -875,11 +885,21 @@ pub(crate) fn read<'a>(
     element: &Element<'a>,
     field: &'static str,
 ) -> Result<Extensions<'a>> {
+    read_with_ordinals(parent, element, field, |_, _, _| Ok(()))
+}
+
+pub(crate) fn read_with_ordinals<'a>(
+    parent: &ScopedReader<'a, '_>,
+    element: &Element<'a>,
+    field: &'static str,
+    observe: impl FnMut(usize, Oid<'a>, Span) -> Result<()>,
+) -> Result<Extensions<'a>> {
     read_tagged(
         parent,
         element,
         Tag::constructed(universal::SEQUENCE),
         field,
+        observe,
     )
 }
 
@@ -888,6 +908,7 @@ fn read_tagged<'a>(
     element: &Element<'a>,
     expected: Tag,
     field: &'static str,
+    mut observe: impl FnMut(usize, Oid<'a>, Span) -> Result<()>,
 ) -> Result<Extensions<'a>> {
     let parser = parent.parser();
     let fail = |code| Error::new(code, field, element.span().start);
@@ -954,6 +975,7 @@ fn read_tagged<'a>(
             return Err(at(ErrorCode::DuplicateExtension));
         }
 
+        observe(items.len(), kind, entry.span())?;
         items
             .try_push(Extension {
                 kind,

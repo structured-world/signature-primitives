@@ -506,8 +506,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
             })?;
         }
         while cursor.at < self.stamp.length {
-            cursor.skip().await?;
-            if cursor.peek().await?.is_none() {
+            if cursor.skip_to_token().await?.is_none() {
                 break;
             }
             let start = cursor.at;

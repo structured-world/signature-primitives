@@ -9,7 +9,7 @@ repository.workspace = true
 readme = "README.md"
 keywords = ["ades", "ltv", "signature", "timestamp", "no-std"]
 categories = ["cryptography", "no-std"]
-include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**", "tests/**", "benches/**", "Cargo.toml", "README.md", "LICENSE"]
 
 [features]
 default = []
@@ -29,3 +29,7 @@ sha2 = { version = "0.11.1", default-features = false }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "pipelines"
+harness = false

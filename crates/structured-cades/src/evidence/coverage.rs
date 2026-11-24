@@ -3,6 +3,7 @@ use super::record::{Checked, Verified};
 use crate::{
     Cades, Error, ISSUER,
     material::Index,
+    prepare::proofs::Entry,
     source::{DocumentId, Node},
     timestamp,
 };
@@ -120,12 +121,7 @@ impl<'prepared, 'm, 'd, 'path> Verified<'_, 'prepared, 'm, 'd, 'path> {
         let spans: &[Span] = if relative == 0 {
             base
         } else {
-            extended = with_predecessors(
-                base,
-                &prepared.timestamps()[report.timestamps.start..ordinal],
-                property,
-                &work,
-            )?;
+            extended = with_predecessors(base, entry, relative, &work)?;
             &extended
         };
         let document = prepared.document();
@@ -184,50 +180,41 @@ impl<'prepared, 'm, 'd, 'path> Verified<'_, 'prepared, 'm, 'd, 'path> {
 }
 fn with_predecessors<W: Work>(
     base: &[Span],
-    predecessors: &[crate::prepare::Timestamp<'_>],
-    property: Node,
+    entry: &Entry<'_>,
+    count: usize,
     work: &W,
 ) -> Result<OwnedVec<Span, W>, CoverageError> {
-    let resource =
-        |cause| CoverageError::Processing(Error::resource(cause, FIELD, property.span().start));
-    if let [predecessor] = predecessors {
-        work.charge_work(1).map_err(resource)?;
-        let extra = predecessor
-            .value()
-            .ok_or(CoverageError::Foreign { property })?
-            .span();
-        return merge_spans(base, &[extra], work).map_err(resource);
-    }
-    let mut additions = work.vector();
-    additions
-        .try_reserve_exact(predecessors.len())
-        .map_err(resource)?;
-    for predecessor in predecessors {
-        work.charge_work(1).map_err(resource)?;
-        let value = predecessor
-            .value()
-            .ok_or(CoverageError::Foreign { property })?;
-        additions.try_push(value.span()).map_err(resource)?;
-    }
-    sort_spans(&mut additions, work).map_err(resource)?;
-    merge_spans(base, &additions, work).map_err(resource)
+    let property = entry.required.property;
+    let predecessors = entry
+        .record()
+        .and_then(|record| record.timestamps().get(..count))
+        .ok_or(CoverageError::Foreign { property })?;
+    // RFC 4998 §5.1 encodes chains and timestamps as SEQUENCE OF. The record
+    // reader retains original byte order. https://www.rfc-editor.org/rfc/rfc4998.html#section-5.1
+    let originals = predecessors
+        .iter()
+        .map(|entry| entry.timestamp_source().element().span());
+    merge_spans(base, originals, work).map_err(|cause| {
+        CoverageError::Processing(Error::resource(cause, FIELD, property.span().start))
+    })
 }
 
-fn merge_spans<'a, W: Work>(
-    mut base: &'a [Span],
-    mut additions: &'a [Span],
+fn merge_spans<W: Work>(
+    mut base: &[Span],
+    additions: impl ExactSizeIterator<Item = Span>,
     work: &W,
 ) -> Result<OwnedVec<Span, W>, structured_asn1::memory::MemoryError> {
+    let mut additions = additions.peekable();
     let mut output = work.vector::<Span>();
-    while !base.is_empty() || !additions.is_empty() {
+    while !base.is_empty() || additions.len() != 0 {
         work.charge_work(3)?;
-        let next = match (base.first(), additions.first()) {
-            (Some(a), Some(b)) if a.start <= b.start => &mut base,
-            (_, Some(_)) => &mut additions,
-            _ => &mut base,
+        let current = match (base.split_first(), additions.peek()) {
+            (Some((&first, tail)), next) if next.is_none_or(|next| first.start <= next.start) => {
+                base = tail;
+                first
+            }
+            _ => additions.next().expect("a remaining span"),
         };
-        let current = next[0];
-        *next = &next[1..];
         if let Some(last) = output.last_mut()
             && current.start <= last.end()
         {

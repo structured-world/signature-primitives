@@ -128,3 +128,52 @@ fn stream_equality_crosses_misaligned_windows_and_respects_work() {
             .unwrap()
     );
 }
+
+#[test]
+fn short_stream_comparison_only_funds_the_compared_ranges() {
+    // The short comparison must fit two eight-byte windows, even when the
+    // original document is much larger and the last byte differs.
+    let stream = b"<< /Length 8 >>\nstream\nabcdefgh\nendstream";
+    let mut pdf = support::Pdf::new(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Count 0 /Kids [] >>"),
+        (3, b"null"),
+        (4, stream),
+    ]);
+    pdf.append(&[(4, stream)]);
+    pdf.append(&[(4, b"<< /Length 8 >>\nstream\nabcdefgi\nendstream")]);
+    let source = Slice::new(
+        &pdf.bytes,
+        Snapshot {
+            document: 1_u8,
+            generation: 0_u8,
+        },
+    );
+    let session = Session::new(
+        Limits::default(),
+        Memory::new(Arc::new(MemoryAccount::new(1 << 22, 1 << 24))),
+    );
+    let work = session.execution();
+    let document = support::ready(Document::read(&source, &session, &work)).unwrap();
+    let [old, same, different] = [0, 1, 2].map(|revision| {
+        support::ready(document.object(revision, 4, 0, &work))
+            .unwrap()
+            .unwrap()
+    });
+    let constrained = Memory::new(Arc::new(MemoryAccount::new(16, 1 << 16)));
+    let location = old.value.root().location();
+    assert!(
+        support::ready(document.same_streams_in(old.stream, same.stream, location, &constrained))
+            .unwrap()
+    );
+    assert!(
+        !support::ready(document.same_streams_in(
+            old.stream,
+            different.stream,
+            location,
+            &constrained
+        ))
+        .unwrap()
+    );
+    assert_eq!(constrained.used(), 0);
+}

@@ -562,8 +562,25 @@ impl<S: RangeSource> Document<'_, S> {
             self.check(operation, location)?;
             return Ok(true);
         }
-        let mut first = RangeReader::new(self.source, self.session, operation)?;
-        let mut second = first.fork()?;
+        // Small streams need no unrelated page bytes. Both windows retain
+        // the document's original stamp even if acquisition suspends.
+        let (mut first, mut second) = if left.length <= 64 {
+            let window = |bounds| {
+                RangeReader::window(
+                    self.source,
+                    self.session,
+                    operation,
+                    crate::source::Source::File,
+                    self.stamp,
+                    bounds,
+                )
+            };
+            (window(left)?, window(right)?)
+        } else {
+            let first = RangeReader::new(self.source, self.session, operation)?;
+            let second = first.fork()?;
+            (first, second)
+        };
         let work = first.execution();
         let mut offset = 0;
         while offset < left.length {

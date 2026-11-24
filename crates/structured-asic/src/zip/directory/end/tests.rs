@@ -56,6 +56,19 @@ fn reverse_marker_scan_matches_scalar_across_window_boundaries() {
 }
 
 #[test]
+fn short_footer_scan_preserves_tail_and_candidate_order() {
+    // The short scan must see two complete candidates and one crossing
+    // candidate, in the same reverse order as the full scan.
+    let mut offsets = alloc::vec::Vec::new();
+    scan_short(b"PK\x05\x06.............PK\x05\x06P", b"K\x05\x06", |at| {
+        offsets.push(at);
+        Ok::<_, core::convert::Infallible>(())
+    })
+    .unwrap();
+    assert_eq!(offsets, [21, 17, 0]);
+}
+
+#[test]
 fn zip64_record_must_fit_before_its_locator_before_any_record_read() {
     // The locator cannot point into itself or its following classic EOCD.
     // Reject its enclosure before the fixed-record copy or source callbacks.

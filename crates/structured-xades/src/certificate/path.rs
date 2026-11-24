@@ -123,11 +123,7 @@ pub fn check_path<
     provider: &'p P,
     execution: &W,
 ) -> PathCheckResult<'view, 'document, X, P::Error> {
-    let certificate = path
-        .members()
-        .last()
-        .expect("a checked path has a target")
-        .certificate();
+    let certificate = path.target().certificate();
     let key = super::bind_key::<X, P::Error, W>(
         xml,
         bound,
@@ -312,7 +308,7 @@ fn match_reference<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
     let members = path.members();
     if ordinal == 0 {
         admit()?;
-        let target = members.last().expect("a checked path has a target");
+        let target = path.target();
         answer.agreement = super::compare_resolved(
             access,
             reference,
@@ -322,7 +318,10 @@ fn match_reference<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
             expected,
         )?;
         if answer.agreement == Agreement::Matches {
-            answer.certificate = Some(PathCertificate::Member(members.len() - 1));
+            answer.certificate = Some(match members.len().checked_sub(1) {
+                Some(index) => PathCertificate::Member(index),
+                None => PathCertificate::Anchor,
+            });
         }
         return Ok(answer);
     }

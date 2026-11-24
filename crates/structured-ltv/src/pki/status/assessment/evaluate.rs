@@ -145,7 +145,9 @@ where
         statements.try_push(statement).map_err(Error::Resource)?;
     }
     assess_lists(target, &lists, &mut deltas, query, work, &mut statements)?;
-    let status = decide::decide(&statements, query, work).map_err(Error::Resource)?;
+    let expiry = target.tbs().validity().not_after();
+    let (status, expiry_evidence) =
+        decide::decide(&statements, query, expiry, work).map_err(Error::Resource)?;
     Ok(Assessment {
         path,
         member,
@@ -153,6 +155,7 @@ where
         now: query.now,
         statements: statements.into_owned(),
         status,
+        expiry_evidence,
     })
 }
 
@@ -204,6 +207,15 @@ where
                     .map_err(Error::CrlBinding)?
                     .is_none()
                 {
+                    // RFC 5280 §5.2.5. An unusable source must stay
+                    // outside the base/delta catalogue.
+                    // https://www.rfc-editor.org/rfc/rfc5280#section-5.2.5
+                    if let Some(span) = list
+                        .noncritical_issuing_distribution_point(work)
+                        .map_err(Error::Processing)?
+                    {
+                        return Ok(Err(Unusable::NoncriticalIssuingDistributionPoint(span)));
+                    }
                     return Ok(Ok(authenticated));
                 }
             }

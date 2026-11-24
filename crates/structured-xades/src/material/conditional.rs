@@ -482,25 +482,27 @@ fn path_copies<'certificate, 'document, X: Xml, W: Work>(
     );
     let rule = |property| copy_rule(property, signature, ordinary);
     if let Some(property) = certificate {
-        if ordinary && let Some(anchor) = path.anchor().certificate() {
-            record(
-                participant,
-                ArtifactRef::Certificate(anchor),
-                rule(property),
-            )?;
-        }
-        let members = if ordinary {
-            path.members()
+        if ordinary {
+            if let Some(anchor) = path.anchor().certificate() {
+                record(
+                    participant,
+                    ArtifactRef::Certificate(anchor),
+                    rule(property),
+                )?;
+            }
+            for member in path.members() {
+                work.charge_work(1).map_err(resource)?;
+                record(
+                    participant,
+                    ArtifactRef::Certificate(member.certificate()),
+                    rule(property),
+                )?;
+            }
         } else {
-            path.members()
-                .last_chunk::<1>()
-                .expect("checked path has a target")
-        };
-        for member in members {
             work.charge_work(1).map_err(resource)?;
             record(
                 participant,
-                ArtifactRef::Certificate(member.certificate()),
+                ArtifactRef::Certificate(path.target().certificate()),
                 rule(property),
             )?;
         }
@@ -511,8 +513,8 @@ fn path_copies<'certificate, 'document, X: Xml, W: Work>(
         } else {
             statuses
                 .entries()
-                .last_chunk::<1>()
-                .expect("complete target status input")
+                .last()
+                .map_or(&[][..], core::slice::from_ref)
         };
         for input in entries {
             work.charge_work(1).map_err(resource)?;

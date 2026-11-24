@@ -12,7 +12,7 @@ use super::Recognition as Conclusion;
 use super::crypto::{Constraints, Material, Unmet};
 use super::indication::{Custom, Indication, SubIndication};
 use super::policy::{Element, Elements, Requirements};
-use crate::pki::status::Status;
+use crate::pki::status::{ExpiryEvidence, Status};
 use structured_asn1::memory::{MemoryError, Work};
 use structured_pkix::temporal::{Instant, LeapTable};
 
@@ -124,11 +124,16 @@ pub struct Signer {
     pub not_after: Instant,
     /// What the revocation evidence says across the interval.
     pub revocation: Status,
+    /// Separate support for non-revocation once the signer has expired.
+    pub expiry_evidence: ExpiryEvidence,
 }
 
 /// What path validation (RFC 5280 6.1) established about one chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chain {
+    /// The signer itself is the selected anchor, and local policy permits
+    /// direct signer trust. Recognition at the validation time is still required.
+    DirectTrust,
     /// It validates.
     Valid,
     /// It validates and does not meet the certificate constraints (5.2.6.4
@@ -574,7 +579,12 @@ fn decide(
     // §5.3.4 step 5 gives all other verification failures precedence.
     verify(facts)?;
     let mut basic = selected
-        .and_then(|_| basic_certificate(facts, signer))
+        .and_then(|index| {
+            if facts.paths[index].chain == Chain::DirectTrust {
+                return Ok(());
+            }
+            basic_certificate(facts, signer)
+        })
         .and_then(|()| acceptance(facts, facts.now, policy))
         .and_then(|()| elements(facts, policy));
     // EN 319 102-1 V1.4.1 §5.2.6.4 step 4 and §5.5.4 steps 6–7:
@@ -692,7 +702,7 @@ fn recovered_path(
             if best < signer.not_before && best < facts.now {
                 SubIndication::NotYetValid
             } else {
-                SubIndication::OutOfBoundsNotRevoked
+                outside_validity(signer, best)
             },
             Basis::SignerValidity,
         ));
@@ -760,10 +770,11 @@ fn compare_times(
 ) -> Result<usize, Verdict> {
     use SubIndication as Sub;
     let not_yet = Verdict::on(Sub::NotYetValid, Basis::SignerValidity);
-    let out_of_bounds = Verdict::on(Sub::OutOfBoundsNotRevoked, Basis::SignerValidity);
+    let out_of_bounds = Verdict::on(outside_validity(signer, best), Basis::SignerValidity);
+    let direct_trust = selected.is_ok_and(|index| facts.paths[index].chain == Chain::DirectTrust);
     match basic {
         Ok(()) => {
-            if best < signer.not_before {
+            if !direct_trust && best < signer.not_before {
                 return Err(not_yet);
             }
         }
@@ -803,7 +814,7 @@ fn compare_times(
                 // §5.5.4 step 4(c) recovers algorithm acceptance. The
                 // earlier proof still has to satisfy the issuance boundary
                 // from step 4(b) before it can support the signature.
-                if best < signer.not_before {
+                if !direct_trust && best < signer.not_before {
                     return Err(not_yet);
                 }
             }
@@ -917,7 +928,21 @@ fn verify(facts: &Facts<'_>) -> Result<(), Verdict> {
 /// (step 2a).
 fn select(facts: &Facts<'_>, constraints: &Constraints<'_>) -> Result<usize, Verdict> {
     let mut status = Verdict::on(SubIndication::NoCertificateChainFound, Basis::Paths);
+    // EN 319 102-1 §5.2.6.4 step 1: direct trust precedes ordinary
+    // path processing. Sunset falls through to alternate candidates.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf#page=52
     for (index, path) in facts.paths.iter().enumerate() {
+        if path.chain == Chain::DirectTrust {
+            match anchor(path.anchor.current) {
+                Ok(()) => return Ok(index),
+                Err(sub) => status = Verdict::on(sub, Basis::Path(index)),
+            }
+        }
+    }
+    for (index, path) in facts.paths.iter().enumerate() {
+        if path.chain == Chain::DirectTrust {
+            continue;
+        }
         match judge(index, path, facts.signer, facts.now, constraints) {
             Ok(()) => return Ok(index),
             // §5.2.6.4 step 8 returns the validated chain and this status.
@@ -969,11 +994,14 @@ fn judge(
     {
         return Ok(());
     }
-    if matches!(
-        signer.map(|signer| signer.revocation),
-        Some(Status::NotFresh { .. })
-    ) {
-        return Err(Verdict::on(SubIndication::TryLater, Basis::Path(index)));
+    if let Some(signer) = signer {
+        match signer.revocation {
+            Status::NotFresh { .. } | Status::NoEvidence => {
+                return pending(signer.revocation)
+                    .map_err(|sub| Verdict::on(sub, Basis::Path(index)));
+            }
+            _ => {}
+        }
     }
     chain_constraints(index, path)?;
     // 5.2.6.4 step 6 and 5.5.4 step 10, at the current time. Both clauses
@@ -1108,9 +1136,10 @@ fn pending(status: Status) -> Result<(), SubIndication> {
         Status::NotIssued { .. } => Err(SubIndication::Custom(Custom::CertificateNotIssued)),
         Status::NotRevoked { .. } => Ok(()),
         // 5.2.6.4 steps 4a and 4c, 5.5.4 steps 6 and 7.
-        Status::OnHold { .. } | Status::NotFresh { .. } | Status::NoEvidence => {
-            Err(SubIndication::TryLater)
-        }
+        Status::OnHold { .. } | Status::NotFresh { .. } => Err(SubIndication::TryLater),
+        // EN 319 102-1 §5.2.6.4 step 4(e): no usable status is a general
+        // chain failure. Step 4(a) needs an available, insufficiently fresh source.
+        Status::NoEvidence => Err(SubIndication::CertificateChainGeneralFailure),
         Status::Revoked { .. } => Err(SubIndication::RevokedNoPoe),
         Status::Unknown { .. } => Err(SubIndication::Custom(Custom::RevocationUnknown)),
         Status::Conflict { .. } => Err(SubIndication::Custom(Custom::RevocationConflict)),
@@ -1157,13 +1186,23 @@ fn basic_certificate(facts: &Facts<'_>, signer: Signer) -> Result<(), Verdict> {
             {
                 SubIndication::Expired
             } else if status.is_ok() {
-                SubIndication::OutOfBoundsNotRevoked
+                outside_validity(signer, facts.now)
             } else {
                 SubIndication::OutOfBoundsNoPoe
             },
         ));
     }
     status
+}
+
+fn outside_validity(signer: Signer, at: Instant) -> SubIndication {
+    // EN 319 102-1 §5.2.6.4 step 7 and NOTE 8: ordinary positive
+    // revocation status does not establish non-revocation after expiry.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf#page=53
+    if at > signer.not_after && signer.expiry_evidence == ExpiryEvidence::Unestablished {
+        return SubIndication::OutOfBoundsNoPoe;
+    }
+    SubIndication::OutOfBoundsNotRevoked
 }
 
 fn signer_status_at(status: Status, at: Instant, content: Option<Instant>) -> Result<(), Verdict> {

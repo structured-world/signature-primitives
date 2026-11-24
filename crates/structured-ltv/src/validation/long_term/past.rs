@@ -249,6 +249,10 @@ fn certificate<W: Work>(
     let mut fallback: Option<(PastCertificate, Option<bool>, bool)> = None;
     for (index, path) in signature.candidates.iter().enumerate() {
         work.charge_work(6)?;
+        // A current direct-trust decision carries no historical path proof.
+        if path.chain == Chain::DirectTrust {
+            continue;
+        }
         let mut missing_proof = None;
         let sub = if !path.recognized || path.chain == Chain::GeneralFailure {
             Sub::CertificateChainGeneralFailure

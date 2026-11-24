@@ -278,19 +278,16 @@ where
     )
     .map_err(refusal)?;
     if let Some(path) = path {
-        if let Some(target) = path.members().last() {
-            key_matches &= exact(
-                target.certificate().as_bytes(),
-                certificate.as_bytes(),
-                &work,
-            )
-            .map_err(refusal)?;
-            key_matches &=
-                same_parameters(checked.key().parameters(), target.key().parameters(), &work)
-                    .map_err(refusal)?;
-        } else {
-            key_matches = false;
-        }
+        let target = path.target();
+        key_matches &= exact(
+            target.certificate().as_bytes(),
+            certificate.as_bytes(),
+            &work,
+        )
+        .map_err(refusal)?;
+        key_matches &=
+            same_parameters(checked.key().parameters(), target.key().parameters(), &work)
+                .map_err(refusal)?;
     } else {
         key_matches &= same_parameters(
             checked.key().parameters(),
@@ -351,11 +348,10 @@ pub(crate) fn restrictions<'a, P: AsnDigest<'a>>(
         // that every signed identifier occur on this one path (attribute
         // certificates may also be named). Do not impose proposed erratum6566.
         // https://www.rfc-editor.org/rfc/rfc5035#section-3
-        let Some((_, authorities)) = path.members().split_last() else {
-            return Err(BindError::Processing(Error::Foreign {
-                at: set.element().span().start,
-            }));
-        };
+        let authorities = path
+            .members()
+            .split_last()
+            .map_or(&[][..], |(_, others)| others);
         // RFC5280 §6.1 excludes even a certificate-backed trust anchor from
         // the prospective path. Its separate material-presence obligation
         // does not make it an ESS-restricted path member.

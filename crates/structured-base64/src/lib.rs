@@ -252,7 +252,11 @@ impl Base64Codec {
             .checked_add(input.len())
             .ok_or(Base64Error::Invalid)?;
         let mut written = if self.position == 0 && !self.finished && input.len() >= 4 {
-            strict::decode_standard_prefix(input, output)
+            if cfg!(target_pointer_width = "64") && input.len() >= 1024 && output.len() >= 768 {
+                strict::decode_wide_standard_prefix(input, output)
+            } else {
+                strict::decode_standard_prefix(input, output)
+            }
         } else {
             0
         };

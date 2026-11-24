@@ -18,6 +18,7 @@ pub mod format;
 pub mod hashes;
 pub mod header;
 pub mod identifier;
+pub mod legacy;
 pub mod material;
 mod mime;
 pub mod pki;

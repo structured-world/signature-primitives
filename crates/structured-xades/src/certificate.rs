@@ -2,7 +2,7 @@
 
 use crate::binary::{self, BinaryXml, Location};
 use crate::binding::{Bound, SignatureXml};
-use crate::container::XADES;
+use crate::container::{DS, XADES};
 use crate::properties::{Error, PropertyResult, Reading};
 use crate::xml::{Access, AccessError, Name, Snapshot, Xml};
 use structured_asn1::digest::{Digest, OnceError, Resolution, matches_once};
@@ -200,6 +200,23 @@ pub fn compare<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: Work>(
     provider: &'p P,
     execution: &W,
 ) -> binary::BinaryResult<Agreement, X, DigestError<P::Error>> {
+    compare_in::<true, X, P, W>(xml, reference, index, certificate, provider, execution)
+}
+
+pub(crate) fn compare_in<
+    'p,
+    const BASELINE: bool,
+    X: BinaryXml,
+    P: DigestProvider<'p, X>,
+    W: Work,
+>(
+    xml: &X,
+    reference: &Catalogue<X>,
+    index: usize,
+    certificate: &Certificate<'_>,
+    provider: &'p P,
+    execution: &W,
+) -> binary::BinaryResult<Agreement, X, DigestError<P::Error>> {
     // An invalid ordinal is caller misuse, not malformed signed XML. Represent
     // the enclosure honestly without indexing or starting a provider operation.
     let Some(entry) = reference.entries.get(index) else {
@@ -216,8 +233,9 @@ pub fn compare<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: Work>(
         node: entry.method,
     };
     let access = Access::new(xml, reference.snapshot, execution);
-    if let Some(answer) = preflight_method(&access, entry.method)
-        .map_err(|cause| binary::Error::Access { location, cause })?
+    if BASELINE
+        && let Some(answer) = preflight_method(&access, entry.method)
+            .map_err(|cause| binary::Error::Access { location, cause })?
     {
         return Ok(answer);
     }
@@ -229,7 +247,7 @@ pub fn compare<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: Work>(
         },
         execution,
         |expected| {
-            Ok::<_, core::convert::Infallible>(compare_expected(
+            Ok::<_, core::convert::Infallible>(compare_expected::<BASELINE, X, P, W>(
                 &access,
                 entry,
                 certificate,
@@ -241,18 +259,18 @@ pub fn compare<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: Work>(
     .map_err(|error| error.map_callback(|never| match never {}))?
 }
 
-fn compare_expected<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
+fn compare_expected<'p, const BASELINE: bool, X: Xml, P: DigestProvider<'p, X>, W: Work>(
     access: &Access<'_, X, W>,
     entry: &Reference<X::Id>,
     certificate: &Certificate<'_>,
     provider: &'p P,
     expected: &[u8],
 ) -> binary::BinaryResult<Agreement, X, DigestError<P::Error>> {
-    let identity = match resolve_expected(access, entry, provider, expected)? {
-        Expected::Ready(identity) => identity,
-        Expected::Answer(answer) => return Ok(answer),
+    let identity = match resolve_identity::<BASELINE, X, P, W>(access, entry, provider, expected)? {
+        Ok(identity) => identity,
+        Err(answer) => return Ok(answer),
     };
-    compare_resolved(access, entry, certificate, provider, &identity, expected)
+    compare_identity(access, entry, certificate, provider, &identity, expected)
 }
 
 pub(crate) enum Expected<I> {
@@ -303,6 +321,20 @@ fn resolve_expected<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
     provider: &P,
     expected: &[u8],
 ) -> binary::BinaryResult<Expected<P::Identity>, X, DigestError<P::Error>> {
+    Ok(
+        match resolve_identity::<true, X, P, W>(access, entry, provider, expected)? {
+            Ok(identity) => Expected::Ready(FormatDigest(identity)),
+            Err(answer) => Expected::Answer(answer),
+        },
+    )
+}
+
+fn resolve_identity<'p, const BASELINE: bool, X: Xml, P: DigestProvider<'p, X>, W: Work>(
+    access: &Access<'_, X, W>,
+    entry: &Reference<X::Id>,
+    provider: &P,
+    expected: &[u8],
+) -> binary::BinaryResult<Result<P::Identity, Agreement>, X, DigestError<P::Error>> {
     let location = Location {
         snapshot: access.snapshot(),
         node: entry.method,
@@ -318,19 +350,19 @@ fn resolve_expected<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
         })?;
     let identity = match resolved {
         Resolution::Supported(identity) => identity,
-        Resolution::Unsupported => return Ok(Expected::Answer(Agreement::Unsupported)),
-        Resolution::Malformed => return Ok(Expected::Answer(Agreement::MalformedMethod)),
+        Resolution::Unsupported => return Ok(Err(Agreement::Unsupported)),
+        Resolution::Malformed => return Ok(Err(Agreement::MalformedMethod)),
     };
-    let identity = match baseline_digest::<X, P>(identity, provider) {
-        Expected::Ready(identity) => identity,
-        answer @ Expected::Answer(_) => return Ok(answer),
+    let identity = match resolved_digest::<BASELINE, X, P>(identity, provider) {
+        Ok(identity) => identity,
+        Err(answer) => return Ok(Err(answer)),
     };
-    if let Some(width) = provider.width(identity.identity())
+    if let Some(width) = provider.width(&identity)
         && expected.len() != width
     {
-        return Ok(Expected::Answer(Agreement::MalformedValue));
+        return Ok(Err(Agreement::MalformedValue));
     }
-    Ok(Expected::Ready(identity))
+    Ok(Ok(identity))
 }
 
 fn compare_resolved<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
@@ -339,6 +371,24 @@ fn compare_resolved<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
     certificate: &Certificate<'_>,
     provider: &'p P,
     identity: &FormatDigest<P::Identity>,
+    expected: &[u8],
+) -> binary::BinaryResult<Agreement, X, DigestError<P::Error>> {
+    compare_identity(
+        access,
+        entry,
+        certificate,
+        provider,
+        identity.identity(),
+        expected,
+    )
+}
+
+fn compare_identity<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
+    access: &Access<'_, X, W>,
+    entry: &Reference<X::Id>,
+    certificate: &Certificate<'_>,
+    provider: &'p P,
+    identity: &P::Identity,
     expected: &[u8],
 ) -> binary::BinaryResult<Agreement, X, DigestError<P::Error>> {
     let execution = access.execution();
@@ -352,7 +402,7 @@ fn compare_resolved<'p, X: Xml, P: DigestProvider<'p, X>, W: Work>(
         // implicit acquisition or width-based algorithm inference.
         let answer = matches_once(
             provider,
-            identity.identity(),
+            identity,
             certificate.as_bytes(),
             expected,
             execution,
@@ -701,13 +751,27 @@ pub fn read<X: Xml, W: Work>(
     if signed.snapshot() != access.snapshot() {
         return Err(Error::Access(AccessError::Changed { node }));
     }
+    read_in(
+        access,
+        signed.signature(),
+        node,
+        crate::container::Syntax::En319132,
+    )
+}
+
+pub(crate) fn read_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    node: X::Id,
+    syntax: crate::container::Syntax,
+) -> PropertyResult<Catalogue<X>, X> {
     let mut entries = access
         .query(node, |_, _, work| Ok(work.vector()))
         .map_err(Error::Access)?;
     for child in access.children(node) {
         let child = child.map_err(Error::Child)?;
-        expect_name(access, child, XADES, "Cert")?;
-        let entry = read_entry(access, child)?;
+        expect_name(access, child, syntax.namespace(), "Cert")?;
+        let entry = read_entry_in(access, child, syntax)?;
         entries
             .try_push(entry)
             .map_err(|cause| Error::Resource { node: child, cause })?;
@@ -719,8 +783,8 @@ pub fn read<X: Xml, W: Work>(
         });
     }
     Ok(References {
-        snapshot: signed.snapshot(),
-        signature: signed.signature(),
+        snapshot: access.snapshot(),
+        signature,
         node,
         entries: entries.into_owned(),
     })
@@ -730,13 +794,46 @@ pub(crate) fn read_entry<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     node: X::Id,
 ) -> PropertyResult<Reference<X::Id>, X> {
+    read_entry_in(access, node, crate::container::Syntax::En319132)
+}
+
+fn read_entry_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+    syntax: crate::container::Syntax,
+) -> PropertyResult<Reference<X::Id>, X> {
+    use crate::container::Syntax;
     let mut children = access.children(node);
     let digest = required(&mut children, node, "CertDigest")?;
-    expect_name(access, digest, XADES, "CertDigest")?;
-    let issuer = children.next().transpose().map_err(Error::Child)?;
-    if let Some(issuer) = issuer {
-        expect_name(access, issuer, XADES, "IssuerSerialV2")?;
-    }
+    expect_name(access, digest, syntax.namespace(), "CertDigest")?;
+    let issuer = match syntax {
+        Syntax::En319132 => {
+            let issuer = children.next().transpose().map_err(Error::Child)?;
+            if let Some(issuer) = issuer {
+                expect_name(access, issuer, XADES, "IssuerSerialV2")?;
+            }
+            issuer
+        }
+        Syntax::Ts101903V122 => {
+            // TS 101 903 V1.2.2 §7.2.2 uses the XMLDSig X509IssuerSerialType.
+            // https://uri.etsi.org/01903/v1.2.2/XAdES.xsd
+            let issuer = required(&mut children, node, "IssuerSerial")?;
+            expect_name(access, issuer, syntax.namespace(), "IssuerSerial")?;
+            let mut pair = access.children(issuer);
+            let name = required(&mut pair, issuer, "X509IssuerName")?;
+            expect_name(access, name, DS, "X509IssuerName")?;
+            crate::properties::simple_content(access, name)?;
+            let serial = required(&mut pair, issuer, "X509SerialNumber")?;
+            expect_name(access, serial, DS, "X509SerialNumber")?;
+            crate::properties::simple_content(access, serial)?;
+            if let Some(extra) = pair.next() {
+                return Err(Error::Unexpected {
+                    node: extra.map_err(Error::Child)?,
+                });
+            }
+            Some(issuer)
+        }
+    };
     if let Some(extra) = children.next() {
         return Err(Error::Unexpected {
             node: extra.map_err(Error::Child)?,

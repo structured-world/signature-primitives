@@ -1,0 +1,300 @@
+use super::*;
+use structured_xades::{
+    binding::SIGNED_PROPERTIES_122,
+    container::{Selected, Syntaxes, XADES_122},
+    legacy::{self, SignerCertificate, timestamp as old},
+};
+
+impl old::LegacyXml for Tree {
+    fn resolve_legacy_element<W: Work>(
+        &self,
+        snapshot: Snapshot<u8, u8>,
+        include: usize,
+        work: &W,
+    ) -> Result<Resolution<usize>, Cause> {
+        self.check(snapshot, include)?;
+        work.charge_work(self.include_routes.len() as u64)
+            .map_err(Cause::Resource)?;
+        Ok(self
+            .include_routes
+            .iter()
+            .find(|route| route.0 == include)
+            .map_or(Resolution::Unresolved, |route| {
+                Resolution::Resolved(route.1)
+            }))
+    }
+
+    fn canonicalize_legacy_default<W: Work>(
+        &self,
+        snapshot: Snapshot<u8, u8>,
+        node: usize,
+        receiver: &mut impl Receiver,
+        work: &W,
+    ) -> Result<(), Cause> {
+        self.check(snapshot, node)?;
+        let node = u8::try_from(node).map_err(|_| Cause::Source)?;
+        self.emit(&[b'E', node], receiver, work)
+    }
+}
+
+fn append(xml: &mut Tree, parent: usize, ns: &'static str, local: &'static str) -> usize {
+    let node = xml.nodes.len();
+    xml.nodes.push(element(Some(parent), ns, local));
+    node
+}
+
+fn tree() -> Tree {
+    let mut xml = Tree::normal();
+    for (node, parent, name) in [
+        (2, 1, "QualifyingProperties"),
+        (3, 2, "SignedProperties"),
+        (4, 3, "SignedSignatureProperties"),
+        (5, 4, "SigningTime"),
+        (6, 2, "UnsignedProperties"),
+        (7, 6, "UnsignedSignatureProperties"),
+    ] {
+        xml.nodes[node] = element(Some(parent), XADES_122, name);
+    }
+    xml.nodes[8] = Record {
+        parent: Some(7),
+        value: Node::Other,
+    };
+    xml.references[1].kind = Some(SIGNED_PROPERTIES_122);
+    xml
+}
+
+fn with_cert_reference(mut xml: Tree) -> Tree {
+    let signing = append(&mut xml, 4, XADES_122, "SigningCertificate");
+    let cert = append(&mut xml, signing, XADES_122, "Cert");
+    let digest = append(&mut xml, cert, XADES_122, "CertDigest");
+    append(&mut xml, digest, DS, "DigestMethod");
+    append(&mut xml, digest, DS, "DigestValue");
+    let issuer = append(&mut xml, cert, XADES_122, "IssuerSerial");
+    append(&mut xml, issuer, DS, "X509IssuerName");
+    append(&mut xml, issuer, DS, "X509SerialNumber");
+    xml
+}
+
+fn layout<W: Work>(access: &Access<'_, Tree, W>) -> legacy::Layout<Tree> {
+    let Selected::Ts101903V122(value) =
+        container::locate_with_syntax(access, 0, Syntaxes::WithTs101903V122).unwrap()
+    else {
+        panic!("expected original V1.2.2");
+    };
+    value
+}
+
+#[test]
+fn original_namespace_requires_explicit_opt_in_and_same_reference_type() {
+    // Empty UnsignedSignatureProperties is valid in the old schema.
+    let mut xml = with_cert_reference(tree());
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    assert!(matches!(
+        container::locate(&access, 0),
+        Err(ContainerError::Missing { .. })
+    ));
+    let prepared = legacy::prepare(&access, &layout(&access)).unwrap();
+    assert_eq!(prepared.reference(), 11);
+    assert!(prepared.unsigned().is_empty());
+    let SignerCertificate::References(references) = prepared.signer() else {
+        panic!("expected V1 certificate references");
+    };
+    assert!(references.entries()[0].issuer_serial().is_some());
+    xml.references[1].kind = Some(SIGNED_PROPERTIES);
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    assert!(matches!(
+        legacy::prepare(&access, &layout(&access)),
+        Err(legacy::Error::Binding(BindingError::Missing { node: 3 }))
+    ));
+}
+
+#[test]
+fn disallows_a_mixed_property_namespace_and_enforces_unsigned_sequence() {
+    // The modern namespace and modern choice ordering cannot substitute for
+    // the older expanded names and ordered grammar.
+    let mut xml = with_cert_reference(tree());
+    let first = append(&mut xml, 7, XADES_122, "CertificateValues");
+    let second = append(&mut xml, 7, XADES, "CompleteCertificateRefs");
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    assert!(matches!(
+        legacy::prepare(&access, &layout(&access)),
+        Err(legacy::Error::Property(properties::Error::Unexpected { node })) if node == second
+    ));
+    xml.nodes[second] = element(Some(7), XADES_122, "CompleteCertificateRefs");
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    assert!(matches!(
+        legacy::prepare(&access, &layout(&access)),
+        Err(legacy::Error::Property(properties::Error::Order { node })) if node == second
+    ));
+    xml.nodes[first] = element(Some(7), XADES_122, "SigAndRefsTimeStamp");
+    xml.nodes[second] = element(Some(7), XADES_122, "RefsOnlyTimeStamp");
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    assert!(matches!(
+        legacy::prepare(&access, &layout(&access)),
+        Err(legacy::Error::Property(properties::Error::Unexpected { node })) if node == second
+    ));
+}
+
+#[test]
+fn bes_requires_complete_key_info_coverage_in_the_absence_of_signing_certificate() {
+    // A real signer certificate must be under a whole-element KeyInfo receipt.
+    let mut xml = tree();
+    xml.nodes[5] = Record {
+        parent: Some(4),
+        value: Node::Other,
+    };
+    let x509_data = append(&mut xml, 13, DS, "X509Data");
+    let certificate = append(&mut xml, x509_data, DS, "X509Certificate");
+    xml.references[0].target = Some(13);
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    assert!(matches!(
+        legacy::prepare(&access, &layout(&access)),
+        Err(legacy::Error::Binding(BindingError::Reference { node: 10 }))
+    ));
+    xml.references[0].coverage = Coverage::ElementContent;
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let prepared = legacy::prepare(&access, &layout(&access)).unwrap();
+    assert!(prepared.signed().is_empty());
+    assert!(matches!(
+        prepared.signer(),
+        SignerCertificate::KeyInfo { node: 13, reference: 10, certificates }
+            if certificates.as_ref() == [certificate]
+    ));
+}
+
+#[test]
+fn bes_binds_the_actual_embedded_certificate_and_selected_key_separately() {
+    // A different certificate in signed KeyInfo does not protect the candidate
+    // even when the owner reports that the actual verification key matches.
+    let (leaf, issuer) = timestamp_oracle::certificate_pair();
+    let work = funded();
+    let parser = structured_asn1::Parser::der(work.clone());
+    let certificate = structured_pkix::Certificate::read(&parser, &leaf, 0).unwrap();
+    let key = structured_pkix::path::EffectiveKey::standing(certificate.tbs().public_key());
+    let mut xml = tree();
+    let x509_data = append(&mut xml, 13, DS, "X509Data");
+    let node = append(&mut xml, x509_data, DS, "X509Certificate");
+    xml.references[0].target = Some(13);
+    xml.references[0].coverage = Coverage::ElementContent;
+    xml.binary_routes.push((node, issuer));
+    xml.key_association = certificate::KeyAssociation::Same;
+    let digest = WholeCertificate {
+        mode: DigestMode::Available,
+        method: usize::MAX,
+        calls: Cell::new(0),
+        pointer: Cell::new(0),
+    };
+    let check = |xml: &Tree| {
+        let access = Access::new(xml, xml.snapshot(), &work);
+        let prepared = legacy::prepare(&access, &layout(&access)).unwrap();
+        legacy::check_signer(xml, &prepared, &certificate, key, &digest, &work).unwrap()
+    };
+    let different = check(&xml);
+    assert_eq!(different.key, certificate::KeyAssociation::Same);
+    assert_eq!(different.certificate, legacy::CertificateMatch::Differs);
+    xml.binary_routes[0].1 = leaf.clone();
+    let embedded = check(&xml);
+    assert_eq!(embedded.key, certificate::KeyAssociation::Same);
+    assert_eq!(
+        embedded.certificate,
+        legacy::CertificateMatch::Embedded(node)
+    );
+    assert_eq!(digest.calls.get(), 0);
+}
+
+fn include(xml: &mut Tree, stamp: usize, link: usize, flag: Boolean) -> usize {
+    let include = append(xml, stamp, XADES_122, "Include");
+    xml.include_routes.push((include, link, flag));
+    include
+}
+
+#[test]
+fn legacy_signature_timestamp_uses_explicit_include_and_default_method() {
+    // §7.3 mandates an Include for the original SignatureValue. A different
+    // target cannot be rescued by canonicalizing the expected node anyway.
+    let mut xml = with_cert_reference(tree());
+    xml.validation_uri = Some("#fixture");
+    let stamp = append(&mut xml, 7, XADES_122, "SignatureTimeStamp");
+    let include = include(&mut xml, stamp, 12, Boolean::Absent);
+    let token = append(&mut xml, stamp, XADES_122, "EncapsulatedTimeStamp");
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let prepared = legacy::prepare(&access, &layout(&access)).unwrap();
+    let stamp = old::read(&access, &prepared, stamp).unwrap();
+    assert_eq!(stamp.token(), old::Token::Encapsulated(token));
+    assert_eq!(stamp.method(), None);
+    let mut source = old::input(&access, &prepared, &stamp).unwrap();
+    let mut sink = Collect::new(&work);
+    stream::run(&mut source, &mut sink, &work, "legacy timestamp", 0).unwrap();
+    assert_eq!(sink.bytes(), &[b'E', 12]);
+    let node = stamp.node();
+    xml.include_routes[0].1 = 13;
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let prepared = legacy::prepare(&access, &layout(&access)).unwrap();
+    let stamp = old::read(&access, &prepared, node).unwrap();
+    assert!(matches!(
+        old::input(&access, &prepared, &stamp),
+        Err(InputError::Reference { node, .. }) if node == include
+    ));
+    assert_eq!(xml.streamed.get(), 1);
+}
+
+#[test]
+fn archive_orders_v122_inputs_and_requires_true_on_reference_includes() {
+    // §7.7 puts timestamp before counters and covers values before prior
+    // archive timestamps, independently of the unsigned XML sequence.
+    let mut xml = with_cert_reference(tree());
+    xml.references[0].target = Some(1);
+    xml.reference_routes = vec![(10, vec![b'A']), (11, vec![b'B'])];
+    xml.validation_uri = Some("#fixture");
+    let counter = append(&mut xml, 7, XADES_122, "CounterSignature");
+    let signature = append(&mut xml, 7, XADES_122, "SignatureTimeStamp");
+    let certificates = append(&mut xml, 7, XADES_122, "CertificateValues");
+    let revocations = append(&mut xml, 7, XADES_122, "RevocationValues");
+    let prior = append(&mut xml, 7, XADES_122, "ArchiveTimeStamp");
+    let archive = append(&mut xml, 7, XADES_122, "ArchiveTimeStamp");
+    include(&mut xml, archive, 0, Boolean::Value(true));
+    include(&mut xml, archive, 1, Boolean::Value(true));
+    let elements = [
+        9,
+        12,
+        13,
+        signature,
+        counter,
+        certificates,
+        revocations,
+        prior,
+    ];
+    for target in elements {
+        include(&mut xml, archive, target, Boolean::Value(false));
+    }
+    let token = append(&mut xml, archive, XADES_122, "XMLTimeStamp");
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let prepared = legacy::prepare(&access, &layout(&access)).unwrap();
+    let stamp = old::read(&access, &prepared, archive).unwrap();
+    assert_eq!(stamp.token(), old::Token::Xml(token));
+    let mut source = old::input(&access, &prepared, &stamp).unwrap();
+    let mut sink = Collect::new(&work);
+    stream::run(&mut source, &mut sink, &work, "legacy archive", 0).unwrap();
+    let mut expected = vec![b'A', b'B'];
+    for element in elements {
+        expected.extend([b'E', u8::try_from(element).unwrap()]);
+    }
+    assert_eq!(sink.bytes(), expected);
+
+    xml.include_routes[0].2 = Boolean::Absent;
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let prepared = legacy::prepare(&access, &layout(&access)).unwrap();
+    let stamp = old::read(&access, &prepared, archive).unwrap();
+    assert!(matches!(
+        old::input(&access, &prepared, &stamp),
+        Err(InputError::ReferencedData {
+            value: Boolean::Absent,
+            ..
+        })
+    ));
+}

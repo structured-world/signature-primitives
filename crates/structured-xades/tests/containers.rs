@@ -45,6 +45,9 @@ mod query_boundary;
 #[path = "support/reference_timestamps.rs"]
 mod reference_timestamps;
 
+#[path = "support/legacy.rs"]
+mod legacy_tests;
+
 use std::{
     cell::{Cell, RefCell},
     cmp::Ordering,

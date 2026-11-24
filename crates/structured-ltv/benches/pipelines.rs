@@ -9,7 +9,10 @@ use structured_asn1::{
     length::DerLength,
     memory::{Memory, MemoryAccount, MemoryError, Work},
 };
-use structured_cms::{digest::DigestBatch, provider::ProviderSession};
+use structured_cms::{
+    digest::{DigestBatch, SingleDigest},
+    provider::ProviderSession,
+};
 use structured_ltv::{
     pki::status::{ExpiryEvidence, Status},
     validation::{
@@ -184,6 +187,30 @@ fn digest_batches(memory: &Memory) {
     }
 }
 
+fn digest_single(memory: &Memory) {
+    let provider = ProviderSession::new(Hash);
+    let data = [0x5a; 4096];
+    for length in [64, 4096] {
+        let bytes = &data[..length];
+        measure(&format!("cms/one/batch/{length}"), 4096, || {
+            let mut identities = memory.vector();
+            identities.try_push(()).unwrap();
+            let memo = DigestBatch::prepare(&provider, identities, memory, "bench", 0)
+                .unwrap()
+                .run(&mut [black_box(bytes)], memory)
+                .unwrap();
+            black_box(memo.for_request(0, memory).unwrap().unwrap().as_bytes());
+        });
+        measure(&format!("cms/one/direct/{length}"), 4096, || {
+            let output = SingleDigest::prepare(&provider, (), memory, "bench", 0)
+                .unwrap()
+                .run(&mut [black_box(bytes)], memory)
+                .unwrap();
+            black_box(output.as_bytes());
+        });
+    }
+}
+
 fn validate_paths(memory: &Memory) {
     let now = Instant::new(1000, 0).unwrap();
     let policy = Requirements {
@@ -258,4 +285,5 @@ fn main() {
     crl_access(&memory);
     validate_paths(&memory);
     digest_batches(&memory);
+    digest_single(&memory);
 }

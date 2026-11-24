@@ -331,9 +331,7 @@ impl<F: Arithmetic> Prepared<F> {
         if digest.is_zero() {
             digest = field.one();
         }
-        let left = self.curve.multiply(self.base, s);
-        let right = self.curve.multiply(public, r);
-        let Some(point) = self.curve.add(left, right) else {
+        let Some(point) = self.curve.multiply_sum(self.base, s, public, r) else {
             return false;
         };
         let mut computed = field.export(field.multiply(digest, point.x));

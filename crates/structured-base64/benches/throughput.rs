@@ -105,25 +105,35 @@ fn main() {
         };
         test("standard encode", STANDARD, &standard);
         test("URL encode", URL_SAFE_NO_PAD, &url);
-        compare(
-            size,
-            "stream decode",
-            || {
-                let mut decoder = Base64Codec::new(false, 0);
-                black_box(
-                    decoder
-                        .update(black_box(standard.as_bytes()), black_box(&mut ours))
-                        .unwrap(),
-                );
-                decoder.finish(&mut []).unwrap();
-            },
-            || {
-                black_box(
-                    general_purpose::STANDARD
-                        .decode_slice(black_box(standard.as_bytes()), black_box(&mut reference))
-                        .unwrap(),
-                );
-            },
-        );
+        let wrapped = standard
+            .as_bytes()
+            .chunks(76)
+            .collect::<Vec<_>>()
+            .join(&b'\n');
+        for (label, wire) in [
+            ("stream decode", standard.as_bytes()),
+            ("stream MIME 76", &wrapped[..]),
+        ] {
+            compare(
+                size,
+                label,
+                || {
+                    let mut decoder = Base64Codec::new(false, 0);
+                    black_box(
+                        decoder
+                            .update(black_box(wire), black_box(&mut ours))
+                            .unwrap(),
+                    );
+                    decoder.finish(&mut []).unwrap();
+                },
+                || {
+                    black_box(
+                        general_purpose::STANDARD
+                            .decode_slice(black_box(standard.as_bytes()), black_box(&mut reference))
+                            .unwrap(),
+                    );
+                },
+            );
+        }
     }
 }

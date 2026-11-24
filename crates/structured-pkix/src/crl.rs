@@ -18,9 +18,9 @@ mod scope;
 use crate::revocation::{RevocationScheme, RevocationTarget, TargetKind};
 pub use scope::{CertificateKind, IssuingDistributionPoint, Reasons, ScopeFailure, ScopeOutcome};
 mod entry;
-pub use entry::EntryLookup;
 pub use entry::Reason;
 pub(crate) use entry::reason_element;
+pub use entry::{EntryLookup, EntryScan};
 mod delta;
 pub use delta::{
     BoundDelta, CombinedEntry, DeltaBinding, DeltaFailure, EntryOrigin, MissingDeltaField,

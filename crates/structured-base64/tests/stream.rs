@@ -171,6 +171,29 @@ fn bulk_prefix_preserves_scalar_error_precedence_and_resume_state() {
     }
 }
 
+#[test]
+fn bulk_decode_resumes_after_wrapping_and_chunk_boundaries() {
+    // Exercise both line boundaries inside quartets and arbitrary resumption.
+    let plain = [0x5a; 301];
+    for columns in [63, 64, 75, 76] {
+        let mut encoder = Base64Codec::new(true, columns);
+        let mut wire = [0; 512];
+        let used = encoder.update(&plain, &mut wire).unwrap();
+        let end = used + encoder.finish(&mut wire[used..]).unwrap();
+        for chunk in [1, 17, 63, 76, 191, 512] {
+            let mut decoder = Base64Codec::new(false, 0);
+            let mut output = [SENTINEL; 302];
+            let mut written = 0;
+            for part in wire[..end].chunks(chunk) {
+                written += decoder.update(part, &mut output[written..301]).unwrap();
+            }
+            assert_eq!(decoder.finish(&mut []), Ok(0));
+            assert_eq!(&output[..written], &plain);
+            assert_eq!(output[301], SENTINEL);
+        }
+    }
+}
+
 // The compatible profile ignores pad bits, but still enforces the group
 // grammar and requires the complete padding across chunk boundaries.
 #[test]

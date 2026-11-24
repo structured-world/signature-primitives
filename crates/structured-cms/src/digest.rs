@@ -60,7 +60,7 @@ struct Request<I> {
 pub struct DigestBatch<'a, P: Digest<'a>> {
     provider: &'a P,
     pending: OwnedVec<Pending<P::Identity, P::State>>,
-    mapping: OwnedVec<usize>,
+    mapping: Option<OwnedVec<usize>>,
     field: &'static str,
     at: u64,
 }
@@ -87,15 +87,12 @@ impl<'a, P: Digest<'a>> DigestBatch<'a, P> {
             // A singleton is already sorted and unique. Move it directly
             // into the reserved provider state instead of building requests.
             let mut pending = execution.vector();
-            let mut mapping = execution.vector();
             if count == 1 {
                 execution
                     .charge_work(core::mem::size_of::<P::Identity>() as u64 + 1)
                     .map_err(refusal)?;
             }
             if let Some(identity) = identities.into_iter().next() {
-                mapping.try_reserve_exact(1).map_err(refusal)?;
-                mapping.try_push(0).map_err(refusal)?;
                 pending.try_reserve_exact(1).map_err(refusal)?;
                 let state = started(provider.start(&identity, execution))?;
                 pending
@@ -109,7 +106,7 @@ impl<'a, P: Digest<'a>> DigestBatch<'a, P> {
             return Ok(Self {
                 provider,
                 pending: pending.into_owned(),
-                mapping: mapping.into_owned(),
+                mapping: None,
                 field,
                 at,
             });
@@ -178,7 +175,7 @@ impl<'a, P: Digest<'a>> DigestBatch<'a, P> {
         Ok(Self {
             provider,
             pending: pending.into_owned(),
-            mapping: mapping.into_owned(),
+            mapping: Some(mapping.into_owned()),
             field,
             at,
         })
@@ -391,7 +388,7 @@ impl<'a, P: Digest<'a>> Sink for BatchSink<'_, 'a, P> {
 pub struct DigestMemo<'a, P: Digest<'a>> {
     provider: &'a P,
     outputs: OwnedVec<DigestOutput<'a, P>>,
-    mapping: OwnedVec<usize>,
+    mapping: Option<OwnedVec<usize>>,
     field: &'static str,
     at: u64,
 }
@@ -505,7 +502,10 @@ impl<'a, P: Digest<'a>> DigestMemo<'a, P> {
     /// Number of original requests, including identities that shared a state.
     #[must_use]
     pub fn request_count(&self) -> usize {
-        self.mapping.len()
+        match &self.mapping {
+            Some(mapping) => mapping.len(),
+            None => self.outputs.len(),
+        }
     }
 
     /// The already finalized output for an original request ordinal.
@@ -521,7 +521,10 @@ impl<'a, P: Digest<'a>> DigestMemo<'a, P> {
         execution.charge_work(1).map_err(|reason| {
             DigestError::Processing(Error::resource(reason, self.field, self.at))
         })?;
-        let Some(index) = self.mapping.get(ordinal) else {
+        let Some(mapping) = &self.mapping else {
+            return Ok(self.outputs.get(ordinal));
+        };
+        let Some(index) = mapping.get(ordinal) else {
             return Ok(None);
         };
         // Preparation assigned every ordinal to a pending state; successful

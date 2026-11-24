@@ -1,6 +1,6 @@
 //! Binding an authenticated delta to an authenticated complete CRL.
 
-use super::{Authenticated, EntryLookup, Reason, RevocationTarget, RevokedCertificate};
+use super::{Authenticated, EntryLookup, EntryScan, Reason, RevocationTarget, RevokedCertificate};
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{Extension, Extensions};
 use crate::identifier::AuthorityKeyIdentifier;
@@ -150,7 +150,39 @@ impl<'b, 'r, 'a> BoundDelta<'b, 'r, 'a> {
             Ok(entry) => entry,
             Err(refusal) => return Ok(refusal),
         };
-        let delta = match usable(self.delta.entry(target, execution)?, EntryOrigin::Delta) {
+        Self::combine(base, self.delta.entry(target, execution)?, execution)
+    }
+
+    /// Applies the pair to one immutable certificate while reusing completed
+    /// searches for these exact lists and target. Foreign scans are ignored.
+    /// An unusable base can decide the pair before the delta is searched.
+    pub fn entry_reusing<'t, W: Work>(
+        self,
+        target: &'t crate::Certificate<'a>,
+        base: &mut Option<EntryScan<'t, 'r, 'a>>,
+        delta: &mut Option<EntryScan<'t, 'r, 'a>>,
+        execution: &W,
+    ) -> Result<CombinedEntry<'r, 'a>> {
+        let base = match usable(
+            self.base.reuse_scan(target, base, execution)?,
+            EntryOrigin::Complete,
+        ) {
+            Ok(entry) => entry,
+            Err(refusal) => return Ok(refusal),
+        };
+        Self::combine(
+            base,
+            self.delta.reuse_scan(target, delta, execution)?,
+            execution,
+        )
+    }
+
+    fn combine<W: Work>(
+        base: Option<&'r RevokedCertificate<'a>>,
+        delta: EntryLookup<'r, 'a>,
+        execution: &W,
+    ) -> Result<CombinedEntry<'r, 'a>> {
+        let delta = match usable(delta, EntryOrigin::Delta) {
             Ok(entry) => entry,
             Err(refusal) => return Ok(refusal),
         };

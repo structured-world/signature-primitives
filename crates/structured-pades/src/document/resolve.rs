@@ -112,7 +112,7 @@ impl<'s, D, G> Completion<'s, D, G> {
 }
 
 struct Resolution<'a, 'q, 'b, 's, S: RangeSource, W: Work> {
-    reader: &'a mut RangeReader<'q, S>,
+    cursor: &'a mut Cursor<'q, S>,
     frames: &'a mut OwnedVec<Frame<'b, 's, S::Document, S::Generation>, W>,
     completed: &'a mut Option<Completion<'s, S::Document, S::Generation>>,
 }
@@ -275,16 +275,12 @@ impl<'s, S: RangeSource> Document<'s, S> {
         work: &Q,
     ) -> Result<(), ReadFailure<S::Error>> {
         let Resolution {
-            reader,
+            cursor,
             frames,
             completed,
         } = context;
-        let mut cursor = Cursor {
-            reader: reader.fork()?,
-            at: offset,
-        };
-        let (arena, indirect) =
-            crate::stream::open(&mut cursor, Arena::new(work).into_owned()).await?;
+        cursor.at = offset;
+        let (arena, indirect) = crate::stream::open(cursor, Arena::new(work).into_owned()).await?;
         if indirect.number != frame.number || indirect.generation != frame.generation {
             return Err(cursor.failure(Syntax::Object, offset));
         }
@@ -320,7 +316,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
             }
             let length = unsigned(&reading.value.arena, length, work)?;
             *completed = Some(Completion::present(
-                finish(&mut cursor, Pending { reading, indirect }, length).await?,
+                finish(cursor, Pending { reading, indirect }, length).await?,
             ));
         } else if let Some((number, generation)) = reading.value.root().reference() {
             frame.state = State::Reference;
@@ -349,10 +345,11 @@ impl<'s, S: RangeSource> Document<'s, S> {
         work: &impl Work,
     ) -> Result<Option<Prepared>, ReadFailure<S::Error>> {
         let Resolution {
-            reader,
+            cursor,
             frames,
             completed,
         } = context;
+        let reader = &mut cursor.reader;
         let mut frame = Frame {
             number,
             generation,
@@ -463,14 +460,18 @@ impl<'s, S: RangeSource> Document<'s, S> {
         request: Request<'_, 's, S::Document, S::Generation>,
         operation: &W,
     ) -> Result<Output<'s, S::Document, S::Generation>, ReadFailure<S::Error>> {
-        let mut reader = self.original_reader(operation)?;
-        let work = reader.execution();
+        let mut cursor = Cursor {
+            reader: self.original_reader(operation)?,
+            at: 0,
+        };
+        let work = cursor.reader.execution();
+        let location = cursor.location(0, 0);
         let mut frames = work.vector();
         let frame = initial(request, &work);
-        push(&mut frames, frame, self, reader.location(0, 0), &work)?;
+        push(&mut frames, frame, self, location, &work)?;
         let mut completed = None;
         while let Some(frame) = frames.pop() {
-            admit(&work, reader.location(0, 0), 1)?;
+            admit(&work, location, 1)?;
             match frame.state {
                 State::Start => {
                     match self.target(revision, frame.number, frame.generation, &work)? {
@@ -481,7 +482,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
                                 frame,
                                 offset,
                                 Resolution {
-                                    reader: &mut reader,
+                                    cursor: &mut cursor,
                                     frames: &mut frames,
                                     completed: &mut completed,
                                 },
@@ -495,7 +496,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
                                 frame,
                                 (stream, index),
                                 &mut frames,
-                                reader.location(0, 0),
+                                location,
                                 &work,
                             )?;
                             continue;
@@ -507,7 +508,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
                 }
                 State::Length(pending) => {
                     completed = Some(Completion::present(
-                        resolved_length(&reader, pending, completed.take(), &work).await?,
+                        resolved_length(&mut cursor, pending, completed.take(), &work).await?,
                     ));
                 }
                 State::Member { index } => {
@@ -515,7 +516,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
                         frame,
                         index,
                         Resolution {
-                            reader: &mut reader,
+                            cursor: &mut cursor,
                             frames: &mut frames,
                             completed: &mut completed,
                         },
@@ -534,7 +535,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
                             controls,
                             selected,
                             Resolution {
-                                reader: &mut reader,
+                                cursor: &mut cursor,
                                 frames: &mut frames,
                                 completed: &mut completed,
                             },
@@ -550,7 +551,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
                 }
             }
             if frames.is_empty() {
-                reader.check(reader.location(0, self.stamp.length))?;
+                cursor.reader.check(cursor.location(0, self.stamp.length))?;
                 return Ok(Output::Object(
                     completed.expect("completed root frame").object,
                 ));
@@ -561,7 +562,7 @@ impl<'s, S: RangeSource> Document<'s, S> {
 }
 
 async fn resolved_length<'s, S: RangeSource>(
-    reader: &RangeReader<'_, S>,
+    cursor: &mut Cursor<'_, S>,
     pending: Pending<'s, S::Document, S::Generation>,
     completed: Option<Completion<'s, S::Document, S::Generation>>,
     work: &impl Work,
@@ -577,11 +578,7 @@ async fn resolved_length<'s, S: RangeSource>(
         .into());
     };
     let length = length.value.root().unsigned(work)?;
-    let mut cursor = Cursor {
-        reader: reader.fork()?,
-        at: 0,
-    };
-    finish(&mut cursor, pending, length).await
+    finish(cursor, pending, length).await
 }
 
 fn member_controls<'b, 's, S: RangeSource, W: Work>(
@@ -591,10 +588,11 @@ fn member_controls<'b, 's, S: RangeSource, W: Work>(
     work: &impl Work,
 ) -> Result<(), ReadFailure<S::Error>> {
     let Resolution {
-        reader,
+        cursor,
         frames,
         completed,
     } = context;
+    let reader = &cursor.reader;
     let Some(Completion {
         object: Some(container),
     }) = completed.take()

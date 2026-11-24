@@ -1184,7 +1184,29 @@ fn delta_entries_override_base_without_requiring_a_prior_hold() {
         else {
             panic!("valid source pair refused")
         };
-        match (pair.entry(&issuer_cert, &execution).unwrap(), expected) {
+        let before = execution.work_remaining();
+        let uncached = pair.entry(&issuer_cert, &execution).unwrap();
+        let cost = before - execution.work_remaining();
+        // The first call fills both scans. Subsequent calls spend only the
+        // pairing work and preserve the original result and refusal class.
+        let mut base_scan = None;
+        let mut delta_scan = None;
+        pair.entry_reusing(&issuer_cert, &mut base_scan, &mut delta_scan, &execution)
+            .unwrap();
+        let before = execution.work_remaining();
+        let reused = pair
+            .entry_reusing(&issuer_cert, &mut base_scan, &mut delta_scan, &execution)
+            .unwrap();
+        assert_eq!(
+            core::mem::discriminant(&uncached),
+            core::mem::discriminant(&reused)
+        );
+        assert!(before - execution.work_remaining() < cost);
+        let error = pair
+            .entry_reusing(&issuer_cert, &mut base_scan, &mut delta_scan, &memory(0, 0))
+            .unwrap_err();
+        assert!(error.is_resource());
+        match (reused, expected) {
             (CombinedEntry::Removed { entry }, 0) => {
                 assert!(std::ptr::eq(
                     entry,

@@ -15,6 +15,9 @@ use structured_ltv::{
     source::{Scope, Source as _},
 };
 const FIELD: &str = "cades.evidence.coverage";
+
+#[cfg(test)]
+mod tests;
 type Items<'m, 'd> = Coverage<Node, DocumentId<'m, 'd>, (), Memory, Cades>;
 
 /// Source/query or original material-index refusal; never missing material.
@@ -187,17 +190,55 @@ fn with_predecessors<W: Work>(
 ) -> Result<OwnedVec<Span, W>, CoverageError> {
     let resource =
         |cause| CoverageError::Processing(Error::resource(cause, FIELD, property.span().start));
-    let mut spans = work.vector();
-    spans.try_extend_from_slice(base).map_err(resource)?;
+    if let [predecessor] = predecessors {
+        work.charge_work(1).map_err(resource)?;
+        let extra = predecessor
+            .value()
+            .ok_or(CoverageError::Foreign { property })?
+            .span();
+        return merge_spans(base, &[extra], work).map_err(resource);
+    }
+    let mut additions = work.vector();
+    additions
+        .try_reserve_exact(predecessors.len())
+        .map_err(resource)?;
     for predecessor in predecessors {
         work.charge_work(1).map_err(resource)?;
         let value = predecessor
             .value()
             .ok_or(CoverageError::Foreign { property })?;
-        spans.try_push(value.span()).map_err(resource)?;
+        additions.try_push(value.span()).map_err(resource)?;
     }
-    normalize(&mut spans, work).map_err(resource)?;
-    Ok(spans)
+    sort_spans(&mut additions, work).map_err(resource)?;
+    merge_spans(base, &additions, work).map_err(resource)
+}
+
+fn merge_spans<'a, W: Work>(
+    mut base: &'a [Span],
+    mut additions: &'a [Span],
+    work: &W,
+) -> Result<OwnedVec<Span, W>, structured_asn1::memory::MemoryError> {
+    let mut output = work.vector::<Span>();
+    while !base.is_empty() || !additions.is_empty() {
+        work.charge_work(3)?;
+        let next = match (base.first(), additions.first()) {
+            (Some(a), Some(b)) if a.start <= b.start => &mut base,
+            (_, Some(_)) => &mut additions,
+            _ => &mut base,
+        };
+        let current = next[0];
+        *next = &next[1..];
+        if let Some(last) = output.last_mut()
+            && current.start <= last.end()
+        {
+            if current.end() > last.end() {
+                last.length = current.end() - last.start;
+            }
+            continue;
+        }
+        output.try_push(current)?;
+    }
+    Ok(output)
 }
 
 pub(super) fn normalize_owned<W: Work>(
@@ -215,16 +256,7 @@ fn normalize<W: Work>(
     spans: &mut OwnedVec<Span, W>,
     work: &W,
 ) -> Result<(), structured_asn1::memory::MemoryError> {
-    spans
-        .try_sort_unstable_by(|a, b| {
-            work.charge_work(3)?;
-            Ok::<_, structured_asn1::memory::MemoryError>(
-                a.start.cmp(&b.start).then_with(|| b.length.cmp(&a.length)),
-            )
-        })
-        .map_err(|cause| match cause {
-            SortError::Resource(cause) | SortError::Comparison(cause) => cause,
-        })?;
+    sort_spans(spans, work)?;
     let mut written = 0;
     for read in 0..spans.len() {
         work.charge_work(3)?;
@@ -244,6 +276,22 @@ fn normalize<W: Work>(
         spans.pop();
     }
     Ok(())
+}
+
+fn sort_spans<W: Work>(
+    spans: &mut OwnedVec<Span, W>,
+    work: &W,
+) -> Result<(), structured_asn1::memory::MemoryError> {
+    spans
+        .try_sort_unstable_by(|a, b| {
+            work.charge_work(3)?;
+            Ok::<_, structured_asn1::memory::MemoryError>(
+                a.start.cmp(&b.start).then_with(|| b.length.cmp(&a.length)),
+            )
+        })
+        .map_err(|cause| match cause {
+            SortError::Resource(cause) | SortError::Comparison(cause) => cause,
+        })
 }
 pub(super) fn selects<W: Work>(
     spans: &[Span],

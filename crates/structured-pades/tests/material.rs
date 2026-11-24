@@ -9,6 +9,133 @@ use structured_pades::{Limits, Session, document::Document, range::Slice};
 mod support;
 use support::ready;
 
+fn compressed_vri(corrupt_last: bool) -> (Vec<u8>, u64) {
+    const VRI: &str = "<< /Type /VRI /TU (D:20260101000000Z) >> ";
+    const COUNT: usize = 8;
+    const STREAM: usize = 5;
+    const XREF: usize = STREAM + 1 + COUNT;
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = [0; STREAM + 1];
+    for (number, value) in [
+        (1, "<< /Type /Catalog /Pages 2 0 R /DSS 4 0 R >>"),
+        (2, "<< /Type /Pages /Count 1 /Kids [3 0 R] >>"),
+        (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>"),
+    ] {
+        offsets[number] = pdf.len();
+        writeln!(pdf, "{number} 0 obj\n{value}\nendobj").unwrap();
+    }
+    offsets[4] = pdf.len();
+    write!(pdf, "4 0 obj\n<< /Type /DSS /VRI <<").unwrap();
+    let mut directory = Vec::new();
+    for ordinal in 0..COUNT {
+        let number = STREAM + 1 + ordinal;
+        write!(pdf, " /{number:040X} {number} 0 R").unwrap();
+        write!(directory, "{number} {} ", ordinal * VRI.len()).unwrap();
+    }
+    pdf.extend_from_slice(b" >> >>\nendobj\n");
+    offsets[STREAM] = pdf.len();
+    let first = directory.len();
+    for ordinal in 0..COUNT {
+        let value = VRI.replace("20260101", &format!("202601{:02}", ordinal + 1));
+        directory.extend_from_slice(value.as_bytes());
+    }
+    writeln!(
+        pdf,
+        "{STREAM} 0 obj\n<< /Type /ObjStm /N {COUNT} /First {first} /Length {} >>\nstream",
+        directory.len()
+    )
+    .unwrap();
+    pdf.extend_from_slice(&directory);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n");
+    let xref = pdf.len();
+    let size = XREF + 1;
+    let crossref_length = size * 7;
+    writeln!(pdf, "{XREF} 0 obj\n<< /Type /XRef /Root 1 0 R /Size {size} /W [1 4 2] /Length {crossref_length} >>\nstream").unwrap();
+    pdf.extend_from_slice(&[0, 0, 0, 0, 0, 255, 255]);
+    for offset in offsets.into_iter().skip(1) {
+        pdf.push(1);
+        pdf.extend_from_slice(&u32::try_from(offset).unwrap().to_be_bytes());
+        pdf.extend_from_slice(&[0, 0]);
+    }
+    for ordinal in 0..COUNT {
+        pdf.push(2);
+        pdf.extend_from_slice(&u32::try_from(STREAM).unwrap().to_be_bytes());
+        let slot = if corrupt_last && ordinal + 1 == COUNT {
+            ordinal - 1
+        } else {
+            ordinal
+        };
+        pdf.extend_from_slice(&u16::try_from(slot).unwrap().to_be_bytes());
+    }
+    pdf.push(1);
+    pdf.extend_from_slice(&u32::try_from(xref).unwrap().to_be_bytes());
+    pdf.extend_from_slice(&[0, 0]);
+    writeln!(pdf, "\nendstream\nendobj\nstartxref\n{xref}\n%%EOF").unwrap();
+    (
+        pdf,
+        u64::try_from(directory.len() + crossref_length).unwrap(),
+    )
+}
+
+#[test]
+fn compressed_vri_reuses_the_original_decoded_stream() {
+    // The allowance covers the cross-reference stream and exactly one object
+    // stream. Every VRI still parses its own string from decoded coordinates.
+    let (pdf, max_decoded) = compressed_vri(false);
+    let memory = Memory::new(Arc::new(MemoryAccount::new(1 << 22, 1 << 24)));
+    let session = Session::new(
+        Limits {
+            max_decoded,
+            ..Limits::default()
+        },
+        memory.clone(),
+    );
+    let source = Slice::new(
+        &pdf,
+        Snapshot {
+            document: 1_u8,
+            generation: 0_u8,
+        },
+    );
+    let document = ready(Document::read(&source, &session, &memory)).unwrap();
+    let validation = ready(document.validation(0, &memory)).unwrap();
+    assert_eq!(validation.vri().len(), 8);
+    for (ordinal, entry) in validation.vri().iter().enumerate() {
+        assert_eq!(
+            usize::from(entry.update_time().unwrap().calendar().day),
+            ordinal + 1
+        );
+    }
+}
+
+#[test]
+fn cached_vri_directory_never_accepts_a_different_member() {
+    // The last xref entry reuses its predecessor's slot. The warm lookup
+    // must still reject the member identity without reinflating the stream.
+    use structured_pades::error::{ErrorKind, ReadFailure, Syntax};
+    let (pdf, max_decoded) = compressed_vri(true);
+    let memory = Memory::new(Arc::new(MemoryAccount::new(1 << 22, 1 << 24)));
+    let session = Session::new(
+        Limits {
+            max_decoded,
+            ..Limits::default()
+        },
+        memory.clone(),
+    );
+    let source = Slice::new(
+        &pdf,
+        Snapshot {
+            document: 1_u8,
+            generation: 0_u8,
+        },
+    );
+    let document = ready(Document::read(&source, &session, &memory)).unwrap();
+    let Err(ReadFailure::Format(error)) = ready(document.validation(0, &memory)) else {
+        panic!("must reject a different original member");
+    };
+    assert!(matches!(error.kind, ErrorKind::Syntax(Syntax::Object)));
+}
+
 #[test]
 fn terminal_material_refusal_retains_the_actual_stream_enclosure() {
     // A terminal inner refusal must identify the actual material body, not

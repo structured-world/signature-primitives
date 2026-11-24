@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.1](https://github.com/structured-world/signature-primitives/compare/structured-base64-v0.27.0...structured-base64-v0.27.1) - 2026-11-24
+
+### Added
+
+- *(pkix)* share path signature answers ([#360](https://github.com/structured-world/signature-primitives/pull/360))
+- *(xades)* admit legacy V1.2.2 properties ([#361](https://github.com/structured-world/signature-primitives/pull/361))
+
+### Other
+
+- reuse CRL metadata and singleton digests ([#353](https://github.com/structured-world/signature-primitives/pull/353))
+- accelerate short PDF and ZIP comparisons ([#359](https://github.com/structured-world/signature-primitives/pull/359))
+- *(pades)* reuse decoded VRI object streams ([#358](https://github.com/structured-world/signature-primitives/pull/358))
+- *(asic)* scan ZIP end markers by word ([#356](https://github.com/structured-world/signature-primitives/pull/356))
+
 ## [0.27.0](https://github.com/structured-world/signature-primitives/compare/structured-base64-v0.26.0...structured-base64-v0.27.0) - 2026-11-24
 
 ### Fixed

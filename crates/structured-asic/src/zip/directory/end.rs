@@ -57,15 +57,10 @@ fn scan_chunk<E>(
     suffix: &[u8],
     mut record: impl FnMut(usize) -> Result<(), E>,
 ) -> Result<(), E> {
-    const REST: &[u8; 3] = b"K\x05\x06";
-    // On x86_64, word setup costs more than scanning an empty archive's
-    // 22-byte footer directly. Use the same byte scan as the leading fragment.
-    let split = if cfg!(target_arch = "x86_64") && bytes.len() < 32 {
-        bytes.len()
-    } else {
-        bytes.len() % 8
-    };
-    let (head, full) = bytes.split_at(split);
+    if cfg!(target_arch = "x86_64") && bytes.len() < 32 {
+        return scan_short(bytes, suffix, record);
+    }
+    let (head, full) = bytes.split_at(bytes.len() % 8);
     debug_assert!(suffix.len() <= 3);
     let trailing = match *suffix {
         [a, b, c] => [0, a, b, c],
@@ -83,9 +78,7 @@ fn scan_chunk<E>(
             | (((word << 16) | (next >> 8)) ^ u64::from_be_bytes([5; 8]))
             | (((word << 24) | next) ^ u64::from_be_bytes([6; 8]));
         next = word >> 40;
-        // Isolate exact zero lanes without cross-lane carries.
-        let lows = 0x7f7f_7f7f_7f7f_7f7f;
-        let mut matches = !(((different & lows) + lows) | different | lows);
+        let mut matches = zero_lanes(different);
         while matches != 0 {
             let offset = 7 - matches.trailing_zeros() as usize / 8;
             record(head.len() + index * 8 + offset)?;
@@ -93,17 +86,63 @@ fn scan_chunk<E>(
         }
     }
     for (at, &byte) in head.iter().enumerate().rev() {
-        if byte != b'P' {
-            continue;
-        }
-        let rest = &bytes[at + 1..];
-        if rest.starts_with(REST)
-            || (REST.starts_with(rest) && suffix.starts_with(&REST[rest.len()..]))
-        {
+        if byte == b'P' && marker_tail(&bytes[at + 1..], suffix) {
             record(at)?;
         }
     }
     Ok(())
+}
+
+fn scan_short<E>(
+    bytes: &[u8],
+    suffix: &[u8],
+    mut record: impl FnMut(usize) -> Result<(), E>,
+) -> Result<(), E> {
+    // The common minimal footer fits one window. Only the last three
+    // starts can depend on a following window.
+    let inside = bytes.len().saturating_sub(3);
+    if !suffix.is_empty() {
+        for at in (inside..bytes.len()).rev() {
+            if bytes[at] == b'P' && marker_tail(&bytes[at + 1..], suffix) {
+                record(at)?;
+            }
+        }
+    }
+    let (head, full) = bytes[..inside].split_at(inside % 8);
+    for (index, group) in full.as_chunks::<8>().0.iter().enumerate().rev() {
+        let at = head.len() + index * 8;
+        let first = u64::from_be_bytes(*group) ^ u64::from_be_bytes([b'P'; 8]);
+        let second =
+            u64::from_be_bytes(*bytes[at + 1..].first_chunk::<8>().expect("complete starts"))
+                ^ u64::from_be_bytes([b'K'; 8]);
+        let mut matches = zero_lanes(first | second);
+        while matches != 0 {
+            let position = at + 7 - matches.trailing_zeros() as usize / 8;
+            if bytes[position + 2..].starts_with(b"\x05\x06") {
+                record(position)?;
+            }
+            matches &= matches - 1;
+        }
+    }
+    for (at, marker) in bytes.windows(4).take(head.len()).enumerate().rev() {
+        if marker == b"PK\x05\x06" {
+            record(at)?;
+        }
+    }
+    Ok(())
+}
+
+#[inline]
+fn zero_lanes(word: u64) -> u64 {
+    // Low bits plus 0x7f cannot carry into another byte. The high bit
+    // remains clear only for an originally zero byte.
+    let lows = 0x7f7f_7f7f_7f7f_7f7f;
+    !(((word & lows) + lows) | word | lows)
+}
+
+fn marker_tail(rest: &[u8], suffix: &[u8]) -> bool {
+    const REST: &[u8; 3] = b"K\x05\x06";
+    rest.starts_with(REST) || (REST.starts_with(rest) && suffix.starts_with(&REST[rest.len()..]))
 }
 
 pub(super) async fn read<S: RangeSource>(

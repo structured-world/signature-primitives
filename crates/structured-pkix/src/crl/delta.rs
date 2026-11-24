@@ -1,13 +1,80 @@
 //! Binding an authenticated delta to an authenticated complete CRL.
 
-use super::{Authenticated, EntryLookup, EntryScan, Reason, RevocationTarget, RevokedCertificate};
+use super::{
+    Authenticated, CertificateList, EntryLookup, EntryScan, Reason, RevocationTarget,
+    RevokedCertificate,
+};
 use crate::error::{Error, ErrorCode, Located, Result};
-use crate::extension::{Extension, Extensions};
+use crate::extension::Extension;
 use crate::identifier::AuthorityKeyIdentifier;
-use crate::oid;
 use core::cmp::Ordering;
 use structured_asn1::memory::Work;
 use structured_asn1::{Integer, Oid, Span};
+
+/// Borrowed, lazily validated fields for repeatedly pairing one original CRL.
+/// A reuse with another CRL discards the cached fields. Pair-specific checks
+/// still run with the current operation and original producing ceilings.
+#[derive(Debug, Default)]
+pub struct DeltaMetadata<'r, 'a> {
+    original: Option<&'r CertificateList<'a>>,
+    minimum: Option<Integer<'a>>,
+    number: Option<Integer<'a>>,
+    authority_checked: bool,
+}
+
+impl<'r, 'a> DeltaMetadata<'r, 'a> {
+    fn bind_source(&mut self, source: &'r CertificateList<'a>) {
+        if self
+            .original
+            .is_none_or(|original| !core::ptr::eq(original, source))
+        {
+            *self = Self {
+                original: Some(source),
+                ..Self::default()
+            };
+        }
+    }
+
+    fn number(
+        cached: &mut Option<Integer<'a>>,
+        extension: &Extension<'a>,
+        execution: &impl Work,
+    ) -> Result<Integer<'a>> {
+        if let Some(value) = *cached {
+            execution
+                .charge_work_from([extension.parser(); 2], 1)
+                .map_err(|cause| {
+                    Error::resource(cause, "extensions.cRLNumber", extension.span().start)
+                })?;
+            return Ok(value);
+        }
+        let value = number(extension, execution)?;
+        *cached = Some(value);
+        Ok(value)
+    }
+
+    fn authority(&mut self, extension: &Extension<'a>, execution: &impl Work) -> Result<()> {
+        const FIELD: &str = "extensions.authorityKeyIdentifier.keyIdentifier";
+        if self.authority_checked {
+            return execution
+                .charge_work_from([extension.parser(); 2], 1)
+                .map_err(|cause| Error::resource(cause, FIELD, extension.span().start));
+        }
+        // RFC 5280 §5.2.1 requires the keyIdentifier method for CRLs.
+        if AuthorityKeyIdentifier::read(extension, execution)?
+            .key_id()
+            .is_none()
+        {
+            return Err(Error::new(
+                ErrorCode::MissingField,
+                FIELD,
+                extension.span().start,
+            ));
+        }
+        self.authority_checked = true;
+        Ok(())
+    }
+}
 
 /// Required metadata that was absent, rather than a mismatched value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,32 +322,59 @@ impl<'r, 'a> Authenticated<'r, 'a> {
         delta: &'b Self,
         execution: &W,
     ) -> Result<DeltaBinding<'b, 'r, 'a>> {
+        self.bind_delta_reusing(
+            delta,
+            &mut DeltaMetadata::default(),
+            &mut DeltaMetadata::default(),
+            execution,
+        )
+    }
+
+    /// Bind a pair while reusing lazily decoded metadata from prior pairs.
+    /// Each cache stays tied to its exact original CRL. Cached lookups still
+    /// charge the producing and current ceilings. Pair failures and their
+    /// ordering follow [`Self::bind_delta`].
+    pub fn bind_delta_reusing<'b, W: Work>(
+        &'b self,
+        delta: &'b Self,
+        base_metadata: &mut DeltaMetadata<'r, 'a>,
+        delta_metadata: &mut DeltaMetadata<'r, 'a>,
+        execution: &W,
+    ) -> Result<DeltaBinding<'b, 'r, 'a>> {
         const FIELD: &str = "certificateList.deltaBinding";
         let at = delta.crl().span().start;
-        let base_extensions = self.crl().tbs().extensions();
-        let delta_extensions = delta.crl().tbs().extensions();
-        if self.crl().tbs().delta_indicator(execution)?.is_some() {
+        let base = self.crl().tbs();
+        let update = delta.crl().tbs();
+        base_metadata.bind_source(self.crl());
+        delta_metadata.bind_source(delta.crl());
+        if base.delta_indicator(execution)?.is_some() {
             return Ok(DeltaBinding::Rejected(DeltaFailure::BaseIsDelta));
         }
-        let Some(indicator) = delta.crl().tbs().delta_indicator(execution)? else {
+        let Some(indicator) = update.delta_indicator(execution)? else {
             return Ok(DeltaBinding::Missing(MissingDeltaField::Indicator));
         };
         if !indicator.is_critical() {
             return Ok(DeltaBinding::Rejected(DeltaFailure::Criticality));
         }
-        let minimum = number(indicator, execution)?;
-        let Some(base_number) = base_extensions.get(oid::CRL_NUMBER, execution)? else {
+        let minimum = DeltaMetadata::number(&mut delta_metadata.minimum, indicator, execution)?;
+        let Some(base_number) = base.crl_number(execution)? else {
             return Ok(DeltaBinding::Missing(MissingDeltaField::BaseNumber));
         };
-        let Some(delta_number) = delta_extensions.get(oid::CRL_NUMBER, execution)? else {
+        let Some(delta_number) = update.crl_number(execution)? else {
             return Ok(DeltaBinding::Missing(MissingDeltaField::DeltaNumber));
         };
         if base_number.is_critical() || delta_number.is_critical() {
             return Ok(DeltaBinding::Rejected(DeltaFailure::Criticality));
         }
-        let base_number = number(base_number, execution)?;
-        let delta_number = number(delta_number, execution)?;
-        match authority_pair(base_extensions, delta_extensions, execution, at)? {
+        let base_number = DeltaMetadata::number(&mut base_metadata.number, base_number, execution)?;
+        let delta_number =
+            DeltaMetadata::number(&mut delta_metadata.number, delta_number, execution)?;
+        match authority_pair(
+            (base, base_metadata),
+            (update, delta_metadata),
+            execution,
+            at,
+        )? {
             AuthorityMatch::Matched => (),
             AuthorityMatch::Missing(field) => return Ok(DeltaBinding::Missing(field)),
             AuthorityMatch::Rejected(reason) => return Ok(DeltaBinding::Rejected(reason)),
@@ -311,8 +405,8 @@ impl<'r, 'a> Authenticated<'r, 'a> {
         )? {
             return Ok(DeltaBinding::Rejected(DeltaFailure::SigningKey));
         }
-        let base_scope = self.crl().tbs().distribution_point(execution)?;
-        let delta_scope = delta.crl().tbs().distribution_point(execution)?;
+        let base_scope = base.distribution_point(execution)?;
+        let delta_scope = update.distribution_point(execution)?;
         if base_scope.is_some_and(|extension| !extension.is_critical())
             || delta_scope.is_some_and(|extension| !extension.is_critical())
         {
@@ -348,17 +442,17 @@ enum AuthorityMatch {
 }
 
 fn authority_pair<'a, W: Work>(
-    base: &Extensions<'a>,
-    delta: &Extensions<'a>,
+    (base, base_metadata): (&super::TbsCertList<'a>, &mut DeltaMetadata<'_, 'a>),
+    (delta, delta_metadata): (&super::TbsCertList<'a>, &mut DeltaMetadata<'_, 'a>),
     execution: &W,
     at: u64,
 ) -> Result<AuthorityMatch> {
-    let Some(base) = base.get(oid::AUTHORITY_KEY_IDENTIFIER, execution)? else {
+    let Some(base) = base.authority_identifier(execution)? else {
         return Ok(AuthorityMatch::Missing(
             MissingDeltaField::BaseAuthorityIdentifier,
         ));
     };
-    let Some(delta) = delta.get(oid::AUTHORITY_KEY_IDENTIFIER, execution)? else {
+    let Some(delta) = delta.authority_identifier(execution)? else {
         return Ok(AuthorityMatch::Missing(
             MissingDeltaField::DeltaAuthorityIdentifier,
         ));
@@ -366,18 +460,8 @@ fn authority_pair<'a, W: Work>(
     if base.is_critical() || delta.is_critical() {
         return Ok(AuthorityMatch::Rejected(DeltaFailure::Criticality));
     }
-    for extension in [base, delta] {
-        let parsed = AuthorityKeyIdentifier::read(extension, execution)?;
-        // RFC5280 §5.2.1 requires CRLs to carry the keyIdentifier method,
-        // not just the optional issuer/serial alternative.
-        if parsed.key_id().is_none() {
-            return Err(Error::new(
-                ErrorCode::MissingField,
-                "extensions.authorityKeyIdentifier.keyIdentifier",
-                extension.span().start,
-            ));
-        }
-    }
+    base_metadata.authority(base, execution)?;
+    delta_metadata.authority(delta, execution)?;
     // RFC5280 §6.3.3(c)(3) requires matching extensions. It does not define
     // additional DN/set equivalence here. Full validated DER-value equality
     // follows OpenSSL check_delta_base and Bouncy Castle PKIXCRLValidator;

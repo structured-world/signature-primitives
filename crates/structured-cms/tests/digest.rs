@@ -6,7 +6,31 @@ use std::sync::Arc;
 use structured_asn1::Parser;
 use structured_asn1::digest::{Digest, Resolution};
 use structured_asn1::memory::{Memory, MemoryAccount, MemoryError, OwnedVec, Work};
-use structured_cms::digest::{DigestBatch, DigestError, DigestMemo};
+use structured_cms::digest::{DigestBatch, DigestError, DigestMemo, SingleDigest};
+
+#[test]
+fn single_digest_needs_only_the_backends_live_storage() {
+    // One byte belongs to the provider state and two to its result. No
+    // identity, state or output catalogue may allocate additional capacity.
+    let provider = Provider::default();
+    let memory = Memory::new(Arc::new(MemoryAccount::new(3, 1024)));
+    let digest = SingleDigest::prepare(
+        &provider,
+        Identity {
+            algorithm: 1,
+            parameters: 0,
+        },
+        &memory,
+        "single",
+        400,
+    )
+    .unwrap();
+    let output = digest.run(&mut [b"a".as_slice(), b"b"], &memory).unwrap();
+    assert_eq!(output.as_bytes(), &[1, b'a'.wrapping_add(b'b')]);
+    assert_eq!(memory.used(), 2);
+    drop(output);
+    assert_eq!(memory.used(), 0);
+}
 
 #[test]
 fn finalized_binding_refuses_a_different_provider_instance_before_callback() {

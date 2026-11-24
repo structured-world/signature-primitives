@@ -35,31 +35,11 @@ pub(super) async fn candidates<S: RangeSource, W: Work>(
         };
         work.charge_work(bytes.len() as u64 * 4 + 1)
             .map_err(|cause| resource(range, cause))?;
-        for at in (0..bytes.len()).rev() {
-            if bytes[at] != 0x50 {
-                continue;
-            }
-            let mut matches = true;
-            for (next, expected) in [0x4b, 0x05, 0x06].iter().enumerate() {
-                let index = at + next + 1;
-                let actual = if index < bytes.len() {
-                    Some(bytes[index])
-                } else if index - bytes.len() < suffix_len {
-                    Some(suffix[index - bytes.len()])
-                } else {
-                    None
-                };
-                if actual != Some(*expected) {
-                    matches = false;
-                    break;
-                }
-            }
-            if matches {
-                found
-                    .try_push(range.start + at as u64)
-                    .map_err(|cause| resource(range, cause))?;
-            }
-        }
+        scan_chunk(bytes, &suffix[..suffix_len], |at| {
+            found
+                .try_push(range.start + at as u64)
+                .map_err(|cause| resource(range, cause))
+        })?;
         let mut next = [0_u8; 3];
         let count = bytes.len().min(3);
         next[..count].copy_from_slice(&bytes[..count]);
@@ -70,6 +50,46 @@ pub(super) async fn candidates<S: RangeSource, W: Work>(
         end = range.start;
     }
     Ok(found)
+}
+
+fn scan_chunk<E>(
+    bytes: &[u8],
+    suffix: &[u8],
+    mut record: impl FnMut(usize) -> Result<(), E>,
+) -> Result<(), E> {
+    const REST: &[u8; 3] = b"K\x05\x06";
+    let mut candidate = |at| {
+        let following = &bytes[at + 1..];
+        let present = if following.len() >= REST.len() {
+            following.starts_with(REST)
+        } else {
+            REST.starts_with(following) && suffix.starts_with(&REST[following.len()..])
+        };
+        if present {
+            record(at)?;
+        }
+        Ok(())
+    };
+
+    let (head, full) = bytes.split_at(bytes.len() % 8);
+    for (index, group) in full.as_chunks::<8>().0.iter().enumerate().rev() {
+        // Isolate exact zero lanes after XOR with the first marker byte.
+        // Masking the low seven bits before addition prevents carry between lanes.
+        let bytes = u64::from_be_bytes(*group) ^ u64::from_be_bytes([b'P'; 8]);
+        let lows = 0x7f7f_7f7f_7f7f_7f7f;
+        let mut matches = !(((bytes & lows) + lows) | bytes | lows);
+        while matches != 0 {
+            let offset = 7 - matches.trailing_zeros() as usize / 8;
+            candidate(head.len() + index * 8 + offset)?;
+            matches &= matches - 1;
+        }
+    }
+    for (at, &byte) in head.iter().enumerate().rev() {
+        if byte == b'P' {
+            candidate(at)?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) async fn read<S: RangeSource>(

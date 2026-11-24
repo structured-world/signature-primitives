@@ -135,19 +135,20 @@ pub(crate) fn read_accounted(
         }
     }
 
-    // More than eight significant bytes cannot be an offset into anything this
-    // machine can address, so the answer is the same whichever way it is read.
-    let significant = bytes.iter().skip_while(|byte| **byte == 0).count();
-    if significant > 8 {
-        return Err(fail(ErrorCode::LengthTooLarge));
-    }
-
-    let mut value: u64 = 0;
+    // Any prefix outside a u64 must be padding. Ordinary one-to-eight-octet
+    // lengths need neither a leading-zero scan nor per-byte overflow checks.
+    let bytes = if count > 8 {
+        let (prefix, value) = bytes.split_at(count - 8);
+        if prefix.iter().any(|&byte| byte != 0) {
+            return Err(fail(ErrorCode::LengthTooLarge));
+        }
+        value
+    } else {
+        bytes
+    };
+    let mut value = 0;
     for byte in bytes {
-        value = value
-            .checked_mul(256)
-            .and_then(|shifted| shifted.checked_add(u64::from(*byte)))
-            .ok_or_else(|| fail(ErrorCode::LengthTooLarge))?;
+        value = (value << 8) | u64::from(*byte);
     }
 
     Ok((Length::Definite(value), 1 + count))

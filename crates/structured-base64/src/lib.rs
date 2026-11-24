@@ -251,8 +251,16 @@ impl Base64Codec {
             .input_offset
             .checked_add(input.len())
             .ok_or(Base64Error::Invalid)?;
-        let mut written = 0;
-        for (index, &byte) in input.iter().enumerate() {
+        let mut written = if self.position == 0 && !self.finished && input.len() >= 16 {
+            strict::decode_standard_prefix(input, output)
+        } else {
+            0
+        };
+        // Each complete group returns to the same plain state. Start the
+        // scalar loop at the first group that needs streaming semantics.
+        let consumed = written / 3 * 4;
+        for (index, &byte) in input[consumed..].iter().enumerate() {
+            let index = consumed + index;
             if matches!(byte, b' ' | b'\t' | b'\r' | b'\n') {
                 continue;
             }

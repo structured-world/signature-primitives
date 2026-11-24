@@ -99,12 +99,8 @@ where
                 let failed =
                     match authenticate_list(path, list, authorities, query, verifier, work)? {
                         Ok(authenticated) => {
-                            let is_delta = list
-                                .tbs()
-                                .extensions()
-                                .get(structured_pkix::oid::DELTA_CRL_INDICATOR, work)
-                                .map_err(Error::Processing)?
-                                .is_some();
+                            let is_delta =
+                                list.has_delta_indicator(work).map_err(Error::Processing)?;
                             let list = List {
                                 source: authenticated,
                                 index,

@@ -56,8 +56,8 @@ pub fn validate<W: structured_asn1::memory::Work>(
     requirements: &Requirements<'_>,
     execution: &W,
 ) -> Result<Outcome, structured_asn1::memory::MemoryError> {
-    admission::admit(facts, requirements, execution)?;
-    Ok(validate::compute(facts, requirements))
+    let direct = admission::admit(facts, requirements, execution)?;
+    Ok(validate::compute(facts, requirements, direct))
 }
 
 /// Compute the same decision and visit every unmet cryptographic constraint

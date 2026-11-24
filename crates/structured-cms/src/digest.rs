@@ -83,6 +83,37 @@ impl<'a, P: Digest<'a>> DigestBatch<'a, P> {
         let refusal = |reason| DigestError::Processing(Error::resource(reason, field, at));
         execution.charge_work(1).map_err(refusal)?;
         let count = identities.len();
+        if count <= 1 {
+            // A singleton is already sorted and unique. Move it directly
+            // into the reserved provider state instead of building requests.
+            let mut pending = execution.vector();
+            let mut mapping = execution.vector();
+            if count == 1 {
+                execution
+                    .charge_work(core::mem::size_of::<P::Identity>() as u64 + 1)
+                    .map_err(refusal)?;
+            }
+            if let Some(identity) = identities.into_iter().next() {
+                mapping.try_reserve_exact(1).map_err(refusal)?;
+                mapping.try_push(0).map_err(refusal)?;
+                pending.try_reserve_exact(1).map_err(refusal)?;
+                let state = started(provider.start(&identity, execution))?;
+                pending
+                    .try_push(Pending {
+                        ordinal: 0,
+                        identity,
+                        state,
+                    })
+                    .map_err(refusal)?;
+            }
+            return Ok(Self {
+                provider,
+                pending: pending.into_owned(),
+                mapping: mapping.into_owned(),
+                field,
+                at,
+            });
+        }
         let mut ordered = execution.vector();
         ordered
             .try_reserve_exact(identities.len())

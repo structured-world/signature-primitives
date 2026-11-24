@@ -107,20 +107,28 @@ impl<'prepared, 'm, 'd, 'path> Verified<'_, 'prepared, 'm, 'd, 'path> {
         let actor = timestamp
             .actor()
             .ok_or(CoverageError::Foreign { property })?;
-        let mut spans = work.vector();
         let base = report
             .covered
             .as_ref()
             .ok_or(CoverageError::Foreign { property })?;
-        spans.try_extend_from_slice(base).map_err(resource)?;
-        for previous in report.timestamps.start..ordinal {
-            work.charge_work(1).map_err(resource)?;
-            let value = prepared.timestamps()[previous]
-                .value()
-                .ok_or(CoverageError::Foreign { property })?;
-            spans.try_push(value.span()).map_err(resource)?;
-        }
-        normalize(&mut spans, &work).map_err(resource)?;
+        // bind_coverage already normalized the base. Only renewals add
+        // timestamp spans and require an owned, recombined interval set.
+        let mut extended;
+        let spans: &[Span] = if relative == 0 {
+            base
+        } else {
+            extended = work.vector();
+            extended.try_extend_from_slice(base).map_err(resource)?;
+            for previous in report.timestamps.start..ordinal {
+                work.charge_work(1).map_err(resource)?;
+                let value = prepared.timestamps()[previous]
+                    .value()
+                    .ok_or(CoverageError::Foreign { property })?;
+                extended.try_push(value.span()).map_err(resource)?;
+            }
+            normalize(&mut extended, &work).map_err(resource)?;
+            &extended
+        };
         let document = prepared.document();
         let query = Scope::new(document, document.snapshot(), &work);
         let mut items = work.map();
@@ -130,7 +138,7 @@ impl<'prepared, 'm, 'd, 'path> Verified<'_, 'prepared, 'm, 'd, 'path> {
         {
             let occurrence = occurrence.map_err(CoverageError::Index)?;
             let node = occurrence.location().node;
-            if selects(&spans, node.span(), &work).map_err(resource)? {
+            if selects(spans, node.span(), &work).map_err(resource)? {
                 items.try_insert(node, true).map_err(resource)?;
             }
         }
@@ -140,7 +148,7 @@ impl<'prepared, 'm, 'd, 'path> Verified<'_, 'prepared, 'm, 'd, 'path> {
             .chain(prepared.parallel_counters())
         {
             work.charge_work(1).map_err(resource)?;
-            if selects(&spans, counter.node().span(), &work).map_err(resource)? {
+            if selects(spans, counter.node().span(), &work).map_err(resource)? {
                 items.try_insert(counter.node(), true).map_err(resource)?;
             }
         }
@@ -152,10 +160,10 @@ impl<'prepared, 'm, 'd, 'path> Verified<'_, 'prepared, 'm, 'd, 'path> {
             if node == actor.verified().token().node {
                 continue;
             }
-            if selects(&spans, node.span(), &work).map_err(resource)? {
+            if selects(spans, node.span(), &work).map_err(resource)? {
                 items.try_insert(node, true).map_err(resource)?;
             }
-            if selects(&spans, entry.property().span(), &work).map_err(resource)? {
+            if selects(spans, entry.property().span(), &work).map_err(resource)? {
                 items.try_insert(entry.property(), true).map_err(resource)?;
             }
         }

@@ -150,8 +150,7 @@ impl<'r, 'a> Authenticated<'r, 'a> {
 fn indirect_source(crl: &super::CertificateList<'_>, execution: &impl Work) -> Result<bool> {
     let idp = crl
         .tbs()
-        .extensions()
-        .get(oid::ISSUING_DISTRIBUTION_POINT, execution)?
+        .distribution_point(execution)?
         .map(|extension| IssuingDistributionPoint::read(extension, execution))
         .transpose()?;
     Ok(idp
@@ -203,11 +202,7 @@ fn validate_status_extensions<W: Work>(
 }
 
 fn delta_source<W: Work>(crl: &super::CertificateList<'_>, execution: &W) -> Result<bool> {
-    let Some(indicator) = crl
-        .tbs()
-        .extensions()
-        .get(oid::DELTA_CRL_INDICATOR, execution)?
-    else {
+    let Some(indicator) = crl.tbs().delta_indicator(execution)? else {
         return Ok(false);
     };
     if !indicator.is_critical() {
@@ -228,11 +223,9 @@ impl super::CertificateList<'_> {
         &self,
         execution: &W,
     ) -> Result<Option<Span>> {
-        let execution = self.execution_in(execution);
         Ok(self
             .tbs()
-            .extensions()
-            .get(oid::ISSUING_DISTRIBUTION_POINT, &execution)?
+            .distribution_point(execution)?
             .and_then(noncritical_idp))
     }
 }

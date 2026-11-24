@@ -34,6 +34,28 @@ fn word([a, b, c, d]: [u8; 4], table: &[[u32; 256]; 4]) -> u32 {
         | table[3][usize::from(d)]
 }
 
+/// Decodes an aligned prefix with full output space, stopping before the
+/// first whitespace, padding or non-alphabet byte. The streaming state
+/// machine owns interpretation and diagnostics at that boundary.
+pub(super) fn decode_standard_prefix(input: &[u8], output: &mut [u8]) -> usize {
+    let mut written = 0;
+    for (input, output) in input
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(output.as_chunks_mut::<3>().0)
+    {
+        let decoded = word(*input, &STANDARD_WORDS);
+        if decoded >> 31 != 0 {
+            break;
+        }
+        let [a, b, c, _] = decoded.to_le_bytes();
+        *output = [a, b, c];
+        written += 3;
+    }
+    written
+}
+
 #[inline]
 fn encode_group([a, b, c]: [u8; 3], table: &[u16; 4096]) -> [u8; 4] {
     let [first, second] = table[usize::from(a) << 4 | usize::from(b >> 4)].to_ne_bytes();

@@ -158,8 +158,7 @@ pub(super) async fn directory<D: Copy + Eq, G: Copy + Eq>(
             })
             .map_err(resource)?;
     }
-    cursor.skip().await?;
-    if cursor.peek().await?.is_some() {
+    if cursor.skip_to_token().await?.is_some() {
         return Err(cursor.failure(Syntax::Object, cursor.at));
     }
     drop(cursor);
@@ -207,8 +206,7 @@ async fn whitespace<D: Copy + Eq, G: Copy + Eq>(
         reader: RangeReader::in_region(slice, session, work, domain, span)?,
         at: span.start,
     };
-    prefix.skip().await?;
-    if prefix.peek().await?.is_some() {
+    if prefix.skip_to_token().await?.is_some() {
         return Err(prefix.failure(Syntax::Object, prefix.at));
     }
     Ok(())
@@ -292,8 +290,7 @@ async fn group<'s, D: Copy + Eq, G: Copy + Eq>(
         let (next, root) = read_into(&mut cursor, session, arena).await?;
         arena = next;
         first_root.get_or_insert(root);
-        cursor.skip().await?;
-        if cursor.peek().await?.is_some() {
+        if cursor.skip_to_token().await?.is_some() {
             return Err(cursor.failure(Syntax::Object, cursor.at));
         }
         members
@@ -337,8 +334,7 @@ pub(super) async fn selected<'s, D: Copy + Eq, G: Copy + Eq>(
         at: slot.span.start,
     };
     let (arena, root) = read_into(&mut cursor, session, Arena::new(work).into_owned()).await?;
-    cursor.skip().await?;
-    if cursor.peek().await?.is_some() {
+    if cursor.skip_to_token().await?.is_some() {
         return Err(cursor.failure(Syntax::Object, cursor.at));
     }
     Ok(Value {

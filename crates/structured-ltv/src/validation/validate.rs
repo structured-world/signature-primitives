@@ -448,13 +448,17 @@ impl Verdict {
 
 /// Validates one signature under `policy`.
 #[must_use]
-pub(super) fn compute(facts: &Facts<'_>, policy: &Requirements<'_>) -> Outcome {
+pub(super) fn compute(
+    facts: &Facts<'_>,
+    policy: &Requirements<'_>,
+    direct: DirectCandidate,
+) -> Outcome {
     // 5.5.4 step 1: best-signature-time starts as the current time and moves
     // to the earliest proven existence.
     let mut best = facts.time.before.map_or(facts.now, |at| at.min(facts.now));
     let constraints = policy.crypto;
     let initialized = initialize(facts.context);
-    let selected = initialized.and_then(|()| select(facts, &constraints));
+    let selected = initialized.and_then(|()| select(facts, &constraints, direct));
     let decided = decide(facts, &mut best, selected, policy, initialized);
     let own = if initialized.is_ok() && decided.is_err() {
         own_failure(facts, best, &constraints).map(|(index, unmet)| (Basis::Material(index), unmet))
@@ -926,19 +930,16 @@ fn verify(facts: &Facts<'_>) -> Result<(), Verdict> {
 /// terminal signer finding is
 /// used, and if none does, the status of the last one tried is reported
 /// (step 2a).
-fn select(facts: &Facts<'_>, constraints: &Constraints<'_>) -> Result<usize, Verdict> {
-    let mut status = Verdict::on(SubIndication::NoCertificateChainFound, Basis::Paths);
-    // EN 319 102-1 §5.2.6.4 step 1: direct trust precedes ordinary
-    // path processing. Sunset falls through to alternate candidates.
-    // https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf#page=52
-    for (index, path) in facts.paths.iter().enumerate() {
-        if path.chain == Chain::DirectTrust {
-            match anchor(path.anchor.current) {
-                Ok(()) => return Ok(index),
-                Err(sub) => status = Verdict::on(sub, Basis::Path(index)),
-            }
-        }
-    }
+fn select(
+    facts: &Facts<'_>,
+    constraints: &Constraints<'_>,
+    direct: DirectCandidate,
+) -> Result<usize, Verdict> {
+    let mut status = match direct.0 {
+        Some(Ok(index)) => return Ok(index),
+        Some(Err((index, sub))) => Verdict::on(sub, Basis::Path(index)),
+        None => Verdict::on(SubIndication::NoCertificateChainFound, Basis::Paths),
+    };
     for (index, path) in facts.paths.iter().enumerate() {
         if path.chain == Chain::DirectTrust {
             continue;
@@ -953,6 +954,25 @@ fn select(facts: &Facts<'_>, constraints: &Constraints<'_>) -> Result<usize, Ver
         }
     }
     Err(status)
+}
+
+/// First recognized direct anchor, or the last direct rejection if none passed.
+#[derive(Clone, Copy, Default)]
+pub(super) struct DirectCandidate(Option<Result<usize, (usize, SubIndication)>>);
+
+impl DirectCandidate {
+    pub(super) fn consider(&mut self, index: usize, path: &Path<'_>) {
+        // EN 319 102-1 §5.2.6.4 step 1 precedes ordinary path processing.
+        // The existing admission walk also observes every direct candidate.
+        // https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf#page=52
+        if path.chain == Chain::DirectTrust && !matches!(self.0, Some(Ok(_))) {
+            self.0 = Some(
+                anchor(path.anchor.current)
+                    .map(|()| index)
+                    .map_err(|sub| (index, sub)),
+            );
+        }
+    }
 }
 
 fn judge(

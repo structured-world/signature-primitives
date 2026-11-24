@@ -94,16 +94,22 @@ impl<S: RangeSource> Cursor<'_, S> {
     }
 
     pub(crate) async fn skip(&mut self) -> Result<(), ReadFailure<S::Error>> {
+        self.skip_to_token().await.map(|_| ())
+    }
+
+    /// Skip trivia and return the already admitted first token byte.
+    /// The cursor remains at that byte or at EOF.
+    pub(crate) async fn skip_to_token(&mut self) -> Result<Option<u8>, ReadFailure<S::Error>> {
         loop {
             let Some(byte) = self.peek().await? else {
-                return Ok(());
+                return Ok(None);
             };
             if is_space(byte) {
                 self.at += 1;
                 continue;
             }
             if byte != b'%' {
-                return Ok(());
+                return Ok(Some(byte));
             }
             self.at += 1;
             let mut terminated = false;
@@ -311,8 +317,8 @@ impl<S: RangeSource> Cursor<'_, S> {
         first: Integer,
     ) -> Result<Option<(u64, u16)>, ReadFailure<S::Error>> {
         let after_first = self.at;
-        self.skip().await?;
-        if self.at == after_first || !matches!(self.peek().await?, Some(b'0'..=b'9')) {
+        let token = self.skip_to_token().await?;
+        if self.at == after_first || !matches!(token, Some(b'0'..=b'9')) {
             return Ok(None);
         }
         let generation = match self.number().await {
@@ -327,8 +333,8 @@ impl<S: RangeSource> Cursor<'_, S> {
             Err(error) => return Err(error),
         };
         let after_generation = self.at;
-        self.skip().await?;
-        if self.at == after_generation || self.peek().await? != Some(b'R') {
+        let token = self.skip_to_token().await?;
+        if self.at == after_generation || token != Some(b'R') {
             return Ok(None);
         }
         self.at += 1;

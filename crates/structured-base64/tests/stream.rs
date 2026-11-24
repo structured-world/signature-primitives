@@ -136,6 +136,41 @@ fn decode_splits_across_padding_and_whitespace() {
     }
 }
 
+#[test]
+fn bulk_prefix_preserves_scalar_error_precedence_and_resume_state() {
+    // Single-byte calls force scalar decoding. Match every transition after
+    // bulk groups, including when output fills before the first invalid byte.
+    for byte in [b'A', b'\n', b'=', b'!', 0xff] {
+        for index in 0..40 {
+            let mut input = *b"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwd";
+            input[index] = byte;
+            for capacity in 0..=30 {
+                let mut bulk = Base64Codec::new(false, 0);
+                let mut bulk_out = [SENTINEL; 32];
+                let answer = bulk.update(&input, &mut bulk_out[..capacity]);
+                let mut scalar = Base64Codec::new(false, 0);
+                let mut scalar_out = [SENTINEL; 32];
+                let expected = input.iter().try_fold(0, |written, byte| {
+                    scalar
+                        .update(
+                            core::slice::from_ref(byte),
+                            &mut scalar_out[written..capacity],
+                        )
+                        .map(|count| written + count)
+                });
+                assert_eq!(
+                    answer, expected,
+                    "offset {index}, byte {byte}, capacity {capacity}"
+                );
+                if answer.is_ok() {
+                    assert_eq!(bulk, scalar);
+                    assert_eq!(bulk_out, scalar_out);
+                }
+            }
+        }
+    }
+}
+
 // The compatible profile ignores pad bits, but still enforces the group
 // grammar and requires the complete padding across chunk boundaries.
 #[test]

@@ -1,12 +1,12 @@
 //! CRL issuing-distribution-point grammar shares certificate DP name parsing.
 
 use super::{RevocationScheme, RevocationTarget, TargetKind};
+use crate::Version;
 use crate::access::{self, DistributionPoint, PointName};
 use crate::error::{Error, ErrorCode, Located, Result};
 use crate::extension::{self, Extension};
 use crate::general_name::GeneralName;
 use crate::name::{self, Name, RelativeName};
-use crate::{Version, oid};
 use structured_asn1::BitString;
 use structured_asn1::memory::Work;
 
@@ -95,8 +95,7 @@ impl super::Authenticated<'_, '_> {
             .map_err(|reason| Error::resource(reason, FIELD, crl.span().start))?;
         let idp = crl
             .tbs()
-            .extensions()
-            .get(oid::ISSUING_DISTRIBUTION_POINT, execution)?
+            .distribution_point(execution)?
             .map(|extension| IssuingDistributionPoint::read(extension, execution))
             .transpose()?;
         if let Some(idp) = &idp {

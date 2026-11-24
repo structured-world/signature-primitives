@@ -564,12 +564,22 @@ impl<S: RangeSource> Document<'_, S> {
         }
         let mut first = RangeReader::new(self.source, self.session, operation)?;
         let mut second = first.fork()?;
-        for offset in 0..left.length {
-            if first.byte_at(left.start + offset).await?
-                != second.byte_at(right.start + offset).await?
-            {
+        let work = first.execution();
+        let mut offset = 0;
+        while offset < left.length {
+            let a = first.chunk_at(left.start + offset, left.end()).await?;
+            let b = second.chunk_at(right.start + offset, right.end()).await?;
+            // Opening each chunk pays its first byte. Compare only the
+            // additional byte pairs admitted by this original/current query.
+            let count = a.len().min(b.len()).min(1 + work.work_remaining() / 2);
+            debug_assert!(count > 0);
+            if count > 1 {
+                crate::model::admit(&work, location, 2 * (count as u64 - 1))?;
+            }
+            if a[..count] != b[..count] {
                 return Ok(false);
             }
+            offset += count as u64;
         }
         self.check(operation, location)?;
         Ok(true)

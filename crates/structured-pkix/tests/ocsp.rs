@@ -301,6 +301,22 @@ fn borrowed_basic_query_inherits_exact_original_and_current_depth_without_a_new_
     }
 }
 
+fn with_nonce(value: &[u8], critical: bool) -> Vec<u8> {
+    let mut extension = tlv(6, structured_pkix::oid::OCSP_NONCE.as_bytes());
+    if critical {
+        extension.extend(tlv(1, &[0xff]));
+    }
+    extension.extend(tlv(4, value));
+    let fields = [
+        tlv(0xa2, &tlv(4, &[0x33; 20])),
+        date(),
+        tlv(48, &assertion(&[0x80, 0])),
+        tlv(0xa1, &tlv(48, &tlv(48, &extension))),
+    ]
+    .concat();
+    response(&tlv(48, &fields))
+}
+
 #[test]
 fn nonce_binding_preserves_missing_unsolicited_and_exact_bytes() {
     // RFC9654 uses an encoded inner OCTET STRING, accepts legacy received
@@ -309,24 +325,6 @@ fn nonce_binding_preserves_missing_unsolicited_and_exact_bytes() {
     let request = [0x61; 32];
     assert!(RequestNonce::new(&request[..31]).is_none());
     assert!(RequestNonce::new(&[0; 129]).is_none());
-    let extension = |value: &[u8], critical: bool| {
-        let mut fields = tlv(6, structured_pkix::oid::OCSP_NONCE.as_bytes());
-        if critical {
-            fields.extend(tlv(1, &[0xff]));
-        }
-        fields.extend(tlv(4, value));
-        tlv(48, &fields)
-    };
-    let with_nonce = |value: &[u8], critical| {
-        let fields = [
-            tlv(0xa2, &tlv(4, &[0x33; 20])),
-            date(),
-            tlv(48, &assertion(&[0x80, 0])),
-            tlv(0xa1, &tlv(48, &extension(value, critical))),
-        ]
-        .concat();
-        response(&tlv(48, &fields))
-    };
     let execution = memory(128 * 1024, 1_000_000);
     let parser = Parser::der(execution.clone());
     let bytes = with_nonce(&tlv(4, &request), false);
@@ -407,6 +405,16 @@ fn nonce_binding_preserves_missing_unsolicited_and_exact_bytes() {
     }
     assert_eq!(RequestNonce::from_sent(&[]).unwrap_err().length, 0);
     assert_eq!(RequestNonce::from_sent(&[0; 129]).unwrap_err().length, 129);
+}
+
+#[test]
+fn nonce_binding_separates_optional_payload_faults_from_strict_inspection() {
+    // A binding needs a noncritical payload only when the request carries a
+    // nonce. Explicit inspection and critical extension handling stay strict.
+    use structured_pkix::ocsp::{NonceBinding, RequestNonce};
+    let request = [0x61; 32];
+    let execution = memory(128 * 1024, 1_000_000);
+    let parser = Parser::der(execution.clone());
     for value in [
         tlv(4, &[]),
         tlv(4, &[0; 129]),

@@ -84,6 +84,10 @@ under the query that performs it; retained facts are never prepaid work.
   identities. `pki::check_direct_anchor` binds a signer to the exact certificate
   already trusted by the caller. The result exposes the original signer via
   `CheckedPath::target` and has no non-anchor revocation obligations.
+  `pki::check_path_with_validity` carries the selected Shell or Chain model
+  into member status assessment. For Chain, a known noncompromise revocation
+  of an issuing CA after its subordinate's issuance remains visible in the
+  assessment without invalidating that issuance.
 - `material` indexes every incorporated certificate, CRL and OCSP value with
   the format's placement of each occurrence, attributes artifact uses to
   actors, reports incorporation, and checks each archive input's `Coverage`

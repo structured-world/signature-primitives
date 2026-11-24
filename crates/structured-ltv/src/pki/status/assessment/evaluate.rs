@@ -77,6 +77,9 @@ where
     {
         return Err(Error::Interval);
     }
+    let subordinate = path
+        .subordinate_issuance(member, work)
+        .map_err(Error::Processing)?;
     let issuer = match member.checked_sub(1) {
         Some(index) => {
             let issuer = path.members()[index];
@@ -147,7 +150,7 @@ where
     assess_lists(target, &lists, &mut deltas, query, work, &mut statements)?;
     let expiry = target.tbs().validity().not_after();
     let (status, expiry_evidence) =
-        decide::decide(&statements, query, expiry, work).map_err(Error::Resource)?;
+        decide::decide(&statements, query, expiry, subordinate, work).map_err(Error::Resource)?;
     Ok(Assessment {
         path,
         member,

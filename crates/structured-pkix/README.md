@@ -75,6 +75,12 @@ PKCS#8 decoding is available through `structured-cms::personal::PrivateKey`.
 Parsing exposes certificate facts; it does not establish application trust.
 For certification-path processing, supply the certificates, trust anchors,
 validation interval, resource limits and a `path::Verify` implementation.
+`path::build_with_validity` and `path::validate_with_validity` accept an explicit
+validity model. Shell checks issuing certificates at the validation interval.
+Chain checks each in-path issuer at its immediate subordinate's signed
+`DateOfCertGen` or, when that extension is absent, its `notBefore`.
+`path::ValidityPolicy::ades` leaves the target time check to
+EN 319 102-1 V1.4.1 §5.2.6.4 step 7.
 To reuse signature math across discovery and supplied-path validation, keep one
 `path::answers::SignatureAnswers` in that operation's verifier adapter. Check
 policy, capability and the effective issuer key on every use before consulting

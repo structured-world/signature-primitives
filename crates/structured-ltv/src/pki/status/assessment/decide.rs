@@ -5,6 +5,7 @@ use structured_asn1::memory::{MemoryError, Work};
 use structured_pkix::{
     Time,
     crl::{Reason, Reasons},
+    temporal::Instant,
 };
 
 type Result<T> = core::result::Result<T, MemoryError>;
@@ -13,6 +14,7 @@ pub(super) fn decide<E: Work>(
     statements: &[Statement<'_>],
     query: &Query<'_>,
     expiry: Time,
+    subordinate: Option<Instant>,
     execution: &E,
 ) -> Result<(Status, ExpiryEvidence)> {
     let deciders = deciders(statements, execution)?;
@@ -70,8 +72,12 @@ pub(super) fn decide<E: Work>(
         if seen {
             continue;
         }
-        execution.charge_work(shift_work)?;
-        let Some(candidate) = judge(basis, latest, query) else {
+        execution.charge_work(if subordinate.is_some() {
+            2 * shift_work
+        } else {
+            shift_work
+        })?;
+        let Some(candidate) = judge(basis, latest, query, subordinate) else {
             continue;
         };
         let slot = if let Status::NotRevoked { .. } = candidate.status {
@@ -146,13 +152,18 @@ fn joined_status(severest: Option<Ranked>, clear: Option<Ranked>, covered: Reaso
 }
 
 /// What one deciding statement answers, and the severity it joins at.
-fn judge(basis: usize, latest: Statement<'_>, query: &Query<'_>) -> Option<Ranked> {
+fn judge(
+    basis: usize,
+    latest: Statement<'_>,
+    query: &Query<'_>,
+    subordinate: Option<Instant>,
+) -> Option<Ranked> {
     let (status, rank) = match latest.finding {
         Finding::NotIssued => (Status::NotIssued { basis }, Rank::NotIssued),
         Finding::Revoked(revoked) => match query.utc.shift(revoked.at.instant(), 0) {
             // An unplaced date may be a revocation the interval reaches.
             Err(reason) => (Status::Uncertain(reason), Rank::UnplacedRevocation),
-            Ok(_) => match revocation(basis, latest, revoked, query) {
+            Ok(_) => match revocation(basis, latest, revoked, query, subordinate) {
                 status @ Status::Uncertain(_) => (status, Rank::UnplacedFreshness),
                 status => (status, Rank::of(status)),
             },
@@ -428,9 +439,41 @@ fn agree(left: Finding<'_>, right: Finding<'_>) -> bool {
     }
 }
 
-fn revocation(basis: usize, latest: Statement<'_>, revoked: Revoked, query: &Query<'_>) -> Status {
+fn revocation(
+    basis: usize,
+    latest: Statement<'_>,
+    revoked: Revoked,
+    query: &Query<'_>,
+    subordinate: Option<Instant>,
+) -> Status {
     let at = revoked.at.instant();
-    if at > query.interval.upper {
+    // EN 319 102-1 V1.4.1 §5.2.6.4 step 4 invokes Common PKI v2.0
+    // Part 9 §6. A recorded non-compromise revocation can leave a CA
+    // valid at issuance. An unknown reason, compromise or hold cannot.
+    // https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf
+    // https://www.bundesnetzagentur.de/EVD/SharedDocuments/Downloads/QES/Common_PKI_v2.0_02.pdf?__blob=publicationFile&v=1
+    let after = if at > query.interval.upper {
+        true
+    } else if let Some(issued) = subordinate
+        && issued < at
+        && matches!(
+            revoked.reason,
+            Some(
+                Reason::AffiliationChanged
+                    | Reason::Superseded
+                    | Reason::CessationOfOperation
+                    | Reason::PrivilegeWithdrawn
+            )
+        )
+    {
+        if let Err(cause) = query.utc.shift(issued, 0) {
+            return Status::Uncertain(cause);
+        }
+        true
+    } else {
+        false
+    };
+    if after {
         // Recorded after the signature provably existed: it does not reach
         // back to the signature, but only fresh information can say that the
         // certificate was not revoked earlier. A hold dated after it clears

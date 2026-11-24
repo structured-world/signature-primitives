@@ -369,11 +369,12 @@ pub enum Status {
         /// Deciding statement index.
         basis: usize,
     },
-    /// Not revoked during the interval; a later recorded revocation stays visible.
+    /// Clear at the applicable time; a later recorded revocation stays visible.
     NotRevoked {
         /// Deciding statement index.
         basis: usize,
-        /// A revocation proven after the interval.
+        /// A revocation after the interval or, for an applicable chain-model
+        /// CA reason, after the subordinate was issued.
         later: Option<Revoked>,
     },
     /// A recorded revocation reaches the interval.

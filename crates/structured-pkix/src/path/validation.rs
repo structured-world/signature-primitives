@@ -3,8 +3,8 @@
 //! purpose, algorithm permissions and trust-anchor selection remain external.
 
 use super::{
-    Anchor, BuildError, BuildResult, EffectiveKey, Interval, Meter, Policy, Truncation, Verified,
-    Verify, Watch, cost, sorting_rounds,
+    Anchor, BuildError, BuildResult, EffectiveKey, Interval, Meter, Policy, TargetValidity,
+    Truncation, ValidityModel, ValidityPolicy, Verified, Verify, Watch, cost, sorting_rounds,
 };
 use crate::constraints::BasicConstraints;
 use crate::extension::{Extension, Recognizer};
@@ -284,7 +284,8 @@ impl Default for ValidationBounds {
 pub struct ValidationContext<'a, 'p, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work = Memory> {
     /// The current operation's shared work and storage account.
     pub execution: &'p E,
-    /// The interval every certificate must cover.
+    /// The original validation interval. Under shell rules every certificate
+    /// must cover it, subject to explicit target deferral.
     pub interval: Interval,
     /// Certificate-policy processing inputs.
     pub policy: Policy<'a>,
@@ -301,6 +302,8 @@ pub struct ValidationContext<'a, 'p, V: Verify<E>, W: Watch, R: Recognizer<E>, E
 pub(super) struct Settings<'a, 'p, R: Recognizer<E>, E: Work = Memory> {
     pub(super) execution: &'p E,
     pub(super) interval: Interval,
+    pub(super) validity: ValidityPolicy,
+    pub(super) target: &'a Certificate<'a>,
     pub(super) policy: Policy<'a>,
     pub(super) policies: usize,
     pub(super) recognizer: &'p R,
@@ -443,7 +446,12 @@ pub(super) fn certificate_facts<'a, E, R: Recognizer<Q>, M: Meter, Q: Work>(
         issuing: Some(RejectionReason::NotAuthority),
         rejected: None,
     };
-    if !settings.interval.inside(certificate.tbs().validity()) {
+    let check_interval = if core::ptr::eq(certificate, settings.target) {
+        settings.validity.target == TargetValidity::Required
+    } else {
+        settings.validity.model == ValidityModel::Shell
+    };
+    if check_interval && !settings.interval.inside(certificate.tbs().validity()) {
         facts.rejected = Some(RejectionReason::Validity);
         return Ok(Some(facts));
     }
@@ -652,6 +660,16 @@ pub fn validate<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>(
     validate_effective(chain, EffectiveAnchor::standing(anchor), context)
 }
 
+/// Check a supplied path with a caller-selected validity policy.
+pub fn validate_with_validity<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>(
+    chain: &[&'a Certificate<'a>],
+    anchor: Anchor<'a>,
+    context: &ValidationContext<'a, '_, V, W, R, E>,
+    validity: ValidityPolicy,
+) -> BuildResult<Validation<'a>, V::Error, R::Error> {
+    validate_effective_with_validity(chain, EffectiveAnchor::standing(anchor), context, validity)
+}
+
 /// Check the supplied local path with an explicitly bound effective anchor key.
 /// This shares every static check with [`validate`], including the local anchor
 /// certificate's name constraints. It does not resume constraints or policy
@@ -661,6 +679,16 @@ pub fn validate_effective<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>
     chain: &[&'a Certificate<'a>],
     effective: EffectiveAnchor<'a>,
     context: &ValidationContext<'a, '_, V, W, R, E>,
+) -> BuildResult<Validation<'a>, V::Error, R::Error> {
+    validate_effective_with_validity(chain, effective, context, ValidityPolicy::default())
+}
+
+/// Check an explicitly bound effective anchor and caller-selected time rules.
+pub fn validate_effective_with_validity<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>(
+    chain: &[&'a Certificate<'a>],
+    effective: EffectiveAnchor<'a>,
+    context: &ValidationContext<'a, '_, V, W, R, E>,
+    validity: ValidityPolicy,
 ) -> BuildResult<Validation<'a>, V::Error, R::Error> {
     let anchor = effective.anchor;
     let Some(target) = chain.first() else {
@@ -684,6 +712,8 @@ pub fn validate_effective<'a, V: Verify<E>, W: Watch, R: Recognizer<E>, E: Work>
     let settings = Settings {
         execution: context.execution,
         interval: context.interval,
+        validity,
+        target,
         policy: context.policy,
         policies: context.bounds.policies,
         recognizer: context.recognizer,

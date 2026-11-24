@@ -494,6 +494,81 @@ fn complete_lists_produce_clear_revoked_hold_stale_and_partial() {
 }
 
 #[test]
+fn chain_uses_child_issuance_for_noncompromise_ca_revocation() {
+    // Authentic revocation stays observable. Only the model's applicable
+    // instant changes, and only for a CA with a known noncompromise reason.
+    let (root_key, leaf_key) = keys();
+    let issuer_key = SigningKey::from_bytes((&[3; 32]).into()).unwrap();
+    let (root_der, _) = certificates(&root_key, &leaf_key);
+    let issuer_der = certificate_with_extensions(
+        "Issuer",
+        "Root",
+        &issuer_key,
+        &root_key,
+        &ext(oid::BASIC_CONSTRAINTS, true, &tlv(0x30, &tlv(1, &[0xff]))),
+    );
+    let leaf_der = certificate_with_extensions(
+        "Leaf",
+        "Issuer",
+        &leaf_key,
+        &issuer_key,
+        &ext(oid::DATE_OF_CERT_GEN, false, &tlv(0x18, b"20250102000000Z")),
+    );
+    let account = memory(1 << 20);
+    let parser = Parser::der(account.clone());
+    let root = Certificate::read(&parser, &root_der, 1).unwrap();
+    let issuer = Certificate::read(&parser, &issuer_der, 500).unwrap();
+    let leaf = Certificate::read(&parser, &leaf_der, 1000).unwrap();
+    let oracle = Oracle {
+        calls: Cell::new(0),
+    };
+    let context = context(&account, &oracle);
+    let utc = LeapTable::new(at(1).seconds() - 1, at(11).seconds(), &[]).unwrap();
+    let query = query(&utc);
+    for model in [path::ValidityModel::Shell, path::ValidityModel::Chain] {
+        let PathOutcome::Accepted(checked) = pki::check_path_with_validity(
+            &[&leaf, &issuer],
+            Anchor::from_certificate(&root),
+            &context,
+            path::ValidityPolicy::ades(model),
+        )
+        .unwrap() else {
+            panic!("test path must pass static validation")
+        };
+        for (date, reason, expect_clear) in [
+            ("250103000000Z", 4, model == path::ValidityModel::Chain),
+            ("250102000000Z", 4, false),
+            ("250103000000Z", 1, false),
+            ("250103000000Z", 0, false),
+        ] {
+            let der = List {
+                entry: Some((date, reason)),
+                ..List::empty()
+            }
+            .sign(&root_key);
+            let list = CertificateList::read(&parser, &der, 1500).unwrap();
+            let outcome =
+                status::assess(&checked, 0, &[crl(&list)], &query, &context, &oracle, &Hash)
+                    .unwrap();
+            let Finding::Revoked(revoked) = outcome.statements()[0].finding else {
+                panic!("authenticated CRL must retain the revocation")
+            };
+            if expect_clear {
+                assert_eq!(
+                    outcome.status(),
+                    Status::NotRevoked {
+                        basis: 0,
+                        later: Some(revoked),
+                    }
+                );
+            } else {
+                assert!(matches!(outcome.status(), Status::Revoked { basis: 0, .. }));
+            }
+        }
+    }
+}
+
+#[test]
 fn mixed_sources_keep_conflict_never_issued_and_authentication_failures() {
     // Good and revoked answers with equal issuance conflict, an extended
     // never-issued answer remains distinct, and a forged signature cannot speak.

@@ -9,10 +9,11 @@ use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 use structured_pkix::Certificate;
 use structured_pkix::extension::Recognizer;
 use structured_pkix::path::{
-    self, Anchor, BuildResult, EffectiveKey, Interval, Rejection, Truncation, Validation,
-    ValidationContext, ValidationFacts, Verify, Watch,
+    self, Anchor, BuildResult, EffectiveKey, Interval, Rejection, TargetValidity, Truncation,
+    Validation, ValidationContext, ValidationFacts, Verify, Watch,
 };
-use structured_pkix::temporal::LeapTable;
+pub use structured_pkix::path::{ValidityModel, ValidityPolicy};
+use structured_pkix::temporal::{Instant, LeapTable};
 
 mod authority;
 mod census;
@@ -76,6 +77,7 @@ impl<'a> Member<'a> {
 pub struct CheckedPath<'a> {
     anchor: Anchor<'a>,
     interval: Interval,
+    validity: ValidityPolicy,
     members: OwnedVec<Member<'a>>,
     direct_target: Option<&'a Certificate<'a>>,
     facts: ValidationFacts<'a>,
@@ -90,10 +92,49 @@ impl<'a> CheckedPath<'a> {
         self.anchor
     }
 
-    /// Exact lossless interval checked by the shared path processor.
+    /// Original validation interval. With chain validity, issuers are checked
+    /// at their subordinate's issuance time rather than over this interval.
     #[must_use]
     pub fn interval(&self) -> Interval {
         self.interval
+    }
+
+    /// Certificate validity policy used by the static path processor.
+    #[must_use]
+    pub fn validity(&self) -> ValidityPolicy {
+        self.validity
+    }
+
+    /// Issuance time used to check an intermediate in a chain-model path.
+    ///
+    /// `member` addresses the original issuer-to-subject sequence. Returns
+    /// `None` for shell paths, the target, direct trust and invalid ordinals.
+    pub fn subordinate_issuance<W: Work>(
+        &self,
+        member: usize,
+        work: &W,
+    ) -> Result<Option<Instant>, structured_pkix::Error> {
+        if self.validity.model != ValidityModel::Chain {
+            return Ok(None);
+        }
+        member
+            .checked_add(1)
+            .and_then(|index| self.members.get(index))
+            .map(|child| {
+                path::issuance_time(child.certificate(), work).map(structured_pkix::Time::instant)
+            })
+            .transpose()
+    }
+
+    fn covers_target(&self, from: Instant, to: Instant) -> bool {
+        if self.interval.from_instant() > from || self.interval.to_instant() < to {
+            return false;
+        }
+        if self.validity.target != TargetValidity::Deferred {
+            return true;
+        }
+        let validity = self.target().certificate().tbs().validity();
+        validity.not_before().instant() <= from && to <= validity.not_after().instant()
     }
 
     /// Original non-anchor members in issuer-to-subject order. The final entry
@@ -170,9 +211,7 @@ impl<'a> CheckedPath<'a> {
             .verified()
             .interval(utc, execution)
             .map_err(TimestampBindingError::Temporal)?;
-        if self.interval.from_instant() > generation.earliest
-            || self.interval.to_instant() < generation.latest
-        {
+        if !self.covers_target(generation.earliest, generation.latest) {
             return Ok(TimestampBinding::Rejected(
                 TimestampBindingFailure::Interval,
             ));
@@ -293,7 +332,18 @@ pub fn check_path<'a, V: Verify<E>, T: Watch, R: Recognizer<E>, E: Work>(
     anchor: Anchor<'a>,
     context: &ValidationContext<'a, '_, V, T, R, E>,
 ) -> BuildResult<PathOutcome<'a>, V::Error, R::Error> {
-    let facts = match path::validate(chain, anchor, context)? {
+    check_path_with_validity(chain, anchor, context, ValidityPolicy::default())
+}
+
+/// Check a path under the selected validity policy and retain it for status
+/// assessment and for association with the original validation material.
+pub fn check_path_with_validity<'a, V: Verify<E>, T: Watch, R: Recognizer<E>, E: Work>(
+    chain: &[&'a Certificate<'a>],
+    anchor: Anchor<'a>,
+    context: &ValidationContext<'a, '_, V, T, R, E>,
+    validity: ValidityPolicy,
+) -> BuildResult<PathOutcome<'a>, V::Error, R::Error> {
+    let facts = match path::validate_with_validity(chain, anchor, context, validity)? {
         Validation::Accepted(facts) => facts,
         Validation::Rejected(reason) => return Ok(PathOutcome::Rejected(reason)),
         Validation::Incomplete(reason) => return Ok(PathOutcome::Incomplete(reason)),
@@ -314,6 +364,7 @@ pub fn check_path<'a, V: Verify<E>, T: Watch, R: Recognizer<E>, E: Work>(
     Ok(PathOutcome::Accepted(CheckedPath {
         anchor,
         interval: context.interval,
+        validity,
         members: members.into_owned(),
         direct_target: None,
         facts,
@@ -338,6 +389,7 @@ pub fn check_direct_anchor<'a, W: Work>(
     Ok(Some(CheckedPath {
         anchor,
         interval,
+        validity: ValidityPolicy::default(),
         members: work.vector().into_owned(),
         direct_target: Some(target),
         facts,

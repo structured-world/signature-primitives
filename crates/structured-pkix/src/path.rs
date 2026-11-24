@@ -27,13 +27,16 @@ mod error;
 mod name_space;
 mod policy;
 mod validation;
+mod validity;
 
 pub use error::{BuildError, BuildResult};
 pub use validation::hybrid;
 pub use validation::{
     ConstraintSource, EffectiveAnchor, NameConstraintFailure, Rejection, RejectionReason,
     Validation, ValidationBounds, ValidationContext, ValidationFacts, validate, validate_effective,
+    validate_effective_with_validity, validate_with_validity,
 };
+pub use validity::{TargetValidity, ValidityModel, ValidityPolicy, issuance_time};
 
 use crate::algorithm::AlgorithmIdentifier;
 use crate::certificate::{Certificate, Validity};
@@ -838,6 +841,7 @@ struct Search<'a, 'p, V: Verify, W: Watch, R: Recognizer> {
     pool: Option<OwnedVec<&'a Certificate<'a>>>,
     anchors: &'p [Anchor<'a>],
     interval: Interval,
+    validity: ValidityPolicy,
     bounds: Bounds,
     policy: Policy<'a>,
     verifier: &'p V,
@@ -1248,6 +1252,19 @@ pub fn build<'a, V: Verify, W: Watch, R: Recognizer>(
     pool: &[&'a Certificate<'a>],
     context: &Context<'a, '_, V, W, R>,
 ) -> BuildResult<Outcome<'a>, V::Error, R::Error> {
+    build_with_validity(target, pool, context, ValidityPolicy::default())
+}
+
+/// Build paths under the caller-selected certificate validity rules.
+///
+/// Construction and supplied-path validation share the same checks. Use the
+/// same policy for both, particularly when deferring the signer's own validity.
+pub fn build_with_validity<'a, V: Verify, W: Watch, R: Recognizer>(
+    target: &'a Certificate<'a>,
+    pool: &[&'a Certificate<'a>],
+    context: &Context<'a, '_, V, W, R>,
+    validity: ValidityPolicy,
+) -> BuildResult<Outcome<'a>, V::Error, R::Error> {
     // A path ends at an anchor, so a caller who named none has asked a
     // question whose complete answer is no paths. Reading the pool to find
     // that out spends a budget on work that cannot change the answer, and a
@@ -1264,7 +1281,9 @@ pub fn build<'a, V: Verify, W: Watch, R: Recognizer>(
     // answer that cannot change. The question is asked again where every
     // certificate of a path is held to it, and asking it here first is what
     // keeps a bound from calling this conclusive answer a partial one.
-    if !context.interval.inside(target.tbs().validity()) {
+    if validity.target == TargetValidity::Required
+        && !context.interval.inside(target.tbs().validity())
+    {
         return Ok(Outcome::empty(context.execution));
     }
 
@@ -1285,6 +1304,7 @@ pub fn build<'a, V: Verify, W: Watch, R: Recognizer>(
         pool: None,
         anchors: &anchors,
         interval: context.interval,
+        validity,
         bounds: context.bounds,
         policy: context.policy,
         verifier: context.verifier,
@@ -1896,6 +1916,8 @@ fn properties<'a, V: Verify, W: Watch, R: Recognizer>(
     let settings = validation::Settings {
         execution: search.execution,
         interval: search.interval,
+        validity: search.validity,
+        target: search.target,
         policy: search.policy,
         policies: search.bounds.policies,
         recognizer: search.recognizer,
@@ -1951,6 +1973,8 @@ fn validate_candidate<'a, V: Verify, W: Watch, R: Recognizer>(
     let settings = validation::Settings {
         execution: search.execution,
         interval: search.interval,
+        validity: search.validity,
+        target: search.target,
         policy: search.policy,
         policies: search.bounds.policies,
         recognizer: search.recognizer,

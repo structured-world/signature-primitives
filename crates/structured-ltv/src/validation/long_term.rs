@@ -78,14 +78,7 @@ impl From<MemoryError> for Error {
     }
 }
 
-/// Whether a candidate path uses shell or chain validity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValidityModel {
-    /// All certificates must be valid at the validation time.
-    Shell,
-    /// Issuers must be valid at their applicable certificate issuance times.
-    Chain,
-}
+pub use structured_pkix::path::ValidityModel;
 
 /// Certificate validity interval, inclusive at both ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -478,6 +478,7 @@ fn an_exhausted_edge_counter_never_overflows() {
         pool: Some(pool),
         anchors: &anchors,
         interval: moment(),
+        validity: super::ValidityPolicy::default(),
         bounds: Bounds {
             edges: usize::MAX,
             ..Bounds::default()
@@ -525,6 +526,7 @@ fn search_work_uses_the_aggregate_domain() {
         pool: None,
         anchors: &[],
         interval: moment(),
+        validity: super::ValidityPolicy::default(),
         bounds: Bounds::default(),
         policy: Policy::default(),
         verifier: &(),
@@ -556,6 +558,128 @@ fn parse<'a>(parser: &'a Parser, ders: &'a [Vec<u8>]) -> Vec<Certificate<'a>> {
     ders.iter()
         .map(|der| Certificate::read(parser, der, 0).expect("a certificate this test wrote"))
         .collect()
+}
+
+fn dated_chain(extra: Vec<Vec<u8>>, leaf_end: &'static str) -> Vec<Vec<u8>> {
+    [
+        Mint {
+            subject: "Leaf",
+            issuer: "Issuer",
+            validity: ("250601000000Z", leaf_end),
+            extra,
+            ..Mint::default()
+        },
+        Mint {
+            subject: "Issuer",
+            issuer: "Root",
+            key: 2,
+            signer: 3,
+            authority: Authority::Unlimited,
+            validity: ("240101000000Z", "250601000000Z"),
+            ..Mint::default()
+        },
+        Mint {
+            subject: "Root",
+            issuer: "Root",
+            key: 3,
+            signer: 3,
+            authority: Authority::Unlimited,
+            validity: ("230101000000Z", "241201000000Z"),
+            ..Mint::default()
+        },
+    ]
+    .iter()
+    .map(Mint::build)
+    .collect()
+}
+
+#[test]
+fn chain_and_shell_use_the_same_rules_in_search_and_supplied_validation() {
+    // The intermediate expires at the child's issuance boundary. It need
+    // not be valid at the later validation time, and the anchor is external.
+    use super::{
+        TargetValidity, Validation, ValidityModel, ValidityPolicy, build_with_validity,
+        validate_with_validity,
+    };
+    let parser = Parser::der(crate::fixtures::memory());
+    let ders = dated_chain(Vec::new(), "270101000000Z");
+    let read = parse(&parser, &ders);
+    let work = crate::fixtures::memory();
+    let anchors = [Anchor::from_certificate(&read[2])];
+    let search = context(&anchors, Bounds::default(), &work);
+    let supplied = super::ValidationContext {
+        execution: &work,
+        interval: moment(),
+        policy: Policy::default(),
+        bounds: super::ValidationBounds::default(),
+        verifier: &Ecdsa,
+        watch: &(),
+        recognizer: &(),
+    };
+    for model in [ValidityModel::Shell, ValidityModel::Chain] {
+        let validity = ValidityPolicy {
+            model,
+            target: TargetValidity::Required,
+        };
+        let found = build_with_validity(&read[0], &[&read[1]], &search, validity).unwrap();
+        let path =
+            validate_with_validity(&[&read[0], &read[1]], anchors[0], &supplied, validity).unwrap();
+        assert_eq!(
+            found.paths().len(),
+            usize::from(model == ValidityModel::Chain)
+        );
+        if model == ValidityModel::Chain {
+            assert!(matches!(path, Validation::Accepted(_)));
+        } else {
+            assert!(matches!(path, Validation::Rejected(rejection)
+                if rejection.at == Some(super::ConstraintSource::Certificate(1))
+                && rejection.reason == super::RejectionReason::Validity));
+        }
+    }
+}
+
+#[test]
+fn chain_uses_the_written_generation_time_and_defers_only_the_signer() {
+    // A written generation time outside the issuing CA's lifetime cannot be
+    // repaired by notBefore; deferral only affects the expired target.
+    use super::{
+        TargetValidity, Validation, ValidityModel, ValidityPolicy, validate_with_validity,
+    };
+    let parser = Parser::der(crate::fixtures::memory());
+    let work = crate::fixtures::memory();
+    let options = super::ValidationContext {
+        execution: &work,
+        interval: moment(),
+        policy: Policy::default(),
+        bounds: super::ValidationBounds::default(),
+        verifier: &Ecdsa,
+        watch: &(),
+        recognizer: &(),
+    };
+    for (date, accepted) in [
+        (&b"20250101000000Z"[..], true),
+        (&b"20230101000000Z"[..], false),
+        (&b"20250101000000.1Z"[..], false),
+    ] {
+        let date = extension(oid::DATE_OF_CERT_GEN, false, &tlv(0x18, date));
+        let ders = dated_chain(vec![date], "251231000000Z");
+        let read = parse(&parser, &ders);
+        let anchor = Anchor::from_certificate(&read[2]);
+        let chain = [&read[0], &read[1]];
+        let ades = ValidityPolicy::ades(ValidityModel::Chain);
+        let outcome = validate_with_validity(&chain, anchor, &options, ades).unwrap();
+        assert_eq!(matches!(outcome, Validation::Accepted(_)), accepted);
+        if accepted {
+            let required = ValidityPolicy {
+                target: TargetValidity::Required,
+                ..ades
+            };
+            let strict = validate_with_validity(&chain, anchor, &options, required).unwrap();
+            assert!(matches!(strict, Validation::Rejected(rejection)
+                if rejection.at == Some(super::ConstraintSource::Certificate(0))
+                && rejection.reason == super::RejectionReason::Validity));
+        }
+    }
 }
 
 #[test]

@@ -21,6 +21,41 @@ fn finish<F: Future>(future: F) -> F::Output {
 }
 
 #[test]
+fn reverse_marker_scan_matches_scalar_across_window_boundaries() {
+    // Check all byte values adjacent to a possible marker, including starts
+    // in the last three bytes of a window and truncated trailing markers.
+    let mut bytes = [0; 513];
+    for (at, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::try_from(at % 256).unwrap();
+    }
+    for at in (0..508).step_by(13) {
+        bytes[at..at + 4].copy_from_slice(b"PK\x05\x06");
+    }
+    bytes[510..].copy_from_slice(b"PK\x05");
+    let expected: alloc::vec::Vec<_> = bytes
+        .windows(4)
+        .enumerate()
+        .rev()
+        .filter_map(|(at, value)| (value == b"PK\x05\x06").then_some(at))
+        .collect();
+    for split in 0..=bytes.len() {
+        let (left, right) = bytes.split_at(split);
+        let mut actual = alloc::vec::Vec::new();
+        scan_chunk(right, &[], |at| {
+            actual.push(split + at);
+            Ok::<_, core::convert::Infallible>(())
+        })
+        .unwrap();
+        scan_chunk(left, &right[..right.len().min(3)], |at| {
+            actual.push(at);
+            Ok::<_, core::convert::Infallible>(())
+        })
+        .unwrap();
+        assert_eq!(actual, expected, "window split at {split}");
+    }
+}
+
+#[test]
 fn zip64_record_must_fit_before_its_locator_before_any_record_read() {
     // The locator cannot point into itself or its following classic EOCD.
     // Reject its enclosure before the fixed-record copy or source callbacks.

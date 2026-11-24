@@ -6,7 +6,7 @@ use crate::{
     model::admit,
 };
 use structured_asn1::memory::Work;
-use structured_cms::digest::{DigestBatch, DigestError, PassError};
+use structured_cms::digest::{DigestError, PassError, SingleDigest};
 use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 pub(super) mod sources;
 mod status;
@@ -354,26 +354,10 @@ fn name_for_ranges<'p, P: AsnDigest<'p>, const N: usize>(
     let Some(identity) = provider.identity(Algorithm::Sha1) else {
         return Ok(None);
     };
-    let mut identities = work.vector();
-    identities.try_push(identity).map_err(|cause| {
-        NameError::Pdf(Error {
-            kind: ErrorKind::Resource(cause),
-            location,
-        })
-    })?;
-    let batch = DigestBatch::prepare(
-        provider,
-        identities.into_owned(),
-        work,
-        "pades.vri",
-        location.span().start,
-    )
-    .map_err(NameError::Digest)?;
-    let memo = batch.run(ranges, work).map_err(NameError::Pass)?;
-    let output = memo
-        .for_request(0, work)
-        .map_err(NameError::Digest)?
-        .ok_or(NameError::LostRequest)?;
+    let digest =
+        SingleDigest::prepare(provider, identity, work, "pades.vri", location.span().start)
+            .map_err(NameError::Digest)?;
+    let output = digest.run(ranges, work).map_err(NameError::Pass)?;
     let bytes = output.as_bytes();
     if bytes.len() != 20 {
         return Err(NameError::Width(bytes.len()));

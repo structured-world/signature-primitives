@@ -23,7 +23,8 @@ pub(crate) use entry::reason_element;
 pub use entry::{EntryLookup, EntryScan};
 mod delta;
 pub use delta::{
-    BoundDelta, CombinedEntry, DeltaBinding, DeltaFailure, EntryOrigin, MissingDeltaField,
+    BoundDelta, CombinedEntry, DeltaBinding, DeltaFailure, DeltaMetadata, EntryOrigin,
+    MissingDeltaField,
 };
 mod freshness;
 pub use freshness::Freshness;
@@ -166,8 +167,7 @@ pub struct TbsCertList<'a> {
     next_update: Option<Time>,
     revoked: OwnedVec<RevokedCertificate<'a>>,
     extensions: Extensions<'a>,
-    distribution_point: Option<NonZeroUsize>,
-    delta_indicator: Option<NonZeroUsize>,
+    ordinals: ExtensionOrdinals,
     bytes: &'a [u8],
     span: Span,
 }
@@ -245,11 +245,19 @@ impl<'a> TbsCertList<'a> {
     }
 
     fn distribution_point<W: Work>(&self, work: &W) -> Result<Option<&Extension<'a>>> {
-        self.indexed_extension(self.distribution_point, work)
+        self.indexed_extension(self.ordinals.distribution_point, work)
     }
 
     fn delta_indicator<W: Work>(&self, work: &W) -> Result<Option<&Extension<'a>>> {
-        self.indexed_extension(self.delta_indicator, work)
+        self.indexed_extension(self.ordinals.delta_indicator, work)
+    }
+
+    fn crl_number<W: Work>(&self, work: &W) -> Result<Option<&Extension<'a>>> {
+        self.indexed_extension(self.ordinals.number, work)
+    }
+
+    fn authority_identifier<W: Work>(&self, work: &W) -> Result<Option<&Extension<'a>>> {
+        self.indexed_extension(self.ordinals.authority, work)
     }
     /// Original document location of `TBSCertList`.
     #[must_use]
@@ -541,9 +549,12 @@ fn read_tbs<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<TbsCertLis
         }
         next = inside.next_element().field(TBS)?;
     }
-    let (extensions, distribution_point, delta_indicator) = match next {
+    let (extensions, ordinals) = match next {
         Some(tagged) => read_list_extensions(&inside, &tagged, version)?,
-        None => (Extensions::empty(inside.memory()), None, None),
+        None => (
+            Extensions::empty(inside.memory()),
+            ExtensionOrdinals::default(),
+        ),
     };
     end(&inside, TBS, element.span().start)?;
     Ok(TbsCertList {
@@ -555,20 +566,29 @@ fn read_tbs<'a>(parent: &Reader<'a>, element: &Element<'a>) -> Result<TbsCertLis
         next_update,
         revoked: revoked.into_owned(),
         extensions,
-        distribution_point,
-        delta_indicator,
+        ordinals,
         bytes: element.as_bytes(),
         span: element.span(),
     })
 }
 
-type IndexedExtensions<'a> = (Extensions<'a>, Option<NonZeroUsize>, Option<NonZeroUsize>);
+#[derive(Debug, Default)]
+struct ExtensionOrdinals {
+    distribution_point: Option<NonZeroUsize>,
+    delta_indicator: Option<NonZeroUsize>,
+    number: Option<NonZeroUsize>,
+    authority: Option<NonZeroUsize>,
+}
 
 fn read_list_extensions<'a>(
     inside: &Reader<'a>,
     tagged: &Element<'a>,
     version: Version,
-) -> Result<IndexedExtensions<'a>> {
+) -> Result<(Extensions<'a>, ExtensionOrdinals)> {
+    const IDP: u8 = crate::oid::ISSUING_DISTRIBUTION_POINT.as_bytes()[2];
+    const DELTA: u8 = crate::oid::DELTA_CRL_INDICATOR.as_bytes()[2];
+    const NUMBER: u8 = crate::oid::CRL_NUMBER.as_bytes()[2];
+    const AUTHORITY: u8 = crate::oid::AUTHORITY_KEY_IDENTIFIER.as_bytes()[2];
     let at = tagged.span().start;
     if tagged.tag() != Tag::context(true, 0) || version != Version::V2 {
         return Err(Error::new(ErrorCode::UnexpectedField, EXTENSIONS, at));
@@ -576,24 +596,29 @@ fn read_list_extensions<'a>(
     let mut wrapper = inside.enter(tagged).field(EXTENSIONS)?;
     let sequence = required(&mut wrapper, EXTENSIONS, at)?;
     let execution = wrapper.execution();
-    let mut distribution_point = None;
-    let mut delta_indicator = None;
+    let mut ordinals = ExtensionOrdinals::default();
     let extensions =
         extension::read_with_ordinals(&wrapper, &sequence, EXTENSIONS, |index, kind, span| {
-            // These two fixed-width OIDs are queried repeatedly by scope,
-            // assessment and delta pairing. Keep only their wire ordinals.
+            // One length check, the shared two-byte id-ce prefix, and up to
+            // four comparisons of the remaining subidentifier.
             execution
                 .charge_work(7)
                 .map_err(|cause| Error::resource(cause, EXTENSIONS, span.start))?;
-            if kind == crate::oid::ISSUING_DISTRIBUTION_POINT {
-                distribution_point = NonZeroUsize::new(index + 1);
-            } else if kind == crate::oid::DELTA_CRL_INDICATOR {
-                delta_indicator = NonZeroUsize::new(index + 1);
-            }
+            let [0x55, 0x1d, extension] = kind.as_bytes() else {
+                return Ok(());
+            };
+            let slot = match *extension {
+                IDP => &mut ordinals.distribution_point,
+                DELTA => &mut ordinals.delta_indicator,
+                NUMBER => &mut ordinals.number,
+                AUTHORITY => &mut ordinals.authority,
+                _ => return Ok(()),
+            };
+            *slot = NonZeroUsize::new(index + 1);
             Ok(())
         })?;
     end(&wrapper, EXTENSIONS, at)?;
-    Ok((extensions, distribution_point, delta_indicator))
+    Ok((extensions, ordinals))
 }
 
 fn read_entry<'a>(

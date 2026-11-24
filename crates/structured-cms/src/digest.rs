@@ -45,6 +45,55 @@ fn started<S, E>(start: Result<Resolution<S>, E>) -> Result<S, DigestError<E>> {
     }
 }
 
+/// One resolved digest without allocating state or output catalogues.
+/// Provider-owned allocations remain subject to the operation's Work.
+pub struct SingleDigest<'a, P: Digest<'a>> {
+    provider: &'a P,
+    identity: P::Identity,
+    state: P::State,
+    location: (&'static str, u64),
+}
+
+impl<'a, P: Digest<'a>> SingleDigest<'a, P> {
+    /// Prepare one identity from this selected provider.
+    pub fn prepare<W: Work>(
+        provider: &'a P,
+        identity: P::Identity,
+        execution: &W,
+        field: &'static str,
+        at: u64,
+    ) -> DigestResult<Self, P::Error> {
+        crate::provider::require_instance(provider, field, at).map_err(DigestError::Processing)?;
+        execution
+            .charge_work(core::mem::size_of::<P::Identity>() as u64 + 1)
+            .map_err(|cause| DigestError::Processing(Error::resource(cause, field, at)))?;
+        let state = started(provider.start(&identity, execution))?;
+        Ok(Self {
+            provider,
+            identity,
+            state,
+            location: (field, at),
+        })
+    }
+
+    /// Complete the original source once and retain its provider-bound result.
+    pub fn run<S: Source, W: Work>(
+        self,
+        source: &mut S,
+        execution: &W,
+    ) -> PassResult<DigestOutput<'a, P>, S::Error, P::Error> {
+        let output = run_single(
+            self.provider,
+            &self.identity,
+            self.state,
+            source,
+            execution,
+            self.location,
+        )?;
+        Ok(Finalized::new(self.provider, self.identity, output))
+    }
+}
+
 struct Pending<I, S> {
     ordinal: usize,
     identity: I,
@@ -433,6 +482,39 @@ impl<'a, P: Digest<'a>> Sink for RelatedSink<'_, 'a, P> {
     }
 }
 
+fn run_single<'a, P: Digest<'a>, S: Source, W: Work>(
+    provider: &'a P,
+    identity: &P::Identity,
+    mut state: P::State,
+    source: &mut S,
+    execution: &W,
+    (field, at): (&'static str, u64),
+) -> PassResult<P::Output, S::Error, P::Error> {
+    stream::run(
+        source,
+        &mut RelatedSink {
+            provider,
+            state: &mut state,
+        },
+        execution,
+        field,
+        at,
+    )?;
+    let output = provider
+        .finish(state, execution)
+        .map_err(|error| StreamError::Callback(DigestError::Callback(error)))?;
+    if let Some(expected) = provider.width(identity) {
+        let actual = output.as_ref().len();
+        if actual != expected {
+            return Err(StreamError::Callback(DigestError::OutputWidth {
+                expected,
+                actual,
+            }));
+        }
+    }
+    Ok(output)
+}
+
 impl<'a, P: Digest<'a>> DigestMemo<'a, P> {
     /// Completes another input with the original request's resolved identity.
     ///
@@ -456,31 +538,16 @@ impl<'a, P: Digest<'a>> DigestMemo<'a, P> {
             return Ok(None);
         };
         let identity = existing.identity();
-        let mut state =
+        let state =
             started(self.provider.start(identity, execution)).map_err(StreamError::Callback)?;
-        stream::run(
+        let output = run_single(
+            self.provider,
+            identity,
+            state,
             source,
-            &mut RelatedSink {
-                provider: self.provider,
-                state: &mut state,
-            },
             execution,
-            field,
-            at,
+            (field, at),
         )?;
-        let output = self
-            .provider
-            .finish(state, execution)
-            .map_err(|error| StreamError::Callback(DigestError::Callback(error)))?;
-        if let Some(expected) = self.provider.width(identity) {
-            let actual = output.as_ref().len();
-            if actual != expected {
-                return Err(StreamError::Callback(DigestError::OutputWidth {
-                    expected,
-                    actual,
-                }));
-            }
-        }
         Ok(Some(RelatedDigest {
             provider: self.provider,
             identity,

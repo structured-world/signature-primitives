@@ -97,10 +97,6 @@ pub type RetainResult<T, X> = Result<T, RetainError<<X as Xml>::Error, <X as Xml
 /// authority, freshness, path or baseline level. OCSP protocol failures remain
 /// protocol failures rather than disappearing from a material catalogue.
 #[derive(Debug)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "fixed-size parsed value avoids an extra allocation per material; any retained collection admits its full enum capacity"
-)]
 pub enum Value<'source> {
     /// Original certificate, retaining its producing session and ranges.
     Certificate(Certificate<'source>),

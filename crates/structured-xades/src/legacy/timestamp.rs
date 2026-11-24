@@ -467,16 +467,23 @@ fn append_group<X: Xml, W: Work>(
     Ok(())
 }
 
-fn each_reference<X: ReferenceXml, W: Work>(
+fn reference_count<X: ReferenceXml, W: Work>(
     access: &Access<'_, X, W>,
     signature: X::Id,
-    mut visit: impl FnMut(X::Id, Option<X::Id>) -> InputResult<(), X>,
-) -> InputResult<(), X> {
-    let count = access
+) -> InputResult<usize, X> {
+    access
         .query(signature, |xml, snapshot, work| {
             xml.reference_count(snapshot, signature, work)
         })
-        .map_err(InputError::Access)?;
+        .map_err(InputError::Access)
+}
+
+fn each_reference<X: ReferenceXml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    count: usize,
+    mut visit: impl FnMut(X::Id, Option<X::Id>) -> InputResult<(), X>,
+) -> InputResult<(), X> {
     for ordinal in 0..count {
         let (node, target) = access
             .query(signature, |xml, snapshot, work| {
@@ -496,7 +503,8 @@ fn direct_references<X: ReferenceXml, W: Work>(
     excluded: Option<X::Id>,
     parts: &mut OwnedVec<Part<X::Id>, W>,
 ) -> InputResult<(), X> {
-    each_reference(access, signature, |node, target| {
+    let count = reference_count(access, signature)?;
+    each_reference(access, signature, count, |node, target| {
         if let (Some(target), Some(excluded)) = (target, excluded)
             && same(access, target, excluded)?
         {
@@ -512,10 +520,25 @@ fn archive<X: ReferenceXml, W: Work>(
     stamp: &Stamp<X>,
     parts: &mut OwnedVec<Part<X::Id>, W>,
 ) -> InputResult<(), X> {
+    // Small signatures avoid indexing allocations. For larger inputs the
+    // index answers only object membership; every reference stays in wire order.
+    const LINEAR_REFERENCE_LIMIT: usize = 8;
+
     // TS 101 903 V1.2.2 §7.7 groups elements by role, not unsigned XML order.
     // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.02.02_60/ts_101903v010202p.pdf
     let signature = prepared.bound.containers().signature();
-    direct_references(access, signature, None, parts)?;
+    let count = reference_count(access, signature)?;
+    let refusal = |cause| InputError::Resource {
+        node: stamp.node,
+        cause,
+    };
+    let mut targets = (count > LINEAR_REFERENCE_LIMIT).then(|| access.execution().map());
+    each_reference(access, signature, count, |node, target| {
+        if let (Some(targets), Some(target)) = (&mut targets, target) {
+            targets.try_insert(target, ()).map_err(refusal)?;
+        }
+        push(parts, node, Part::Reference(node))
+    })?;
     let mut add = |id| push(parts, stamp.node, Part::Element(id));
     for local in ["SignedInfo", "SignatureValue"] {
         add(crate::timestamp::singleton(access, signature, DS, local)?)?;
@@ -543,15 +566,23 @@ fn archive<X: ReferenceXml, W: Work>(
         if !is(access, object, DS, "Object")? {
             continue;
         }
-        let mut referenced = false;
-        each_reference(access, signature, |_, target| {
-            if let Some(target) = target
-                && same(access, target, object)?
-            {
-                referenced = true;
-            }
-            Ok(())
-        })?;
+        let referenced = if let Some(targets) = &targets {
+            targets
+                .get(&object, access.execution())
+                .map_err(refusal)?
+                .is_some()
+        } else {
+            let mut referenced = false;
+            each_reference(access, signature, count, |_, target| {
+                if let Some(target) = target
+                    && same(access, target, object)?
+                {
+                    referenced = true;
+                }
+                Ok(())
+            })?;
+            referenced
+        };
         if !referenced {
             add(object)?;
         }

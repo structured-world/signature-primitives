@@ -243,7 +243,15 @@ fn normalize<W: Work>(
     spans: &mut OwnedVec<Span, W>,
     work: &W,
 ) -> Result<(), structured_asn1::memory::MemoryError> {
-    sort_spans(spans, work)?;
+    // The union needs nondecreasing starts. Equal starts can arrive in either
+    // length order because the merge below retains the maximum end.
+    for pair in spans.windows(2) {
+        work.charge_work(1)?;
+        if pair[0].start > pair[1].start {
+            sort_spans(spans, work)?;
+            break;
+        }
+    }
     let mut written = 0;
     for read in 0..spans.len() {
         work.charge_work(3)?;

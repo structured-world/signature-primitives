@@ -36,17 +36,18 @@ pub(super) fn admit(
             .ok_or(MemoryError::WorkExceeded)?,
     )?;
     let mut direct = super::validate::DirectCandidate::default();
+    // Includes this preflight and each later path's scalar/enum decisions.
+    // Pay the fixed part for every path before its metadata is read.
+    work.charge_work(mul(facts.paths.len(), 32)?)?;
     for (index, path) in facts.paths.iter().enumerate() {
-        // Includes this preflight and the later path's scalar/enum decisions.
-        work.charge_work(32)?;
         let members = add(
             mul(path.authorities.len(), 2)?,
             mul(path.revocation_issuers.len(), 8)?,
         )?;
-        work.charge_work(add(
-            members,
-            mul(path.materials.len(), mul(2, per_material)?)?,
-        )?)?;
+        let nested = add(members, mul(path.materials.len(), mul(2, per_material)?)?)?;
+        if nested != 0 {
+            work.charge_work(nested)?;
+        }
         direct.consider(index, path);
     }
     admit_delay(facts, policy, work)?;

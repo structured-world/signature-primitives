@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0](https://github.com/structured-world/signature-primitives/compare/structured-cades-v0.26.0...structured-cades-v0.27.0) - 2026-11-24
+
+### Fixed
+
+- *(pkix)* [**breaking**] scope OCSP nonce binding failures ([#349](https://github.com/structured-world/signature-primitives/pull/349))
+
+### Other
+
+- *(cades)* merge archive ranges in wire order ([#355](https://github.com/structured-world/signature-primitives/pull/355))
+- *(asn1)* reserve diagnostic paths once ([#350](https://github.com/structured-world/signature-primitives/pull/350))
+- reuse signature validation inputs ([#346](https://github.com/structured-world/signature-primitives/pull/346))
+- reduce XAdES and DSTU verification work ([#352](https://github.com/structured-world/signature-primitives/pull/352))
+- *(pades)* compare original stream windows ([#351](https://github.com/structured-world/signature-primitives/pull/351))
+- *(base64)* accelerate long AArch64 streams ([#354](https://github.com/structured-world/signature-primitives/pull/354))
+- *(base64)* decode short MIME tails in quartets ([#347](https://github.com/structured-world/signature-primitives/pull/347))
+
 ## [0.26.0](https://github.com/structured-world/signature-primitives/compare/structured-cades-v0.25.1...structured-cades-v0.26.0) - 2026-11-24
 
 ### Fixed

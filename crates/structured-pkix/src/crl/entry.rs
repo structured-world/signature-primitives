@@ -32,7 +32,64 @@ pub enum EntryLookup<'r, 'a> {
     },
 }
 
+/// Completed entry search for an exact original list and immutable certificate.
+#[derive(Debug, Clone, Copy)]
+pub struct EntryScan<'t, 'r, 'a> {
+    list: &'r super::CertificateList<'a>,
+    target: &'t crate::Certificate<'a>,
+    lookup: EntryLookup<'r, 'a>,
+}
+
+impl<'r, 'a> EntryScan<'_, 'r, 'a> {
+    /// The outcome of the complete original search, including negative facts.
+    #[must_use]
+    pub fn lookup(&self) -> EntryLookup<'r, 'a> {
+        self.lookup
+    }
+}
+
 impl<'r, 'a> Authenticated<'r, 'a> {
+    /// Search this list and retain its original target association for pairing.
+    pub fn scan_entry<'t, W: Work>(
+        &self,
+        target: &'t crate::Certificate<'a>,
+        work: &W,
+    ) -> Result<EntryScan<'t, 'r, 'a>> {
+        Ok(EntryScan {
+            list: self.crl(),
+            target,
+            lookup: self.entry(target, work)?,
+        })
+    }
+
+    pub(super) fn reuse_scan<'t, W: Work>(
+        &self,
+        target: &'t crate::Certificate<'a>,
+        cached: &mut Option<EntryScan<'t, 'r, 'a>>,
+        work: &W,
+    ) -> Result<EntryLookup<'r, 'a>> {
+        let list = self.crl();
+        if let Some(scan) = cached
+            && core::ptr::eq(scan.list, list)
+            && core::ptr::eq(scan.target, target)
+        {
+            work.charge_work_from(
+                [
+                    list.tbs().signature().source_parser(),
+                    target.source_parser(),
+                ],
+                1,
+            )
+            .map_err(|cause| {
+                Error::resource(cause, "certificateList.entryLookup", list.span().start)
+            })?;
+            return Ok(scan.lookup);
+        }
+        let scan = self.scan_entry(target, work)?;
+        *cached = Some(scan);
+        Ok(scan.lookup)
+    }
+
     /// Search by issuer plus serial, retaining indirect issuer inheritance.
     /// Unknown critical extensions anywhere in the list invalidate use for all
     /// statuses, including demands on entries unrelated to this target.
@@ -61,7 +118,7 @@ impl<'r, 'a> Authenticated<'r, 'a> {
         }
         let target_serial = target.serial().as_bytes();
         let target_issuer = target.issuer().as_bytes();
-        let mut inherited = None;
+        let mut inherited_matches = None;
         let mut default_matches = None;
         let mut found = None;
         let mut conflict = None;
@@ -80,16 +137,13 @@ impl<'r, 'a> Authenticated<'r, 'a> {
             }
             // Known extension syntax is checked even on unmatched entries.
             validate_status_extensions(entry, is_delta, execution)?;
-            if let Some(names) = validated_issuer(entry, indirect, execution)? {
-                inherited = Some(names);
-            }
             // Explicit certificateIssuer inherits §5.3.3's original DN
             // encoding identity rule. The default CRL issuer instead uses
             // the ordinary DN equality rules of §7.1.
             // https://www.rfc-editor.org/rfc/rfc5280#section-5.3.3
-            let mut issuer_matches = false;
-            if let Some(names) = &inherited {
-                for name in names {
+            if let Some(names) = validated_issuer(entry, indirect, execution)? {
+                let mut matched = false;
+                for name in &names {
                     execution
                         .charge_work(1)
                         .map_err(|reason| Error::resource(reason, FIELD, entry.span.start))?;
@@ -99,22 +153,24 @@ impl<'r, 'a> Authenticated<'r, 'a> {
                             .map_err(|e| Error::resource(e, FIELD, target.span().start))?;
                         if equal_bytes(name.as_bytes(), target_issuer, execution, entry.span.start)?
                         {
-                            issuer_matches = true;
+                            matched = true;
                             break;
                         }
                     }
                 }
-            } else {
-                issuer_matches = if let Some(matched) = default_matches {
-                    matched
-                } else {
-                    let matched = target
-                        .issuer()
-                        .matches(crl.tbs().issuer(), &target_execution)?;
-                    default_matches = Some(matched);
-                    matched
-                };
+                inherited_matches = Some(matched);
             }
+            let issuer_matches = if let Some(matched) = inherited_matches {
+                matched
+            } else if let Some(matched) = default_matches {
+                matched
+            } else {
+                let matched = target
+                    .issuer()
+                    .matches(crl.tbs().issuer(), &target_execution)?;
+                default_matches = Some(matched);
+                matched
+            };
             if issuer_matches {
                 target_execution
                     .charge_work(target_serial.len() as u64)

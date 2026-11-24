@@ -24,6 +24,40 @@ struct Projective {
     z: Words,
 }
 
+enum Multiple {
+    Known(Option<Point>),
+    Recover(Recovery),
+}
+
+struct Recovery {
+    point: Point,
+    x: Words,
+    y: Words,
+    denominator: Words,
+}
+
+impl Recovery {
+    fn finish(self, field: &impl Arithmetic, inverse: Words) -> Point {
+        let x = field.multiply(self.x, inverse);
+        let y = field
+            .multiply(x.add(self.point.x), field.multiply(self.y, inverse))
+            .add(self.point.y);
+        Point { x, y }
+    }
+}
+
+impl Multiple {
+    fn finish(self, field: &impl Arithmetic) -> Option<Point> {
+        match self {
+            Self::Known(point) => point,
+            Self::Recover(recovery) => {
+                let inverse = field.inverse(recovery.denominator);
+                Some(recovery.finish(field, inverse))
+            }
+        }
+    }
+}
+
 impl<F: Arithmetic> Curve<F> {
     pub(crate) fn new(field: F, a: bool, b: Words) -> Result<Self, Error> {
         if b.is_zero() {
@@ -122,12 +156,38 @@ impl<F: Arithmetic> Curve<F> {
     }
 
     pub(crate) fn multiply(&self, point: Point, scalar: Words) -> Option<Point> {
+        self.ladder(point, scalar).finish(&self.field)
+    }
+
+    pub(crate) fn multiply_sum(
+        &self,
+        left: Point,
+        s: Words,
+        right: Point,
+        r: Words,
+    ) -> Option<Point> {
+        let field = &self.field;
+        let (left, right) = (self.ladder(left, s), self.ladder(right, r));
+        match (left, right) {
+            (Multiple::Recover(left), Multiple::Recover(right)) => {
+                // Both denominators are nonzero by the ladder's recovery
+                // conditions. Invert their product once and recover each inverse.
+                let inverse = field.inverse(field.multiply(left.denominator, right.denominator));
+                let a = field.multiply(inverse, right.denominator);
+                let b = field.multiply(inverse, left.denominator);
+                self.add(Some(left.finish(field, a)), Some(right.finish(field, b)))
+            }
+            (left, right) => self.add(left.finish(field), right.finish(field)),
+        }
+    }
+
+    fn ladder(&self, point: Point, scalar: Words) -> Multiple {
         let bits = scalar.bits();
         if bits == 0 {
-            return None;
+            return Multiple::Known(None);
         }
         if point.x.is_zero() {
-            return if scalar.bit(0) { Some(point) } else { None };
+            return Multiple::Known(scalar.bit(0).then_some(point));
         }
         let field = &self.field;
         let mut lower = Projective {
@@ -175,13 +235,13 @@ impl<F: Arithmetic> Curve<F> {
             field.degree().div_ceil(64),
         );
         if lower.z.is_zero() {
-            return None;
+            return Multiple::Known(None);
         }
         if upper.z.is_zero() {
-            return Some(Point {
+            return Multiple::Known(Some(Point {
                 x: point.x,
                 y: point.x.add(point.y),
-            });
+            }));
         }
         // Recover both affine coordinates with the common denominator x Z1 Z2.
         let z_product = field.multiply(lower.z, upper.z);
@@ -191,12 +251,12 @@ impl<F: Arithmetic> Curve<F> {
         let numerator = field
             .multiply(field.square(point.x).add(point.y), z_product)
             .add(joined);
-        let denominator = field.inverse(field.multiply(point.x, z_product));
-        let x = field.multiply(field.multiply(x_z2, lower.x), denominator);
-        let y = field
-            .multiply(x.add(point.x), field.multiply(numerator, denominator))
-            .add(point.y);
-        Some(Point { x, y })
+        Multiple::Recover(Recovery {
+            point,
+            x: field.multiply(x_z2, lower.x),
+            y: numerator,
+            denominator: field.multiply(point.x, z_product),
+        })
     }
 }
 

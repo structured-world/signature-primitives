@@ -72,3 +72,27 @@ fn catalogue_refuses_a_new_source_generation_before_acquisition() {
     ));
     assert_eq!(source.reads.get(), before);
 }
+
+#[test]
+fn object_and_indirect_stream_length_reuse_the_same_original_window() {
+    // Opening the stream, resolving Length and reading endstream all fit
+    // in one immutable page. The resolver must acquire it only once.
+    let pdf = Pdf::new(&[
+        (1, b"<< /Type /Catalog >>"),
+        (2, b"<< /Length 3 0 R >>\nstream\nabc\nendstream"),
+        (3, b"3"),
+    ]);
+    let source = Updating {
+        bytes: &pdf.bytes,
+        generation: Cell::new(0),
+        reads: Cell::new(0),
+    };
+    let memory = Memory::new(Arc::new(MemoryAccount::new(1_000_000, 100_000_000)));
+    let session = Session::new(Limits::default(), memory);
+    let work = session.execution();
+    let document = ready(Document::read(&source, &session, &work)).unwrap();
+    source.reads.set(0);
+    let stream = ready(document.object(0, 2, 0, &work)).unwrap().unwrap();
+    assert_eq!(stream.stream().unwrap().length, 3);
+    assert_eq!(source.reads.get(), 1);
+}

@@ -256,12 +256,10 @@ impl Base64Codec {
         } else {
             0
         };
-        // Each complete group returns to the same plain state. Start the
-        // scalar loop at the first group that needs streaming semantics.
-        let consumed = written / 3 * 4;
-        for (index, &byte) in input[consumed..].iter().enumerate() {
-            let index = consumed + index;
+        let mut index = written / 3 * 4;
+        while let Some(&byte) = input.get(index) {
             if matches!(byte, b' ' | b'\t' | b'\r' | b'\n') {
+                index += 1;
                 continue;
             }
             if byte == b'=' {
@@ -271,6 +269,7 @@ impl Base64Codec {
                     _ => return Err(Base64Error::InvalidByte(self.input_offset + index, byte)),
                 };
                 self.finished = true;
+                index += 1;
                 continue;
             }
             if self.finished {
@@ -279,6 +278,15 @@ impl Base64Codec {
             let value = strict::STANDARD_VALUES[usize::from(byte)];
             if value == strict::INVALID {
                 return Err(Base64Error::InvalidByte(self.input_offset + index, byte));
+            }
+            if self.position == 0 && input.len() - index >= 16 {
+                let count = strict::decode_standard_prefix(&input[index..], &mut output[written..]);
+                if count != 0 {
+                    // A whole quartet leaves the decoder in the same state.
+                    written += count;
+                    index += count / 3 * 4;
+                    continue;
+                }
             }
             if self.position != 0 {
                 let shift = self.position * 2;
@@ -290,6 +298,7 @@ impl Base64Codec {
             }
             self.position = (self.position + 1) % 4;
             self.carry = if self.position == 0 { 0 } else { value };
+            index += 1;
         }
         self.input_offset = end;
         Ok(written)

@@ -11,7 +11,7 @@ use structured_pkix::{
     algorithm::digest::AsnDigest,
     crl::{
         Authenticated, Authentication as ListAuthentication, BoundDelta, CertificateList,
-        CombinedEntry, DeltaBinding, EntryLookup, Reasons, ScopeOutcome,
+        CombinedEntry, DeltaBinding, EntryLookup, EntryScan, Reasons, ScopeOutcome,
     },
     error::CallbackError,
     extension::Recognizer,
@@ -31,6 +31,7 @@ struct List<'a> {
 struct Delta<'a> {
     list: List<'a>,
     paired: bool,
+    scan: Option<EntryScan<'a, 'a, 'a>>,
 }
 
 /// Authenticate and assess every supplied artifact for this member. Multiple
@@ -110,6 +111,7 @@ where
                                     .try_push(Delta {
                                         list,
                                         paired: false,
+                                        scan: None,
                                     })
                                     .map_err(Error::Resource)?;
                             } else {
@@ -235,15 +237,21 @@ fn assess_lists<'a, E: Work, V, D, R>(
     for &base in lists {
         work.charge_work(1).map_err(Error::Resource)?;
         let scope = base.source.scope(target, work).map_err(Error::Processing)?;
-        let (reasons, finding) = match scope {
+        let (reasons, finding, mut scan) = match scope {
             ScopeOutcome::Applicable(reasons) => {
-                let entry = base.source.entry(target, work).map_err(Error::Processing)?;
+                let scan = base
+                    .source
+                    .scan_entry(target, work)
+                    .map_err(Error::Processing)?;
                 (
                     reasons,
-                    self::entry(entry, reasons, work).map_err(Error::Processing)?,
+                    self::entry(scan.lookup(), reasons, work).map_err(Error::Processing)?,
+                    Some(scan),
                 )
             }
-            ScopeOutcome::NotApplicable(cause) => (Reasons::NONE, Finding::NotApplicable(cause)),
+            ScopeOutcome::NotApplicable(cause) => {
+                (Reasons::NONE, Finding::NotApplicable(cause), None)
+            }
         };
         let positions = Sources {
             primary: base.index,
@@ -264,7 +272,7 @@ fn assess_lists<'a, E: Work, V, D, R>(
                 base,
                 deltas,
                 target,
-                (reasons, finding),
+                (reasons, finding, &mut scan),
                 query,
                 work,
                 statements,
@@ -293,7 +301,7 @@ fn assess_deltas<'a, E: Work, V, D, R>(
     base: List<'a>,
     deltas: &mut [Delta<'a>],
     target: &'a Certificate<'a>,
-    (reasons, base_finding): (Reasons, Finding<'a>),
+    (reasons, base_finding, base_scan): (Reasons, Finding<'a>, &mut Option<EntryScan<'a, 'a, 'a>>),
     query: &Query<'_>,
     work: &E,
     statements: &mut OwnedVec<Statement<'a>, E>,
@@ -307,7 +315,9 @@ fn assess_deltas<'a, E: Work, V, D, R>(
         else {
             continue;
         };
-        let entry = pair.entry(target, work).map_err(Error::Processing)?;
+        let entry = pair
+            .entry_reusing(target, base_scan, &mut delta.scan, work)
+            .map_err(Error::Processing)?;
         let finding = combined(pair, &entry, target, (reasons, base_finding), query);
         let positions = Sources {
             primary: delta.list.index,

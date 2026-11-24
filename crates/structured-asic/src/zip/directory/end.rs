@@ -58,35 +58,37 @@ fn scan_chunk<E>(
     mut record: impl FnMut(usize) -> Result<(), E>,
 ) -> Result<(), E> {
     const REST: &[u8; 3] = b"K\x05\x06";
-    let mut candidate = |at| {
-        let following = &bytes[at + 1..];
-        let present = if following.len() >= REST.len() {
-            following.starts_with(REST)
-        } else {
-            REST.starts_with(following) && suffix.starts_with(&REST[following.len()..])
-        };
-        if present {
-            record(at)?;
-        }
-        Ok(())
-    };
-
     let (head, full) = bytes.split_at(bytes.len() % 8);
+    let mut trailing = [0_u8; 4];
+    trailing[1..=suffix.len()].copy_from_slice(suffix);
+    let mut next = u64::from(u32::from_be_bytes(trailing));
     for (index, group) in full.as_chunks::<8>().0.iter().enumerate().rev() {
-        // Isolate exact zero lanes after XOR with the first marker byte.
-        // Masking the low seven bits before addition prevents carry between lanes.
-        let bytes = u64::from_be_bytes(*group) ^ u64::from_be_bytes([b'P'; 8]);
+        // Compare four overlapping byte lanes, using the following word's
+        // first three octets where a marker crosses the chunk boundary.
+        let word = u64::from_be_bytes(*group);
+        let different = (word ^ u64::from_be_bytes([b'P'; 8]))
+            | (((word << 8) | (next >> 16)) ^ u64::from_be_bytes([b'K'; 8]))
+            | (((word << 16) | (next >> 8)) ^ u64::from_be_bytes([5; 8]))
+            | (((word << 24) | next) ^ u64::from_be_bytes([6; 8]));
+        next = word >> 40;
+        // Isolate exact zero lanes without cross-lane carries.
         let lows = 0x7f7f_7f7f_7f7f_7f7f;
-        let mut matches = !(((bytes & lows) + lows) | bytes | lows);
+        let mut matches = !(((different & lows) + lows) | different | lows);
         while matches != 0 {
             let offset = 7 - matches.trailing_zeros() as usize / 8;
-            candidate(head.len() + index * 8 + offset)?;
+            record(head.len() + index * 8 + offset)?;
             matches &= matches - 1;
         }
     }
     for (at, &byte) in head.iter().enumerate().rev() {
-        if byte == b'P' {
-            candidate(at)?;
+        if byte != b'P' {
+            continue;
+        }
+        let rest = &bytes[at + 1..];
+        if rest.starts_with(REST)
+            || (REST.starts_with(rest) && suffix.starts_with(&REST[rest.len()..]))
+        {
+            record(at)?;
         }
     }
     Ok(())

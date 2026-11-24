@@ -2,7 +2,7 @@
 
 use super::{BasicResponse, SingleResponse, retention};
 use crate::temporal::Reading;
-use crate::{Error, Result, oid};
+use crate::{Error, Extension, Result, oid};
 use structured_asn1::memory::Work;
 use structured_asn1::{Oid, Span};
 
@@ -21,9 +21,9 @@ pub enum ExtensionProcessing<'a> {
     },
 }
 
-pub(super) struct Processed<'a> {
+pub(super) struct Processed<'r, 'a> {
     pub(super) processing: ExtensionProcessing<'a>,
-    pub(super) nonce: Option<&'a [u8]>,
+    pub(super) nonce: Option<&'r Extension<'a>>,
     pub(super) extended_revoke: bool,
 }
 
@@ -39,11 +39,15 @@ impl<'a> BasicResponse<'a> {
     /// noncritical values remain opaque.
     /// <https://www.rfc-editor.org/rfc/rfc6960#section-4.4>
     pub fn check_extensions<W: Work>(&self, execution: &W) -> Result<ExtensionProcessing<'a>> {
-        self.process_extensions(execution)
+        self.process_extensions(execution, true)
             .map(|facts| facts.processing)
     }
 
-    pub(super) fn process_extensions<W: Work>(&self, execution: &W) -> Result<Processed<'a>> {
+    pub(super) fn process_extensions<W: Work>(
+        &self,
+        execution: &W,
+        validate_nonce: bool,
+    ) -> Result<Processed<'_, 'a>> {
         execution.charge_work(1).map_err(|reason| {
             Error::resource(reason, "ocspResponse.extensions", self.span.start)
         })?;
@@ -56,11 +60,10 @@ impl<'a> BasicResponse<'a> {
                 Error::resource(reason, "ocspResponse.extensions", extension.span().start)
             })?;
             if extension.kind() == oid::OCSP_NONCE {
-                nonce = Some(super::nonce::read(
-                    extension,
-                    execution,
-                    "ocspResponse.nonce",
-                )?);
+                if validate_nonce {
+                    super::nonce::read(extension, execution, "ocspResponse.nonce")?;
+                }
+                nonce = Some(extension);
             } else if extension.kind() == oid::OCSP_EXTENDED_REVOKE {
                 retention::extended_revoke(extension, execution)?;
                 extended_revoke = true;

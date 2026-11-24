@@ -27,7 +27,7 @@ pub enum Status {
     Reasons,
     /// OCSP update window does not establish current status.
     Window(UpdateWindow),
-    /// The actual request's nonce was not returned or differs.
+    /// The actual request's nonce was missing, malformed or different.
     Nonce(NonceBinding),
     /// Original adverse OCSP status, retaining Unknown/Revoked/NotIssued.
     Ocsp(structured_pkix::ocsp::Status),
@@ -155,10 +155,7 @@ impl<'a, T: RevocationTarget<'a>> Evidence for BoundEvidence<'_, 'a, '_, '_, T> 
         if evidence.window() != UpdateWindow::Within {
             return Ok(Status::Window(evidence.window()));
         }
-        if matches!(
-            evidence.nonce(),
-            NonceBinding::Missing | NonceBinding::Differs
-        ) {
+        if evidence.nonce().is_failure() {
             return Ok(Status::Nonce(evidence.nonce()));
         }
         Ok(

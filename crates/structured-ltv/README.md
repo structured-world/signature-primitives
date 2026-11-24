@@ -41,12 +41,19 @@ under the query that performs it; retained facts are never prepaid work.
   the deciding material group under the caller's work budget.
   Policy selection, policy identity in reports and trusted-list processing
   belong to the caller.
+  `Chain::DirectTrust` is the explicit route for an active trust anchor that
+  is itself the signer. A sunset anchor can fall through to an ordinary path.
+  `Signer::expiry_evidence` records the separate support needed for a finding
+  of non-revocation after expiry.
 - `pki::status::assess` evaluates supplied CRLs and OCSP responses for an
   original member of a checked path. It authenticates source signatures with
   caller-supplied capabilities, binds the original issuer or responder,
   validates compatible base/delta pairs, and joins the resulting statements
   across revocation reasons and the caller's signature interval. An assessment
   retains source indices, negative findings and the status's deciding basis.
+  An unusable CRL with a noncritical issuing distribution point does not
+  discard other sources. `Assessment::expiry_evidence` reports whether the
+  deciding post-expiry assertions cover every revocation reason.
   Trust anchors, configured responders, acquisition and freshness policy
   remain explicit caller inputs.
 - `validation::long_term` runs EN 319 102-1 clause 5.6 over proof-of-existence
@@ -74,7 +81,9 @@ under the query that performs it; retained facts are never prepaid work.
   and derives the complete participant census (`participants`) from the
   format's receipts: `SignerReceipt`, `CounterReceipts` and
   `CredentialReceipts`. Later facts require those very receipts, not equal
-  identities.
+  identities. `pki::check_direct_anchor` binds a signer to the exact certificate
+  already trusted by the caller. The result exposes the original signer via
+  `CheckedPath::target` and has no non-anchor revocation obligations.
 - `material` indexes every incorporated certificate, CRL and OCSP value with
   the format's placement of each occurrence, attributes artifact uses to
   actors, reports incorporation, and checks each archive input's `Coverage`

@@ -47,7 +47,10 @@ impl<'document> CheckedPath<'document> {
         {
             return Ok(Some(Failure::Anchor));
         }
-        let target = path.members.last().expect("a checked path has a target");
+        // Direct signer trust does not create an alternate authority chain.
+        let Some(target) = path.members.last() else {
+            return Ok(Some(Failure::Signer));
+        };
         if !exact(
             target.certificate().as_bytes(),
             signer.as_bytes(),

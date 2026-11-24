@@ -559,6 +559,82 @@ fn signed_certificate_path_digests_keep_first_target_role_and_resolve_each_once(
 }
 
 #[test]
+fn signing_certificate_v2_can_bind_the_explicitly_trusted_target() {
+    // The first signed certificate reference binds the original signer even
+    // when it is itself the trust anchor and has no non-anchor members.
+    use structured_ltv::{material::PathCertificate, pki};
+    use structured_pkix::path::{Anchor, Interval};
+    use structured_xades::{binding, certificate, container};
+    let (leaf_bytes, root_bytes) = super::timestamp_oracle::certificate_pair();
+    let trusted_bytes = leaf_bytes.clone();
+    let memory = funded();
+    let trusted_parser = structured_asn1::Parser::new(
+        structured_asn1::Encoding::Der,
+        structured_asn1::Limits {
+            max_work: 20_000,
+            ..structured_asn1::Limits::default()
+        },
+        funded(),
+    );
+    let parser = structured_asn1::Parser::der(memory.clone());
+    let leaf = structured_pkix::Certificate::read(&parser, &leaf_bytes, 400).unwrap();
+    let root = structured_pkix::Certificate::read(&parser, &root_bytes, 800).unwrap();
+    let trusted =
+        structured_pkix::Certificate::read(&trusted_parser, &trusted_bytes, 1200).unwrap();
+    let interval = Interval::at(1_767_225_600);
+    assert!(
+        pki::check_direct_anchor(&leaf, Anchor::from_certificate(&root), interval, &memory)
+            .unwrap()
+            .is_none()
+    );
+    let path =
+        pki::check_direct_anchor(&leaf, Anchor::from_certificate(&trusted), interval, &memory)
+            .unwrap()
+            .unwrap();
+    assert!(path.members().is_empty());
+    assert!(core::ptr::eq(path.target().certificate(), &raw const leaf));
+    assert!(core::ptr::eq(
+        path.anchor().certificate().unwrap(),
+        &raw const trusted
+    ));
+    let statuses = path
+        .status_census(interval.to_instant().into(), &[], &memory)
+        .unwrap();
+    assert!(statuses.entries().is_empty());
+
+    let digest = Sha256::digest(&leaf_bytes).to_vec();
+    let mut xml = certificate_path_tree(digest.clone(), digest);
+    xml.key_association = certificate::KeyAssociation::Same;
+    let signed = super::signed_roles(&xml, &memory).unwrap();
+    let access = Access::new(&xml, xml.snapshot(), &memory);
+    let references = certificate::read(&access, &signed).unwrap();
+    let layout = container::locate(&access, 0).unwrap();
+    let bound = binding::bind(&access, &layout).unwrap();
+    let provider = Oracle::new(Mode::Ready);
+    let report = certificate::match_path(&xml, &references, &path, &provider, &memory).unwrap();
+    assert!(report.all_match());
+    assert_eq!(
+        report.entries()[0].certificate,
+        Some(PathCertificate::Anchor)
+    );
+    assert!(
+        certificate::check_path(&xml, &bound, &references, &path, &provider, &memory)
+            .unwrap()
+            .is_bound()
+    );
+    // Identical bytes from another parser must not bypass its own ceiling.
+    let original = trusted.execution_in(trusted_parser.memory());
+    original
+        .charge_work(original.work_remaining() as u64)
+        .unwrap();
+    assert!(
+        pki::check_direct_anchor(&leaf, Anchor::from_certificate(&trusted), interval, &memory)
+            .unwrap_err()
+            .is_resource()
+    );
+}
+
+#[test]
 fn path_digest_width_and_storage_refusals_precede_candidate_hashing() {
     // Impossible declared width is separate from mismatch; report allocation
     // refusal runs no resolver/hash and never returns a successful partial set.

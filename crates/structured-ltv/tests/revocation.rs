@@ -12,7 +12,7 @@ use structured_asn1::{
 };
 use structured_ltv::pki::{
     self, CrlAuthority, PathOutcome,
-    status::{self, Finding, Interval, Query, Source, Status, Unusable, When},
+    status::{self, ExpiryEvidence, Finding, Interval, Query, Source, Status, Unusable, When},
 };
 use structured_pkix::{
     Certificate,
@@ -36,7 +36,8 @@ struct List<'a> {
     next: &'a str,
     entry: Option<(&'a str, u8)>,
     base: Option<u8>,
-    partition: bool,
+    partition: Option<bool>,
+    retains_expired: bool,
 }
 
 impl List<'_> {
@@ -47,7 +48,8 @@ impl List<'_> {
             next: "250109000000Z",
             entry: None,
             base: None,
-            partition: false,
+            partition: None,
+            retains_expired: false,
         }
     }
 
@@ -67,12 +69,19 @@ impl List<'_> {
                 &tlv(0x30, &tlv(0x80, b"key")),
             ));
         }
-        if self.partition {
+        if let Some(critical) = self.partition {
             // onlySomeReasons = keyCompromise.
             extensions.extend(ext(
                 oid::ISSUING_DISTRIBUTION_POINT,
-                true,
+                critical,
                 &tlv(0x30, &tlv(0x83, &[6, 0x40])),
+            ));
+        }
+        if self.retains_expired {
+            extensions.extend(ext(
+                oid::EXPIRED_CERTS_ON_CRL,
+                false,
+                &tlv(0x18, b"20250102000000Z"),
             ));
         }
         let mut fields = [
@@ -344,7 +353,7 @@ fn complete_lists_produce_clear_revoked_hold_stale_and_partial() {
             ..empty
         },
         List {
-            partition: true,
+            partition: Some(true),
             ..empty
         },
     ];
@@ -704,6 +713,120 @@ fn delta_release_does_not_erase_an_overlapping_hold_or_claim_an_expired_serial()
         outcome.statements()[0].finding,
         Finding::Unusable(Unusable::DeltaWithoutBase)
     ));
+}
+
+#[test]
+fn malformed_crl_has_a_located_finding_and_cannot_hide_an_independent_source() {
+    // RFC 5280 §5.2.5: noncritical IDP invalidates the source, including
+    // as a delta, while other authenticated sources still speak.
+    let (root_key, leaf_key) = keys();
+    let (root_der, leaf_der) = certificates(&root_key, &leaf_key);
+    let account = memory(1 << 20);
+    let parser = Parser::der(account.clone());
+    let root = Certificate::read(&parser, &root_der, 1).unwrap();
+    let leaf = Certificate::read(&parser, &leaf_der, 500).unwrap();
+    let oracle = Oracle {
+        calls: Cell::new(0),
+    };
+    let context = context(&account, &oracle);
+    let path = checked(&root, &leaf, &context);
+    let utc = LeapTable::new(at(1).seconds() - 1, at(11).seconds(), &[]).unwrap();
+    let query = query(&utc);
+    let good_der = List::empty().sign(&root_key);
+    let good = CertificateList::read(&parser, &good_der, 1000).unwrap();
+    for base in [None, Some(1)] {
+        let bad_der = List {
+            number: 2,
+            base,
+            partition: Some(false),
+            ..List::empty()
+        }
+        .sign(&root_key);
+        let bad = CertificateList::read(&parser, &bad_der, 2000).unwrap();
+        let span = bad
+            .tbs()
+            .extensions()
+            .get(oid::ISSUING_DISTRIBUTION_POINT, &account)
+            .unwrap()
+            .unwrap()
+            .span();
+        let outcome = status::assess(
+            &path,
+            0,
+            &[crl(&bad), crl(&good)],
+            &query,
+            &context,
+            &oracle,
+            &Hash,
+        )
+        .unwrap();
+        assert_eq!(outcome.statements().len(), 2);
+        assert_eq!(
+            outcome.statements()[0].finding,
+            Finding::Unusable(Unusable::NoncriticalIssuingDistributionPoint(span))
+        );
+        let Status::NotRevoked { basis, later: None } = outcome.status() else {
+            panic!("independent complete CRL still decides");
+        };
+        assert_eq!(outcome.statements()[basis].sources.primary, 1);
+        let only_bad =
+            status::assess(&path, 0, &[crl(&bad)], &query, &context, &oracle, &Hash).unwrap();
+        assert_eq!(only_bad.status(), Status::NoEvidence);
+    }
+}
+
+#[test]
+fn expiry_evidence_needs_usable_post_expiry_status_for_every_reason() {
+    // A positive pre-expiry CRL or a partial post-expiry partition is
+    // insufficient for EN 319 102-1 §5.2.6.4 step 7 NOTE 8.
+    let (root_key, leaf_key) = keys();
+    let (root_der, _) = certificates(&root_key, &leaf_key);
+    let leaf_der =
+        certificate_with_expiry("Leaf", "Root", &leaf_key, &root_key, &[], b"250106000000Z");
+    let account = memory(1 << 20);
+    let parser = Parser::der(account.clone());
+    let root = Certificate::read(&parser, &root_der, 1).unwrap();
+    let leaf = Certificate::read(&parser, &leaf_der, 500).unwrap();
+    let oracle = Oracle {
+        calls: Cell::new(0),
+    };
+    let context = context(&account, &oracle);
+    let path = checked(&root, &leaf, &context);
+    let utc = LeapTable::new(at(1).seconds() - 1, at(11).seconds(), &[]).unwrap();
+    let query = query(&utc);
+    let late = List {
+        issued: "250107000000Z",
+        ..List::empty()
+    };
+    let values = [
+        List::empty(),
+        late,
+        List {
+            retains_expired: true,
+            partition: Some(true),
+            ..late
+        },
+        List {
+            retains_expired: true,
+            ..late
+        },
+    ]
+    .map(|list| list.sign(&root_key));
+    let [early, no_retention, partial, retained] = values
+        .each_ref()
+        .map(|bytes| CertificateList::read(&parser, bytes, 2000).unwrap());
+    for (sources, expected) in [
+        (&[crl(&early)][..], ExpiryEvidence::Unestablished),
+        (&[crl(&no_retention)][..], ExpiryEvidence::Unestablished),
+        (
+            &[crl(&early), crl(&partial)][..],
+            ExpiryEvidence::Unestablished,
+        ),
+        (&[crl(&retained)][..], ExpiryEvidence::RetainedStatus),
+    ] {
+        let outcome = status::assess(&path, 0, sources, &query, &context, &oracle, &Hash).unwrap();
+        assert_eq!(outcome.expiry_evidence(), expected);
+    }
 }
 
 #[test]

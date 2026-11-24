@@ -221,6 +221,26 @@ fn delta_source<W: Work>(crl: &super::CertificateList<'_>, execution: &W) -> Res
     Ok(true)
 }
 
+impl super::CertificateList<'_> {
+    /// Location of an issuing distribution point marked noncritical, in
+    /// violation of RFC 5280 §5.2.5.
+    pub fn noncritical_issuing_distribution_point<W: Work>(
+        &self,
+        execution: &W,
+    ) -> Result<Option<Span>> {
+        let execution = self.execution_in(execution);
+        Ok(self
+            .tbs()
+            .extensions()
+            .get(oid::ISSUING_DISTRIBUTION_POINT, &execution)?
+            .and_then(noncritical_idp))
+    }
+}
+
+fn noncritical_idp(extension: &Extension<'_>) -> Option<Span> {
+    (!extension.is_critical()).then(|| extension.span())
+}
+
 fn check_source_metadata<'r, 'a, W: Work>(
     crl: &'r super::CertificateList<'a>,
     is_delta: bool,
@@ -239,7 +259,7 @@ fn check_source_metadata<'r, 'a, W: Work>(
         if kind == oid::ISSUING_DISTRIBUTION_POINT {
             // RFC5280 §5.2.5: this extension MUST be critical. The caller
             // already decoded its scope once before this metadata pass.
-            if !extension.is_critical() {
+            if noncritical_idp(extension).is_some() {
                 return Err(malformed());
             }
         } else if kind == oid::CRL_NUMBER {

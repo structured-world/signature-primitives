@@ -8,7 +8,7 @@ use super::{
 };
 use crate::constraints::BasicConstraints;
 use crate::extension::{Extension, Recognizer};
-use crate::{Certificate, ErrorCode, Name, oid};
+use crate::{Certificate, Error, ErrorCode, Name, Result, oid};
 use structured_asn1::Oid;
 use structured_asn1::memory::{Memory, MemoryError, OwnedVec, Work};
 
@@ -188,6 +188,50 @@ pub struct ValidationFacts<'a> {
 }
 
 impl<'a> ValidationFacts<'a> {
+    /// Checks that the target is the certificate explicitly supplied as the
+    /// trust anchor. No issuer signature, path policies or validity dates are
+    /// checked. The caller decides whether direct trust is permitted and active.
+    pub fn check_direct_anchor<W: Work>(
+        target: &Certificate<'a>,
+        anchor: Anchor<'a>,
+        work: &W,
+    ) -> Result<Option<Self>> {
+        let Some(trusted) = anchor.certificate() else {
+            return Ok(None);
+        };
+        let left = target.as_bytes();
+        let right = trusted.as_bytes();
+        let resource =
+            |cause| Error::resource(cause, "certificate.directAnchor", target.span().start);
+        let same_span = core::ptr::eq(left, right);
+        let count = if !same_span && left.len() == right.len() {
+            u64::try_from(left.len())
+                .ok()
+                .and_then(|length| length.checked_mul(2))
+                .and_then(|length| length.checked_add(1))
+                .ok_or_else(|| resource(MemoryError::WorkExceeded))?
+        } else {
+            1
+        };
+        target
+            .signature_algorithm()
+            .execution_origin()
+            .charge_work_with(
+                trusted.signature_algorithm().execution_origin(),
+                work,
+                count,
+            )
+            .map_err(resource)?;
+        if !same_span && left != right {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            key: EffectiveKey::standing(target.tbs().public_key()),
+            non_self_issued_intermediates: 0,
+            policies: work.vector().into_owned(),
+        }))
+    }
+
     /// Accepted authority/user policy identifiers in deterministic encoded order.
     #[must_use]
     pub fn policies(&self) -> &[Oid<'a>] {

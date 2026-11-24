@@ -354,9 +354,7 @@ pub fn check_properties<'m, 'd, 'p, E, P: Provider<'p, 'd, Evidence = E>>(
             });
         };
         let path = counters.counter(ordinal).path;
-        let target = path.members().last().ok_or(CheckError::Unbound {
-            signature: counter.node(),
-        })?;
+        let target = path.target();
         let group = group(
             prepared,
             counter.node(),

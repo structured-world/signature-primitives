@@ -127,11 +127,7 @@ where
         let selected: Authority<'path, 'd> = source
             .select(self.start + index, token, work)
             .map_err(SelectionError::Caller)?;
-        let target = selected
-            .path
-            .members()
-            .last()
-            .ok_or(SelectionError::Processing(Error::Foreign { at }))?;
+        let target = selected.path.target();
         let result = ers::Selection {
             certificate: target.certificate(),
             certificate_parent: selected.certificate_parent,
@@ -585,10 +581,7 @@ impl<'a, 'm, 'd> View<'a, 'm, 'd> {
         for result in results {
             let (index, common, _, _) = result.into_parts();
             let path = selected.path(index, &work, required.property.span().start)?;
-            let target = path
-                .members()
-                .last()
-                .expect("nonempty selection admitted above");
+            let target = path.target();
             let global = self.entry.timestamps.start + index;
             let checked = timestamp::with_token(self.prepared, global, operation, |context| {
                 Ok::<_, Infallible>(context.checked(

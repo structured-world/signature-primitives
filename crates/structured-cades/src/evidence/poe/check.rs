@@ -281,11 +281,7 @@ impl<'a, 'm, 'd> View<'a, 'm, 'd> {
                 let choice = authorities
                     .select(self.entry.timestamps.start, token, &reader.execution())
                     .map_err(CheckError::Authority)?;
-                let target = choice
-                    .path
-                    .members()
-                    .last()
-                    .ok_or(CheckError::Processing(Error::Foreign { at }))?;
+                let target = choice.path.target();
                 let selection = ers::Selection {
                     certificate: target.certificate(),
                     certificate_parent: choice.certificate_parent,

@@ -45,7 +45,7 @@ pub use crl::{
 pub use responder::{ResponderBinding, ResponderError, ResponderFailure, ResponderPath};
 pub use status::{OcspBinding, OcspBindingError, OcspBindingFailure, OcspTarget};
 
-/// One original non-anchor certificate and its projected effective key.
+/// One original path certificate and its projected effective key.
 #[derive(Debug, Clone, Copy)]
 pub struct Member<'a> {
     certificate: &'a Certificate<'a>,
@@ -77,6 +77,7 @@ pub struct CheckedPath<'a> {
     anchor: Anchor<'a>,
     interval: Interval,
     members: OwnedVec<Member<'a>>,
+    direct_target: Option<&'a Certificate<'a>>,
     facts: ValidationFacts<'a>,
 }
 
@@ -96,11 +97,27 @@ impl<'a> CheckedPath<'a> {
     }
 
     /// Original non-anchor members in issuer-to-subject order. The final entry
-    /// is the supplied target. Each needs its own status-processing outcome;
+    /// is the supplied target on an ordinary path. A directly trusted target
+    /// has no non-anchor members. Each member needs a status-processing outcome;
     /// the path's existence alone never supplies a Good assertion.
     #[must_use]
     pub fn members(&self) -> &[Member<'a>] {
         &self.members
+    }
+
+    /// The original target and its effective key, including for direct trust.
+    ///
+    /// # Panics
+    /// Only if the private construction invariant is violated.
+    #[must_use]
+    pub fn target(&self) -> Member<'a> {
+        if let Some(certificate) = self.direct_target {
+            return Member {
+                certificate,
+                key: self.facts.key,
+            };
+        }
+        *self.members.last().expect("a checked path has a target")
     }
 
     /// Accepted static policies/effective target key from the same invocation.
@@ -113,10 +130,6 @@ impl<'a> CheckedPath<'a> {
     /// The checked path interval must contain the entire timestamp-generation
     /// interval, not just its bare genTime. This is static TSA path binding;
     /// unresolved revocation and application trust acceptance remain separate.
-    ///
-    /// # Panics
-    /// Only if the private construction invariant is violated: an accepted
-    /// common path always has its original nonempty target chain.
     pub fn bind_timestamp<'view, 'certificate, N: Copy, D: Copy, G: Copy, I, W: Work>(
         &'view self,
         actor: &'view CheckedActor<'certificate, 'a, N, D, G, I>,
@@ -126,8 +139,7 @@ impl<'a> CheckedPath<'a> {
         execution
             .charge_work(1)
             .map_err(TimestampBindingError::Resource)?;
-        // Construction follows a successful common path with a nonempty chain.
-        let target = self.members.last().expect("a checked path has a target");
+        let target = self.target();
         if !exact(
             target.certificate.as_bytes(),
             actor.certificate().as_bytes(),
@@ -303,6 +315,31 @@ pub fn check_path<'a, V: Verify<E>, T: Watch, R: Recognizer<E>, E: Work>(
         anchor,
         interval: context.interval,
         members: members.into_owned(),
+        direct_target: None,
+        facts,
+    }))
+}
+
+/// Bind an original signer certificate to the exact certificate explicitly
+/// trusted by the caller (EN 319 102-1 V1.4.1 §5.2.6.4 step 1).
+/// The caller must authorize this route and establish active trust throughout
+/// the supplied interval. No issuer signature or certificate validity is checked.
+/// Returns `None` if the anchor has no certificate or has different bytes.
+/// <https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf#page=52>
+pub fn check_direct_anchor<'a, W: Work>(
+    target: &'a Certificate<'a>,
+    anchor: Anchor<'a>,
+    interval: Interval,
+    work: &W,
+) -> Result<Option<CheckedPath<'a>>, structured_pkix::Error> {
+    let Some(facts) = ValidationFacts::check_direct_anchor(target, anchor, work)? else {
+        return Ok(None);
+    };
+    Ok(Some(CheckedPath {
+        anchor,
+        interval,
+        members: work.vector().into_owned(),
+        direct_target: Some(target),
         facts,
     }))
 }

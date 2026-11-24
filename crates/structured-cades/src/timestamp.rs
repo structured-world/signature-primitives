@@ -560,11 +560,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
                 at: digest.offset(),
             });
         }
-        let Some(target) = path.members().last() else {
-            return Err(CheckError::Selection(Error::Foreign {
-                at: self.entry.property().span().start,
-            }));
-        };
+        let target = path.target();
         let certificate = target.certificate();
         let key = target.key();
         let selection = CheckContext {

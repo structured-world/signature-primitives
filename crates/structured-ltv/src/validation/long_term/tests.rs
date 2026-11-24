@@ -102,6 +102,7 @@ fn facts() -> Facts<'static> {
         signer: Some(Signer {
             not_before: VALID.not_before,
             not_after: VALID.not_after,
+            expiry_evidence: crate::pki::status::ExpiryEvidence::CaAssuranceAtSigning,
             revocation: Status::NotRevoked {
                 basis: 0,
                 later: None,

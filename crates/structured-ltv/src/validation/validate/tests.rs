@@ -105,6 +105,7 @@ fn facts() -> Facts<'static> {
             not_before: day(2025, 1, 1),
             not_after: day(2027, 12, 31),
             revocation: NOT_REVOKED,
+            expiry_evidence: ExpiryEvidence::CaAssuranceAtSigning,
         }),
         references: &INTACT,
         value: Value::Verified,
@@ -1080,7 +1081,54 @@ fn basic_validation_reports_out_of_bounds_before_issuance() {
     assert_eq!(outcome.indication, Indication::Indeterminate);
     assert_eq!(outcome.sub, Some(SubIndication::OutOfBoundsNotRevoked));
     input.signer.as_mut().unwrap().revocation = Status::NoEvidence;
-    assert_eq!(run(&input).sub, Some(SubIndication::OutOfBoundsNoPoe));
+    assert_eq!(
+        run(&input).sub,
+        Some(SubIndication::CertificateChainGeneralFailure)
+    );
+}
+
+#[test]
+fn direct_trust_still_requires_signature_verification_and_falls_through_at_sunset() {
+    // EN 319 102-1 §5.2.6.4 step 1 only substitutes for certificate validation.
+    let direct = Path {
+        chain: Chain::DirectTrust,
+        ..GOOD
+    };
+    let paths = [GOOD, direct];
+    let mut input = Facts {
+        paths: &paths,
+        ..facts()
+    };
+    let signer = input.signer.as_mut().unwrap();
+    signer.not_after = day(2025, 12, 31);
+    signer.revocation = Status::NoEvidence;
+    assert_eq!(run(&input).indication, Indication::TotalPassed);
+    assert_eq!(run(&input).path, Some(1));
+    input.value = Value::Mismatch;
+    assert_eq!(run(&input).sub, Some(SubIndication::SigCryptoFailure));
+
+    let sunset = Path {
+        anchor: Anchor {
+            current: Conclusion::OutsideValidity,
+            ..RECOGNIZED
+        },
+        ..direct
+    };
+    let paths = [sunset, GOOD];
+    let input = Facts {
+        paths: &paths,
+        ..facts()
+    };
+    assert_eq!(run(&input).indication, Indication::TotalPassed);
+    assert_eq!(run(&input).path, Some(1));
+    let input = Facts {
+        paths: &paths[..1],
+        ..input
+    };
+    assert_eq!(
+        run(&input).sub,
+        Some(SubIndication::NoCertificateChainFoundNoPoe)
+    );
 }
 
 /// Step 7 stops certificate validation before step 8. With-time can recover
@@ -1157,10 +1205,11 @@ fn expiry_is_judged_at_best_signature_time() {
     facts.time.before = None;
     assert_eq!(sub(&facts), Some("OUT_OF_BOUNDS_NOT_REVOKED"));
 
-    if let Some(signer) = facts.signer.as_mut() {
-        signer.revocation = Status::NoEvidence;
-    }
+    facts.signer.as_mut().unwrap().expiry_evidence = ExpiryEvidence::Unestablished;
     assert_eq!(sub(&facts), Some("OUT_OF_BOUNDS_NO_POE"));
+
+    facts.signer.as_mut().unwrap().revocation = Status::NoEvidence;
+    assert_eq!(sub(&facts), Some("CERTIFICATE_CHAIN_GENERAL_FAILURE"));
 
     let mut facts = self::facts();
     facts.now = day(2028, 2, 1);
@@ -1209,7 +1258,11 @@ fn undecided_revocation_is_indeterminate_and_says_why() {
     let cases = [
         (Status::NotFresh { basis: 0 }, "TRY_LATER", None),
         (Status::OnHold { basis: 0 }, "TRY_LATER", None),
-        (Status::NoEvidence, "TRY_LATER", None),
+        (
+            Status::NoEvidence,
+            "CERTIFICATE_CHAIN_GENERAL_FAILURE",
+            None,
+        ),
         (
             Status::Unknown { basis: 0 },
             "CUSTOM",
@@ -1382,6 +1435,7 @@ fn a_sha1_signature_needs_proof_it_existed_before_2012_08() {
         not_before: day(2010, 1, 1),
         not_after: day(2012, 1, 1),
         revocation: NOT_REVOKED,
+        expiry_evidence: ExpiryEvidence::CaAssuranceAtSigning,
     });
     facts.time.before = Some(day(2011, 3, 1));
     assert_eq!(run(&facts).indication, Indication::TotalPassed);

@@ -1,6 +1,6 @@
 //! Join authenticated evidence across the eight RFC 5280 reason partitions.
 
-use super::{Finding, Freshness, Query, Revoked, Statement, Status, When};
+use super::{ExpiryEvidence, Finding, Freshness, Query, Revoked, Statement, Status, When};
 use structured_asn1::memory::{MemoryError, Work};
 use structured_pkix::{
     Time,
@@ -12,25 +12,28 @@ type Result<T> = core::result::Result<T, MemoryError>;
 pub(super) fn decide<E: Work>(
     statements: &[Statement<'_>],
     query: &Query<'_>,
+    expiry: Time,
     execution: &E,
-) -> Result<Status> {
+) -> Result<(Status, ExpiryEvidence)> {
     let deciders = deciders(statements, execution)?;
     // Nothing is compared with the interval when no source speaks.
     if deciders.iter().all(Option::is_none) {
-        return Ok(Status::NoEvidence);
+        return Ok((Status::NoEvidence, ExpiryEvidence::Unestablished));
     }
     let bits = usize::BITS - query.utc.transitions().len().leading_zeros();
     let shift_work = 8 + 3 * (u64::from(bits) + 1);
     execution.charge_work(3 * shift_work)?;
-    for label in [query.interval.upper, query.now] {
-        if let Err(reason) = query.utc.shift(label, 0) {
-            return Ok(Status::Uncertain(reason));
-        }
-    }
-    if let Some(lower) = query.interval.lower
-        && let Err(reason) = query.utc.shift(lower, 0)
+    for label in [
+        Some(query.interval.upper),
+        Some(query.now),
+        query.interval.lower,
+    ]
+    .into_iter()
+    .flatten()
     {
-        return Ok(Status::Uncertain(reason));
+        if let Err(reason) = query.utc.shift(label, 0) {
+            return Ok((Status::Uncertain(reason), ExpiryEvidence::Unestablished));
+        }
     }
     // Equally recent sources that say different things about the same reason
     // leave no single answer for it; neither is the reader's to pick.
@@ -43,17 +46,30 @@ pub(super) fn decide<E: Work>(
     let mut severest: Option<Ranked> = None;
     let mut clear: Option<Ranked> = None;
     let mut covered = Reasons::NONE;
+    let mut retained = 0;
     for (position, basis) in deciders.iter().enumerate() {
         let Some(basis) = *basis else { continue };
+        if conflicted[position] {
+            continue;
+        }
+        let latest = statements[basis];
+        // Only the actual decider for this reason establishes post-expiry
+        // coverage. A newer pre-expiry or conflicting assertion cannot
+        // borrow coverage from another reason's retained source.
+        if latest.issued > expiry
+            && latest.freshness == Freshness::Fresh
+            && matches!(latest.finding, Finding::NotRevoked(_))
+        {
+            retained |= 1 << (position + 1);
+        }
         // Each decider is judged once, however many reasons it decides.
         let seen = deciders[..position]
             .iter()
             .zip(&conflicted)
             .any(|(earlier, conflicted)| !conflicted && *earlier == Some(basis));
-        if conflicted[position] || seen {
+        if seen {
             continue;
         }
-        let latest = statements[basis];
         execution.charge_work(shift_work)?;
         let Some(candidate) = judge(basis, latest, query) else {
             continue;
@@ -97,9 +113,20 @@ pub(super) fn decide<E: Work>(
             })
         )
     {
-        return Ok(conflict);
+        return Ok((conflict, ExpiryEvidence::Unestablished));
     }
-    Ok(match (severest, clear) {
+    let status = joined_status(severest, clear, covered);
+    let expiry_evidence =
+        if matches!(status, Status::NotRevoked { .. }) && retained == Reasons::ALL.bits() {
+            ExpiryEvidence::RetainedStatus
+        } else {
+            ExpiryEvidence::Unestablished
+        };
+    Ok((status, expiry_evidence))
+}
+
+fn joined_status(severest: Option<Ranked>, clear: Option<Ranked>, covered: Reasons) -> Status {
+    match (severest, clear) {
         (None, None) => Status::NoEvidence,
         // Some reasons are known clear and the rest only unknown.
         (
@@ -115,7 +142,7 @@ pub(super) fn decide<E: Work>(
             Status::PartialReasons { basis, covered }
         }
         (Some(Ranked { status, .. }), _) | (None, Some(Ranked { status, .. })) => status,
-    })
+    }
 }
 
 /// What one deciding statement answers, and the severity it joins at.

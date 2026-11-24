@@ -263,7 +263,7 @@ pub fn bind_counter<'view, 'document, X: CertificateXml, W: Work>(
             node: source.child(),
         });
     }
-    let target = path.members().last().expect("a checked path has a target");
+    let target = path.target();
     let association = access.query(source.child(), |xml, snapshot, work| {
         xml.key_association(
             snapshot,

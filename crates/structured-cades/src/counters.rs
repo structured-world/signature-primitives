@@ -175,9 +175,7 @@ impl<'m, 'd> Context<'_, 'm, 'd> {
                 .map_err(processing)?;
         let conforms = profile_conforms(self.signer, &profile, self.reader)?;
         let mut result = Binding::unproven(self.selected, self.parent, path, profile);
-        let Some(target) = path.members().last() else {
-            return Ok(result);
-        };
+        let target = path.target();
         let same_certificate = exact(
             target.certificate().as_bytes(),
             certificate.as_bytes(),

@@ -113,6 +113,8 @@ pub enum Unusable<'a> {
     DeltaWithoutBase,
     /// Conflicting entries for the target in a CRL.
     EntryConflict,
+    /// The CRL violates RFC 5280 §5.2.5 at this original extension.
+    NoncriticalIssuingDistributionPoint(Span),
     /// The source demands semantics this processor does not recognize.
     UnsupportedCritical {
         /// Identifier of the unhandled critical extension.
@@ -257,6 +259,19 @@ impl Statement<'_> {
     }
 }
 
+/// Support for non-revocation after the signer's certificate expires
+/// (EN 319 102-1 V1.4.1 §5.2.6.4 step 7, NOTE 8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpiryEvidence {
+    /// Neither form of support has been established.
+    Unestablished,
+    /// Usable, checked post-expiry status covers all revocation reasons.
+    RetainedStatus,
+    /// The caller authenticated an applicable CA assurance of
+    /// non-revocation at the time of signing.
+    CaAssuranceAtSigning,
+}
+
 /// Completed assessment of the original non-anchor path member.
 pub struct Assessment<'p, 'a> {
     path: &'p CheckedPath<'a>,
@@ -265,6 +280,7 @@ pub struct Assessment<'p, 'a> {
     now: Instant,
     statements: OwnedVec<Statement<'a>>,
     status: Status,
+    expiry_evidence: ExpiryEvidence,
 }
 
 impl<'p, 'a> Assessment<'p, 'a> {
@@ -281,6 +297,11 @@ impl<'p, 'a> Assessment<'p, 'a> {
     /// Result of joining the supplied statements.
     pub fn status(&self) -> Status {
         self.status
+    }
+
+    /// Whether post-expiry assertions decisively cover every reason.
+    pub fn expiry_evidence(&self) -> ExpiryEvidence {
+        self.expiry_evidence
     }
 
     /// Original findings, addressed by the indices in `Status`.

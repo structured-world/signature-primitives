@@ -2,8 +2,8 @@
 
 mod assessment;
 pub use assessment::{
-    Assessment, Authentication, Error, Finding, Freshness, Interval, LookupFailure, Query,
-    Responder, Revoked, Source, Sources, Statement, Status, Unusable, When, assess,
+    Assessment, Authentication, Error, ExpiryEvidence, Finding, Freshness, Interval, LookupFailure,
+    Query, Responder, Revoked, Source, Sources, Statement, Status, Unusable, When, assess,
 };
 
 use super::{CheckedPath, exact};

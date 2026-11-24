@@ -128,6 +128,18 @@ fn signed_response(
     serial: u8,
     extended: bool,
 ) -> Vec<u8> {
+    let extension = extended.then(|| ext(oid::OCSP_EXTENDED_REVOKE, false, &tlv(5, &[])));
+    signed_response_with_extension(key, signer_name, signer, status, serial, extension)
+}
+
+fn signed_response_with_extension(
+    key: &SigningKey,
+    signer_name: &str,
+    signer: &SigningKey,
+    status: &[u8],
+    serial: u8,
+    extension: Option<Vec<u8>>,
+) -> Vec<u8> {
     let certificate_id = tlv(
         0x30,
         &[
@@ -157,11 +169,8 @@ fn signed_response(
         tlv(0x30, &single),
     ]
     .concat();
-    if extended {
-        body.extend(tlv(
-            0xa1,
-            &tlv(0x30, &ext(oid::OCSP_EXTENDED_REVOKE, false, &tlv(5, &[]))),
-        ));
+    if let Some(extension) = extension {
+        body.extend(tlv(0xa1, &tlv(0x30, &extension)));
     }
     tlv(
         0x30,
@@ -189,6 +198,74 @@ fn basic<'a>(parser: &'a Parser, der: &'a [u8]) -> BasicResponse<'a> {
         panic!("expected a successful response envelope")
     };
     response.into_basic(parser.memory()).unwrap().unwrap()
+}
+
+#[test]
+fn unsolicited_legacy_nonce_leaves_signed_status_usable() {
+    assess_legacy_nonce(None);
+}
+
+#[test]
+fn requested_legacy_nonce_does_not_discard_other_ocsp_evidence() {
+    assess_legacy_nonce(ocsp::RequestNonce::new(&[0x61; 32]));
+}
+
+fn assess_legacy_nonce(nonce: Option<ocsp::RequestNonce<'_>>) {
+    // Legacy responders sometimes wrote raw nonce bytes into extnValue. Both
+    // responses have real signatures and bind to the selected certificate.
+    let (root_key, leaf_key) = keys();
+    let (root_der, leaf_der) = certificates(&root_key, &leaf_key);
+    let account = memory(1 << 20);
+    let parser = Parser::der(account.clone());
+    let root = Certificate::read(&parser, &root_der, 1).unwrap();
+    let leaf = Certificate::read(&parser, &leaf_der, 500).unwrap();
+    let oracle = Oracle {
+        calls: Cell::new(0),
+    };
+    let context = context(&account, &oracle);
+    let path = checked(&root, &leaf, &context);
+    let utc = LeapTable::new(at(1).seconds() - 1, at(11).seconds(), &[]).unwrap();
+    let bad_bytes = signed_response_with_extension(
+        &root_key,
+        "Root",
+        &root_key,
+        &tlv(0x80, &[]),
+        7,
+        Some(ext(oid::OCSP_NONCE, false, &[0x7e; 16])),
+    );
+    let good_bytes = signed_response_with_extension(
+        &root_key,
+        "Root",
+        &root_key,
+        &tlv(0x80, &[]),
+        7,
+        Some(ext(oid::OCSP_NONCE, false, &tlv(4, &[0x61; 32]))),
+    );
+    let decoded = [basic(&parser, &bad_bytes), basic(&parser, &good_bytes)];
+    let sources = decoded.each_ref().map(|response| Source::Ocsp {
+        response,
+        nonce,
+        intended_signer: None,
+        responders: &[],
+    });
+    let result =
+        status::assess(&path, 0, &sources, &query(&utc), &context, &oracle, &Hash).unwrap();
+    assert!(matches!(result.status(), Status::NotRevoked { .. }));
+    assert!(matches!(
+        result.statements()[1].finding,
+        Finding::NotRevoked(_)
+    ));
+    if nonce.is_some() {
+        assert!(matches!(
+            result.statements()[0].finding,
+            Finding::Unusable(Unusable::Nonce(_))
+        ));
+    } else {
+        assert!(matches!(
+            result.statements()[0].finding,
+            Finding::NotRevoked(_)
+        ));
+    }
 }
 
 struct Hash;

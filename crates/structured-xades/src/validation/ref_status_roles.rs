@@ -302,7 +302,7 @@ struct StatusComparisons<
     P: DigestProvider<'provider, X>,
     W: Work,
 > {
-    memo: Memo<'provider, 'source, P, W>,
+    memo: Memo<'provider, P, W>,
     candidates: Option<OwnedVec<ReferenceStatus<'certificate, 'document>, W>>,
     envelopes: Option<XmlEnvelopeIndex<'source, X, W>>,
     located: LocatedEnvelopes<'source, X, W>,

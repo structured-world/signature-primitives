@@ -207,7 +207,7 @@ fn candidates<'v, 'd, N: Copy, D: Copy, G: Copy, W: Work>(
 }
 
 struct CredentialScan<'provider, 'view, 'document, P: Digest<'provider>, W: Work> {
-    memo: Memo<'provider, 'document, P, W>,
+    memo: Memo<'provider, P, W>,
     candidates: Option<OwnedVec<CredentialCertificate<'view, 'document>, W>>,
     ids: OwnedVec<usize, W>,
     comparisons: OwnedVec<Agreement, W>,

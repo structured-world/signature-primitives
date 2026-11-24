@@ -161,7 +161,6 @@ struct CacheKey {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct SourceKey<'source> {
-    kind: material::Kind,
     bytes: &'source [u8],
 }
 
@@ -169,39 +168,44 @@ struct SourceKey<'source> {
 struct Candidate<'source> {
     source: ArtifactSource,
     embedded: Option<usize>,
-    kind: material::Kind,
     bytes: &'source [u8],
 }
 
 fn candidates<'source, N: Copy, D: Copy, G: Copy, W: Work>(
     view: &material::View<'source, N, D, G>,
     tokens: Option<&CarriedMaterial<'source, N, D, G>>,
+    kind: material::Kind,
     work: &W,
 ) -> Result<OwnedVec<Candidate<'source>, W>, MemoryError> {
     let mut values = work.vector();
-    values.try_reserve_exact(view.sources().len())?;
     for (source, retained) in view.sources().iter().enumerate() {
         work.charge_work(1)?;
+        if retained.source().kind() != kind {
+            continue;
+        }
         values.try_push(Candidate {
             source: ArtifactSource::Material(source),
             embedded: None,
-            kind: retained.source().kind(),
             bytes: retained.source().bytes(),
         })?;
     }
-    for basic in view.basic_responses() {
-        work.charge_work(1)?;
-        for (embedded, certificate) in basic.response().certificates().iter().enumerate() {
+    if kind == material::Kind::Certificate {
+        for basic in view.basic_responses() {
             work.charge_work(1)?;
-            values.try_push(Candidate {
-                source: ArtifactSource::Material(basic.source_index()),
-                embedded: Some(embedded),
-                kind: material::Kind::Certificate,
-                bytes: certificate.as_bytes(),
-            })?;
+            for (embedded, certificate) in basic.response().certificates().iter().enumerate() {
+                work.charge_work(1)?;
+                values.try_push(Candidate {
+                    source: ArtifactSource::Material(basic.source_index()),
+                    embedded: Some(embedded),
+                    bytes: certificate.as_bytes(),
+                })?;
+            }
         }
     }
-    if let Some(tokens) = tokens {
+    let Some(tokens) = tokens else {
+        return Ok(values);
+    };
+    if kind == material::Kind::Certificate {
         for (token, reading) in tokens.view.readings().iter().enumerate() {
             work.charge_work(1)?;
             for (certificate, value) in reading.token().message().certificates().iter().enumerate()
@@ -210,28 +214,9 @@ fn candidates<'source, N: Copy, D: Copy, G: Copy, W: Work>(
                 values.try_push(Candidate {
                     source: ArtifactSource::TokenCertificate { token, certificate },
                     embedded: None,
-                    kind: material::Kind::Certificate,
                     bytes: value.as_bytes(),
                 })?;
             }
-        }
-        for crl in tokens.crls() {
-            work.charge_work(1)?;
-            values.try_push(Candidate {
-                source: ArtifactSource::TokenRevocation(crl.origin),
-                embedded: None,
-                kind: material::Kind::Crl,
-                bytes: crl.value.as_bytes(),
-            })?;
-        }
-        for response in tokens.responses() {
-            work.charge_work(1)?;
-            values.try_push(Candidate {
-                source: ArtifactSource::TokenRevocation(response.origin),
-                embedded: None,
-                kind: material::Kind::Ocsp,
-                bytes: response.value.as_bytes(),
-            })?;
         }
         for basic in tokens.basic_responses() {
             work.charge_work(1)?;
@@ -240,10 +225,27 @@ fn candidates<'source, N: Copy, D: Copy, G: Copy, W: Work>(
                 values.try_push(Candidate {
                     source: ArtifactSource::TokenRevocation(basic.origin),
                     embedded: Some(embedded),
-                    kind: material::Kind::Certificate,
                     bytes: certificate.as_bytes(),
                 })?;
             }
+        }
+    } else if kind == material::Kind::Ocsp {
+        for response in tokens.responses() {
+            work.charge_work(1)?;
+            values.try_push(Candidate {
+                source: ArtifactSource::TokenRevocation(response.origin),
+                embedded: None,
+                bytes: response.value.as_bytes(),
+            })?;
+        }
+    } else {
+        for crl in tokens.crls() {
+            work.charge_work(1)?;
+            values.try_push(Candidate {
+                source: ArtifactSource::TokenRevocation(crl.origin),
+                embedded: None,
+                bytes: crl.value.as_bytes(),
+            })?;
         }
     }
     Ok(values)
@@ -260,6 +262,7 @@ impl HashWork for SourceKey<'_> {
 
 fn source_ids<W: Work>(
     sources: &[Candidate<'_>],
+    first: usize,
     work: &W,
 ) -> Result<OwnedVec<usize, W>, MemoryError> {
     let mut index = work.map();
@@ -268,12 +271,12 @@ fn source_ids<W: Work>(
     for (ordinal, source) in sources.iter().enumerate() {
         work.charge_work(1)?;
         let key = SourceKey {
-            kind: source.kind,
             bytes: source.bytes,
         };
         let canonical = if let Some(&existing) = index.get(&key, work)? {
             existing
         } else {
+            let ordinal = first + ordinal;
             index.try_insert(key, ordinal)?;
             ordinal
         };
@@ -288,12 +291,47 @@ impl HashWork for CacheKey {
     }
 }
 
-pub(super) struct Memo<'provider, 'source, P: Digest<'provider>, W: Work> {
+pub(super) struct Memo<'provider, P: Digest<'provider>, W: Work> {
     provider: &'provider P,
     identities: OwnedVec<FormatDigest<P::Identity>, W>,
     entries: OwnedMap<CacheKey, Option<Resolution<P::Output>>, W>,
-    sources: Option<OwnedVec<usize, W>>,
-    candidates: Option<OwnedVec<Candidate<'source>, W>>,
+}
+
+struct Candidates<'source, W: Work> {
+    values: OwnedVec<Candidate<'source>, W>,
+    ids: OwnedVec<usize, W>,
+}
+
+struct Catalogue<'source, W: Work> {
+    groups: [Option<Candidates<'source, W>>; 3],
+    next: usize,
+}
+
+impl<'source, W: Work> Catalogue<'source, W> {
+    fn group<N: Copy, D: Copy, G: Copy>(
+        &mut self,
+        kind: material::Kind,
+        pools: CandidatePools<'_, 'source, N, D, G>,
+        work: &W,
+    ) -> Result<&Candidates<'source, W>, MemoryError> {
+        let index = match kind {
+            material::Kind::Certificate => 0,
+            material::Kind::Crl => 1,
+            material::Kind::Ocsp => 2,
+        };
+        let group = &mut self.groups[index];
+        if let Some(values) = group {
+            return Ok(values);
+        }
+        let values = candidates(pools.xml, pools.tokens, kind, work)?;
+        let next = self
+            .next
+            .checked_add(values.len())
+            .ok_or(MemoryError::CapacityOverflow)?;
+        let ids = source_ids(&values, self.next, work)?;
+        self.next = next;
+        Ok(group.insert(Candidates { values, ids }))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -323,53 +361,31 @@ impl<N: Copy + Eq, D: Copy + Eq, G: Copy + Eq> CandidatePools<'_, '_, N, D, G> {
     }
 }
 
-impl<'provider, 'source, P: Digest<'provider>, W: Work> Memo<'provider, 'source, P, W> {
+impl<'provider, P: Digest<'provider>, W: Work> Memo<'provider, P, W> {
     pub(super) fn new(provider: &'provider P, work: &W) -> Self {
         Self {
             provider,
             identities: work.vector(),
             entries: work.map(),
-            sources: None,
-            candidates: None,
         }
     }
-    fn row<N: Copy, D: Copy, G: Copy>(
+    fn row<'source, N: Copy, D: Copy, G: Copy>(
         &mut self,
-        identity: FormatDigest<P::Identity>,
-        expected: &[u8],
-        kind: material::Kind,
+        (identity, expected, kind): (FormatDigest<P::Identity>, &[u8], material::Kind),
         pools: CandidatePools<'_, 'source, N, D, G>,
+        catalogue: &mut Catalogue<'source, W>,
         comparisons: &mut OwnedVec<MaterialDigest, W>,
         work: &W,
     ) -> Result<(), digest::Error<RangesError, P::Error>> {
         let method = self.method(identity, work)?;
-        if self.sources.is_none() {
-            let values =
-                candidates(pools.xml, pools.tokens, work).map_err(digest::Error::Resource)?;
-            self.sources = Some(source_ids(&values, work).map_err(digest::Error::Resource)?);
-            self.candidates = Some(values);
-        }
-        let count = self
-            .candidates
-            .as_ref()
-            .expect("prepared original candidates")
-            .len();
-        for ordinal in 0..count {
+        let group = catalogue
+            .group(kind, pools, work)
+            .map_err(digest::Error::Resource)?;
+        for (candidate, &canonical) in group.values.iter().zip(group.ids.iter()) {
             work.charge_work(1).map_err(digest::Error::Resource)?;
-            let candidate = self
-                .candidates
-                .as_ref()
-                .expect("prepared original candidates")[ordinal];
-            if candidate.kind != kind {
-                continue;
-            }
             comparisons
                 .try_reserve(1)
                 .map_err(digest::Error::Resource)?;
-            let canonical = self
-                .sources
-                .as_ref()
-                .expect("prepared original source identities")[ordinal];
             let agreement = self.compare(canonical, candidate.bytes, method, expected, work)?;
             comparisons
                 .try_push(MaterialDigest {
@@ -553,6 +569,10 @@ fn compare_catalogues<'references, 'source, 'p, X: BinaryXml, P: DigestProvider<
         cause: ReferenceDigestError::Digest(digest::Error::Resource(cause)),
     };
     let mut memo = Memo::<P, W>::new(provider, work);
+    let mut catalogue = Catalogue {
+        groups: [None, None, None],
+        next: 0,
+    };
     let mut rows = work.vector();
     let mut comparisons = work.vector();
     for (property, references) in prepared.validation_references().iter().enumerate() {
@@ -581,10 +601,9 @@ fn compare_catalogues<'references, 'source, 'p, X: BinaryXml, P: DigestProvider<
                         work,
                         |identity, expected, work| {
                             memo.row(
-                                identity,
-                                expected,
-                                kind,
+                                (identity, expected, kind),
                                 CandidatePools { xml: view, tokens },
+                                &mut catalogue,
                                 &mut comparisons,
                                 work,
                             )

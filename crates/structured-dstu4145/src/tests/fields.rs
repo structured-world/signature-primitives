@@ -212,20 +212,24 @@ fn points<F: Arithmetic>(curve: &crate::curve::Curve<F>, spec: &domains::Spec) {
             curve.multiply(base, Words::hex("4"))
         )
     );
-    // Batched inversion must match independent recovery, including the
-    // non-recovery and inverse-point branches on every named PB/ONB domain.
+    // Joint affine x must match independent recovery and addition, including
+    // equal and inverse points on every named PB/ONB domain.
     let mut before_order = spec.order;
     before_order.0[0] -= 1; // The domain order is odd.
-    for (s, t) in [
-        (Words::hex("3"), Words::hex("4")),
-        (Words::ZERO, Words::ONE),
-        (spec.order, Words::hex("3")),
-        (Words::ONE, before_order),
+    let twice = twice.unwrap();
+    for (other, s, t) in [
+        (twice, Words::hex("3"), Words::hex("4")),
+        (twice, Words::ZERO, Words::ONE),
+        (twice, spec.order, Words::hex("3")),
+        (twice, Words::ONE, before_order),
+        (base, Words::hex("3"), Words::hex("3")),
+        (base, Words::ONE, before_order),
     ] {
-        let other = twice.unwrap();
         assert_eq!(
-            curve.multiply_sum(base, s, other, t),
-            curve.add(curve.multiply(base, s), curve.multiply(other, t))
+            curve.multiply_sum_x(base, s, other, t),
+            curve
+                .add(curve.multiply(base, s), curve.multiply(other, t))
+                .map(|point| point.x)
         );
     }
     let encoded = encoded(

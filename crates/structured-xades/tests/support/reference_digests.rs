@@ -445,6 +445,56 @@ fn complete_reference_digest_catalogue_retains_all_pairs_and_reuses_finished_out
 }
 
 #[test]
+fn certificate_catalogue_does_not_hash_unreferenced_crls() {
+    // The original catalogue still retains every CRL, while a certificate
+    // reference only needs to inspect those entries' kind metadata.
+    use structured_xades::validation::compare_reference_catalogues;
+    with_checked_path(|_, leaf, root, _| {
+        let memory = structured_asn1::memory::Memory::new(std::sync::Arc::new(
+            structured_asn1::memory::MemoryAccount::new(8 << 20, 100_000_000),
+        ));
+        let mut costs = [0; 2];
+        for (unrelated, cost) in [0, 32].into_iter().zip(&mut costs) {
+            let mut xml = complete_catalogue_fixture(leaf, root);
+            if unrelated != 0 {
+                let values = add(&mut xml, 7, XADES, "RevocationValues");
+                let crls = add(&mut xml, values, XADES, "CRLValues");
+                for number in 1..=unrelated {
+                    let node = add(&mut xml, crls, XADES, "EncapsulatedCRLValue");
+                    xml.binary_routes.push((
+                        node,
+                        crate::timestamp_oracle::complete_crl_number(2, number),
+                    ));
+                }
+            }
+            let parser = structured_asn1::Parser::der(memory.clone());
+            let operation = parser.read(&[], 900).unwrap();
+            let prepared = prepare::prepare(
+                &Access::new(&xml, xml.snapshot(), &memory),
+                0,
+                unsigned::Requirements::Basic,
+                None,
+            )
+            .unwrap();
+            material::with_values(&xml, &prepared, &operation, |_, view| {
+                let work = funded();
+                let provider = Oracle::new(Mode::Ready);
+                let report =
+                    compare_reference_catalogues(&xml, &prepared, &view, &provider, &work).unwrap();
+                assert_eq!(report.sources().len(), 4 + usize::from(unrelated));
+                assert_eq!(report.comparisons(0).unwrap().len(), 4);
+                *cost = work.work_used();
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        }
+        // One kind check per added CRL, plus a lookup through the fixture's
+        // enlarged binary-route table for each of four digest declarations.
+        assert_eq!(costs[1] - costs[0], 32 * (1 + 4));
+    });
+}
+
+#[test]
 fn reference_catalogue_refusal_drops_every_partial_cache_and_report() {
     // An already parsed pool is not allocation/work credit for a new query;
     // failed hashing after a complete earlier row never returns that row alone.

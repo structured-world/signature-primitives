@@ -325,6 +325,8 @@ pub fn validate<
     let settings = Settings {
         execution: context.execution,
         interval: context.interval,
+        validity: super::ValidityPolicy::default(),
+        target: chain[0],
         policy: context.policy,
         policies: context.bounds.policies,
         recognizer: &known,

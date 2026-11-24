@@ -103,6 +103,8 @@ pub const CRL_DISTRIBUTION_POINTS: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 
 pub const CRL_NUMBER: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x14]);
 /// CRL entry revocation reason, RFC 5280 §5.3.1.
 pub const CRL_REASON: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x15]);
+/// Common PKI v2.0 Part 9 `DateOfCertGen` certificate extension.
+pub const DATE_OF_CERT_GEN: Oid<'static> = Oid::from_bytes(&[0x2b, 36, 8, 3, 1]);
 /// CRL entry invalidity date, RFC 5280 §5.3.2.
 pub const INVALIDITY_DATE: Oid<'static> = Oid::from_bytes(&[0x55, 0x1d, 0x18]);
 /// Delta CRL base number, RFC 5280 §5.2.4.

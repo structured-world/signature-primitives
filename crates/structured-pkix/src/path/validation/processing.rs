@@ -2,7 +2,8 @@
 
 use super::super::name_space::{Admission, NameSpace};
 use super::super::{
-    BuildError, BuildResult, EffectiveKey, Meter, Truncation, Verified, cost, policy,
+    BuildError, BuildResult, EffectiveKey, Meter, Truncation, ValidityModel, Verified, cost,
+    issuance_time, policy,
 };
 use super::{
     CertificateFacts, Chain, ConstraintSource, Decoded, Driver, EffectiveAnchor,
@@ -433,6 +434,23 @@ fn inner<'a, R: Recognizer<E>, D: Driver<'a, R, E>, E: Work>(
     };
     let mut state = Processing::new(chain, anchor, settings, driver)?;
     for index in (0..chain.len()).rev() {
+        if settings.validity.model == ValidityModel::Chain && index != 0 {
+            // EN 319 102-1 V1.4.1 §5.2.6.4 step 4 applies this check to
+            // issuers in the prospective path. The trust anchor is outside it.
+            // https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf
+            let child = chain[index - 1];
+            let at = ConstraintSource::Certificate(index - 1);
+            let issued = read(driver, at, oid::DATE_OF_CERT_GEN, || {
+                issuance_time(child, settings.execution).map(Some)
+            })?
+            .expect("the issuance rule always supplies a time");
+            if !chain[index].tbs().validity().contains(issued) {
+                return Err(reject(
+                    ConstraintSource::Certificate(index),
+                    RejectionReason::Validity,
+                ));
+            }
+        }
         state.certificate(chain[index], index, proven, settings, driver)?;
     }
     state.finish(settings, driver)

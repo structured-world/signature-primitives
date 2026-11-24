@@ -68,7 +68,7 @@ impl<'document> CheckedPath<'document> {
             .map_err(Error::Resource)?;
         let from = utc.shift(at.start(), 0).map_err(Error::Time)?;
         let to = at.upper_bound(utc).map_err(Error::Time)?;
-        if path.interval.from_instant() > from || path.interval.to_instant() < to {
+        if !path.covers_target(from, to) {
             return Ok(Some(Failure::Interval));
         }
         if !exact(

@@ -75,6 +75,10 @@ PKCS#8 decoding is available through `structured-cms::personal::PrivateKey`.
 Parsing exposes certificate facts; it does not establish application trust.
 For certification-path processing, supply the certificates, trust anchors,
 validation interval, resource limits and a `path::Verify` implementation.
+To reuse signature math across discovery and supplied-path validation, keep one
+`path::answers::SignatureAnswers` in that operation's verifier adapter. Check
+policy, capability and the effective issuer key on every use before consulting
+the store. Only definite answers from its bound verifier are retained.
 See the [path API](https://docs.rs/structured-pkix/latest/structured_pkix/path/)
 and [certificate API](https://docs.rs/structured-pkix/latest/structured_pkix/struct.Certificate.html).
 

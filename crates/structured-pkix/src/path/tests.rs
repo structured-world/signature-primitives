@@ -607,6 +607,112 @@ fn supplied_path_and_search_verify_the_same_original_chain() {
 }
 
 #[test]
+fn supplied_validation_reuses_discovery_signature_math() {
+    use super::answers::{Edge, Error, SignatureAnswers};
+    use crate::key::PublicKeyInfo;
+    use core::cell::Cell;
+    use structured_asn1::memory::Memory;
+
+    struct Adapter<F> {
+        answers: SignatureAnswers<F>,
+        admissions: Cell<usize>,
+    }
+
+    impl<F> Verify for Adapter<F>
+    where
+        F: Fn(Edge<'_>, &Memory) -> Result<Verified, crate::Error>,
+    {
+        type Error = Error<crate::Error>;
+
+        fn verify(
+            &self,
+            algorithm: &crate::AlgorithmIdentifier<'_>,
+            key: super::EffectiveKey<'_>,
+            signed: &[u8],
+            signature: crate::signature::SignatureValue<'_>,
+            work: &Memory,
+        ) -> Result<Verified, Self::Error> {
+            self.admissions.set(self.admissions.get() + 1);
+            if algorithm.algorithm() != ECDSA_SHA256
+                || key.key().algorithm().algorithm() != oid::EC_PUBLIC_KEY
+            {
+                return Ok(Verified::Unsupported);
+            }
+            let Some(signature) = signature.octets() else {
+                return Ok(Verified::No);
+            };
+            self.answers.verify(
+                Edge {
+                    algorithm: algorithm.as_bytes(),
+                    signed,
+                    signature,
+                    issuer_spki: key.key().as_bytes(),
+                },
+                work,
+            )
+        }
+    }
+
+    // Both public path operations run adapter admission for both edges.
+    // Only discovery executes ECDSA; validation reuses the two math answers.
+    let ders = chain(Authority::Unlimited, Some(0x04));
+    let parser = Parser::der(crate::fixtures::memory());
+    let read = parse(&parser, &ders);
+    let anchor = Anchor::from_certificate(&read[2]);
+    let work = crate::fixtures::memory();
+    let math = Cell::new(0);
+    let adapter = Adapter {
+        admissions: Cell::new(0),
+        answers: SignatureAnswers::new(&work, |edge: Edge<'_>, work: &Memory| {
+            let parser = Parser::der(work.clone());
+            let mut reader = parser.read(edge.issuer_spki, 0).unwrap();
+            let element = reader.next_element().unwrap().unwrap();
+            let key = PublicKeyInfo::read_element(&reader, &element, "test.issuer")?;
+            let key =
+                p256::ecdsa::VerifyingKey::from_sec1_bytes(key.key_octets().unwrap()).unwrap();
+            let signature = p256::ecdsa::Signature::from_der(edge.signature).unwrap();
+            math.set(math.get() + 1);
+            Ok(if key.verify(edge.signed, &signature).is_ok() {
+                Verified::Yes
+            } else {
+                Verified::No
+            })
+        }),
+    };
+    let search = super::Context {
+        execution: &work,
+        anchors: &[anchor],
+        interval: moment(),
+        bounds: Bounds::default(),
+        policy: Policy::default(),
+        verifier: &adapter,
+        watch: &(),
+        recognizer: &(),
+    };
+    let outcome = build(&read[0], &[&read[1]], &search).unwrap();
+    assert_eq!(outcome.paths().len(), 1);
+    assert_eq!(adapter.admissions.get(), 2);
+    assert_eq!(math.get(), 2);
+    let supplied = super::ValidationContext {
+        execution: &work,
+        interval: moment(),
+        policy: Policy::default(),
+        bounds: super::ValidationBounds::default(),
+        verifier: &adapter,
+        watch: &(),
+        recognizer: &(),
+    };
+    let validation = super::validate(&[&read[0], &read[1]], anchor, &supplied).unwrap();
+    assert!(matches!(validation, super::Validation::Accepted(_)));
+    assert_eq!(adapter.admissions.get(), 4);
+    assert_eq!(math.get(), 2);
+    drop(validation);
+    drop(outcome);
+    drop(adapter);
+    assert_eq!(work.used(), 0);
+}
+
+#[test]
 fn supplied_intermediate_role_and_issuer_failures_are_located() {
     // Completed CA/KU/issuer failures retain the exact supplied position;
     // they never become provider errors or an apparently absent certificate.

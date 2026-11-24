@@ -58,7 +58,14 @@ fn scan_chunk<E>(
     mut record: impl FnMut(usize) -> Result<(), E>,
 ) -> Result<(), E> {
     const REST: &[u8; 3] = b"K\x05\x06";
-    let (head, full) = bytes.split_at(bytes.len() % 8);
+    // On x86_64, word setup costs more than scanning an empty archive's
+    // 22-byte footer directly. Use the same byte scan as the leading fragment.
+    let split = if cfg!(target_arch = "x86_64") && bytes.len() < 32 {
+        bytes.len()
+    } else {
+        bytes.len() % 8
+    };
+    let (head, full) = bytes.split_at(split);
     debug_assert!(suffix.len() <= 3);
     let trailing = match *suffix {
         [a, b, c] => [0, a, b, c],

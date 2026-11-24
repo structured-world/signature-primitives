@@ -198,7 +198,10 @@ impl<'a> OcspRequest<'a> {
     ) -> CallbackResult<BoundResponse<'q, 'a, 'r, 'response>, D::Error> {
         let source = self.execution_in(execution);
         let processed = process_extensions(&self.extensions, true, &source)?;
-        let response_nonce = response.response().nonce(execution)?;
+        let response_nonce = response
+            .response()
+            .extensions()
+            .get(crate::oid::OCSP_NONCE, execution)?;
         let response_work = response
             .response()
             .signature_algorithm()

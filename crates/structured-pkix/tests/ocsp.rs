@@ -309,25 +309,27 @@ fn nonce_binding_preserves_missing_unsolicited_and_exact_bytes() {
     let request = [0x61; 32];
     assert!(RequestNonce::new(&request[..31]).is_none());
     assert!(RequestNonce::new(&[0; 129]).is_none());
-    let extension = |value: &[u8]| {
-        tlv(
-            48,
-            &[tlv(6, &[0x2b, 6, 1, 5, 5, 7, 0x30, 1, 2]), tlv(4, value)].concat(),
-        )
+    let extension = |value: &[u8], critical: bool| {
+        let mut fields = tlv(6, structured_pkix::oid::OCSP_NONCE.as_bytes());
+        if critical {
+            fields.extend(tlv(1, &[0xff]));
+        }
+        fields.extend(tlv(4, value));
+        tlv(48, &fields)
     };
-    let with_nonce = |value: &[u8]| {
+    let with_nonce = |value: &[u8], critical| {
         let fields = [
             tlv(0xa2, &tlv(4, &[0x33; 20])),
             date(),
             tlv(48, &assertion(&[0x80, 0])),
-            tlv(0xa1, &tlv(48, &extension(value))),
+            tlv(0xa1, &tlv(48, &extension(value, critical))),
         ]
         .concat();
         response(&tlv(48, &fields))
     };
     let execution = memory(128 * 1024, 1_000_000);
     let parser = Parser::der(execution.clone());
-    let bytes = with_nonce(&tlv(4, &request));
+    let bytes = with_nonce(&tlv(4, &request), false);
     let parsed = decode_basic(&parser, &bytes, 401).unwrap();
     let retained = execution.used();
     assert_eq!(
@@ -359,6 +361,20 @@ fn nonce_binding_preserves_missing_unsolicited_and_exact_bytes() {
             .unwrap_err()
             .is_resource()
     );
+    // Finding the extension consumes the whole operation allowance. The
+    // requested nonce cannot then be decoded, even with a funded source.
+    let lookup_only = memory(
+        128 * 1024,
+        1 + structured_pkix::oid::OCSP_NONCE.as_bytes().len(),
+    );
+    let error = parsed
+        .bind_nonce(
+            Some(RequestNonce::from_sent(&request).unwrap()),
+            &lookup_only,
+        )
+        .unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!(error.field(), "ocspResponse.nonce");
     let absent = response(&data(&assertion(&[0x80, 0])));
     let parsed = decode_basic(&parser, &absent, 401).unwrap();
     assert_eq!(
@@ -373,7 +389,7 @@ fn nonce_binding_preserves_missing_unsolicited_and_exact_bytes() {
     );
     for length in [1, 16, 32, 128] {
         let nonce = vec![0x61; length];
-        let bytes = with_nonce(&tlv(4, &nonce));
+        let bytes = with_nonce(&tlv(4, &nonce), false);
         assert_eq!(
             decode_basic(&parser, &bytes, 401)
                 .unwrap()
@@ -398,11 +414,30 @@ fn nonce_binding_preserves_missing_unsolicited_and_exact_bytes() {
         [tlv(4, &request), tlv(4, &request)].concat(),
         request.to_vec(),
     ] {
-        let bytes = with_nonce(&value);
+        let bytes = with_nonce(&value, false);
         let parsed = decode_basic(&parser, &bytes, 401).unwrap();
-        assert!(parsed.nonce(&execution).is_err());
+        let error = parsed.nonce(&execution).unwrap_err();
         assert!(parsed.check_extensions(&execution).is_err());
+        assert_eq!(
+            parsed.bind_nonce(None, &execution).unwrap(),
+            NonceBinding::Unsolicited
+        );
+        assert_eq!(
+            parsed
+                .bind_nonce(RequestNonce::new(&request), &execution)
+                .unwrap(),
+            NonceBinding::Malformed {
+                code: error.code(),
+                offset: error.offset(),
+            }
+        );
     }
+    let bytes = with_nonce(&[0x7e; 16], true);
+    let parsed = decode_basic(&parser, &bytes, 401).unwrap();
+    assert_eq!(
+        parsed.bind_nonce(None, &execution).unwrap_err(),
+        parsed.nonce(&execution).unwrap_err()
+    );
 }
 
 #[test]

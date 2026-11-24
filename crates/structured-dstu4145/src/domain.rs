@@ -331,10 +331,10 @@ impl<F: Arithmetic> Prepared<F> {
         if digest.is_zero() {
             digest = field.one();
         }
-        let Some(point) = self.curve.multiply_sum(self.base, s, public, r) else {
+        let Some(x) = self.curve.multiply_sum_x(self.base, s, public, r) else {
             return false;
         };
-        let mut computed = field.export(field.multiply(digest, point.x));
+        let mut computed = field.export(field.multiply(digest, x));
         computed.clear_above(self.order.bits() - 1);
         computed == r
     }

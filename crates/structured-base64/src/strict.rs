@@ -59,6 +59,7 @@ pub(super) fn decode_standard_prefix(input: &[u8], output: &mut [u8]) -> usize {
 /// Decode two quartets at a time when the stream begins with enough space.
 /// Retry a partially valid pair through the same quartet and scalar paths.
 #[inline(never)]
+#[cfg(target_arch = "aarch64")]
 pub(super) fn decode_wide_standard_prefix(input: &[u8], output: &mut [u8]) -> usize {
     let mut written = 0;
     for (input, output) in input

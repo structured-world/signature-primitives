@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.27.1...structured-asn1-v0.28.0) - 2026-11-24
+
+### Added
+
+- *(pkix)* add chain validity model ([#364](https://github.com/structured-world/signature-primitives/pull/364))
+
+### Other
+
+- accelerate archive and path processing ([#362](https://github.com/structured-world/signature-primitives/pull/362))
+
 ## [0.27.1](https://github.com/structured-world/signature-primitives/compare/structured-asn1-v0.27.0...structured-asn1-v0.27.1) - 2026-11-24
 
 ### Added

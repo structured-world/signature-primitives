@@ -195,6 +195,41 @@ fn bulk_decode_resumes_after_wrapping_and_chunk_boundaries() {
 }
 
 #[test]
+fn wide_prefix_matches_the_scalar_decoder_at_pair_boundaries() {
+    // A late fault in either quartet must leave the first error and its
+    // original offset unchanged, even when the sink fills partway.
+    for byte in *b"B =!" {
+        for index in [1, 4, 7, 8, 1022, 1023, 1055] {
+            let mut input = [b'A'; 1056];
+            input[index] = byte;
+            for capacity in [768, 791, 792] {
+                let mut wide = Base64Codec::new(false, 0);
+                let mut scalar = Base64Codec::new(false, 0);
+                let mut output = [SENTINEL; 793];
+                let mut expected = output;
+                let answer = wide.update(&input, &mut output[..capacity]);
+                let reference = input.iter().try_fold(0, |written, byte| {
+                    scalar
+                        .update(
+                            core::slice::from_ref(byte),
+                            &mut expected[written..capacity],
+                        )
+                        .map(|count| written + count)
+                });
+                assert_eq!(
+                    answer, reference,
+                    "offset {index}, byte {byte}, capacity {capacity}"
+                );
+                if answer.is_ok() {
+                    assert_eq!(wide, scalar);
+                    assert_eq!(output, expected);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn wrapped_short_tail_matches_the_scalar_decoder() {
     // After the 76th symbol these tails contain zero to four full quartets.
     // Splits on either side of the break must leave the same stream state.

@@ -31,9 +31,9 @@ pub(crate) async fn read_into<S: RangeSource>(
         if frames.is_empty() && root.is_some() {
             break;
         }
-        let token = cursor.skip_to_token().await?;
+        let next = cursor.skip_to_token().await?;
         let start = cursor.at;
-        let Some(byte) = token else {
+        let Some(byte) = next else {
             return Err(cursor.failure(Syntax::End, start));
         };
         if byte == b']' || byte == b'>' {

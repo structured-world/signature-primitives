@@ -291,10 +291,10 @@ impl<'s, S: RangeSource> Archive<'s, S> {
         hi = self.order.len();
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            if compare(mid)? != core::cmp::Ordering::Greater {
-                lo = mid + 1;
-            } else {
+            if compare(mid)? == core::cmp::Ordering::Greater {
                 hi = mid;
+            } else {
+                lo = mid + 1;
             }
         }
         Ok(Names {

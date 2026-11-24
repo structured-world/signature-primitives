@@ -11,7 +11,7 @@ use structured_pkix::{
     algorithm::digest::AsnDigest,
     crl::{
         Authenticated, Authentication as ListAuthentication, BoundDelta, CertificateList,
-        CombinedEntry, DeltaBinding, EntryLookup, EntryScan, Reasons, ScopeOutcome,
+        CombinedEntry, DeltaBinding, DeltaMetadata, EntryLookup, EntryScan, Reasons, ScopeOutcome,
     },
     error::CallbackError,
     extension::Recognizer,
@@ -32,6 +32,7 @@ struct Delta<'a> {
     list: List<'a>,
     paired: bool,
     scan: Option<EntryScan<'a, 'a, 'a>>,
+    metadata: DeltaMetadata<'a, 'a>,
 }
 
 /// Authenticate and assess every supplied artifact for this member. Multiple
@@ -112,6 +113,7 @@ where
                                         list,
                                         paired: false,
                                         scan: None,
+                                        metadata: DeltaMetadata::default(),
                                     })
                                     .map_err(Error::Resource)?;
                             } else {
@@ -306,11 +308,17 @@ fn assess_deltas<'a, E: Work, V, D, R>(
     work: &E,
     statements: &mut OwnedVec<Statement<'a>, E>,
 ) -> Result<(), V, D, R> {
+    let mut base_metadata = DeltaMetadata::default();
     for delta in deltas {
         work.charge_work(1).map_err(Error::Resource)?;
         let DeltaBinding::Bound(pair) = base
             .source
-            .bind_delta(&delta.list.source, work)
+            .bind_delta_reusing(
+                &delta.list.source,
+                &mut base_metadata,
+                &mut delta.metadata,
+                work,
+            )
             .map_err(Error::Processing)?
         else {
             continue;

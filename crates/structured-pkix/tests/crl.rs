@@ -2029,6 +2029,51 @@ fn crl_metadata(number: Option<&[u8]>, minimum: Option<&[u8]>, scope: bool) -> V
 }
 
 #[test]
+fn repeated_delta_binding_reuses_only_the_same_original_metadata() {
+    // A warm pair needs less work, still pays for cached access, and cannot
+    // apply the first delta's minimum to another source at the same offset.
+    use structured_pkix::crl::{DeltaBinding, DeltaFailure, DeltaMetadata};
+    let execution = memory(128 * 1024, 1_000_000);
+    let parser = Parser::der(execution.clone());
+    let issuer_bytes = certificate(false, None, 7);
+    let issuer = structured_pkix::Certificate::read(&parser, &issuer_bytes, 100).unwrap();
+    let base_bytes = crl(&tbs(Some(1), &crl_metadata(Some(&[5]), None, false)));
+    let delta_bytes = crl(&tbs(Some(1), &crl_metadata(Some(&[7]), Some(&[5]), false)));
+    let other_bytes = crl(&tbs(Some(1), &crl_metadata(Some(&[7]), Some(&[6]), false)));
+    let base = CertificateList::read(&parser, &base_bytes, 300).unwrap();
+    let delta = CertificateList::read(&parser, &delta_bytes, 600).unwrap();
+    let other = CertificateList::read(&parser, &other_bytes, 600).unwrap();
+    let base = authenticated(&base, &issuer, &execution);
+    let delta = authenticated(&delta, &issuer, &execution);
+    let other = authenticated(&other, &issuer, &execution);
+    let (mut complete, mut update) = (DeltaMetadata::default(), DeltaMetadata::default());
+    let before = execution.work_used();
+    assert!(matches!(
+        base.bind_delta_reusing(&delta, &mut complete, &mut update, &execution)
+            .unwrap(),
+        DeltaBinding::Bound(_)
+    ));
+    let cold = execution.work_used() - before;
+    let before = execution.work_used();
+    assert!(matches!(
+        base.bind_delta_reusing(&delta, &mut complete, &mut update, &execution)
+            .unwrap(),
+        DeltaBinding::Bound(_)
+    ));
+    assert!(execution.work_used() - before < cold);
+    let error = base
+        .bind_delta_reusing(&delta, &mut complete, &mut update, &memory(0, 2))
+        .unwrap_err();
+    assert!(error.is_resource());
+    assert_eq!(error.field(), "extensions.cRLNumber");
+    assert!(matches!(
+        base.bind_delta_reusing(&other, &mut complete, &mut update, &execution)
+            .unwrap(),
+        DeltaBinding::Rejected(DeltaFailure::BaseTooOld)
+    ));
+}
+
+#[test]
 fn authenticated_delta_binding_keeps_sources_and_checks_arbitrary_width_numbers() {
     // Binding cannot mix keys/scopes or reverse base/delta numbering. CRL
     // numbers are not narrowed to u64, and the combined evidence keeps both

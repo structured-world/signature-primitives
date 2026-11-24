@@ -5,7 +5,7 @@ use std::{
     hint::black_box,
     time::{Duration, Instant},
 };
-use structured_base64::{STANDARD, URL_SAFE_NO_PAD};
+use structured_base64::{Base64Codec, STANDARD, URL_SAFE_NO_PAD};
 
 fn time(iterations: usize, mut operation: impl FnMut()) -> Duration {
     let start = Instant::now();
@@ -105,5 +105,25 @@ fn main() {
         };
         test("standard encode", STANDARD, &standard);
         test("URL encode", URL_SAFE_NO_PAD, &url);
+        compare(
+            size,
+            "stream decode",
+            || {
+                let mut decoder = Base64Codec::new(false, 0);
+                black_box(
+                    decoder
+                        .update(black_box(standard.as_bytes()), black_box(&mut ours))
+                        .unwrap(),
+                );
+                decoder.finish(&mut []).unwrap();
+            },
+            || {
+                black_box(
+                    general_purpose::STANDARD
+                        .decode_slice(black_box(standard.as_bytes()), black_box(&mut reference))
+                        .unwrap(),
+                );
+            },
+        );
     }
 }

@@ -59,8 +59,13 @@ fn scan_chunk<E>(
 ) -> Result<(), E> {
     const REST: &[u8; 3] = b"K\x05\x06";
     let (head, full) = bytes.split_at(bytes.len() % 8);
-    let mut trailing = [0_u8; 4];
-    trailing[1..=suffix.len()].copy_from_slice(suffix);
+    debug_assert!(suffix.len() <= 3);
+    let trailing = match *suffix {
+        [a, b, c] => [0, a, b, c],
+        [a, b] => [0, a, b, 0],
+        [a] => [0, a, 0, 0],
+        _ => [0; 4],
+    };
     let mut next = u64::from(u32::from_be_bytes(trailing));
     for (index, group) in full.as_chunks::<8>().0.iter().enumerate().rev() {
         // Compare four overlapping byte lanes, using the following word's

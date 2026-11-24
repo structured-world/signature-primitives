@@ -94,7 +94,7 @@ impl<'q, S: RangeSource> RangeReader<'q, S> {
         Self::window(source, session, operation, domain, source.stamp(), bounds)
     }
 
-    fn window<W: Work>(
+    pub(crate) fn window<W: Work>(
         source: &'q S,
         session: &'q Session,
         operation: &'q W,

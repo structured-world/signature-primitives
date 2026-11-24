@@ -313,7 +313,7 @@ impl<'r, 'a> ScopedResponse<'r, 'a> {
                 RecipientBinding::Matches
             }
         };
-        let processed = response.process_extensions(execution)?;
+        let processed = response.process_extensions(execution, false)?;
         if let ExtensionProcessing::Unsupported { kind, span } = processed.processing {
             return Ok(TargetEvidence::UnsupportedCritical { kind, span });
         }

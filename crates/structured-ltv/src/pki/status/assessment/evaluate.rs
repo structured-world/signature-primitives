@@ -617,10 +617,7 @@ where
                 continue;
             }
         }
-        let finding = if matches!(
-            evidence.nonce(),
-            ocsp::NonceBinding::Missing | ocsp::NonceBinding::Differs
-        ) {
+        let finding = if evidence.nonce().is_failure() {
             Finding::Unusable(Unusable::Nonce(evidence.nonce()))
         } else {
             match evidence.status() {

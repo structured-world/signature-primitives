@@ -755,7 +755,7 @@ impl<'a: 'operation, 'operation> ScopedReader<'a, 'operation> {
             .map_err(|reason| Error::resource(reason, element.contents_span.start))?;
         let mut path = self
             .path
-            .try_copy_in(self.memory())
+            .try_copy_with_room(self.memory(), 1)
             .map_err(|reason| Error::resource(reason, element.contents_span.start))?;
         path.push(self.memory(), element.index)
             .map_err(|reason| Error::resource(reason, element.contents_span.start))?;
@@ -1106,7 +1106,7 @@ impl<'a: 'operation, 'operation> ScopedReader<'a, 'operation> {
             .checked_add(1)
             .ok_or(crate::memory::MemoryError::WorkExceeded)?;
         self.admit_path(additional)?;
-        let mut path = self.path.try_copy_in(self.memory())?;
+        let mut path = self.path.try_copy_with_room(self.memory(), additional)?;
         path.push(self.memory(), own_index)?;
         for index in trail {
             path.push(self.memory(), *index)?;

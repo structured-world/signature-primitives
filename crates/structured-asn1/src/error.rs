@@ -164,50 +164,42 @@ impl Path {
     }
 
     pub(crate) fn try_copy_in(&self, memory: &Memory) -> core::result::Result<Self, MemoryError> {
-        Ok(Self {
-            indices: match &self.indices {
-                Some(indices) => {
-                    let mut copy = memory.vector();
-                    copy.try_extend_from_slice(indices)?;
-                    Some(copy)
-                }
-                None => None,
-            },
+        self.try_copy_with_room(memory, 0)
+    }
+
+    pub(crate) fn try_copy_with_room(
+        &self,
+        memory: &Memory,
+        additional: usize,
+    ) -> core::result::Result<Self, MemoryError> {
+        let indices = self.indices();
+        let capacity = child_capacity(indices.len(), additional)?;
+        let mut copy = Self {
+            indices: None,
             unavailable: self.unavailable,
-        })
+        };
+        if capacity != 0 {
+            let mut owned = memory.vector();
+            owned.try_reserve_exact(capacity)?;
+            owned.try_extend_from_slice(indices)?;
+            copy.indices = Some(owned);
+        }
+        Ok(copy)
     }
 
     /// Pre-admission for copying this path and appending scalar indices.
     /// `OwnedVec`'s allocator charges the aggregate account itself; its parser
     /// caller separately reserves this exact local share before any allocation.
     pub(crate) fn copy_work(&self, additional: usize) -> core::result::Result<u64, MemoryError> {
-        let length = self.indices().len() as u64;
-        let additional = additional as u64;
-        let target = length
-            .checked_add(additional)
-            .ok_or(MemoryError::WorkExceeded)?;
-        // Copy plus exact allocation: two passes of four bytes per u32.
-        let mut work = length
-            .checked_mul(8)
-            .and_then(|work| work.checked_add(additional))
-            .ok_or(MemoryError::WorkExceeded)?;
-        let mut capacity = length;
-        // Audited allocator-api2 0.4 RawVec<u32>: minimum four elements,
-        // then doubling. At most u64::BITS growth steps, independent of input
-        // traversal. Include old/new layouts before each replacement allocation.
-        while capacity < target {
-            let next = capacity
-                .checked_mul(2)
-                .ok_or(MemoryError::WorkExceeded)?
-                .max(4);
-            work = next
-                .checked_add(capacity)
-                .and_then(|bytes| bytes.checked_mul(4))
-                .and_then(|bytes| work.checked_add(bytes))
-                .ok_or(MemoryError::WorkExceeded)?;
-            capacity = next;
-        }
-        Ok(work)
+        let length = self.indices().len();
+        let capacity = child_capacity(length, additional)? as u64;
+        // One exact allocation, one copy of the retained indices, one
+        // scalar append per added index. No intermediate growth is needed.
+        capacity
+            .checked_add(length as u64)
+            .and_then(|count| count.checked_mul(4))
+            .and_then(|work| work.checked_add(additional as u64))
+            .ok_or(MemoryError::WorkExceeded)
     }
 
     pub(crate) fn push(
@@ -219,6 +211,16 @@ impl Path {
             .get_or_insert_with(|| memory.vector())
             .try_push(index)
     }
+}
+
+fn child_capacity(length: usize, additional: usize) -> core::result::Result<usize, MemoryError> {
+    if additional == 0 {
+        return Ok(length);
+    }
+    length
+        .checked_add(additional)
+        .map(|target| target.max(4))
+        .ok_or(MemoryError::CapacityOverflow)
 }
 
 impl fmt::Display for Path {

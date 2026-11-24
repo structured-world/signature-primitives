@@ -8,6 +8,26 @@ use crate::tag::{Tag, universal};
 const TWO_INTEGERS: [u8; 8] = [0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02];
 
 #[test]
+fn descending_reserves_the_child_path_once() {
+    // Both live paths fit in 32 bytes. Allocating a temporary one-index copy
+    // while growing the child would exceed the account before it could be freed.
+    use crate::memory::{Memory, MemoryAccount};
+    let memory = Memory::new(alloc::sync::Arc::new(MemoryAccount::new(32, 1024)));
+    let parser = Parser::der(memory.clone());
+    let bytes = [0x30, 0x05, 0x30, 0x03, 0x02, 0x01, 0x01];
+    let mut root = parser.read(&bytes, 401).unwrap();
+    let outer = root.next_element().unwrap().unwrap();
+    let mut inside = root.enter(&outer).unwrap();
+    let inner = inside.next_element().unwrap().unwrap();
+    let mut child = inside.enter(&inner).unwrap();
+    assert_eq!(child.path().indices(), &[0, 0]);
+    assert_eq!(child.read_integer().unwrap().as_u64(), Some(1));
+    assert_eq!(memory.used(), 32);
+    drop((inside, child));
+    assert_eq!(memory.used(), 0);
+}
+
+#[test]
 fn execution_rebinding_keeps_old_storage_and_charges_new_descendants() {
     // A retained path remains owned by A. Reading, entering, copying and
     // error reporting after rebinding must use B without moving A's charge.

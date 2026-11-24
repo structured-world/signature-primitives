@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use structured_asn1::Parser;
-use structured_asn1::memory::{Memory, MemoryAccount};
+use structured_asn1::memory::{Memory, MemoryAccount, Work as _};
 use structured_cades::{
     Level,
     prepare::{Preparation, Rule, Severity},
@@ -1297,18 +1297,44 @@ fn legacy_reference_timestamps_preserve_mapped_failures_and_original_obligations
 
 #[test]
 fn legacy_reference_traversal_obeys_producing_and_aggregate_work_and_rolls_back() {
+    const LOCAL: usize = 1 << 26;
+    const AGGREGATE: usize = 1 << 27;
     // The opaque CMS catalogue fits; inspecting every OtherCertID must then
     // refuse under either current local work or aggregate work, releasing all
     // temporary preparation storage without disguising refusal as a finding.
     let kind = [42, 134, 72, 134, 247, 13, 1, 9, 16, 2, 21];
     let entry = tlv(0x30, &tlv(4, &[1; 20]));
     let bytes = message(&[attribute(&kind, &[tlv(0x30, &entry.repeat(512))])]);
-    for (local, aggregate) in [(20_000, 100_000_000), (100_000_000, 20_000)] {
+    // Pin the failure to one unit below each independently measured success
+    // threshold, so cheaper shared parsing cannot remove the refusal case.
+    let (local_cost, aggregate_cost) = {
+        let account = Memory::new(Arc::new(MemoryAccount::new(1 << 20, AGGREGATE)));
+        let parser = Parser::new(
+            structured_asn1::Encoding::Ber,
+            structured_asn1::Limits {
+                max_work: LOCAL as u64,
+                ..Default::default()
+            },
+            account.clone(),
+        );
+        let data = SignedData::read(&parser, &bytes, 500).unwrap();
+        let parent = parser.read(&[], 0).unwrap();
+        let document = Document::new(&data, &parent).unwrap();
+        let report =
+            Preparation::read(&document, &data.signers()[0], Level::Basic, &parent).unwrap();
+        let costs = (
+            LOCAL - parent.execution().work_remaining(),
+            account.work_used(),
+        );
+        drop(report);
+        costs
+    };
+    for (local, aggregate) in [(local_cost - 1, AGGREGATE), (LOCAL, aggregate_cost - 1)] {
         let account = Memory::new(Arc::new(MemoryAccount::new(1 << 20, aggregate)));
         let parser = Parser::new(
             structured_asn1::Encoding::Ber,
             structured_asn1::Limits {
-                max_work: local,
+                max_work: local as u64,
                 ..Default::default()
             },
             account.clone(),

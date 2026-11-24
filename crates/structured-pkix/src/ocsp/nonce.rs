@@ -69,6 +69,21 @@ pub enum NonceBinding {
     Matches,
     /// The original request and response nonce bytes differ.
     Differs,
+    /// The requested nonce could not be decoded from a noncritical extension.
+    Malformed {
+        /// Original decoding failure.
+        code: ErrorCode,
+        /// Original byte offset of the failure.
+        offset: u64,
+    },
+}
+
+impl NonceBinding {
+    /// Whether an actual requested nonce failed to bind the response.
+    #[must_use]
+    pub fn is_failure(self) -> bool {
+        matches!(self, Self::Missing | Self::Differs | Self::Malformed { .. })
+    }
 }
 
 pub(super) fn read<'a, W: Work>(
@@ -98,16 +113,37 @@ pub(super) fn read<'a, W: Work>(
 
 pub(super) fn bind<L: Work, R: Work>(
     request: Option<RequestNonce<'_>>,
-    response: Option<&[u8]>,
+    response: Option<&crate::Extension<'_>>,
     left: (&L, &'static str, u64),
     right: (&R, &'static str, u64),
 ) -> Result<NonceBinding> {
-    let (request, response) = match (request, response) {
-        (None, None) => return Ok(NonceBinding::NotRequested),
-        (None, Some(_)) => return Ok(NonceBinding::Unsolicited),
-        (Some(_), None) => return Ok(NonceBinding::Missing),
-        (Some(request), Some(response)) => (request.as_bytes(), response),
+    let Some(response) = response else {
+        return Ok(if request.is_some() {
+            NonceBinding::Missing
+        } else {
+            NonceBinding::NotRequested
+        });
     };
+    // RFC 9654 §2.1 gives nonce its request-response binding role.
+    // An unsolicited noncritical value is irrelevant to that binding.
+    // https://www.rfc-editor.org/rfc/rfc9654#section-2.1
+    if request.is_none() && !response.is_critical() {
+        return Ok(NonceBinding::Unsolicited);
+    }
+    let value = match read(response, right.0, right.1) {
+        Ok(value) => value,
+        Err(error) if error.is_resource() || response.is_critical() => return Err(error),
+        Err(error) => {
+            return Ok(NonceBinding::Malformed {
+                code: error.code(),
+                offset: error.offset(),
+            });
+        }
+    };
+    let Some(request) = request else {
+        return Ok(NonceBinding::Unsolicited);
+    };
+    let request = request.as_bytes();
     left.0
         .charge_work(1)
         .map_err(|reason| Error::resource(reason, left.1, left.2))?;
@@ -115,7 +151,7 @@ pub(super) fn bind<L: Work, R: Work>(
         .0
         .charge_work(1)
         .map_err(|reason| Error::resource(reason, right.1, right.2))?;
-    if request.len() != response.len() {
+    if request.len() != value.len() {
         return Ok(NonceBinding::Differs);
     }
     left.0
@@ -123,9 +159,9 @@ pub(super) fn bind<L: Work, R: Work>(
         .map_err(|reason| Error::resource(reason, left.1, left.2))?;
     right
         .0
-        .charge_work(response.len() as u64)
+        .charge_work(value.len() as u64)
         .map_err(|reason| Error::resource(reason, right.1, right.2))?;
-    Ok(if request == response {
+    Ok(if request == value {
         NonceBinding::Matches
     } else {
         NonceBinding::Differs
@@ -144,8 +180,9 @@ impl<'a> BasicResponse<'a> {
     }
 
     /// Compare the actual request nonce only after authenticating this response.
-    /// Missing/unsolicited values are preserved for the caller's replay policy;
-    /// they are never replaced by a generated or default nonce.
+    /// Unsolicited noncritical values are reported without decoding. A malformed
+    /// requested noncritical value preserves its original decoding failure.
+    /// Resource failures and malformed critical values return errors.
     pub fn bind_nonce<W: Work>(
         &self,
         request: Option<RequestNonce<'_>>,
@@ -154,7 +191,7 @@ impl<'a> BasicResponse<'a> {
         let source = self.algorithm.query_in(execution);
         bind(
             request,
-            self.nonce(execution)?,
+            self.extensions.get(oid::OCSP_NONCE, execution)?,
             (execution, "ocspResponse.nonce", self.span.start),
             (&source, "ocspResponse.nonce", self.span.start),
         )

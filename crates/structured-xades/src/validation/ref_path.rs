@@ -149,7 +149,7 @@ fn candidate_ids<W: Work>(
 
 struct PathComparisons<'provider, 'path, 'document, P: Digest<'provider>, W: Work> {
     path: &'path CheckedPath<'document>,
-    memo: Memo<'provider, 'document, P, W>,
+    memo: Memo<'provider, P, W>,
     ids: Option<OwnedVec<usize, W>>,
     covered: OwnedVec<bool, W>,
     comparisons: OwnedVec<Agreement, W>,

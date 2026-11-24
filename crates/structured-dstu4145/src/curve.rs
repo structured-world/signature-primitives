@@ -123,6 +123,7 @@ impl<F: Arithmetic> Curve<F> {
         Ok(point)
     }
 
+    #[cfg(test)]
     pub(crate) fn add(&self, left: Option<Point>, right: Option<Point>) -> Option<Point> {
         let (Some(left), Some(right)) = (left, right) else {
             return left.or(right);
@@ -159,26 +160,78 @@ impl<F: Arithmetic> Curve<F> {
         self.ladder(point, scalar).finish(&self.field)
     }
 
-    pub(crate) fn multiply_sum(
+    pub(crate) fn multiply_sum_x(
         &self,
         left: Point,
         s: Words,
         right: Point,
         r: Words,
-    ) -> Option<Point> {
+    ) -> Option<Words> {
         let field = &self.field;
         let (left, right) = (self.ladder(left, s), self.ladder(right, r));
         match (left, right) {
-            (Multiple::Recover(left), Multiple::Recover(right)) => {
-                // Both denominators are nonzero by the ladder's recovery
-                // conditions. Invert their product once and recover each inverse.
-                let inverse = field.inverse(field.multiply(left.denominator, right.denominator));
-                let a = field.multiply(inverse, right.denominator);
-                let b = field.multiply(inverse, left.denominator);
-                self.add(Some(left.finish(field, a)), Some(right.finish(field, b)))
-            }
-            (left, right) => self.add(left.finish(field), right.finish(field)),
+            (Multiple::Recover(left), Multiple::Recover(right)) => self.recover_sum_x(left, right),
+            (left, right) => self.add_x(left.finish(field), right.finish(field)),
         }
+    }
+
+    fn recover_sum_x(&self, left: Recovery, right: Recovery) -> Option<Words> {
+        let field = &self.field;
+        let left_x = field.multiply(left.x, right.denominator);
+        let right_x = field.multiply(right.x, left.denominator);
+        let difference = left_x.add(right_x);
+        let denominator = field.multiply(left.denominator, right.denominator);
+        if difference.is_zero() {
+            // Equal affine x still needs the doubling/inverse-point cases.
+            let inverse = field.inverse(denominator);
+            let a = field.multiply(inverse, right.denominator);
+            let b = field.multiply(inverse, left.denominator);
+            return self.add_x(Some(left.finish(field, a)), Some(right.finish(field, b)));
+        }
+        // Over the common denominator D, x_i = X_i/D and
+        // y_i = ((X_i + p_i.x*D) * Y_i + p_i.y*D²) / D².
+        // The distinct-point slope has denominator D*(X_1 + X_2).
+        // Its inverse also recovers x_1 + x_2 from (X_1 + X_2)².
+        let left_y = field.multiply(
+            left_x.add(field.multiply(left.point.x, denominator)),
+            field.multiply(left.y, right.denominator),
+        );
+        let right_y = field.multiply(
+            right_x.add(field.multiply(right.point.x, denominator)),
+            field.multiply(right.y, left.denominator),
+        );
+        let y_sum = left_y
+            .add(right_y)
+            .add(field.multiply(left.point.y.add(right.point.y), field.square(denominator)));
+        let inverse = field.inverse(field.multiply(denominator, difference));
+        let slope = field.multiply(y_sum, inverse);
+        let x_sum = field.multiply(field.square(difference), inverse);
+        Some(self.x_from_slope(slope, x_sum))
+    }
+
+    fn add_x(&self, left: Option<Point>, right: Option<Point>) -> Option<Words> {
+        let (Some(left), Some(right)) = (left, right) else {
+            return left.or(right).map(|point| point.x);
+        };
+        let field = &self.field;
+        if left.x == right.x {
+            if left.y != right.y || left.x.is_zero() {
+                return None;
+            }
+            let slope = left.x.add(field.multiply(left.y, field.inverse(left.x)));
+            return Some(self.x_from_slope(slope, Words::ZERO));
+        }
+        let x_sum = left.x.add(right.x);
+        let slope = field.multiply(left.y.add(right.y), field.inverse(x_sum));
+        Some(self.x_from_slope(slope, x_sum))
+    }
+
+    fn x_from_slope(&self, slope: Words, x_sum: Words) -> Words {
+        let mut x = self.field.square(slope).add(slope).add(x_sum);
+        if self.a {
+            x = x.add(self.field.one());
+        }
+        x
     }
 
     fn ladder(&self, point: Point, scalar: Words) -> Multiple {

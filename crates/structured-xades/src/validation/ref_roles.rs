@@ -138,7 +138,7 @@ pub type CertificateRoleResult<'p, 'c, 'd, X, PE> = binary::BinaryResult<
 >;
 
 fn compare_role_candidates<'c, 'd, 'q, X: Xml, P: Digest<'q>, W: Work>(
-    memo: &mut Memo<'q, 'd, P, W>,
+    memo: &mut Memo<'q, P, W>,
     candidates: &mut Option<OwnedVec<ReferenceCa<'c, 'd>, W>>,
     artifacts: &ArtifactUses<'_, '_, '_, 'c, 'd, X::Id, X::Document, X::Generation, Xades>,
     comparisons: &mut OwnedVec<CertificateRoleComparison<'c, 'd>, W>,

@@ -454,7 +454,34 @@ impl<'xml, 'document, 'certificate, X: TimestampXml + BinaryXml, P>
     where
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
     {
-        self.retain_from(stamp, entry, operation, recognizes, |execution| {
+        let ((), actor) =
+            self.check_actor_from(bound, stamp, entry, operation, recognizes, |_| ())?;
+        Ok(actor)
+    }
+
+    /// Project a completed root token check and retain any positive evidence.
+    ///
+    /// The visitor sees the original signature, imprint and other check facts
+    /// even when there is no actor. It runs once, with the original XML snapshot
+    /// current. The frozen pool entry keeps its selected encoding and source
+    /// limits. Processing and profile errors return before calling the visitor.
+    #[expect(
+        clippy::result_large_err,
+        reason = "retain original source maps and opaque callback causes"
+    )]
+    pub fn check_actor_from<R, PE, RE>(
+        &self,
+        bound: &Bound<X::Id, X::Document, X::Generation>,
+        stamp: &Timestamp<X>,
+        entry: TokenEntry<'_, '_, X::Id, X::Document, X::Generation>,
+        operation: &Reader<'_>,
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+        visitor: impl for<'checked> FnOnce(&CheckedTimestamp<'checked>) -> R,
+    ) -> CheckResult<(R, Option<TimestampActor<'certificate, 'document, X>>), X, PE, RE>
+    where
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+    {
+        self.check_from(stamp, entry, operation, recognizes, visitor, |execution| {
             Input::prepare(self.xml, bound, stamp, execution)
         })
     }
@@ -478,23 +505,53 @@ impl<'xml, 'document, 'certificate, X: TimestampXml + BinaryXml, P>
     where
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
     {
-        self.retain_from(counter.stamp(), entry, operation, recognizes, |execution| {
-            counter.input(self.xml, execution)
-        })
+        let ((), actor) = self.check_counter_from(counter, entry, operation, recognizes, |_| ())?;
+        Ok(actor)
+    }
+
+    /// Project a completed countersignature token check and retain any actor.
+    ///
+    /// Uses the same visitor and frozen-entry rules as [`Self::check_actor_from`].
+    /// The entry must belong to this countersignature and timestamp before
+    /// any input replay or provider work begins.
+    #[expect(
+        clippy::result_large_err,
+        reason = "retain original source maps and opaque callback causes"
+    )]
+    pub fn check_counter_from<R, PE, RE>(
+        &self,
+        counter: &CounterStamp<X::Id, X::Document, X::Generation>,
+        entry: TokenEntry<'_, '_, X::Id, X::Document, X::Generation>,
+        operation: &Reader<'_>,
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+        visitor: impl for<'checked> FnOnce(&CheckedTimestamp<'checked>) -> R,
+    ) -> CheckResult<(R, Option<TimestampActor<'certificate, 'document, X>>), X, PE, RE>
+    where
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+    {
+        self.check_from(
+            counter.stamp(),
+            entry,
+            operation,
+            recognizes,
+            visitor,
+            |execution| counter.input(self.xml, execution),
+        )
     }
 
     #[expect(
         clippy::result_large_err,
         reason = "retain original source maps and opaque callback causes"
     )]
-    fn retain_from<PE, RE>(
+    fn check_from<R, PE, RE>(
         &self,
         stamp: &Timestamp<X>,
         entry: TokenEntry<'_, '_, X::Id, X::Document, X::Generation>,
         operation: &Reader<'_>,
         recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+        visitor: impl for<'checked> FnOnce(&CheckedTimestamp<'checked>) -> R,
         prepare: impl FnOnce(&Execution<'_>) -> InputResult<Input<'xml, X>, X>,
-    ) -> CheckResult<Option<TimestampActor<'certificate, 'document, X>>, X, PE, RE>
+    ) -> CheckResult<(R, Option<TimestampActor<'certificate, 'document, X>>), X, PE, RE>
     where
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
     {
@@ -554,11 +611,10 @@ impl<'xml, 'document, 'certificate, X: TimestampXml + BinaryXml, P>
                     cause: binary::TokenError::Callback(cause),
                 })
             })?;
-        let evidence = checked.into_evidence();
-        access
-            .query(stamp.node, |_, _, _| Ok(()))
+        let projection = access
+            .query(stamp.node, |_, _, _| Ok(visitor(&checked)))
             .map_err(|cause| CheckError::Input(InputError::Access(cause)))?;
-        Ok(evidence.map(|evidence| {
+        let actor = checked.into_evidence().map(|evidence| {
             CheckedActor::new(
                 ISSUER,
                 Verified::new(
@@ -572,7 +628,8 @@ impl<'xml, 'document, 'certificate, X: TimestampXml + BinaryXml, P>
                 self.context.certificate,
                 self.context.key,
             )
-        }))
+        });
+        Ok((projection, actor))
     }
 
     #[expect(

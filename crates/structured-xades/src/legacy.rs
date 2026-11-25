@@ -7,6 +7,7 @@
 use crate::binding::{self, SignatureXml};
 use crate::container::{self, DS, XADES_122};
 use crate::properties;
+use crate::scalar::{self, ScalarXml};
 use crate::xml::{Access, Name, Node, Snapshot, Xml};
 use structured_asn1::memory::{OwnedVec, Work};
 
@@ -56,6 +57,14 @@ pub enum Error<E, N> {
     Binding(binding::BindingError<E, N>),
     /// An original property did not satisfy the applicable grammar.
     Property(properties::Error<E, N>),
+    /// The original serial element could not establish an XML Schema integer.
+    Serial(scalar::Error<E, N>),
+}
+
+impl<E, N> From<properties::Error<E, N>> for Error<E, N> {
+    fn from(error: properties::Error<E, N>) -> Self {
+        Self::Property(error)
+    }
 }
 
 /// Located processing result for the original XML source.
@@ -173,7 +182,8 @@ const UNSIGNED: &[Rule] = &[
 /// The caller supplies an opt-in layout from the same XML generation. §4.4.1
 /// requires a signed `SigningCertificate` or a signed `KeyInfo` containing the
 /// selected certificate. This stage locates the protected certificate claims.
-pub fn prepare<X: SignatureXml, W: Work>(
+/// The XML owner checks each `X509SerialNumber` as an unbounded XML Schema integer.
+pub fn prepare<X: SignatureXml + ScalarXml, W: Work>(
     access: &Access<'_, X, W>,
     layout: &Layout<X>,
 ) -> Result<Prepared<X>, X> {
@@ -213,13 +223,7 @@ pub fn prepare<X: SignatureXml, W: Work>(
         .find(|entry| entry.name == "SigningCertificate")
     {
         Some(entry) => SignerCertificate::References(SigningReferences(
-            crate::certificate::read_in(
-                access,
-                layout.signature(),
-                entry.node,
-                container::Syntax::Ts101903V122,
-            )
-            .map_err(Error::Property)?,
+            crate::certificate::read_legacy(access, layout.signature(), entry.node)?,
         )),
         None => signed_key_info(access, layout.signature())?,
     };

@@ -392,7 +392,7 @@ fn retry_suggestion(retry: RetryCause<'_>, decision: Decision) -> Option<Instant
 fn fresh_at_signing<W: Work>(
     record: &RevocationData<'_>,
     best: Option<Instant>,
-    mut horizon: Horizon,
+    now: Instant,
     proofs: &Proofs<W>,
     crypto: &Crypto<'_>,
     work: &W,
@@ -403,12 +403,15 @@ fn fresh_at_signing<W: Work>(
     if best >= end {
         return Ok(false);
     }
-    if record.base.is_none() {
-        return Ok(true);
-    }
-    Ok(
-        base_eligible(record, &mut horizon, proofs, crypto, work, &mut None)?
-            && horizon.admits(best),
+    // EN 319 102-1 §5.6.2.4.4 step 5 checks freshness at best-signature-time.
+    // The base must pass its own historical evidence limits independently.
+    base_eligible(
+        record,
+        &mut Horizon::Through(now),
+        proofs,
+        crypto,
+        work,
+        &mut None,
     )
 }
 
@@ -480,7 +483,7 @@ pub(super) fn signature<W: Work>(
     if sub == Sub::TryLater
         && let RetryCause::Freshness { record, .. } = signature.retry
     {
-        if fresh_at_signing(record, best, horizon, proofs, crypto, work)? {
+        if fresh_at_signing(record, best, now, proofs, crypto, work)? {
             report.decision = clear;
             report.retry_at = None;
         }

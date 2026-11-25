@@ -102,18 +102,10 @@ pub fn enumerate<'a, W: Work>(
             };
             for &anchor in anchors {
                 meter.edge()?;
-                let subject_work = last.execution_in(work);
-                let matches = if let Some(published) = anchor.certificate() {
-                    names(
-                        last.tbs().issuer(),
-                        anchor.name(),
-                        meter,
-                        &published.execution_in(&subject_work),
-                    )?
-                } else {
-                    names(last.tbs().issuer(), anchor.name(), meter, &subject_work)?
-                };
-                if !matches {
+                let source = anchor
+                    .certificate()
+                    .map(|published| published.signature_algorithm().source_parser());
+                if !names(last, anchor.name(), source, meter)? {
                     continue;
                 }
                 if let Some(published) = anchor.certificate() {
@@ -121,10 +113,14 @@ pub fn enumerate<'a, W: Work>(
                     for held in chain {
                         let bytes = published.as_bytes().len().max(held.as_bytes().len()) as u64;
                         meter.admit(cost::CHECK + bytes / cost::COMPARED)?;
-                        published
-                            .execution_in(&held.execution_in(work))
-                            .charge_work(bytes)
-                            .map_err(|cause| published.tbs().subject().resource(cause))?;
+                        work.charge_work_from(
+                            [
+                                published.signature_algorithm().source_parser(),
+                                held.signature_algorithm().source_parser(),
+                            ],
+                            bytes,
+                        )
+                        .map_err(|cause| published.tbs().subject().resource(cause))?;
                         if super::same(held, published) {
                             repeated = true;
                             break;
@@ -180,16 +176,23 @@ where
         work,
         |(subject, issuer), meter| {
             meter.admit(cost::SIGNATURE)?;
+            let algorithm = subject.signature_algorithm();
+            let key = issuer.tbs().public_key();
+            // Admit dispatch jointly. The backend receives the subject scope;
+            // the original key carries its own scope for deferred decoding.
+            work.charge_work_from(
+                [algorithm.source_parser(), key.algorithm().source_parser()],
+                1,
+            )
+            .map_err(|cause| meter.resource(cause))?;
             let subject_work = subject.execution_in(work);
-            let edge = issuer.execution_in(&subject_work);
-            edge.charge_work(1).map_err(|cause| meter.resource(cause))?;
             verifier
                 .verify(
-                    &subject.signature_algorithm(),
-                    EffectiveKey::standing(issuer.tbs().public_key()),
+                    &algorithm,
+                    EffectiveKey::standing(key),
                     subject.signed_bytes(),
                     subject.signature_value(),
-                    &edge,
+                    &subject_work,
                 )
                 .map(|answer| answer == Verified::Yes)
                 .map_err(Error::Verification)
@@ -263,15 +266,25 @@ impl<W: Work> Budget<'_, '_, W> {
 }
 
 fn names<W: Work, V>(
-    subject: &Name<'_>,
+    subject: &Certificate<'_>,
     issuer: &Name<'_>,
+    issuer_source: Option<&structured_asn1::Parser>,
     meter: &mut Budget<'_, '_, W>,
-    execution: &impl Work,
 ) -> Result<bool, Error<V>> {
-    if !super::validation::spend_names(meter, subject, issuer)? {
+    let written = subject.tbs().issuer();
+    if !super::validation::spend_names(meter, written, issuer)? {
         return Err(Error::Limit(Truncation::Work));
     }
-    Ok(subject.matches(issuer, execution)?)
+    // Rebinding one execution twice would replace the first foreign parser.
+    Ok(if let Some(issuer_source) = issuer_source {
+        written.matches_between(
+            issuer,
+            (meter.work, subject.signature_algorithm().source_parser()),
+            (meter.work, issuer_source),
+        )?
+    } else {
+        written.matches(issuer, &subject.execution_in(meter.work))?
+    })
 }
 
 struct Frame {
@@ -337,13 +350,11 @@ fn walk<'a, W: Work, V>(
                 if chain.iter().any(|held| core::ptr::eq(*held, issuer)) {
                     continue;
                 }
-                let subject_work = subject.execution_in(work);
-                let edge_work = issuer.execution_in(&subject_work);
                 if names(
-                    subject.tbs().issuer(),
+                    subject,
                     issuer.tbs().subject(),
+                    Some(issuer.signature_algorithm().source_parser()),
                     &mut meter,
-                    &edge_work,
                 )? && follows((subject, issuer), &mut meter)?
                 {
                     frame.continued = true;

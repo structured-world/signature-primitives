@@ -1084,6 +1084,43 @@ fn algorithm_and_freshness_recovery_use_their_own_proof_rules() {
     );
 }
 
+#[test]
+fn delta_freshness_recovery_retains_its_independent_proof_rule() {
+    // Step 5 uses best-signature-time, even when it is after the separately
+    // validated path horizon. The complete CRL still needs its own proof.
+    let record = RevocationData {
+        base: Some(BaseCrl {
+            object: OLD_TOKEN,
+            issuer: ISSUER,
+            issuer_validity: VALID,
+            crypto: &[],
+            delegated: None,
+        }),
+        ..REV
+    };
+    let signature = Signature {
+        retry: RetryCause::Freshness {
+            record: &record,
+            retry_at: None,
+        },
+        ..INITIAL_SIGNATURE
+    };
+    let mut proofs = HISTORICAL.to_vec();
+    proofs[3].at = at(55);
+    let sub = SubIndication::TryLater;
+    assert_eq!(
+        past_result(signature, sub, &proofs).decision,
+        Decision::Finding(sub)
+    );
+    proofs.push(Proof {
+        object: OLD_TOKEN,
+        at: at(20),
+    });
+    let report = past_result(signature, sub, &proofs);
+    assert_eq!(report.signature_poe, Some(false));
+    assert_eq!(report.decision, Decision::Passed);
+}
+
 /// Reinstatement replaces an older hold regardless of catalogue order. An
 /// equally dated or older clear status cannot clear the hold.
 #[test]

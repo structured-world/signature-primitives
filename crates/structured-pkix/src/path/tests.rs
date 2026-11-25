@@ -365,6 +365,40 @@ fn prospective_paths_keep_unvalidated_routes_and_refuse_partial_results() {
     assert!(core::ptr::eq(tips[0], &raw const target));
 }
 
+#[test]
+fn prospective_path_refuses_exhausted_subject_source_under_foreign_operation() {
+    use structured_asn1::memory::Work;
+    // The anchor and operation have budget. The exact subject is exhausted
+    // after parsing and must refuse the edge before comparing its issuer.
+    let target_der = Mint::default().build();
+    let issuer_der = Mint {
+        subject: "Issuer",
+        key: 2,
+        ..Mint::default()
+    }
+    .build();
+    let subject_source = Parser::der(crate::fixtures::memory());
+    let issuer_source = Parser::der(crate::fixtures::memory());
+    let operation = Parser::der(crate::fixtures::memory());
+    let reader = operation.read(&[], 0).unwrap();
+    let current = reader.execution();
+    let target = Certificate::read(&subject_source, &target_der, 0).unwrap();
+    let issuer = Certificate::read(&issuer_source, &issuer_der, 0).unwrap();
+    let work = current.execution_for(&subject_source);
+    work.charge_work(work.work_remaining() as u64).unwrap();
+    assert!(current.work_remaining() > 0);
+    let result = super::prospective::enumerate(
+        &target,
+        &[],
+        &[Anchor::from_certificate(&issuer)],
+        Bounds::default(),
+        &current,
+    );
+    assert!(
+        matches!(result, Err(super::prospective::Error::Processing(error)) if error.is_resource())
+    );
+}
+
 /// A verifier that needs the parameters in force, which is what a key
 /// omitting its own is asking of the path above it.
 ///

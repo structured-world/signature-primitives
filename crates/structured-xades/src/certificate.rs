@@ -4,6 +4,8 @@ use crate::binary::{self, BinaryXml, Location};
 use crate::binding::{Bound, SignatureXml};
 use crate::container::{DS, XADES};
 use crate::properties::{Error, PropertyResult, Reading};
+use crate::reference::LexicalSource;
+use crate::scalar::{self, Datatype, ScalarXml};
 use crate::xml::{Access, AccessError, Name, Snapshot, Xml};
 use structured_asn1::digest::{Digest, OnceError, Resolution, matches_once};
 use structured_asn1::{
@@ -751,27 +753,43 @@ pub fn read<X: Xml, W: Work>(
     if signed.snapshot() != access.snapshot() {
         return Err(Error::Access(AccessError::Changed { node }));
     }
-    read_in(
-        access,
-        signed.signature(),
-        node,
-        crate::container::Syntax::En319132,
-    )
+    read_in(access, signed.signature(), node, XADES, |child| {
+        read_entry(access, child)
+    })
 }
 
-pub(crate) fn read_in<X: Xml, W: Work>(
+pub(crate) fn read_legacy<X: ScalarXml, W: Work>(
     access: &Access<'_, X, W>,
     signature: X::Id,
     node: X::Id,
-    syntax: crate::container::Syntax,
-) -> PropertyResult<Catalogue<X>, X> {
+) -> crate::legacy::Result<Catalogue<X>, X> {
+    read_in(
+        access,
+        signature,
+        node,
+        crate::container::XADES_122,
+        |child| {
+            read_entry_in(access, child, crate::container::XADES_122, |issuer| {
+                read_legacy_issuer(access, child, issuer).map(Some)
+            })
+        },
+    )
+}
+
+fn read_in<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    node: X::Id,
+    namespace: &str,
+    read_entry: impl Fn(X::Id) -> Result<Reference<X::Id>, E>,
+) -> Result<Catalogue<X>, E> {
     let mut entries = access
         .query(node, |_, _, work| Ok(work.vector()))
         .map_err(Error::Access)?;
     for child in access.children(node) {
         let child = child.map_err(Error::Child)?;
-        expect_name(access, child, syntax.namespace(), "Cert")?;
-        let entry = read_entry_in(access, child, syntax)?;
+        expect_name(access, child, namespace, "Cert")?;
+        let entry = read_entry(child)?;
         entries
             .try_push(entry)
             .map_err(|cause| Error::Resource { node: child, cause })?;
@@ -780,7 +798,8 @@ pub(crate) fn read_in<X: Xml, W: Work>(
         return Err(Error::Missing {
             parent: node,
             local: "Cert",
-        });
+        }
+        .into());
     }
     Ok(References {
         snapshot: access.snapshot(),
@@ -794,50 +813,29 @@ pub(crate) fn read_entry<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     node: X::Id,
 ) -> PropertyResult<Reference<X::Id>, X> {
-    read_entry_in(access, node, crate::container::Syntax::En319132)
+    read_entry_in(access, node, XADES, |issuer| {
+        if let Some(issuer) = issuer {
+            expect_name(access, issuer, XADES, "IssuerSerialV2")?;
+        }
+        Ok(issuer)
+    })
 }
 
-fn read_entry_in<X: Xml, W: Work>(
+fn read_entry_in<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
     access: &Access<'_, X, W>,
     node: X::Id,
-    syntax: crate::container::Syntax,
-) -> PropertyResult<Reference<X::Id>, X> {
-    use crate::container::Syntax;
+    namespace: &str,
+    read_issuer: impl FnOnce(Option<X::Id>) -> Result<Option<X::Id>, E>,
+) -> Result<Reference<X::Id>, E> {
     let mut children = access.children(node);
     let digest = required(&mut children, node, "CertDigest")?;
-    expect_name(access, digest, syntax.namespace(), "CertDigest")?;
-    let issuer = match syntax {
-        Syntax::En319132 => {
-            let issuer = children.next().transpose().map_err(Error::Child)?;
-            if let Some(issuer) = issuer {
-                expect_name(access, issuer, XADES, "IssuerSerialV2")?;
-            }
-            issuer
-        }
-        Syntax::Ts101903V122 => {
-            // TS 101 903 V1.2.2 §7.2.2 uses the XMLDSig X509IssuerSerialType.
-            // https://uri.etsi.org/01903/v1.2.2/XAdES.xsd
-            let issuer = required(&mut children, node, "IssuerSerial")?;
-            expect_name(access, issuer, syntax.namespace(), "IssuerSerial")?;
-            let mut pair = access.children(issuer);
-            let name = required(&mut pair, issuer, "X509IssuerName")?;
-            expect_name(access, name, DS, "X509IssuerName")?;
-            crate::properties::simple_content(access, name)?;
-            let serial = required(&mut pair, issuer, "X509SerialNumber")?;
-            expect_name(access, serial, DS, "X509SerialNumber")?;
-            crate::properties::simple_content(access, serial)?;
-            if let Some(extra) = pair.next() {
-                return Err(Error::Unexpected {
-                    node: extra.map_err(Error::Child)?,
-                });
-            }
-            Some(issuer)
-        }
-    };
+    expect_name(access, digest, namespace, "CertDigest")?;
+    let issuer = read_issuer(children.next().transpose().map_err(Error::Child)?)?;
     if let Some(extra) = children.next() {
         return Err(Error::Unexpected {
             node: extra.map_err(Error::Child)?,
-        });
+        }
+        .into());
     }
     let (method, value) = crate::properties::digest_value(access, digest)?;
     Ok(Reference {
@@ -846,6 +844,44 @@ fn read_entry_in<X: Xml, W: Work>(
         digest: value,
         issuer,
     })
+}
+
+fn read_legacy_issuer<X: ScalarXml, W: Work>(
+    access: &Access<'_, X, W>,
+    parent: X::Id,
+    issuer: Option<X::Id>,
+) -> crate::legacy::Result<X::Id, X> {
+    const SERIAL: &str = "X509SerialNumber";
+    let issuer = issuer.ok_or(Error::Missing {
+        parent,
+        local: "IssuerSerial",
+    })?;
+    expect_name(access, issuer, crate::container::XADES_122, "IssuerSerial")?;
+    let mut pair = access.children(issuer);
+    let name = required(&mut pair, issuer, "X509IssuerName")?;
+    expect_name(access, name, DS, "X509IssuerName")?;
+    crate::properties::simple_content(access, name)?;
+    let serial = required(&mut pair, issuer, SERIAL)?;
+    expect_name(access, serial, DS, SERIAL)?;
+    if let Some(extra) = pair.next() {
+        return Err(Error::Unexpected {
+            node: extra.map_err(Error::Child)?,
+        }
+        .into());
+    }
+    // TS 101 903 V1.2.2 §7.2.2 uses XMLDSig X509IssuerSerialType, which
+    // declares xs:integer for the serial. The XML owner checks its lexical space.
+    // https://uri.etsi.org/01903/v1.2.2/XAdES.xsd
+    // https://www.w3.org/TR/xmldsig-core1/#sec-X509Data
+    // https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/#integer
+    scalar::check(
+        access,
+        serial,
+        LexicalSource::SimpleContent,
+        Datatype::Integer,
+    )
+    .map_err(crate::legacy::Error::Serial)?;
+    Ok(issuer)
 }
 
 fn required<X: Xml, W: Work>(

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0](https://github.com/structured-world/signature-primitives/compare/v0.29.0...v0.30.0) - 2026-11-25
+
+### Added
+
+- [**breaking**] add prospective paths and delta CRL proofs ([#369](https://github.com/structured-world/signature-primitives/pull/369))
+
 ## [0.29.0](https://github.com/structured-world/signature-primitives/compare/v0.28.0...v0.29.0) - 2026-11-25
 
 ### Added

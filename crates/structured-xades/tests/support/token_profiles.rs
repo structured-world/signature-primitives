@@ -230,6 +230,104 @@ fn replace_at(der: &[u8], path: &[usize], replacement: &impl Fn(&[u8]) -> Vec<u8
     timestamp_oracle::tlv(der[0], &contents)
 }
 
+pub(super) fn invalid_tsa_signature(token: &[u8]) -> Vec<u8> {
+    // The fixture carries a certificate before signerInfos. Change only the
+    // last byte of the ECDSA scalar, preserving DER and the signed TSTInfo.
+    replace_at(token, &[1, 0, 4, 0, 5], &|signature| {
+        let mut signature = signature.to_vec();
+        *signature.last_mut().unwrap() ^= 1;
+        signature
+    })
+}
+
+pub(super) fn pooled_facts(
+    checked: &structured_cms::timestamp::CheckedTimestamp<'_>,
+) -> (
+    structured_cms::timestamp::ImprintAgreement,
+    Option<structured_cms::provider::SignatureAnswer>,
+) {
+    let structured_cms::timestamp::TokenSignature::Checked(signature) = &checked.signature else {
+        panic!("fixture signature arithmetic must complete");
+    };
+    (checked.imprint, signature.signature())
+}
+
+#[test]
+fn root_pool_reports_imprint_and_tsa_signature_failures_independently() {
+    use structured_cms::{provider::SignatureAnswer, timestamp::ImprintAgreement};
+    use structured_pkix::{
+        path::EffectiveKey,
+        temporal::{Instant, LeapTable},
+    };
+    // Both cases produce no actor, but the original checked facts identify
+    // different failures. Use the actual ECDSA verifier for both checks.
+    for wrong_imprint in [true, false] {
+        let (mut xml, first, _) = token_pipeline_tree();
+        let method = u8::try_from(first - 1).unwrap();
+        let value = if wrong_imprint { 0 } else { 12 };
+        let (provider, token, tsa, _) =
+            timestamp_oracle::fixture_with_root(&[b'E', value, b'M', method]);
+        xml.binary = if wrong_imprint {
+            token
+        } else {
+            invalid_tsa_signature(&token)
+        };
+        let memory = funded();
+        let parser = structured_asn1::Parser::der(memory.clone());
+        let operation = parser.read(&[], 900).unwrap();
+        let certificate = structured_pkix::Certificate::read(&parser, &tsa, 400).unwrap();
+        let utc = LeapTable::new(0, 2_000_000_000, &[]).unwrap();
+        let context = CheckContext {
+            certificate: &certificate,
+            certificate_parent: &operation,
+            key: EffectiveKey::standing(certificate.tbs().public_key()),
+            requested: None,
+            utc: &utc,
+            reference: Some(Instant::new(1_800_000_000, 0).unwrap()),
+            window: None,
+            policy_accuracy: None,
+        };
+        let access = Access::new(&xml, xml.snapshot(), &memory);
+        let prepared =
+            prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).unwrap();
+        let check = timestamp::Check {
+            xml: &xml,
+            provider: &provider,
+            context: &context,
+        };
+        timestamp::with_tokens(
+            &xml,
+            &prepared,
+            &operation,
+            timestamp::TokenProfile::Etsi,
+            |query, view| {
+                xml.decoded_pointer.set(0);
+                let (facts, actor) = check
+                    .check_actor_from(
+                        prepared.bound(),
+                        &prepared.timestamps()[0],
+                        view.entry(0).unwrap(),
+                        query,
+                        |_, _| Ok::<_, ()>(false),
+                        pooled_facts,
+                    )
+                    .unwrap();
+                let expected = if wrong_imprint {
+                    (ImprintAgreement::Differs, Some(SignatureAnswer::Valid))
+                } else {
+                    (ImprintAgreement::Matches, Some(SignatureAnswer::Invalid))
+                };
+                assert_eq!(facts, expected);
+                assert!(actor.is_none());
+                assert_eq!(provider.verified.get(), 1);
+                assert_eq!(xml.decoded_pointer.get(), 0);
+                Ok::<_, ()>(())
+            },
+        )
+        .unwrap();
+    }
+}
+
 #[test]
 fn root_actor_uses_the_cms_pool_encoding_for_unordered_certificates() {
     use structured_pkix::{

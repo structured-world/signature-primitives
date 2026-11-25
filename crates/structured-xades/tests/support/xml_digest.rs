@@ -19,6 +19,7 @@ use structured_xades::{
     certificate::{Agreement, DigestProvider},
     digest,
     pki::participants,
+    timestamp,
     xml::{Access, AccessError, Name, Xml},
 };
 
@@ -1147,8 +1148,14 @@ fn nested_signature_timestamp_math_binds_child_signature_value() {
         path::EffectiveKey,
         temporal::{Instant, LeapTable},
     };
-    use structured_xades::{prepare, timestamp, unsigned};
-    for (wrong_value, pooled) in [(false, false), (true, false), (false, true), (true, true)] {
+    use structured_xades::{prepare, unsigned};
+    for (wrong_value, pooled, wrong_signature) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (true, true, false),
+        (false, true, true),
+    ] {
         with_checked_path(|path, _, _, memory| {
             let mut xml = super::preparation_tree();
             xml.key_association = structured_xades::certificate::KeyAssociation::Same;
@@ -1166,7 +1173,11 @@ fn nested_signature_timestamp_math_binds_child_signature_value() {
                 u8::try_from(method).unwrap(),
             ];
             let (provider, token, tsa, _) = super::timestamp_oracle::fixture_with_root(&bytes);
-            xml.binary = token;
+            xml.binary = if wrong_signature {
+                super::token_profiles::invalid_tsa_signature(&token)
+            } else {
+                token
+            };
             let access = Access::new(&xml, xml.snapshot(), memory);
             let prepared =
                 prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).unwrap();
@@ -1203,29 +1214,14 @@ fn nested_signature_timestamp_math_binds_child_signature_value() {
                     &operation,
                     timestamp::TokenProfile::Etsi,
                     |query, view| {
-                        assert!(matches!(
-                            check.retain_counter_from(
-                                &stamps.entries()[0],
-                                view.entry(0).unwrap(),
-                                query,
-                                |_, _| Ok::<_, ()>(false)
-                            ),
-                            Err(timestamp::CheckError::Input(
-                                timestamp::InputError::Foreign { .. }
-                            ))
-                        ));
-                        assert_eq!(provider.verified.get(), 0);
-                        xml.decoded_pointer.set(0);
-                        let result = check
-                            .retain_counter_from(
-                                &stamps.entries()[0],
-                                view.entry(1).unwrap(),
-                                query,
-                                |_, _| Ok::<_, ()>(false),
-                            )
-                            .unwrap();
-                        assert_eq!(xml.decoded_pointer.get(), 0); // no second binary decoding
-                        Ok::<_, ()>(result)
+                        Ok::<_, ()>(check_counter_entry(
+                            &check,
+                            &stamps.entries()[0],
+                            query,
+                            &view,
+                            wrong_value,
+                            wrong_signature,
+                        ))
                     },
                 )
                 .unwrap()
@@ -1236,10 +1232,69 @@ fn nested_signature_timestamp_math_binds_child_signature_value() {
                     })
                     .unwrap()
             };
-            assert_counter_actor(actor, wrong_value, (child, property, tokens[0]));
+            assert_counter_actor(
+                actor,
+                wrong_value || wrong_signature,
+                (child, property, tokens[0]),
+            );
             assert_eq!(provider.verified.get(), 1);
         });
     }
+}
+
+fn check_counter_entry<'certificate, 'document>(
+    check: &timestamp::Check<
+        '_,
+        'document,
+        'certificate,
+        '_,
+        Tree,
+        super::timestamp_oracle::Oracle,
+    >,
+    stamp: &timestamp::CounterStamp<usize, u8, u8>,
+    query: &structured_asn1::Reader<'_>,
+    view: &timestamp::TokenView<'_, usize, u8, u8>,
+    wrong_value: bool,
+    wrong_signature: bool,
+) -> Option<timestamp::TimestampActor<'certificate, 'document, Tree>> {
+    use structured_cms::{provider::SignatureAnswer, timestamp::ImprintAgreement};
+
+    assert!(matches!(
+        check.check_counter_from(
+            stamp,
+            view.entry(0).unwrap(),
+            query,
+            |_, _| Ok::<_, ()>(false),
+            |_| panic!("a foreign entry cannot publish check facts")
+        ),
+        Err(timestamp::CheckError::Input(
+            timestamp::InputError::Foreign { .. }
+        ))
+    ));
+    assert_eq!(check.provider.verified.get(), 0);
+    check.xml.decoded_pointer.set(0);
+    let (facts, actor) = check
+        .check_counter_from(
+            stamp,
+            view.entry(1).unwrap(),
+            query,
+            |_, _| Ok::<_, ()>(false),
+            super::token_profiles::pooled_facts,
+        )
+        .unwrap();
+    let imprint = if wrong_value {
+        ImprintAgreement::Differs
+    } else {
+        ImprintAgreement::Matches
+    };
+    let signature = if wrong_signature {
+        SignatureAnswer::Invalid
+    } else {
+        SignatureAnswer::Valid
+    };
+    assert_eq!(facts, (imprint, Some(signature)));
+    assert_eq!(check.xml.decoded_pointer.get(), 0); // no second binary decoding
+    actor
 }
 
 fn assert_counter_actor(

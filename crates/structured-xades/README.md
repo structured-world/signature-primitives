@@ -232,6 +232,9 @@ and downstream interoperability remain separate from this package's mechanisms.
    `Check::retain_counter_from` for countersignatures when checking a
    `TokenEntry` from either pool. These checks reuse the parsed token and
    its selected encoding. Standalone checks read the XML declaration directly.
+   Use `Check::check_actor_from` or `Check::check_counter_from` to project
+   completed signature and imprint facts when a pooled check produces no actor.
+   The scoped projection and optional actor share a single check of that entry.
 4. `baseline::basic` joins the checked fields, exact signing certificate,
    effective key, counter paths and actual hash uses. Every written protected,
    ordinary and attribute certificate-reference issuer hint uses the same DER

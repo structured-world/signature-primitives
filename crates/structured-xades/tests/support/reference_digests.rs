@@ -449,13 +449,17 @@ fn certificate_catalogue_does_not_hash_unreferenced_crls() {
     // The original catalogue still retains every CRL, while a certificate
     // reference only needs to inspect those entries' kind metadata.
     use structured_xades::validation::compare_reference_catalogues;
-    with_checked_path(|_, leaf, root, _| {
+    with_checked_path(|_, leaf, _, _| {
         let memory = structured_asn1::memory::Memory::new(std::sync::Arc::new(
             structured_asn1::memory::MemoryAccount::new(8 << 20, 100_000_000),
         ));
         let mut costs = [0; 2];
         for (unrelated, cost) in [0, 32].into_iter().zip(&mut costs) {
-            let mut xml = complete_catalogue_fixture(leaf, root);
+            // Both catalogues retain four certificate occurrences and four
+            // references. A single distinct certificate keeps the two
+            // independently seeded caches free of unequal-key collisions,
+            // whose paid equality checks would change the Work difference.
+            let mut xml = complete_catalogue_fixture(leaf, leaf);
             if unrelated != 0 {
                 let values = add(&mut xml, 7, XADES, "RevocationValues");
                 let crls = add(&mut xml, values, XADES, "CRLValues");
@@ -483,6 +487,7 @@ fn certificate_catalogue_does_not_hash_unreferenced_crls() {
                     compare_reference_catalogues(&xml, &prepared, &view, &provider, &work).unwrap();
                 assert_eq!(report.sources().len(), 4 + usize::from(unrelated));
                 assert_eq!(report.comparisons(0).unwrap().len(), 4);
+                assert_eq!((provider.started.get(), provider.finished.get()), (1, 1));
                 *cost = work.work_used();
                 Ok::<_, ()>(())
             })

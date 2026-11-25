@@ -3,6 +3,7 @@ use structured_xades::{
     binding::SIGNED_PROPERTIES_122,
     container::{Selected, Syntaxes, XADES_122},
     legacy::{self, SignerCertificate, timestamp as old},
+    scalar::{Datatype, Fact},
 };
 
 impl old::LegacyXml for Tree {
@@ -63,7 +64,11 @@ fn tree() -> Tree {
     xml
 }
 
-fn with_cert_reference(mut xml: Tree) -> Tree {
+fn with_cert_reference(xml: Tree) -> Tree {
+    with_serial(xml, "42", Fact::Valid).0
+}
+
+fn with_serial(mut xml: Tree, text: &'static str, fact: Fact) -> (Tree, usize) {
     let signing = append(&mut xml, 4, XADES_122, "SigningCertificate");
     let cert = append(&mut xml, signing, XADES_122, "Cert");
     let digest = append(&mut xml, cert, XADES_122, "CertDigest");
@@ -71,8 +76,14 @@ fn with_cert_reference(mut xml: Tree) -> Tree {
     append(&mut xml, digest, DS, "DigestValue");
     let issuer = append(&mut xml, cert, XADES_122, "IssuerSerial");
     append(&mut xml, issuer, DS, "X509IssuerName");
-    append(&mut xml, issuer, DS, "X509SerialNumber");
-    xml
+    let serial = append(&mut xml, issuer, DS, "X509SerialNumber");
+    xml.nodes.push(Record {
+        parent: Some(serial),
+        value: Node::Text(text),
+    });
+    xml.scalar_routes
+        .push(scalar_checks::route(serial, Datatype::Integer, fact));
+    (xml, serial)
 }
 
 fn layout<W: Work>(access: &Access<'_, Tree, W>) -> legacy::Layout<Tree> {
@@ -82,6 +93,33 @@ fn layout<W: Work>(access: &Access<'_, Tree, W>) -> legacy::Layout<Tree> {
         panic!("expected original V1.2.2");
     };
     value
+}
+
+#[test]
+fn issuer_serial_requires_an_integer_from_the_original_xml_owner() {
+    // Malformed simple text must fail at the original value node. The valid
+    // case exercises an xs:integer wider than common machine integer types.
+    for (text, fact) in [
+        ("not-an-integer", Fact::Malformed),
+        (" \t+340282366920938463463374607431768211456\n", Fact::Valid),
+    ] {
+        let (xml, serial) = with_serial(tree(), text, fact);
+        let work = funded();
+        let access = Access::new(&xml, xml.snapshot(), &work);
+        let result = legacy::prepare(&access, &layout(&access));
+        if fact == Fact::Valid {
+            assert!(result.is_ok());
+        } else {
+            assert!(matches!(
+                result,
+                Err(legacy::Error::Property(properties::Error::Lexical {
+                    node,
+                    local: "X509SerialNumber",
+                })) if node == serial
+            ));
+        }
+        assert_eq!(xml.scalar_calls.get(), 1);
+    }
 }
 
 #[test]

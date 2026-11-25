@@ -7,6 +7,7 @@
 use crate::binding::{self, SignatureXml};
 use crate::container::{self, DS, XADES_122};
 use crate::properties;
+use crate::scalar::ScalarXml;
 use crate::xml::{Access, Name, Node, Snapshot, Xml};
 use structured_asn1::memory::{OwnedVec, Work};
 
@@ -173,7 +174,8 @@ const UNSIGNED: &[Rule] = &[
 /// The caller supplies an opt-in layout from the same XML generation. §4.4.1
 /// requires a signed `SigningCertificate` or a signed `KeyInfo` containing the
 /// selected certificate. This stage locates the protected certificate claims.
-pub fn prepare<X: SignatureXml, W: Work>(
+/// The XML owner checks each `X509SerialNumber` as an unbounded XML Schema integer.
+pub fn prepare<X: SignatureXml + ScalarXml, W: Work>(
     access: &Access<'_, X, W>,
     layout: &Layout<X>,
 ) -> Result<Prepared<X>, X> {
@@ -213,13 +215,8 @@ pub fn prepare<X: SignatureXml, W: Work>(
         .find(|entry| entry.name == "SigningCertificate")
     {
         Some(entry) => SignerCertificate::References(SigningReferences(
-            crate::certificate::read_in(
-                access,
-                layout.signature(),
-                entry.node,
-                container::Syntax::Ts101903V122,
-            )
-            .map_err(Error::Property)?,
+            crate::certificate::read_legacy(access, layout.signature(), entry.node)
+                .map_err(Error::Property)?,
         )),
         None => signed_key_info(access, layout.signature())?,
     };

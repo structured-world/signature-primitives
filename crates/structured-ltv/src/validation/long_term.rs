@@ -152,11 +152,29 @@ pub enum Revocation {
     },
 }
 
+/// Historical dependencies of the complete CRL used with a delta CRL.
+#[derive(Debug, Clone, Copy)]
+pub struct BaseCrl<'a> {
+    /// Original complete CRL paired with the delta.
+    pub object: Object,
+    /// Original certificate that signed the complete CRL.
+    pub issuer: Object,
+    /// Validity of that issuer's certificate.
+    pub issuer_validity: Validity,
+    /// Signature mechanisms of the complete CRL.
+    pub crypto: &'a [CryptoObject],
+    /// Historical limit of a separately validated base issuer path.
+    pub delegated: Option<Horizon>,
+}
+
 /// Revocation evidence already authenticated and applicable to its target.
 #[derive(Debug, Clone, Copy)]
 pub struct RevocationData<'a> {
     /// Original CRL or OCSP response.
     pub object: Object,
+    /// The authenticated complete CRL needed to interpret a delta finding.
+    /// Absent for standalone complete CRL or OCSP evidence.
+    pub base: Option<BaseCrl<'a>>,
     /// Original certificate that issued the data.
     pub issuer: Object,
     /// Issuer validity for the historical proof check.

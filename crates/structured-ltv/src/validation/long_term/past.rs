@@ -21,6 +21,44 @@ fn usable<W: Work>(
     )
 }
 
+fn base_eligible<W: Work>(
+    record: &RevocationData<'_>,
+    horizon: &mut Horizon,
+    proofs: &Proofs<W>,
+    crypto: &Crypto<'_>,
+    work: &W,
+    missing: &mut Option<Object>,
+) -> Result<bool, Error> {
+    let Some(base) = record.base else {
+        return Ok(true);
+    };
+    // RFC 5280 §5.2.4 requires the complete CRL to interpret a delta.
+    // EN 319 102-1 V1.4.1 §5.6.2.1.1 requires historical reliability
+    // of the evidence used. A delta receipt cannot prove its base existed.
+    // https://www.rfc-editor.org/rfc/rfc5280#section-5.2.4
+    if !proofs.by(base.object, *horizon, work)? {
+        missing.get_or_insert(base.object);
+        return Ok(false);
+    }
+    if !proofs.between(
+        base.issuer,
+        base.issuer_validity.not_before,
+        Horizon::Before(base.issuer_validity.not_after),
+        work,
+    )? {
+        missing.get_or_insert(base.issuer);
+        return Ok(false);
+    }
+    if let Some(delegated) = base.delegated {
+        if !proofs.by(base.object, delegated, work)? {
+            missing.get_or_insert(base.object);
+            return Ok(false);
+        }
+        horizon.tighten(delegated);
+    }
+    slide_crypto(base.crypto, horizon, proofs, crypto, work, missing)
+}
+
 fn permanent_revocation(status: Revocation) -> bool {
     // RFC 5280 §5.2.4 permits release from certificateHold. The caller
     // supplies only authenticated status applicable to this certificate.
@@ -85,7 +123,14 @@ fn choose<'a, W: Work>(
             }
             candidate.horizon.tighten(delegated);
         }
-        if !slide_crypto(
+        if !base_eligible(
+            record,
+            &mut candidate.horizon,
+            proofs,
+            crypto,
+            work,
+            missing,
+        )? || !slide_crypto(
             record.crypto,
             &mut candidate.horizon,
             proofs,
@@ -317,12 +362,16 @@ fn all_algorithm_proofs<W: Work>(
 fn ca_revocation_proof<W: Work>(
     signature: &Signature<'_>,
     proofs: &Proofs<W>,
+    crypto: &Crypto<'_>,
     work: &W,
 ) -> Result<bool, Error> {
     if let Some(at) = signature.revoked_ca_at {
         for record in signature.revocations {
             work.charge_work(1)?;
-            if proofs.by(record.object, Horizon::Through(at), work)? {
+            let mut horizon = Horizon::Through(at);
+            if proofs.by(record.object, horizon, work)?
+                && base_eligible(record, &mut horizon, proofs, crypto, work, &mut None)?
+            {
                 return Ok(true);
             }
         }
@@ -338,6 +387,29 @@ fn retry_suggestion(retry: RetryCause<'_>, decision: Decision) -> Option<Instant
         RetryCause::Freshness { retry_at, .. } | RetryCause::Suspension { retry_at } => retry_at,
         RetryCause::Other => None,
     }
+}
+
+fn fresh_at_signing<W: Work>(
+    record: &RevocationData<'_>,
+    best: Option<Instant>,
+    mut horizon: Horizon,
+    proofs: &Proofs<W>,
+    crypto: &Crypto<'_>,
+    work: &W,
+) -> Result<bool, Error> {
+    let Some((best, end)) = best.zip(record.fresh_before) else {
+        return Ok(false);
+    };
+    if best >= end {
+        return Ok(false);
+    }
+    if record.base.is_none() {
+        return Ok(true);
+    }
+    Ok(
+        base_eligible(record, &mut horizon, proofs, crypto, work, &mut None)?
+            && horizon.admits(best),
+    )
 }
 
 fn recoverable(sub: Sub) -> bool {
@@ -408,10 +480,7 @@ pub(super) fn signature<W: Work>(
     if sub == Sub::TryLater
         && let RetryCause::Freshness { record, .. } = signature.retry
     {
-        if best
-            .zip(record.fresh_before)
-            .is_some_and(|(at, end)| at < end)
-        {
+        if fresh_at_signing(record, best, horizon, proofs, crypto, work)? {
             report.decision = clear;
             report.retry_at = None;
         }
@@ -423,7 +492,7 @@ pub(super) fn signature<W: Work>(
     let validity = signature.validity;
     report.decision = match sub {
         Sub::RevokedCaNoPoe => {
-            if !ca_revocation_proof(signature, proofs, work)? {
+            if !ca_revocation_proof(signature, proofs, crypto, work)? {
                 current
             } else if validity.contains(best) {
                 clear

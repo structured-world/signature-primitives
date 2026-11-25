@@ -253,7 +253,7 @@ impl Mint<'_> {
 /// and what a path needs from it is this one answer.
 struct Ecdsa;
 
-impl Verify for Ecdsa {
+impl<W: structured_asn1::memory::Work> Verify<W> for Ecdsa {
     type Error = core::convert::Infallible;
     fn verify(
         &self,
@@ -261,7 +261,7 @@ impl Verify for Ecdsa {
         key: super::EffectiveKey<'_>,
         signed: &[u8],
         signature: crate::signature::SignatureValue<'_>,
-        _execution: &structured_asn1::memory::Memory,
+        _execution: &W,
     ) -> core::result::Result<Verified, Self::Error> {
         Ok({
             if algorithm.algorithm() != ECDSA_SHA256
@@ -285,6 +285,84 @@ impl Verify for Ecdsa {
             }
         })
     }
+}
+
+#[test]
+fn prospective_paths_keep_unvalidated_routes_and_refuse_partial_results() {
+    use super::prospective::{self, Error};
+
+    // Two same-name CA candidates, one with the wrong key. The old dates
+    // and absent CA bit are intentionally irrelevant to discovery.
+    let target = Mint {
+        validity: ("010101000000Z", "020101000000Z"),
+        ..Mint::default()
+    }
+    .build();
+    let issuer = Mint {
+        subject: "Issuer",
+        issuer: "Root",
+        key: 2,
+        signer: 3,
+        ..Mint::default()
+    }
+    .build();
+    let lookalike = Mint {
+        subject: "Issuer",
+        issuer: "Root",
+        key: 4,
+        signer: 3,
+        ..Mint::default()
+    }
+    .build();
+    let root = Mint {
+        subject: "Root",
+        issuer: "Root",
+        key: 3,
+        signer: 3,
+        ..Mint::default()
+    }
+    .build();
+    let work = crate::fixtures::memory();
+    let parser = Parser::der(work.clone());
+    let [target, issuer, lookalike, root] = [&target, &issuer, &lookalike, &root]
+        .map(|der| Certificate::read(&parser, der, 0).unwrap());
+    let pool = [&lookalike, &issuer, &issuer];
+    let anchors = [Anchor::from_certificate(&root)];
+    let bounds = Bounds::default();
+    let routes = prospective::enumerate(&target, &pool, &anchors, bounds, &work).unwrap();
+    assert_eq!(routes.len(), 2);
+    for (route, expected) in routes.iter().zip([&lookalike, &issuer]) {
+        assert_eq!(route.certificates().len(), 2);
+        assert!(core::ptr::eq(route.certificates()[0], &raw const target));
+        assert!(core::ptr::eq(route.certificates()[1], expected));
+        assert!(core::ptr::eq(
+            route.anchor().certificate().unwrap(),
+            &raw const root
+        ));
+    }
+    for (limits, reason) in [
+        (Bounds { paths: 1, ..bounds }, Truncation::Paths),
+        (Bounds { depth: 1, ..bounds }, Truncation::Depth),
+        (Bounds { edges: 1, ..bounds }, Truncation::Edges),
+        (Bounds { work: 0, ..bounds }, Truncation::Work),
+    ] {
+        assert!(
+            matches!(prospective::enumerate(&target, &pool, &anchors, limits, &work), Err(Error::Limit(actual)) if actual == reason)
+        );
+    }
+    let tips = prospective::verified_tops(
+        &target,
+        &[&lookalike, &issuer, &root],
+        bounds,
+        &work,
+        &Ecdsa,
+    )
+    .unwrap();
+    assert_eq!(tips.len(), 1);
+    assert!(core::ptr::eq(tips[0], &raw const root));
+    let tips = prospective::verified_tops(&target, &[&lookalike], bounds, &work, &Ecdsa).unwrap();
+    assert_eq!(tips.len(), 1);
+    assert!(core::ptr::eq(tips[0], &raw const target));
 }
 
 /// A verifier that needs the parameters in force, which is what a key

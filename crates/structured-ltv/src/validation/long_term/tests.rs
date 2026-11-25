@@ -47,6 +47,7 @@ const HISTORICAL: &[Proof] = &[
 ];
 const REV: RevocationData<'static> = RevocationData {
     object: REVOCATION,
+    base: None,
     issuer: ISSUER,
     issuer_validity: VALID,
     issued: at(30),
@@ -652,6 +653,56 @@ fn past_result(signature: Signature<'_>, sub: SubIndication, proofs: &[Proof]) -
         &memory(1 << 20, 1_000_000),
     )
     .unwrap()
+}
+
+#[test]
+fn delta_status_requires_historical_proof_for_its_base_and_base_issuer() {
+    // The delta and its issuer already have PoE. Neither can satisfy the
+    // distinct complete CRL or its distinct issuer's validity window.
+    let records = [RevocationData {
+        base: Some(BaseCrl {
+            object: OLD_TOKEN,
+            issuer: NEW_TOKEN,
+            issuer_validity: VALID,
+            crypto: &[],
+            delegated: None,
+        }),
+        ..REV
+    }];
+    let members = [Member {
+        revocations: RevocationCheck::Required(&records),
+        ..MEMBER
+    }];
+    let candidates = [Candidate {
+        members: &members,
+        ..CANDIDATE
+    }];
+    let signature = Signature {
+        candidates: &candidates,
+        ..INITIAL_SIGNATURE
+    };
+    let mut proof = HISTORICAL.to_vec();
+    for missing in [OLD_TOKEN, NEW_TOKEN] {
+        let report = past_result(signature, SubIndication::OutOfBoundsNoPoe, &proof);
+        assert!(matches!(report.certificate, Some(PastCertificate::Finding {
+            missing_proof: Some(object), ..
+        }) if object == missing));
+        proof.push(Proof {
+            object: missing,
+            at: at(20),
+        });
+    }
+    let report = past_result(signature, SubIndication::OutOfBoundsNoPoe, &proof);
+    assert_eq!(report.decision, Decision::Passed);
+    proof.last_mut().unwrap().at = at(50);
+    let report = past_result(signature, SubIndication::OutOfBoundsNoPoe, &proof);
+    assert!(matches!(
+        report.certificate,
+        Some(PastCertificate::Finding {
+            missing_proof: Some(NEW_TOKEN),
+            ..
+        })
+    ));
 }
 
 /// Authority compromise is a key compromise in the chain model too.

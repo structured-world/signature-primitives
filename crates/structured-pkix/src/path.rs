@@ -26,6 +26,7 @@ pub mod answers;
 mod error;
 mod name_space;
 mod policy;
+pub mod prospective;
 mod validation;
 mod validity;
 
@@ -1185,14 +1186,24 @@ fn fold_pool<'a, V: Verify, W: Watch, R: Recognizer>(
     pool: &[&'a Certificate<'a>],
     target: &'a Certificate<'a>,
 ) -> BuildResult<OwnedVec<&'a Certificate<'a>>, V::Error, R::Error> {
-    let mut named: OwnedMap<usize, ()> = search.execution.map();
-    let mut seen: OwnedMap<&[u8], ()> = search.execution.map();
-    let mut unique = search.execution.vector();
+    fold_pool_in(search.execution, pool, target, |cost| search.spend(cost))
+        .map_err(BuildError::Processing)
+}
+
+fn fold_pool_in<'a, W: Work>(
+    execution: &W,
+    pool: &[&'a Certificate<'a>],
+    target: &'a Certificate<'a>,
+    mut spend: impl FnMut(u64) -> Result<bool>,
+) -> Result<OwnedVec<&'a Certificate<'a>, W>> {
+    let mut named = execution.map::<usize, ()>();
+    let mut seen = execution.map::<&[u8], ()>();
+    let mut unique = execution.vector();
     for candidate in pool {
         let bytes = candidate.as_bytes();
 
         // Looking at a candidate at all, which every one of them costs.
-        if !search.spend(cost::CHECK)? {
+        if !spend(cost::CHECK)? {
             break;
         }
 
@@ -1208,7 +1219,7 @@ fn fold_pool<'a, V: Verify, W: Watch, R: Recognizer>(
         {
             continue;
         }
-        if !search.spend(bytes.len() as u64 / cost::HASHED)? {
+        if !spend(bytes.len() as u64 / cost::HASHED)? {
             break;
         }
 
@@ -1219,8 +1230,7 @@ fn fold_pool<'a, V: Verify, W: Watch, R: Recognizer>(
         // have been charged for it, so a bound tight enough to notice
         // reports the answer as truncated over a certificate that could
         // never have been followed.
-        search
-            .execution
+        execution
             .charge_work(bytes.len().max(target.as_bytes().len()) as u64)
             .map_err(|reason| candidate.tbs().subject().resource(reason))?;
         if bytes != target.as_bytes()

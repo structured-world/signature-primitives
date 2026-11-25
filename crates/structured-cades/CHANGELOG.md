@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0](https://github.com/structured-world/signature-primitives/compare/structured-cades-v0.28.0...structured-cades-v0.29.0) - 2026-11-25
+
+### Added
+
+- *(xades)* expose pooled timestamp check facts ([#366](https://github.com/structured-world/signature-primitives/pull/366))
+
+### Fixed
+
+- *(xades)* [**breaking**] validate legacy certificate serials ([#365](https://github.com/structured-world/signature-primitives/pull/365))
+
+### Other
+
+- *(xades)* stabilize CRL catalogue work check ([#367](https://github.com/structured-world/signature-primitives/pull/367))
+
 ## [0.28.0](https://github.com/structured-world/signature-primitives/compare/structured-cades-v0.27.1...structured-cades-v0.28.0) - 2026-11-24
 
 ### Added

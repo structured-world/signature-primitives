@@ -75,6 +75,11 @@ PKCS#8 decoding is available through `structured-cms::personal::PrivateKey`.
 Parsing exposes certificate facts; it does not establish application trust.
 For certification-path processing, supply the certificates, trust anchors,
 validation interval, resource limits and a `path::Verify` implementation.
+`path::prospective::enumerate` collects complete leaf-first candidates against
+the supplied anchors before time and path validation. Its search limits return
+an error instead of a partial catalogue. `path::prospective::verified_tops`
+finds carried branch tips using the issuer's standalone key for each edge;
+choosing and trusting anchors remains the caller's responsibility.
 `path::build_with_validity` and `path::validate_with_validity` accept an explicit
 validity model. Shell checks issuing certificates at the validation interval.
 Chain checks each in-path issuer at its immediate subordinate's signed

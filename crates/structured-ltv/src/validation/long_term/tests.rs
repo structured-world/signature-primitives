@@ -47,6 +47,7 @@ const HISTORICAL: &[Proof] = &[
 ];
 const REV: RevocationData<'static> = RevocationData {
     object: REVOCATION,
+    base: None,
     issuer: ISSUER,
     issuer_validity: VALID,
     issued: at(30),
@@ -654,6 +655,56 @@ fn past_result(signature: Signature<'_>, sub: SubIndication, proofs: &[Proof]) -
     .unwrap()
 }
 
+#[test]
+fn delta_status_requires_historical_proof_for_its_base_and_base_issuer() {
+    // The delta and its issuer already have PoE. Neither can satisfy the
+    // distinct complete CRL or its distinct issuer's validity window.
+    let records = [RevocationData {
+        base: Some(BaseCrl {
+            object: OLD_TOKEN,
+            issuer: NEW_TOKEN,
+            issuer_validity: VALID,
+            crypto: &[],
+            delegated: None,
+        }),
+        ..REV
+    }];
+    let members = [Member {
+        revocations: RevocationCheck::Required(&records),
+        ..MEMBER
+    }];
+    let candidates = [Candidate {
+        members: &members,
+        ..CANDIDATE
+    }];
+    let signature = Signature {
+        candidates: &candidates,
+        ..INITIAL_SIGNATURE
+    };
+    let mut proof = HISTORICAL.to_vec();
+    for missing in [OLD_TOKEN, NEW_TOKEN] {
+        let report = past_result(signature, SubIndication::OutOfBoundsNoPoe, &proof);
+        assert!(matches!(report.certificate, Some(PastCertificate::Finding {
+            missing_proof: Some(object), ..
+        }) if object == missing));
+        proof.push(Proof {
+            object: missing,
+            at: at(20),
+        });
+    }
+    let report = past_result(signature, SubIndication::OutOfBoundsNoPoe, &proof);
+    assert_eq!(report.decision, Decision::Passed);
+    proof.last_mut().unwrap().at = at(50);
+    let report = past_result(signature, SubIndication::OutOfBoundsNoPoe, &proof);
+    assert!(matches!(
+        report.certificate,
+        Some(PastCertificate::Finding {
+            missing_proof: Some(NEW_TOKEN),
+            ..
+        })
+    ));
+}
+
 /// Authority compromise is a key compromise in the chain model too.
 #[test]
 fn authority_compromise_limits_historical_chain_model() {
@@ -1031,6 +1082,43 @@ fn algorithm_and_freshness_recovery_use_their_own_proof_rules() {
         past_result(signature, SubIndication::TryLater, &proofs[..3]).decision,
         Decision::Finding(SubIndication::TryLater),
     );
+}
+
+#[test]
+fn delta_freshness_recovery_retains_its_independent_proof_rule() {
+    // Step 5 uses best-signature-time, even when it is after the separately
+    // validated path horizon. The complete CRL still needs its own proof.
+    let record = RevocationData {
+        base: Some(BaseCrl {
+            object: OLD_TOKEN,
+            issuer: ISSUER,
+            issuer_validity: VALID,
+            crypto: &[],
+            delegated: None,
+        }),
+        ..REV
+    };
+    let signature = Signature {
+        retry: RetryCause::Freshness {
+            record: &record,
+            retry_at: None,
+        },
+        ..INITIAL_SIGNATURE
+    };
+    let mut proofs = HISTORICAL.to_vec();
+    proofs[3].at = at(55);
+    let sub = SubIndication::TryLater;
+    assert_eq!(
+        past_result(signature, sub, &proofs).decision,
+        Decision::Finding(sub)
+    );
+    proofs.push(Proof {
+        object: OLD_TOKEN,
+        at: at(20),
+    });
+    let report = past_result(signature, sub, &proofs);
+    assert_eq!(report.signature_poe, Some(false));
+    assert_eq!(report.decision, Decision::Passed);
 }
 
 /// Reinstatement replaces an older hold regardless of catalogue order. An

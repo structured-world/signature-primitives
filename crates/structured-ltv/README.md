@@ -88,6 +88,10 @@ under the query that performs it; retained facts are never prepaid work.
   into member status assessment. For Chain, a known noncompromise revocation
   of an issuing CA after its subordinate's issuance remains visible in the
   assessment without invalidating that issuance.
+  For historical validation, attach the authenticated complete CRL to a
+  delta-based status through `validation::long_term::RevocationData::base`.
+  The complete CRL has its own proof, issuer validity, and applicable
+  cryptographic and delegated-path bounds.
 - `material` indexes every incorporated certificate, CRL and OCSP value with
   the format's placement of each occurrence, attributes artifact uses to
   actors, reports incorporation, and checks each archive input's `Coverage`

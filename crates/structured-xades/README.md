@@ -18,7 +18,9 @@ selected layout records which grammar applies. The default reader accepts only
 the EN syntax.
 
 For a V1.2.2 layout, `legacy::prepare` checks the original signed-properties
-binding and reads the ordered property sequences. `legacy::check_signer`
+binding and reads the ordered property sequences. It uses the adapter's
+`ScalarXml` implementation to check each `X509SerialNumber` as an XML Schema
+integer. `legacy::check_signer`
 compares the actual candidate to signed certificate digests or a certificate
 in the authenticated `KeyInfo`. `legacy::timestamp` resolves explicit Includes
 and streams the original V1.2.2 imprint input through the XML adapter. Its

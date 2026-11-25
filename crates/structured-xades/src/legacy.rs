@@ -7,7 +7,7 @@
 use crate::binding::{self, SignatureXml};
 use crate::container::{self, DS, XADES_122};
 use crate::properties;
-use crate::scalar::ScalarXml;
+use crate::scalar::{self, ScalarXml};
 use crate::xml::{Access, Name, Node, Snapshot, Xml};
 use structured_asn1::memory::{OwnedVec, Work};
 
@@ -57,6 +57,14 @@ pub enum Error<E, N> {
     Binding(binding::BindingError<E, N>),
     /// An original property did not satisfy the applicable grammar.
     Property(properties::Error<E, N>),
+    /// The original serial element could not establish an XML Schema integer.
+    Serial(scalar::Error<E, N>),
+}
+
+impl<E, N> From<properties::Error<E, N>> for Error<E, N> {
+    fn from(error: properties::Error<E, N>) -> Self {
+        Self::Property(error)
+    }
 }
 
 /// Located processing result for the original XML source.
@@ -215,8 +223,7 @@ pub fn prepare<X: SignatureXml + ScalarXml, W: Work>(
         .find(|entry| entry.name == "SigningCertificate")
     {
         Some(entry) => SignerCertificate::References(SigningReferences(
-            crate::certificate::read_legacy(access, layout.signature(), entry.node)
-                .map_err(Error::Property)?,
+            crate::certificate::read_legacy(access, layout.signature(), entry.node)?,
         )),
         None => signed_key_info(access, layout.signature())?,
     };

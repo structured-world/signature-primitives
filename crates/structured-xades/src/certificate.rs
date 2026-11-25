@@ -762,7 +762,7 @@ pub(crate) fn read_legacy<X: ScalarXml, W: Work>(
     access: &Access<'_, X, W>,
     signature: X::Id,
     node: X::Id,
-) -> PropertyResult<Catalogue<X>, X> {
+) -> crate::legacy::Result<Catalogue<X>, X> {
     read_in(
         access,
         signature,
@@ -776,13 +776,13 @@ pub(crate) fn read_legacy<X: ScalarXml, W: Work>(
     )
 }
 
-fn read_in<X: Xml, W: Work>(
+fn read_in<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
     access: &Access<'_, X, W>,
     signature: X::Id,
     node: X::Id,
     namespace: &str,
-    read_entry: impl Fn(X::Id) -> PropertyResult<Reference<X::Id>, X>,
-) -> PropertyResult<Catalogue<X>, X> {
+    read_entry: impl Fn(X::Id) -> Result<Reference<X::Id>, E>,
+) -> Result<Catalogue<X>, E> {
     let mut entries = access
         .query(node, |_, _, work| Ok(work.vector()))
         .map_err(Error::Access)?;
@@ -798,7 +798,8 @@ fn read_in<X: Xml, W: Work>(
         return Err(Error::Missing {
             parent: node,
             local: "Cert",
-        });
+        }
+        .into());
     }
     Ok(References {
         snapshot: access.snapshot(),
@@ -820,12 +821,12 @@ pub(crate) fn read_entry<X: Xml, W: Work>(
     })
 }
 
-fn read_entry_in<X: Xml, W: Work>(
+fn read_entry_in<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
     access: &Access<'_, X, W>,
     node: X::Id,
     namespace: &str,
-    read_issuer: impl FnOnce(Option<X::Id>) -> PropertyResult<Option<X::Id>, X>,
-) -> PropertyResult<Reference<X::Id>, X> {
+    read_issuer: impl FnOnce(Option<X::Id>) -> Result<Option<X::Id>, E>,
+) -> Result<Reference<X::Id>, E> {
     let mut children = access.children(node);
     let digest = required(&mut children, node, "CertDigest")?;
     expect_name(access, digest, namespace, "CertDigest")?;
@@ -833,7 +834,8 @@ fn read_entry_in<X: Xml, W: Work>(
     if let Some(extra) = children.next() {
         return Err(Error::Unexpected {
             node: extra.map_err(Error::Child)?,
-        });
+        }
+        .into());
     }
     let (method, value) = crate::properties::digest_value(access, digest)?;
     Ok(Reference {
@@ -848,7 +850,7 @@ fn read_legacy_issuer<X: ScalarXml, W: Work>(
     access: &Access<'_, X, W>,
     parent: X::Id,
     issuer: Option<X::Id>,
-) -> PropertyResult<X::Id, X> {
+) -> crate::legacy::Result<X::Id, X> {
     const SERIAL: &str = "X509SerialNumber";
     let issuer = issuer.ok_or(Error::Missing {
         parent,
@@ -864,7 +866,8 @@ fn read_legacy_issuer<X: ScalarXml, W: Work>(
     if let Some(extra) = pair.next() {
         return Err(Error::Unexpected {
             node: extra.map_err(Error::Child)?,
-        });
+        }
+        .into());
     }
     // TS 101 903 V1.2.2 §7.2.2 uses XMLDSig X509IssuerSerialType, which
     // declares xs:integer for the serial. The XML owner checks its lexical space.
@@ -877,13 +880,7 @@ fn read_legacy_issuer<X: ScalarXml, W: Work>(
         LexicalSource::SimpleContent,
         Datatype::Integer,
     )
-    .map_err(|error| match error {
-        scalar::Error::Access(error) => Error::Access(error),
-        scalar::Error::Value { node, .. } => Error::Lexical {
-            node,
-            local: SERIAL,
-        },
-    })?;
+    .map_err(crate::legacy::Error::Serial)?;
     Ok(issuer)
 }
 

@@ -3,7 +3,7 @@ use structured_xades::{
     binding::SIGNED_PROPERTIES_122,
     container::{Selected, Syntaxes, XADES_122},
     legacy::{self, SignerCertificate, timestamp as old},
-    scalar::{Datatype, Fact},
+    scalar::{Datatype, Error as ScalarError, Fact},
 };
 
 impl old::LegacyXml for Tree {
@@ -112,14 +112,32 @@ fn issuer_serial_requires_an_integer_from_the_original_xml_owner() {
         } else {
             assert!(matches!(
                 result,
-                Err(legacy::Error::Property(properties::Error::Lexical {
+                Err(legacy::Error::Serial(ScalarError::Value {
                     node,
-                    local: "X509SerialNumber",
+                    datatype: Datatype::Integer,
+                    fact: Fact::Malformed,
                 })) if node == serial
             ));
         }
         assert_eq!(xml.scalar_calls.get(), 1);
     }
+}
+
+#[test]
+fn issuer_serial_preserves_unsupported_integer_validation() {
+    // The serial is numeric, but the adapter does not support the requested
+    // datatype. Preparation must refuse without diagnosing malformed XML.
+    let (xml, serial) = with_serial(tree(), "42", Fact::Unsupported);
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    assert!(matches!(
+        legacy::prepare(&access, &layout(&access)),
+        Err(legacy::Error::Serial(ScalarError::Value {
+            node,
+            datatype: Datatype::Integer,
+            fact: Fact::Unsupported,
+        })) if node == serial
+    ));
 }
 
 #[test]

@@ -254,6 +254,19 @@ fn c_x_xl_and_archive_inventory_retains_every_occurrence_in_its_scope() {
 }
 
 #[test]
+fn original_extended_preparation_accepts_original_signed_certificate() {
+    // Original C/X/XL/A signatures protect SigningCertificate. The same
+    // wire input remains outside the current EN baseline.
+    let xml = super::legacy_tests::profile_tree(structured_xades::legacy::Profile::PreEn);
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    assert!(
+        prepare::prepare_extended_original(&access, 0, unsigned::Requirements::Basic, None).is_ok()
+    );
+    assert!(prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).is_err());
+}
+
+#[test]
 fn extended_stage_preparation_progresses_from_c_to_a_without_relaxing_baseline() {
     // References stay available for X and do not disqualify the XL material
     // census or A archives when the caller explicitly selects this profile.
@@ -353,7 +366,15 @@ fn extended_stage_preparation_progresses_from_c_to_a_without_relaxing_baseline()
             })
             .unwrap();
         }
-        assert!(prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).is_err());
+        let baseline = prepare::prepare(&access, 0, unsigned::Requirements::Archival, None);
+        if syntax == ReferenceSyntax::V2 {
+            assert!(matches!(
+                baseline,
+                Err(prepare::Error::Property(properties::Error::Forbidden { node })) if refs.contains(&node)
+            ));
+        } else {
+            assert!(baseline.is_err());
+        }
     }
 }
 

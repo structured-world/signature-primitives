@@ -245,20 +245,6 @@ pub(super) fn profile_tree(profile: Profile) -> Tree {
 }
 
 #[test]
-fn original_extended_preparation_accepts_original_signed_certificate() {
-    // Original C/X/XL/A signatures protect SigningCertificate, not its
-    // later V2 replacement. The same wire input remains outside EN baseline.
-    let xml = profile_tree(Profile::PreEn);
-    let work = funded();
-    let access = Access::new(&xml, xml.snapshot(), &work);
-    assert!(
-        prepare::prepare_extended_original(&access, 0, unsigned::Requirements::Basic, None,)
-            .is_ok()
-    );
-    assert!(prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).is_err());
-}
-
-#[test]
 fn historical_policy_checks_documentation_in_the_original_namespace() {
     // Both older schemas carry the documentation URI in their own namespace.
     use structured_xades::{identifier, policy::Declaration};

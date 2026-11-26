@@ -25,7 +25,10 @@ pub use content::{
     ContentScope, ContentSource, ContentWriter, PendingContent,
 };
 pub use material::{Material, MaterialKind, Materials};
-pub use material::{write_extended_values, write_material};
+pub use material::{
+    write_extended_values, write_historical_timestamp_values, write_historical_values,
+    write_material,
+};
 pub use policy::{
     ExplicitPolicy, NoticeReference, PolicyDocument, PolicyQualifier, PolicyStore, PolicyTransform,
     PolicyWriter, SignaturePolicy, SuppliedPolicy, UserNotice,
@@ -38,7 +41,7 @@ pub use qualifying::{
 pub use references::{
     ReferenceArtifact, ReferenceError, ReferenceRole, ReferenceWriter, References,
 };
-pub use timestamp::{Timestamp, TimestampKind};
+pub use timestamp::{HistoricalTimestampWriter, Timestamp, TimestampKind};
 
 mod augmentation;
 pub use augmentation::{
@@ -208,9 +211,18 @@ impl<B: Writer, W: Work> Emit<'_, B, W> {
         self.end()
     }
     pub fn digest(&mut self, method: &str, value: &[u8]) -> Result<(), Error<B::Error>> {
-        self.begin(DS, "DigestMethod")?;
+        self.digest_in(DS, method, value)
+    }
+
+    pub fn digest_in(
+        &mut self,
+        namespace: &'static str,
+        method: &str,
+        value: &[u8],
+    ) -> Result<(), Error<B::Error>> {
+        self.begin(namespace, "DigestMethod")?;
         self.attribute("Algorithm", method)?;
         self.end()?;
-        self.binary(DS, "DigestValue", value)
+        self.binary(namespace, "DigestValue", value)
     }
 }

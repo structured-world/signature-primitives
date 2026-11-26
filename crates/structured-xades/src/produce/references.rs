@@ -230,14 +230,7 @@ fn write_reference<'p, B: ReferenceWriter, P: Digest<'p>, W: Work>(
             emit.begin(XADES, "Cert")?;
             write_digest(&mut emit, "CertDigest", method, output)?;
             if syntax == ReferenceSyntax::Original {
-                emit.begin(XADES, "IssuerSerial")?;
-                text(&mut emit, DS, "X509IssuerName", |writer, work| {
-                    writer.distinguished_name(cert.tbs().issuer(), work)
-                })?;
-                text(&mut emit, DS, "X509SerialNumber", |writer, work| {
-                    writer.integer(cert.tbs().serial(), work)
-                })?;
-                emit.end()?;
+                write_issuer_serial(&mut emit, XADES, cert)?;
             }
         }
         material::Value::Crl(crl) => {
@@ -295,6 +288,21 @@ fn write_reference<'p, B: ReferenceWriter, P: Digest<'p>, W: Work>(
     }
     emit.end()?;
     Ok(())
+}
+
+pub(super) fn write_issuer_serial<B: ReferenceWriter, W: Work>(
+    emit: &mut Emit<'_, B, W>,
+    namespace: &'static str,
+    cert: &Certificate<'_>,
+) -> Result<(), Error<B::Error>> {
+    emit.begin(namespace, "IssuerSerial")?;
+    text(emit, DS, "X509IssuerName", |writer, work| {
+        writer.distinguished_name(cert.tbs().issuer(), work)
+    })?;
+    text(emit, DS, "X509SerialNumber", |writer, work| {
+        writer.integer(cert.tbs().serial(), work)
+    })?;
+    emit.end()
 }
 
 fn text<B: ReferenceWriter, W: Work>(

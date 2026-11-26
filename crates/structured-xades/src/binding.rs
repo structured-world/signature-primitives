@@ -8,6 +8,8 @@ use structured_asn1::memory::Work;
 pub const SIGNED_PROPERTIES: &str = "http://uri.etsi.org/01903#SignedProperties";
 /// Reference Type mandated by TS 101 903 V1.2.2 §6.3.1.
 pub const SIGNED_PROPERTIES_122: &str = "http://uri.etsi.org/01903/v1.2.2#SignedProperties";
+/// Reference type required by ETSI TS 101 903 V1.1.1 §6.3.1.
+pub const SIGNED_PROPERTIES_111: &str = "http://uri.etsi.org/01903/v1.1.1#SignedProperties";
 
 /// `XMLDSig` outcome for this exact source generation and selected signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,8 +200,8 @@ pub(crate) fn covering_reference<X: SignatureXml, W: Work>(
         })
         .map_err(BindingError::Access)?;
     let (wanted, minimum) = match purpose {
-        Purpose::Properties(target, Syntax::En319132) => (target, 2),
-        Purpose::Properties(target, Syntax::Ts101903V122)
+        Purpose::Properties(target, Syntax::En319132 | Syntax::Ts103171) => (target, 2),
+        Purpose::Properties(target, Syntax::Ts101903V111 | Syntax::Ts101903V122)
         | Purpose::LegacyKeyInfo(target)
         | Purpose::Counter(target) => (target, 1),
     };
@@ -217,7 +219,8 @@ pub(crate) fn covering_reference<X: SignatureXml, W: Work>(
                             Some(kind) => access.equal(
                                 kind,
                                 match syntax {
-                                    Syntax::En319132 => SIGNED_PROPERTIES,
+                                    Syntax::En319132 | Syntax::Ts103171 => SIGNED_PROPERTIES,
+                                    Syntax::Ts101903V111 => SIGNED_PROPERTIES_111,
                                     Syntax::Ts101903V122 => SIGNED_PROPERTIES_122,
                                 },
                             ),

@@ -1,6 +1,6 @@
 //! Scalar obligations of recognized original policy qualifiers.
 
-use super::{Declaration, Original, XADES, XADES_141, named, user_notice_with};
+use super::{Declaration, Original, XADES_141, named, user_notice_with};
 use crate::identifier;
 use crate::properties::Error;
 use crate::reference::LexicalSource;
@@ -65,11 +65,11 @@ pub fn check_qualifier_syntax<X: ScalarXml + UriXml, W: Work>(
         let qualifier = &explicit.qualifiers[index];
         let mut child = access.first_child(qualifier.node).map_err(Error::Access)?;
         while let Some(node) = child {
-            if named(access, node, XADES, "SPURI")? {
+            if named(access, node, reading.namespace, "SPURI")? {
                 scalar::check(access, node, LexicalSource::SimpleContent, Datatype::AnyUri)
                     .map_err(SyntaxError::Scalar)?;
-            } else if named(access, node, XADES, "SPUserNotice")? {
-                user_notice_with(access, node, |number| {
+            } else if named(access, node, reading.namespace, "SPUserNotice")? {
+                user_notice_with(access, node, reading.namespace, |number| {
                     scalar::check(
                         access,
                         number,

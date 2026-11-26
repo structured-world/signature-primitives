@@ -71,11 +71,21 @@ impl Identifier<'_> {
         name: &'static str,
         emit: &mut Emit<'_, B, W>,
     ) -> Result<(), Error<B::Error>> {
+        self.write_in(namespace, XADES, name, emit)
+    }
+
+    pub(super) fn write_in<B: Writer, W: Work>(
+        self,
+        namespace: &'static str,
+        children: &'static str,
+        name: &'static str,
+        emit: &mut Emit<'_, B, W>,
+    ) -> Result<(), Error<B::Error>> {
         if self.uri.is_empty() {
             return Err(Error::Value("identifier.uri"));
         }
         emit.begin(namespace, name)?;
-        emit.begin(XADES, "Identifier")?;
+        emit.begin(children, "Identifier")?;
         if let Some(qualifier) = self.qualifier {
             let lexical = match qualifier {
                 Qualifier::Uri => "OIDAsURI",
@@ -95,12 +105,12 @@ impl Identifier<'_> {
         }))?;
         emit.end()?;
         if let Some(description) = self.description {
-            emit.text(XADES, "Description", description)?;
+            emit.text(children, "Description", description)?;
         }
         if !self.documentation.is_empty() {
-            emit.begin(XADES, "DocumentationReferences")?;
+            emit.begin(children, "DocumentationReferences")?;
             for uri in self.documentation {
-                emit.scalar(XADES, "DocumentationReference", uri, Datatype::AnyUri)?;
+                emit.scalar(children, "DocumentationReference", uri, Datatype::AnyUri)?;
             }
             emit.end()?;
         }
@@ -164,19 +174,27 @@ impl DataObjectFormat<'_> {
         self,
         emit: &mut Emit<'_, B, W>,
     ) -> Result<(), Error<B::Error>> {
-        emit.begin(XADES, "DataObjectFormat")?;
+        self.emit_in(XADES, emit)
+    }
+
+    pub(super) fn emit_in<B: Writer, W: Work>(
+        self,
+        namespace: &'static str,
+        emit: &mut Emit<'_, B, W>,
+    ) -> Result<(), Error<B::Error>> {
+        emit.begin(namespace, "DataObjectFormat")?;
         emit.attribute("ObjectReference", self.reference)?;
         if let Some(value) = self.description {
-            emit.text(XADES, "Description", value)?;
+            emit.text(namespace, "Description", value)?;
         }
         if let Some(identifier) = self.identifier {
-            identifier.write(XADES, "ObjectIdentifier", emit)?;
+            identifier.write_in(namespace, namespace, "ObjectIdentifier", emit)?;
         }
         if let Some(value) = self.mime_type {
-            emit.text(XADES, "MimeType", value)?;
+            emit.text(namespace, "MimeType", value)?;
         }
         if let Some(value) = self.encoding {
-            emit.scalar(XADES, "Encoding", value, Datatype::AnyUri)?;
+            emit.scalar(namespace, "Encoding", value, Datatype::AnyUri)?;
         }
         emit.end()
     }

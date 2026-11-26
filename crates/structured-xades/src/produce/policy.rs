@@ -2,6 +2,7 @@
 
 use super::qualifying::fragment;
 use super::{DS, Datatype, Emit, Error, FragmentSlot, Identifier, PropertyWriter, Work, XADES};
+use crate::legacy::Profile;
 use crate::timestamp::XADES_141;
 
 const SPECIFICATION_TRANSFORM: &str =
@@ -134,8 +135,8 @@ impl<F> SuppliedPolicy<'_, F> {
             return Err(Error::Value("signaturePolicyId.digestWidth"));
         }
         emit_explicit(
-            writer,
-            work,
+            &mut Emit { writer, work },
+            (XADES, DS),
             self.identifier,
             self.digest_method,
             self.digest,
@@ -162,13 +163,43 @@ impl<F> SignaturePolicy<'_, F> {
         writer: &mut B,
         work: &W,
     ) -> Result<(), Error<B::Error>> {
+        self.write_in(None, writer, work)
+    }
+
+    pub(super) fn write_historical<B: PolicyWriter<Fragment = F>, W: Work>(
+        &self,
+        profile: Profile,
+        writer: &mut B,
+        work: &W,
+    ) -> Result<(), Error<B::Error>> {
+        self.write_in(Some(profile), writer, work)
+    }
+
+    fn write_in<B: PolicyWriter<Fragment = F>, W: Work>(
+        &self,
+        profile: Option<Profile>,
+        writer: &mut B,
+        work: &W,
+    ) -> Result<(), Error<B::Error>> {
+        let namespace = profile.map_or(XADES, Profile::namespace);
         let Self::Explicit(policy) = self else {
             let mut emit = Emit { writer, work };
-            emit.begin(XADES, "SignaturePolicyIdentifier")?;
-            emit.begin(XADES, "SignaturePolicyImplied")?;
+            emit.begin(namespace, "SignaturePolicyIdentifier")?;
+            emit.begin(namespace, "SignaturePolicyImplied")?;
             emit.end()?;
             return emit.end();
         };
+        if profile.is_some() {
+            if matches!(policy.transform, PolicyTransform::InSpecification(_)) {
+                return Err(Error::Value("signaturePolicy.historicalTransform"));
+            }
+            for qualifier in policy.qualifiers {
+                work.charge_work(1).map_err(Error::Resource)?;
+                if matches!(qualifier, PolicyQualifier::DocumentSpecification(_)) {
+                    return Err(Error::Value("signaturePolicy.historicalQualifier"));
+                }
+            }
+        }
         require_declaration(
             policy.identifier,
             policy.digest_method,
@@ -189,8 +220,8 @@ impl<F> SignaturePolicy<'_, F> {
             return Err(Error::Value("signaturePolicyId.digest"));
         }
         emit_explicit(
-            writer,
-            work,
+            &mut Emit { writer, work },
+            (namespace, profile.map_or(DS, Profile::digest_namespace)),
             policy.identifier,
             policy.digest_method,
             digest.as_ref(),
@@ -223,22 +254,21 @@ fn require_declaration<E, F, W: Work>(
 }
 
 fn emit_explicit<B: PropertyWriter, W: Work>(
-    writer: &mut B,
-    work: &W,
+    emit: &mut Emit<'_, B, W>,
+    (namespace, digest_namespace): (&'static str, &'static str),
     identifier: Identifier<'_>,
     method: &str,
     digest: &[u8],
     transform: &PolicyTransform<'_, B::Fragment>,
     qualifiers: &[PolicyQualifier<'_, B::Fragment>],
 ) -> Result<(), Error<B::Error>> {
-    let mut emit = Emit { writer, work };
-    emit.begin(XADES, "SignaturePolicyIdentifier")?;
-    emit.begin(XADES, "SignaturePolicyId")?;
-    identifier.write(XADES, "SigPolicyId", &mut emit)?;
+    emit.begin(namespace, "SignaturePolicyIdentifier")?;
+    emit.begin(namespace, "SignaturePolicyId")?;
+    identifier.write_in(namespace, namespace, "SigPolicyId", emit)?;
     let specification = match transform {
         PolicyTransform::None => None,
         PolicyTransform::Xml(value) => {
-            fragment(&mut emit, FragmentSlot::PolicyTransforms, value)?;
+            fragment(emit, FragmentSlot::PolicyTransforms, value)?;
             None
         }
         PolicyTransform::InSpecification(spec) => {
@@ -250,10 +280,10 @@ fn emit_explicit<B: PropertyWriter, W: Work>(
             Some(*spec)
         }
     };
-    emit.begin(XADES, "SigPolicyHash")?;
-    emit.digest(method, digest)?;
+    emit.begin(namespace, "SigPolicyHash")?;
+    emit.digest_in(digest_namespace, method, digest)?;
     emit.end()?;
-    emit_qualifiers(&mut emit, specification, qualifiers)?;
+    emit_qualifiers(emit, namespace, specification, qualifiers)?;
     emit.end()?;
     emit.end()
 }
@@ -323,23 +353,24 @@ fn require_specification<E>(specification: Identifier<'_>) -> Result<(), Error<E
 
 fn emit_qualifiers<B: PropertyWriter, W: Work>(
     emit: &mut Emit<'_, B, W>,
+    namespace: &'static str,
     specification: Option<Identifier<'_>>,
     qualifiers: &[PolicyQualifier<'_, B::Fragment>],
 ) -> Result<(), Error<B::Error>> {
     if specification.is_none() && qualifiers.is_empty() {
         return Ok(());
     }
-    emit.begin(XADES, "SigPolicyQualifiers")?;
+    emit.begin(namespace, "SigPolicyQualifiers")?;
     if let Some(spec) = specification {
-        emit.begin(XADES, "SigPolicyQualifier")?;
+        emit.begin(namespace, "SigPolicyQualifier")?;
         spec.write(XADES_141, "SPDocSpecification", emit)?;
         emit.end()?;
     }
     for qualifier in qualifiers {
-        emit.begin(XADES, "SigPolicyQualifier")?;
+        emit.begin(namespace, "SigPolicyQualifier")?;
         match qualifier {
-            PolicyQualifier::Uri(uri) => emit.scalar(XADES, "SPURI", uri, Datatype::AnyUri)?,
-            PolicyQualifier::Notice(notice) => user_notice(emit, notice)?,
+            PolicyQualifier::Uri(uri) => emit.scalar(namespace, "SPURI", uri, Datatype::AnyUri)?,
+            PolicyQualifier::Notice(notice) => user_notice(emit, namespace, notice)?,
             PolicyQualifier::DocumentSpecification(spec) => {
                 spec.write(XADES_141, "SPDocSpecification", emit)?;
             }
@@ -352,15 +383,16 @@ fn emit_qualifiers<B: PropertyWriter, W: Work>(
 
 fn user_notice<B: PropertyWriter, W: Work>(
     emit: &mut Emit<'_, B, W>,
+    namespace: &'static str,
     notice: &UserNotice<'_>,
 ) -> Result<(), Error<B::Error>> {
-    emit.begin(XADES, "SPUserNotice")?;
+    emit.begin(namespace, "SPUserNotice")?;
     if let Some(reference) = &notice.reference {
-        emit.begin(XADES, "NoticeRef")?;
-        emit.text(XADES, "Organization", reference.organization)?;
-        emit.begin(XADES, "NoticeNumbers")?;
+        emit.begin(namespace, "NoticeRef")?;
+        emit.text(namespace, "Organization", reference.organization)?;
+        emit.begin(namespace, "NoticeNumbers")?;
         for number in reference.numbers {
-            emit.begin(XADES, "int")?;
+            emit.begin(namespace, "int")?;
             emit.work.charge_work(1).map_err(Error::Resource)?;
             emit.writer
                 .integer(number, emit.work)
@@ -371,7 +403,7 @@ fn user_notice<B: PropertyWriter, W: Work>(
         emit.end()?;
     }
     if let Some(text) = notice.text {
-        emit.text(XADES, "ExplicitText", text)?;
+        emit.text(namespace, "ExplicitText", text)?;
     }
     emit.end()
 }

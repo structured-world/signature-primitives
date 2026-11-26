@@ -52,7 +52,7 @@ mod query_boundary;
 mod reference_timestamps;
 
 #[path = "support/legacy.rs"]
-mod legacy_tests;
+pub mod legacy_tests;
 
 use std::{
     cell::{Cell, RefCell},
@@ -144,6 +144,7 @@ struct Tree {
     object_mime: Option<&'static str>,
     identifier_qualifier: Option<&'static str>,
     validation_uri: Option<&'static str>,
+    hash_data_uri: Option<(&'static str, &'static str)>,
     counter_evidence: Option<CounterEvidence>,
     nested_counters: Vec<CounterEvidence>,
     indexed: Option<Edges>,
@@ -276,6 +277,7 @@ impl Tree {
             object_mime: None,
             identifier_qualifier: None,
             validation_uri: None,
+            hash_data_uri: None,
             counter_evidence: None,
             nested_counters: Vec::new(),
             indexed: None,
@@ -745,6 +747,18 @@ impl Xml for Tree {
                     .map_or(self.digest_algorithm, |entry| Some(entry.1))
             } else if name.namespace.is_empty() && name.local == "ObjectReference" {
                 self.object_reference
+            } else if let Some((attribute, value)) = self.hash_data_uri
+                && name.namespace.is_empty()
+                && name.local == attribute
+                && matches!(
+                    self.nodes[node].value,
+                    Node::Element(Name {
+                        local: "HashDataInfo",
+                        ..
+                    })
+                )
+            {
+                Some(value)
             } else if name.namespace.is_empty() && name.local == "URI" {
                 self.validation_uri
             } else {

@@ -10,6 +10,17 @@ pub(super) struct UriRoute {
     change: bool,
 }
 
+impl UriRoute {
+    pub(super) fn valid(node: usize, text: &'static str) -> Self {
+        Self {
+            node,
+            text,
+            fact: Fact::Valid,
+            change: false,
+        }
+    }
+}
+
 impl UriXml for Tree {
     fn with_uri<R, VE, W: Work>(
         &self,

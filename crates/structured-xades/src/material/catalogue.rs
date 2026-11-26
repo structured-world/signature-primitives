@@ -35,6 +35,7 @@ pub enum Entry<N> {
 pub struct Catalogue<N, D, G> {
     snapshot: Snapshot<D, G>,
     parent: N,
+    namespace: &'static str,
     entries: OwnedVec<Entry<N>>,
 }
 
@@ -57,6 +58,31 @@ impl<N: Copy, D: Copy, G: Copy> Catalogue<N, D, G> {
     pub fn entries(&self) -> &[Entry<N>] {
         &self.entries
     }
+}
+
+/// Retain the actual encapsulated value of one catalogue entry. Absent
+/// ordinals and open-format entries retain no PKI value.
+pub fn retain_entry<X: crate::binary::OwnedBinaryXml>(
+    xml: &X,
+    catalogue: &Reading<X>,
+    index: usize,
+    operation: &structured_asn1::Reader<'_>,
+) -> super::RetainResult<Option<super::Material<X>>, X> {
+    let Some(&Entry::Encapsulated { node, kind }) = catalogue.entries.get(index) else {
+        return Ok(None);
+    };
+    super::retain_expected(
+        xml,
+        crate::binary::Location {
+            snapshot: catalogue.snapshot,
+            node,
+        },
+        kind,
+        catalogue.namespace,
+        kind.local(),
+        operation,
+    )
+    .map(Some)
 }
 
 /// Catalogue using the XML owner's source identities.
@@ -110,7 +136,7 @@ pub(super) fn container_kind<X: Xml, W: Work>(
             ContainerKind::AttributeRevocation,
         ),
     ] {
-        if named(access, node, local)? {
+        if named(access, node, XADES, local)? {
             return Ok(Some(kind));
         }
     }
@@ -132,19 +158,27 @@ pub fn read<X: Xml, W: Work>(
     // Their conditional role/authentication rules remain with the profile,
     // not a second certificate/revocation grammar here.
     let kind = container_kind(access, parent)?.ok_or(Error::Unexpected { node: parent })?;
-    let certificates = kind.certificates();
+    read_in(access, parent, XADES, kind.certificates())
+}
+
+pub(crate) fn read_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    parent: X::Id,
+    namespace: &'static str,
+    certificates: bool,
+) -> PropertyResult<Reading<X>, X> {
     let mut entries = access
         .query(parent, |_, _, work| Ok(work.vector()))
         .map_err(Error::Access)?;
     if certificates {
         for child in access.children(parent) {
             let node = child.map_err(Error::Child)?;
-            let entry = if named(access, node, "EncapsulatedX509Certificate")? {
+            let entry = if named(access, node, namespace, "EncapsulatedX509Certificate")? {
                 Entry::Encapsulated {
                     node,
                     kind: Kind::Certificate,
                 }
-            } else if named(access, node, "OtherCertificate")? {
+            } else if named(access, node, namespace, "OtherCertificate")? {
                 Entry::OtherCertificate { node }
             } else {
                 return Err(Error::Unexpected { node });
@@ -157,11 +191,11 @@ pub fn read<X: Xml, W: Work>(
         let mut previous = None;
         for child in access.children(parent) {
             let group = child.map_err(Error::Child)?;
-            let (rank, member, kind) = if named(access, group, "CRLValues")? {
+            let (rank, member, kind) = if named(access, group, namespace, "CRLValues")? {
                 (0, "EncapsulatedCRLValue", Some(Kind::Crl))
-            } else if named(access, group, "OCSPValues")? {
+            } else if named(access, group, namespace, "OCSPValues")? {
                 (1, "EncapsulatedOCSPValue", Some(Kind::Ocsp))
-            } else if named(access, group, "OtherValues")? {
+            } else if named(access, group, namespace, "OtherValues")? {
                 (2, "OtherValue", None)
             } else {
                 return Err(Error::Unexpected { node: group });
@@ -178,7 +212,7 @@ pub fn read<X: Xml, W: Work>(
             let mut present = false;
             for child in access.children(group) {
                 let node = child.map_err(Error::Child)?;
-                if !named(access, node, member)? {
+                if !named(access, node, namespace, member)? {
                     return Err(Error::Unexpected { node });
                 }
                 let entry = match kind {
@@ -201,6 +235,7 @@ pub fn read<X: Xml, W: Work>(
     Ok(Catalogue {
         snapshot: access.snapshot(),
         parent,
+        namespace,
         entries: entries.into_owned(),
     })
 }
@@ -208,15 +243,10 @@ pub fn read<X: Xml, W: Work>(
 fn named<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     node: X::Id,
+    namespace: &str,
     local: &'static str,
 ) -> PropertyResult<bool, X> {
     access
-        .has_name(
-            node,
-            Name {
-                namespace: XADES,
-                local,
-            },
-        )
+        .has_name(node, Name { namespace, local })
         .map_err(Error::Access)
 }

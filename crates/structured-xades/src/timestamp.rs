@@ -37,12 +37,12 @@ mod tokens;
 pub use material::{Carried, CarriedCause, CarriedError, CarriedMaterial, OtherCarried};
 pub use profile::{DigestError, DigestUse};
 pub use selection::{
-    RequirementError, RequirementResult, TimestampSelection, requirements,
+    RequirementError, RequirementResult, TimestampSelection, extended_requirements, requirements,
     requirements_with_counters,
 };
 pub use tokens::{
     EncodingConformance, TokenEntry, TokenPipelineError, TokenPipelineResult, TokenProfile,
-    TokenReading, TokenSource, TokenView, with_counter_tokens, with_tokens,
+    TokenReading, TokenSource, TokenView, with_counter_tokens, with_extended_tokens, with_tokens,
 };
 
 /// An implicit timestamp input prescribed by the current baseline.

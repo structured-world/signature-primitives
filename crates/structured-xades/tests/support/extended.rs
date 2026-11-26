@@ -195,6 +195,10 @@ fn c_x_xl_and_archive_inventory_retains_every_occurrence_in_its_scope() {
         let revocation = add(&mut xml, 7, XADES, "RevocationValues");
         let (a, _) = append_timestamp(&mut xml, 7, Role::Archive, 1);
         let (renewal, _) = append_timestamp(&mut xml, 7, Role::Archive, 1);
+        let objects = add(&mut xml, 3, XADES, "SignedDataObjectProperties");
+        let signed_stamp = add(&mut xml, objects, XADES, "AllDataObjectsTimeStamp");
+        add(&mut xml, signed_stamp, DS, "CanonicalizationMethod");
+        let signed_token = add(&mut xml, signed_stamp, XADES, "EncapsulatedTimeStamp");
         let work = funded();
         let access = Access::new(&xml, xml.snapshot(), &work);
         let layout = container::locate(&access, 0).unwrap();
@@ -228,10 +232,51 @@ fn c_x_xl_and_archive_inventory_retains_every_occurrence_in_its_scope() {
                 .iter()
                 .map(timestamp::Stamp::node)
                 .collect::<Vec<_>>(),
-            [8, x, a, renewal]
+            [8, x, a, renewal, signed_stamp]
         );
+        let prior = timestamp::extended_requirements(
+            &access,
+            &prepared,
+            timestamp::TimestampSelection::BeforeArchive(2),
+        )
+        .unwrap();
+        assert_eq!(
+            prior
+                .entries()
+                .iter()
+                .map(|entry| entry.property)
+                .collect::<Vec<_>>(),
+            [8, x, signed_stamp]
+        );
+        assert_eq!(prior.entries()[2].token, signed_token);
         assert_eq!(prepared.first_unverified(&[], &work).unwrap(), Some(8));
     }
+}
+
+#[test]
+fn signed_data_timestamps_use_the_default_only_in_the_historical_profile() {
+    // TS 101 903 permits the implicit method on both signed timestamp forms.
+    let (mut xml, _, _) = Tree::stamped(Role::Signature);
+    let objects = add(&mut xml, 3, XADES, "SignedDataObjectProperties");
+    let all = add(&mut xml, objects, XADES, "AllDataObjectsTimeStamp");
+    add(&mut xml, all, XADES, "EncapsulatedTimeStamp");
+    let one = add(&mut xml, objects, XADES, "IndividualDataObjectsTimeStamp");
+    add(&mut xml, one, XADES, "Include");
+    add(&mut xml, one, XADES, "EncapsulatedTimeStamp");
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let layout = container::locate(&access, 0).unwrap();
+    let bound = binding::bind(&access, &layout).unwrap();
+    let historical = extended::prepare(&access, &bound, ReferenceSyntax::Original).unwrap();
+    for (stamp, node) in historical.timestamps()[1..].iter().zip([all, one]) {
+        assert_eq!(stamp.node(), node);
+        assert_eq!(stamp.explicit_method(), None);
+    }
+    assert_eq!(historical.timestamps().len(), 3);
+    assert!(matches!(
+        extended::prepare(&access, &bound, ReferenceSyntax::V2),
+        Err(extended::Error::Timestamp(InputError::Missing { node, local: "CanonicalizationMethod" })) if node == all
+    ));
 }
 
 #[test]
@@ -368,12 +413,66 @@ fn p256_tsa_response_is_bound_to_the_exact_x_request_and_transaction() {
         draft.events[0],
         Written::Begin(XADES_141, "SigAndRefsTimeStampV2")
     );
-    assert!(draft.events.contains(&Written::Binary(token)));
+    assert!(draft.events.contains(&Written::Binary(token.clone())));
     xml.generation.set(2);
     assert!(matches!(
         plan.write_timestamp(&checked, &mut draft, &work),
         Err(produce::Error::Foreign)
     ));
+
+    check_original_x1(&mut xml, method, token, &query, &provider, &context);
+}
+
+fn check_original_x1(
+    xml: &mut Tree,
+    method: usize,
+    token: Vec<u8>,
+    query: &structured_asn1::Reader<'_>,
+    provider: &timestamp_oracle::Oracle,
+    context: &CheckContext<'_, '_>,
+) {
+    // The same original X1 token must drive both TSA selection and the check.
+    let name = ExtendedKind::SignatureAndReferences(ReferenceSyntax::V2).name();
+    let property = add(xml, 7, name.namespace, name.local);
+    xml.nodes[method].parent = Some(property);
+    let token_node = add(xml, property, XADES, "EncapsulatedTimeStamp");
+    xml.binary = token;
+    let work = query.execution();
+    let access = Access::new(xml, xml.snapshot(), &work);
+    let layout = container::locate(&access, 0).unwrap();
+    let bound = binding::bind(&access, &layout).unwrap();
+    let properties = extended::prepare(&access, &bound, ReferenceSyntax::V2).unwrap();
+    let census =
+        timestamp::extended_requirements(&access, &properties, timestamp::TimestampSelection::All)
+            .unwrap();
+    assert_eq!(census.entries().len(), 2);
+    assert_eq!(census.entries()[1].token, token_node);
+    assert_eq!(
+        census.entries()[1].purpose,
+        Role::SignatureAndReferences.purpose()
+    );
+    let check = timestamp::Check {
+        xml,
+        provider,
+        context,
+    };
+    timestamp::with_extended_tokens(
+        xml,
+        &properties,
+        query,
+        timestamp::TokenProfile::Etsi,
+        |current, view| {
+            let entry = view.entry(1).unwrap();
+            let stamp = &properties.timestamps()[1];
+            let actor = check
+                .retain_actor_from(&bound, stamp, entry, current, |_, _| Ok::<_, ()>(false))
+                .unwrap()
+                .unwrap();
+            assert_eq!(actor.verified().token().node, token_node);
+            Ok::<_, ()>(())
+        },
+    )
+    .unwrap();
 }
 
 impl produce::ReferenceWriter for Draft {

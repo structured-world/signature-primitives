@@ -140,7 +140,8 @@ impl<X: Xml> Properties<X> {
     pub fn values(&self) -> &[ValuesFor<X>] {
         &self.values
     }
-    /// Original T, X and A timestamps, including earlier A occurrences.
+    /// Original T, X and A timestamps in property order, followed by signed
+    /// data-object timestamps. Earlier A occurrences remain independently visible.
     #[must_use]
     pub fn timestamps(&self) -> &[Timestamp<X>] {
         &self.timestamps
@@ -291,6 +292,7 @@ pub fn prepare<X: Xml, W: Work>(
             }
         }
     }
+    append_signed_timestamps(access, layout, syntax, &mut timestamps)?;
     Ok(Properties {
         snapshot: layout.snapshot(),
         signature,
@@ -299,6 +301,54 @@ pub fn prepare<X: Xml, W: Work>(
         values: values.into_owned(),
         timestamps: timestamps.into_owned(),
     })
+}
+
+fn append_signed_timestamps<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    layout: &crate::container::Layout<X>,
+    syntax: ReferenceSyntax,
+    timestamps: &mut OwnedVec<Timestamp<X>, W>,
+) -> ResultFor<(), X> {
+    let (_, signed_objects) = properties::sections(access, layout).map_err(Error::Property)?;
+    if let Some(parent) = signed_objects {
+        for child in access.children(parent) {
+            let node = child.map_err(|cause| Error::Property(properties::Error::Child(cause)))?;
+            let named = |local| {
+                access
+                    .has_name(
+                        node,
+                        Name {
+                            namespace: XADES,
+                            local,
+                        },
+                    )
+                    .map_err(|cause| Error::Property(properties::Error::Access(cause)))
+            };
+            let role = if named("AllDataObjectsTimeStamp")? {
+                Role::AllDataObjects
+            } else if named("IndividualDataObjectsTimeStamp")? {
+                Role::IndividualDataObjects
+            } else {
+                continue;
+            };
+            // TS 101 903 V1.4.2 §§7.1.4.2, 7.2.9 and 7.2.10 apply the
+            // same optional method to signed and unsigned historical stamps.
+            // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
+            let stamp = timestamp::read_fields_in(
+                access,
+                layout.signature(),
+                parent,
+                node,
+                role,
+                syntax == ReferenceSyntax::Original,
+            )
+            .map_err(Error::Timestamp)?;
+            timestamps
+                .try_push(stamp)
+                .map_err(|cause| Error::Property(properties::Error::Resource { node, cause }))?;
+        }
+    }
+    Ok(())
 }
 
 fn admit<E, N>(seen: &mut [bool; 8], slot: usize, node: N) -> Result<(), properties::Error<E, N>> {

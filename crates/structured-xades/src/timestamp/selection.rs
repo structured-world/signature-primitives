@@ -95,6 +95,30 @@ pub fn requirements<X: Xml, W: Work>(
     ))
 }
 
+/// Derive original root obligations for the extended property
+/// inventory. An archive ordinal is relative to that inventory; its own
+/// tokens and all later unsigned properties are excluded from `BeforeArchive`.
+/// Signed data-object timestamps precede every archive. Nested signatures
+/// have independent selected scopes.
+pub fn extended_requirements<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    properties: &crate::extended::Properties<X>,
+    selection: TimestampSelection,
+) -> RequirementResult<X> {
+    let signature = properties.signature();
+    let root = Location {
+        snapshot: properties.snapshot(),
+        node: signature,
+    };
+    let (scope, entries) = selected_entries(access, root, properties.timestamps(), selection)?;
+    Ok(TimestampRequirements::new(
+        ISSUER,
+        signature,
+        scope,
+        entries.into_owned(),
+    ))
+}
+
 type RootEntries<X, W> = Result<
     (
         TimestampScope<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>,
@@ -109,8 +133,21 @@ fn root_entries<X: Xml, W: Work>(
     selection: TimestampSelection,
 ) -> RootEntries<X, W> {
     let layout = prepared.bound().containers();
-    let signature = layout.signature();
-    if layout.snapshot() != access.snapshot() {
+    let root = Location {
+        snapshot: layout.snapshot(),
+        node: layout.signature(),
+    };
+    selected_entries(access, root, prepared.timestamps(), selection)
+}
+
+fn selected_entries<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    root: Location<X::Id, X::Document, X::Generation>,
+    stamps: &[super::Timestamp<X>],
+    selection: TimestampSelection,
+) -> RootEntries<X, W> {
+    let signature = root.node;
+    if root.snapshot != access.snapshot() {
         return Err(InputError::Foreign { node: signature }.into());
     }
     let pay = || {
@@ -124,12 +161,9 @@ fn root_entries<X: Xml, W: Work>(
     };
     pay()?;
     let scope = match selection {
-        TimestampSelection::All => TimestampScope::All(Location {
-            snapshot: access.snapshot(),
-            node: signature,
-        }),
+        TimestampSelection::All => TimestampScope::All(root),
         TimestampSelection::BeforeArchive(index) => {
-            let Some(selected) = prepared.timestamps().get(index) else {
+            let Some(selected) = stamps.get(index) else {
                 return Err(RequirementError::Index { signature, index });
             };
             if selected.role() != Role::Archive {
@@ -148,7 +182,7 @@ fn root_entries<X: Xml, W: Work>(
         cause,
     };
     let mut count = 0usize;
-    for (ordinal, stamp) in prepared.timestamps().iter().enumerate() {
+    for (ordinal, stamp) in stamps.iter().enumerate() {
         pay()?;
         if selection.includes(ordinal, stamp.role()) {
             count = count
@@ -158,7 +192,7 @@ fn root_entries<X: Xml, W: Work>(
     }
     let mut entries = access.execution().vector();
     entries.try_reserve_exact(count).map_err(resource)?;
-    for (ordinal, stamp) in prepared.timestamps().iter().enumerate() {
+    for (ordinal, stamp) in stamps.iter().enumerate() {
         pay()?;
         if !selection.includes(ordinal, stamp.role()) {
             continue;

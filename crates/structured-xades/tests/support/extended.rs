@@ -544,7 +544,7 @@ fn c_hashes_whole_artifacts_and_xl_embeds_the_same_original_encodings() {
             .write(&mut draft, &provider, &work, |method, _| {
                 assert_eq!(method, selection.method);
                 Ok(DigestResolution::Supported((
-                    (),
+                    structured_pkix::algorithm::digest::Algorithm::Sha256,
                     structured_xades::hashes::HashClass::OtherKnown,
                 )))
             })

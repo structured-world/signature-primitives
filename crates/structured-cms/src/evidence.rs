@@ -20,7 +20,7 @@ const FIELD: &str = "evidenceRecord";
 mod input;
 pub use input::{InputError, Membership, ObjectInput};
 mod renewal;
-pub use renewal::PriorSequence;
+pub use renewal::{PriorError, PriorSequence};
 mod objects;
 pub use objects::{AsyncObjects, AsyncStreams};
 pub mod verify;
@@ -191,6 +191,14 @@ pub struct EvidenceRecord<'d> {
     timestamps: OwnedVec<ArchiveTimeStamp<'d>>,
 }
 impl<'d> EvidenceRecord<'d> {
+    /// Reads exactly one complete record from the producing reader.
+    pub fn read_from(reader: &mut Reader<'d>) -> Result<Self> {
+        let element = required(reader)?;
+        let record = Self::read(reader, &element)?;
+        finish(reader)?;
+        Ok(record)
+    }
+
     /// Reads one original embedded record. Parent encoding/depth are inherited.
     pub fn read(parent: &Reader<'d>, element: &Element<'d>) -> Result<Self> {
         let mut inside = enter(parent, element, Tag::constructed(universal::SEQUENCE))?;

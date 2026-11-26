@@ -11,6 +11,9 @@ use crate::{
 use structured_asn1::memory::{OwnedVec, Work};
 use structured_cms::stream::{Receiver, Source};
 
+mod construct;
+pub use construct::{InitialError, InitialImprint, InitialResult};
+
 /// Refusal while selecting or replaying an original protection object.
 #[derive(Debug)]
 pub enum ObjectError<E, N> {
@@ -125,7 +128,7 @@ impl<'a, X: TimestampXml> Objects<'a, X> {
     }
 }
 
-impl<'bound, X: TimestampXml> Records<'bound, X> {
+impl<X: TimestampXml> Records<'_, X> {
     /// Build the original group shared by this member and every parallel sibling.
     /// The containing property and every later group are outside this input.
     pub fn objects<'a, W: Work>(
@@ -202,22 +205,7 @@ impl<'bound, X: TimestampXml> Records<'bound, X> {
                     .map_err(|cause| resource(reference.node, cause))
             })
         });
-        match complete {
-            Ok(Completeness::Complete) => {}
-            Ok(other) => return Err(ObjectError::Incomplete(other)),
-            Err(AccessError::Xml(VisitError::Visitor(cause))) => return Err(cause),
-            Err(AccessError::Xml(VisitError::Processing(cause))) => {
-                return Err(ObjectError::Input(InputError::Access(AccessError::Xml(
-                    cause,
-                ))));
-            }
-            Err(AccessError::Changed { node }) => {
-                return Err(ObjectError::Input(InputError::Access(
-                    AccessError::Changed { node },
-                )));
-            }
-            Err(AccessError::Resource { node, cause }) => return Err(resource(node, cause)),
-        }
+        check_catalogue(complete, resource)?;
         let mut element = |node| {
             items
                 .try_push(Object {
@@ -262,6 +250,31 @@ impl<'bound, X: TimestampXml> Records<'bound, X> {
     }
 }
 
+type Catalogue<E, N> = Result<Completeness<N>, AccessError<VisitError<E, ObjectError<E, N>>, N>>;
+
+fn check_catalogue<E, N>(
+    complete: Catalogue<E, N>,
+    resource: impl FnOnce(N, structured_asn1::memory::MemoryError) -> ObjectError<E, N>,
+) -> Result<(), ObjectError<E, N>> {
+    match complete {
+        Ok(Completeness::Complete) => {}
+        Ok(other) => return Err(ObjectError::Incomplete(other)),
+        Err(AccessError::Xml(VisitError::Visitor(cause))) => return Err(cause),
+        Err(AccessError::Xml(VisitError::Processing(cause))) => {
+            return Err(ObjectError::Input(InputError::Access(AccessError::Xml(
+                cause,
+            ))));
+        }
+        Err(AccessError::Changed { node }) => {
+            return Err(ObjectError::Input(InputError::Access(
+                AccessError::Changed { node },
+            )));
+        }
+        Err(AccessError::Resource { node, cause }) => return Err(resource(node, cause)),
+    }
+    Ok(())
+}
+
 fn append_unsigned<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     parent: Option<X::Id>,
@@ -269,22 +282,33 @@ fn append_unsigned<X: Xml, W: Work>(
     mut append: impl FnMut(X::Id) -> ResultFor<(), X>,
 ) -> ResultFor<(), X> {
     // TS 119 132-3 §§5.1.1 and 5.2.2: earlier sealing groups are each one
-    // object. This does not flatten or include the current parallel members.
+    // object. All other properties are protected regardless of position.
     // https://www.etsi.org/deliver/etsi_ts/119100_119199/11913203/01.01.01_60/ts_11913203v010101p.pdf
+    let mut before = boundary;
+    let mut later_seals = false;
     if let Some(parent) = parent {
         for child in access.children(parent) {
             let node = child.map_err(|cause| ObjectError::Input(InputError::Child(cause)))?;
-            if let Some(boundary) = boundary
+            if let Some(boundary) = before
                 && access
                     .equal_id(node, boundary)
                     .map_err(|cause| ObjectError::Input(InputError::Resource { node, cause }))?
             {
-                return Ok(());
+                before = None;
+                later_seals = true;
+                continue;
+            }
+            if later_seals
+                && access
+                    .has_name(node, super::PROPERTY)
+                    .map_err(|cause| ObjectError::Input(InputError::Access(cause)))?
+            {
+                continue;
             }
             append(node)?;
         }
     }
-    match boundary {
+    match before {
         Some(node) => Err(ObjectError::Input(InputError::Foreign { node })),
         None => Ok(()),
     }

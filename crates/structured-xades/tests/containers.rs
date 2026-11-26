@@ -14,6 +14,9 @@ mod lifecycle;
 #[path = "support/extended.rs"]
 mod extended_signatures;
 
+#[path = "support/evidence_records.rs"]
+mod evidence_records;
+
 #[path = "support/qualifying_production.rs"]
 mod qualifying_production;
 
@@ -129,6 +132,7 @@ struct Tree {
     incomplete: bool,
     binary: Vec<u8>,
     binary_routes: Vec<(usize, Vec<u8>)>,
+    evidence_attributes: Vec<(usize, &'static str, &'static str)>,
     text_routes: Vec<(usize, &'static str)>,
     calendar_routes: Vec<(usize, properties::CalendarFact<'static>)>,
     binary_depth: u32,
@@ -262,6 +266,7 @@ impl Tree {
             incomplete: false,
             binary: Vec::new(),
             binary_routes: Vec::new(),
+            evidence_attributes: Vec::new(),
             text_routes: Vec::new(),
             calendar_routes: Vec::new(),
             binary_depth: 0,
@@ -730,6 +735,18 @@ impl Xml for Tree {
         visitor: impl for<'view> FnOnce(Option<&'view str>) -> R,
     ) -> Result<R, Cause> {
         self.check(snapshot, node)?;
+        if name.namespace.is_empty() && !self.evidence_attributes.is_empty() {
+            execution
+                .charge_work(self.evidence_attributes.len() as u64)
+                .map_err(Cause::Resource)?;
+            if let Some((_, _, value)) = self
+                .evidence_attributes
+                .iter()
+                .find(|entry| entry.0 == node && entry.1 == name.local)
+            {
+                return Ok(visitor(Some(value)));
+            }
+        }
         Ok(visitor(
             if name.namespace.is_empty() && name.local == "Qualifier" {
                 self.identifier_qualifier

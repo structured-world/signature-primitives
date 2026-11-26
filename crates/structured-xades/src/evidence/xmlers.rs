@@ -4,6 +4,71 @@ use super::{Format, Member, Records, XML_ERS};
 use crate::xml::{Access, AccessError, ChildError, Name, Snapshot, Xml};
 use structured_asn1::memory::{MemoryError, OwnedVec, SortError, Work};
 
+mod imprint;
+mod produce;
+mod verify;
+pub use imprint::Error as ImprintError;
+pub use produce::{Archive, Method, Methods, RenewalInput, RenewalMethod};
+pub use verify::{
+    Authority, Check, Error as CheckError, Failure, Finding, HistoricalInput, Report, VerifyResult,
+};
+
+/// Original canonicalization projection for XMLERS renewal processing.
+#[derive(Clone, Copy)]
+pub enum CanonicalInput<'a, N> {
+    /// Complete previous `TimeStamp`, including its cryptographic information.
+    Timestamp(&'a Stamp<N>),
+    /// Original sequence wrapper with only the preceding chains. Original
+    /// child identity and attributes survive logical reordering by `Order`.
+    Sequence {
+        /// Original `ArchiveTimeStampSequence` element.
+        node: N,
+        /// Every preceding chain, in ascending `Order`.
+        chains: &'a [Chain<N>],
+    },
+}
+
+impl<N: Copy> CanonicalInput<'_, N> {
+    /// Original element at the root of the projection.
+    #[must_use]
+    pub fn node(self) -> N {
+        match self {
+            Self::Timestamp(stamp) => stamp.timestamp,
+            Self::Sequence { node, .. } => node,
+        }
+    }
+}
+
+/// XML-owned original lexical, digest policy and canonicalization capability
+/// for RFC 6283 records. These methods do not acquire foreign data or rewrite
+/// the document to make a projection canonicalizable.
+pub trait XmlRecordXml: crate::timestamp::TimestampXml + crate::binary::OwnedBinaryXml {
+    /// Resolve the complete original XMLERS `DigestMethod`, with its parameters,
+    /// under the existing deployment policy and current/producing ceilings.
+    fn evidence_digest<W: Work>(
+        &self,
+        snapshot: Snapshot<Self::Document, Self::Generation>,
+        method: Self::Id,
+        work: &W,
+    ) -> Result<
+        structured_asn1::digest::Resolution<structured_pkix::algorithm::digest::Algorithm>,
+        Self::Error,
+    >;
+
+    /// Stream the original logical subtree under the selected chain's XMLERS
+    /// `CanonicalizationMethod`. The method includes original parameters. Use
+    /// the supplied ordered inventories for lists with `Order` and keep the
+    /// original namespace/ancestor context, without serializing or reparsing.
+    fn canonicalize_evidence<W: Work>(
+        &self,
+        snapshot: Snapshot<Self::Document, Self::Generation>,
+        method: Self::Id,
+        input: CanonicalInput<'_, Self::Id>,
+        receiver: &mut impl structured_cms::stream::Receiver,
+        work: &W,
+    ) -> Result<(), Self::Error>;
+}
+
 /// Original grammar or access failure of an XML evidence record.
 #[derive(Debug)]
 pub enum Error<E, N> {
@@ -314,11 +379,13 @@ fn require<E, N>(field: Option<N>, parent: N, local: &'static str) -> Result<N, 
     field.ok_or(Error::Missing(parent, local))
 }
 
+type Child<X> = Result<<X as Xml>::Id, ChildError<<X as Xml>::Error, <X as Xml>::Id>>;
+
 fn read_expected<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     parent: X::Id,
     local: &'static str,
-    child: Option<Result<X::Id, ChildError<X::Error, X::Id>>>,
+    child: Option<Child<X>>,
 ) -> ResultFor<X::Id, X> {
     let child = require(child.transpose().map_err(Error::Child)?, parent, local)?;
     if access

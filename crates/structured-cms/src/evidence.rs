@@ -20,7 +20,7 @@ const FIELD: &str = "evidenceRecord";
 mod input;
 pub use input::{InputError, Membership, ObjectInput};
 mod renewal;
-pub use renewal::PriorSequence;
+pub use renewal::{PriorError, PriorSequence};
 mod objects;
 pub use objects::{AsyncObjects, AsyncStreams};
 pub mod verify;

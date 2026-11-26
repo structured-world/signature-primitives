@@ -9,17 +9,22 @@ use core::ops::Range;
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 
 mod asn1;
+mod edit;
 mod objects;
 pub mod xmlers;
-pub use asn1::{Asn1, Asn1Error, Asn1ReadingError, Asn1Result, Asn1Verification};
-pub use objects::{Object, ObjectError, Objects};
+pub use asn1::{Asn1, Asn1Error, Asn1ReadingError, Asn1Report, Asn1Result, Asn1Verification};
+pub use edit::{
+    Edit, EditError, EditPlan, EditResult, Placement, PlanFor, Renewal, SealingDraft,
+    SealingWriter, Transition,
+};
+pub use objects::{InitialError, InitialImprint, InitialResult, Object, ObjectError, Objects};
 
 /// ETSI TS 119 132-3 §4.1 namespace for the sealing property and ASN.1 members.
 pub const XADES_ERS: &str = "http://uri.etsi.org/19132/v1.1.1#";
 /// RFC 6283 §2.1 namespace for XML evidence records.
 pub const XML_ERS: &str = "urn:ietf:params:xml:ns:ers";
 
-const PROPERTY: Name<'static> = Name {
+pub(crate) const PROPERTY: Name<'static> = Name {
     namespace: XADES_ERS,
     local: "SealingEvidenceRecords",
 };
@@ -35,10 +40,41 @@ const XML_MEMBER: Name<'static> = Name {
 /// Original wire format of all members on one signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
-    /// RFC 4998 binary EvidenceRecord carried as XML base64Binary.
+    /// RFC 4998 binary `EvidenceRecord` carried as XML `base64Binary`.
     Asn1,
-    /// RFC 6283 EvidenceRecord carried as original XML.
+    /// RFC 6283 `EvidenceRecord` carried as original XML.
     Xml,
+}
+
+/// Complete verification of a single original sealing member and its
+/// protected input. Only the format drivers can issue this proof.
+pub struct Verified<N, D, G> {
+    location: crate::binary::Location<N, D, G>,
+    signature: N,
+    index: usize,
+    chains: usize,
+    stamps: usize,
+    xml_tail: Option<(i32, i32)>,
+}
+
+impl<N: Copy, D: Copy, G: Copy> Verified<N, D, G> {
+    /// Actual member and immutable source generation.
+    #[must_use]
+    pub fn location(&self) -> crate::binary::Location<N, D, G> {
+        self.location
+    }
+
+    /// Original selected signature whose object group was verified.
+    #[must_use]
+    pub fn signature(&self) -> N {
+        self.signature
+    }
+
+    /// Original member ordinal in the complete record census.
+    #[must_use]
+    pub fn index(&self) -> usize {
+        self.index
+    }
 }
 
 /// Original resource and structural results remain located.
@@ -162,6 +198,9 @@ pub fn read<'a, X: Xml, W: Work>(
     bound: &'a Selected<X>,
 ) -> ResultFor<Records<'a, X>, X> {
     let layout = bound.containers();
+    if layout.syntax() != crate::container::Syntax::En319132 {
+        return Err(Error::Foreign(layout.signature()));
+    }
     let parent = unsigned_parent(access, layout)?;
     let work = access.execution();
     let mut format = None;
@@ -212,6 +251,40 @@ pub fn read<'a, X: Xml, W: Work>(
         groups: groups.into_owned(),
         members: members.into_owned(),
     })
+}
+
+pub(crate) fn require_unsealed<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    parent: Option<X::Id>,
+) -> crate::timestamp::InputResult<(), X> {
+    use crate::timestamp::InputError;
+    // ETSI TS 119 132-3 §5.1.1 permits only explicitly selected ERS edits
+    // after the seal. A malformed sealing property also cannot be bypassed.
+    // https://www.etsi.org/deliver/etsi_ts/119100_119199/11913203/01.01.01_60/ts_11913203v010101p.pdf
+    if let Some(parent) = parent {
+        for child in access.children(parent) {
+            let node = child.map_err(InputError::Child)?;
+            if access
+                .has_name(node, PROPERTY)
+                .map_err(InputError::Access)?
+            {
+                return Err(InputError::Unexpected { node });
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn require_unsealed_signature<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    layout: &Layout<X>,
+) -> crate::timestamp::InputResult<(), X> {
+    if let Some(unsigned) = layout.unsigned() {
+        let parent =
+            crate::timestamp::optional(access, unsigned, XADES, "UnsignedSignatureProperties")?;
+        require_unsealed(access, parent)?;
+    }
+    Ok(())
 }
 
 fn member_format<X: Xml, W: Work>(access: &Access<'_, X, W>, node: X::Id) -> ResultFor<Format, X> {

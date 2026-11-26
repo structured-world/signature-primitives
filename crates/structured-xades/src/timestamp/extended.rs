@@ -142,6 +142,7 @@ impl<'a, X: TimestampXml> Input<'a, X> {
     ) -> InputResult<Self, X> {
         let layout = bound.containers();
         let access = Access::new(xml, layout.snapshot(), execution);
+        crate::evidence::require_unsealed_signature(&access, layout)?;
         if !named(&access, method, DS, "CanonicalizationMethod")? {
             return Err(InputError::Unexpected { node: method });
         }

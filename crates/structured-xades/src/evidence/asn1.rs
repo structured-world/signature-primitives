@@ -6,10 +6,10 @@ use crate::{
     timestamp::TimestampXml,
     xml::Xml,
 };
-use structured_asn1::{Reader, memory::Execution};
+use structured_asn1::{Encoding, Reader, memory::Execution};
 use structured_cms::{
     evidence::{
-        EvidenceRecord, Membership,
+        EvidenceRecord, Membership, PriorSequence,
         verify::{self, Authorities, Decision, Historical},
     },
     provider::SignatureProvider,
@@ -48,19 +48,47 @@ pub type Asn1Result<T, X, V> = Result<
 >;
 
 /// Original record check result, preserving common historical and source causes.
-pub type Asn1Verification<'a, 'source, X, PE, RE, AE, HE> = verify::VerificationResult<
-    'a,
-    'source,
-    ObjectError<<X as Xml>::Error, <X as Xml>::Id>,
-    PE,
-    RE,
-    AE,
-    HE,
+pub type Asn1Verification<'a, 'source, X, PE, RE, AE, HE> = Result<
+    Asn1Report<'a, 'source, X>,
+    verify::VerificationError<ObjectError<<X as Xml>::Error, <X as Xml>::Id>, PE, RE, AE, HE>,
 >;
+
+/// Complete RFC 4998 report tied to its actual XML enclosure.
+pub struct Asn1Report<'a, 'source, X: Xml> {
+    location: Location<X::Id, X::Document, X::Generation>,
+    signature: X::Id,
+    index: usize,
+    report: verify::Report<'a, 'source>,
+}
+
+impl<'a, 'source, X: Xml> Asn1Report<'a, 'source, X> {
+    /// Common original timestamp and renewal reports without rechecking.
+    #[must_use]
+    pub fn report(&self) -> &verify::Report<'a, 'source> {
+        &self.report
+    }
+
+    /// Retain complete positive verification from this original enclosure.
+    #[must_use]
+    pub fn verified(&self) -> Option<super::Verified<X::Id, X::Document, X::Generation>> {
+        let verified = self.report.verified()?;
+        let record = verified.record();
+        Some(super::Verified {
+            location: self.location,
+            signature: self.signature,
+            index: self.index,
+            chains: record.chains().len(),
+            stamps: record.timestamps().len(),
+            xml_tail: None,
+        })
+    }
+}
 
 /// Parsed original RFC 4998 member and its privately selected XML object group.
 pub struct Asn1<'view, 'source, 'xml, X: TimestampXml> {
     location: Location<X::Id, X::Document, X::Generation>,
+    signature: X::Id,
+    index: usize,
     reader: &'view Reader<'source>,
     record: EvidenceRecord<'source>,
     objects: Objects<'xml, X>,
@@ -79,13 +107,24 @@ impl<'source, X: TimestampXml> Asn1<'_, 'source, '_, X> {
         (self.reader, &self.record)
     }
 
+    /// Exact original prior sequence for issuing an ASN.1 hash-tree renewal.
+    pub fn hash_tree_renewal(&self) -> structured_cms::Result<PriorSequence<'_, 'source>> {
+        PriorSequence::for_renewal(&self.record, self.reader)
+    }
+
+    /// Previous token, including its original `SignedData`. Its bytes and
+    /// producing reader are the input to RFC 4998 time-stamp renewal.
+    #[must_use]
+    pub fn timestamp_renewal(&self) -> Option<structured_cms::evidence::Original<'source>> {
+        self.record
+            .timestamps()
+            .last()
+            .map(structured_cms::evidence::ArchiveTimeStamp::timestamp_source)
+    }
+
     /// Verify every timestamp and renewal against the original protected group.
     /// Trust, historical path/status and algorithm longevity are explicit caller
     /// decisions made for the exact selected actors through the common engine.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "provider, UTC, history and selection have independent owners"
-    )]
     #[expect(
         clippy::result_large_err,
         reason = "binary and XML origins and original causes survive refusal"
@@ -104,7 +143,7 @@ impl<'source, X: TimestampXml> Asn1<'_, 'source, '_, X> {
         P: for<'operation> SignatureProvider<'operation, Error = PE>,
         A: Authorities<'source>,
     {
-        self.record.verify(
+        let report = self.record.verify(
             provider,
             self.reader,
             authorities,
@@ -114,7 +153,13 @@ impl<'source, X: TimestampXml> Asn1<'_, 'source, '_, X> {
             Membership::Group,
             recognizes,
             historical,
-        )
+        )?;
+        Ok(Asn1Report {
+            location: self.location,
+            signature: self.signature,
+            index: self.index,
+            report,
+        })
     }
 }
 
@@ -142,7 +187,10 @@ impl<X: TimestampXml + BinaryXml> Records<'_, X> {
         let objects = self
             .objects(xml, index, &operation.execution())
             .map_err(Asn1Error::Objects)?;
-        binary::with_der_reader(xml, location, operation, |reader| {
+        // RFC 4998 §5.2 requires DER for the renewal preimage, not for the
+        // enclosure. The common engine projects the original prefix into DER.
+        // https://www.rfc-editor.org/rfc/rfc4998.html#section-5.2
+        binary::with_reader_as(xml, location, operation, Encoding::Ber, |reader| {
             let record = EvidenceRecord::read_from(reader).map_err(Asn1ReadingError::Record)?;
             if record.encryption_info().is_some() {
                 return Err(Asn1ReadingError::Encrypted);
@@ -152,6 +200,8 @@ impl<X: TimestampXml + BinaryXml> Records<'_, X> {
             }
             visitor(Asn1 {
                 location,
+                signature: self.signature(),
+                index,
                 reader,
                 record,
                 objects,

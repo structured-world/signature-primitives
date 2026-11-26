@@ -49,7 +49,13 @@ serializer, signing backend, network client or clock is added here.
 - `Basic::write_with_properties` opens the signed-signature, signed-data-object,
   and unsigned property slots for additional producers. `SignaturePolicy`
   writes explicit or implied policy, with policy digest and transform emission
-  tied to the same XML-owned plan. `ExplicitPolicy::write_store` checks the
+  tied to the same XML-owned plan. `SuppliedPolicy::write` emits an explicit
+  signed declaration from an existing digest. The XML owner resolves the exact
+  declared method and its output width. This operation requires only the
+  property writer and the supplied digest. For the ETSI ASN.1 policy-document
+  transform, an adapter can compute the digest using
+  `structured_cms::signature_policy::Asn1Policy`.
+  `ExplicitPolicy::write_store` checks the
   selected signature's explicit policy and uses its original document bytes for
   an embedded store. `DataObjectFormat`, `Commitment`, `ProductionPlace`, and
   `SignerRole` emit the other qualifying properties in their schema order.

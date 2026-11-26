@@ -35,6 +35,7 @@ pub mod payload;
 pub mod personal;
 pub mod prepare;
 pub mod provider;
+pub mod signature_policy;
 pub mod signed;
 pub mod signer;
 pub mod stream;

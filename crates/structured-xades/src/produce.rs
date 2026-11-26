@@ -27,7 +27,7 @@ pub use material::write_material;
 pub use material::{Material, MaterialKind, Materials};
 pub use policy::{
     ExplicitPolicy, NoticeReference, PolicyDocument, PolicyQualifier, PolicyStore, PolicyTransform,
-    PolicyWriter, SignaturePolicy, UserNotice,
+    PolicyWriter, SignaturePolicy, SuppliedPolicy, UserNotice,
 };
 pub use qualifying::{
     CertifiedRole, Commitment, CommitmentScope, DataObjectFormat, FragmentSlot, Identifier,

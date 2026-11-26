@@ -14,6 +14,7 @@ pub mod container;
 pub mod counter;
 pub mod credential;
 pub mod digest;
+pub mod evidence;
 pub mod extended;
 pub mod format;
 pub mod hashes;

@@ -191,6 +191,14 @@ pub struct EvidenceRecord<'d> {
     timestamps: OwnedVec<ArchiveTimeStamp<'d>>,
 }
 impl<'d> EvidenceRecord<'d> {
+    /// Reads exactly one complete record from the producing reader.
+    pub fn read_from(reader: &mut Reader<'d>) -> Result<Self> {
+        let element = required(reader)?;
+        let record = Self::read(reader, &element)?;
+        finish(reader)?;
+        Ok(record)
+    }
+
     /// Reads one original embedded record. Parent encoding/depth are inherited.
     pub fn read(parent: &Reader<'d>, element: &Element<'d>) -> Result<Self> {
         let mut inside = enter(parent, element, Tag::constructed(universal::SEQUENCE))?;

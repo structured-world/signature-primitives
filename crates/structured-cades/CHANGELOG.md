@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.3](https://github.com/structured-world/signature-primitives/compare/structured-cades-v0.30.2...structured-cades-v0.30.3) - 2026-11-26
+
+### Added
+
+- *(policy)* support supplied and DER digests ([#377](https://github.com/structured-world/signature-primitives/pull/377))
+
 ## [0.30.2](https://github.com/structured-world/signature-primitives/compare/structured-cades-v0.30.1...structured-cades-v0.30.2) - 2026-11-26
 
 ### Added

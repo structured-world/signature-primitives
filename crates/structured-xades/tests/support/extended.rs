@@ -235,6 +235,146 @@ fn c_x_xl_and_archive_inventory_retains_every_occurrence_in_its_scope() {
 }
 
 #[test]
+fn extended_stage_preparation_progresses_from_c_to_a_without_relaxing_baseline() {
+    // References stay available for X and do not disqualify the XL material
+    // census or A archives when the caller explicitly selects this profile.
+    for syntax in [ReferenceSyntax::Original, ReferenceSyntax::V2] {
+        let mut xml = preparation_tree();
+        let signature_stamp = 8;
+        let refs = reference_prefix(&mut xml, syntax);
+        check_extended_stage(
+            &xml,
+            syntax,
+            unsigned::Requirements::Timestamped,
+            &refs,
+            &[signature_stamp],
+            &[],
+        );
+
+        let kind = ExtendedKind::SignatureAndReferences(syntax);
+        let (x, _) = append_timestamp(&mut xml, 7, Role::SignatureAndReferences, 1);
+        let name = kind.name();
+        xml.nodes[x] = element(Some(7), name.namespace, name.local);
+        check_extended_stage(
+            &xml,
+            syntax,
+            unsigned::Requirements::Timestamped,
+            &refs,
+            &[signature_stamp, x],
+            &[],
+        );
+
+        let certs = add(&mut xml, 7, XADES, "CertificateValues");
+        let revocation = add(&mut xml, 7, XADES, "RevocationValues");
+        let value = add(&mut xml, certs, XADES, "EncapsulatedX509Certificate");
+        let artifact = candidate_certificate();
+        xml.binary = artifact.clone();
+        let values = [certs, revocation];
+        check_extended_stage(
+            &xml,
+            syntax,
+            unsigned::Requirements::LongTerm,
+            &refs,
+            &[signature_stamp, x],
+            &values,
+        );
+
+        let (archive, _) = append_timestamp(&mut xml, 7, Role::Archive, 1);
+        if syntax == ReferenceSyntax::Original {
+            xml.nodes[archive] = element(Some(7), XADES, "ArchiveTimeStamp");
+        }
+        check_extended_stage(
+            &xml,
+            syntax,
+            unsigned::Requirements::Archival,
+            &refs,
+            &[signature_stamp, x, archive],
+            &values,
+        );
+
+        let work = funded();
+        let access = Access::new(&xml, xml.snapshot(), &work);
+        let prepared =
+            prepare::prepare_extended(&access, 0, syntax, unsigned::Requirements::LongTerm, None)
+                .unwrap();
+        let parser = Parser::der(work.clone());
+        let operation = parser.read(&[], 0).unwrap();
+        material::with_values(&xml, &prepared, &operation, |_, indexed| {
+            let value = indexed
+                .values()
+                .iter()
+                .find(|entry| entry.location.node == value)
+                .unwrap();
+            let material::Value::Certificate(certificate) = &value.value else {
+                panic!("original certificate")
+            };
+            assert_eq!(certificate.as_bytes(), artifact);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        assert!(
+            matches!(prepare::prepare(&access, 0, unsigned::Requirements::Archival, None),
+            Err(prepare::Error::Property(properties::Error::Forbidden { node })) if refs.contains(&node))
+        );
+    }
+}
+
+fn check_extended_stage(
+    xml: &Tree,
+    syntax: ReferenceSyntax,
+    stage: unsigned::Requirements,
+    refs: &[usize],
+    timestamps: &[usize],
+    values: &[usize],
+) {
+    let work = funded();
+    let access = Access::new(xml, xml.snapshot(), &work);
+    let prepared = prepare::prepare_extended(&access, 0, syntax, stage, None).unwrap();
+    assert_eq!(prepared.extended_syntax(), Some(syntax));
+    assert_eq!(
+        prepared
+            .validation_references()
+            .iter()
+            .map(validation::ReferenceProperty::node)
+            .collect::<Vec<_>>(),
+        refs
+    );
+    assert_eq!(
+        prepared
+            .material()
+            .iter()
+            .map(material::Catalogue::parent)
+            .collect::<Vec<_>>(),
+        values
+    );
+    assert_eq!(
+        prepared
+            .timestamps()
+            .iter()
+            .map(timestamp::Stamp::node)
+            .collect::<Vec<_>>(),
+        timestamps
+    );
+    if stage == unsigned::Requirements::Archival {
+        let at = timestamps.len() - 1;
+        let required = timestamp::requirements(
+            &access,
+            &prepared,
+            timestamp::TimestampSelection::BeforeArchive(at),
+        )
+        .unwrap();
+        assert_eq!(
+            required
+                .entries()
+                .iter()
+                .map(|token| token.property)
+                .collect::<Vec<_>>(),
+            timestamps[..at]
+        );
+    }
+}
+
+#[test]
 fn archive_names_select_distinct_original_object_and_property_coverage() {
     // The older archive omits referenced Objects and unlisted extension
     // properties. The 1.4.1 archive includes both and seals any earlier A.

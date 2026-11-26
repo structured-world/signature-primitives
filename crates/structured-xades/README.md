@@ -54,6 +54,14 @@ Use the same timestamp check as for the baseline with the appropriate
 TS 101 903 and EN 319 132-2 properties. The original archive recipe and the
 1.4.1 recipe select their respective source inputs.
 
+Use `prepare::prepare_extended` with `ReferenceSyntax::Original` or `V2`
+to run the shared certificate, token and material pipeline for the selected
+extended vocabulary. Select `Timestamped`, `LongTerm` or `Archival` according
+to the processing stage. Complete reference properties and X timestamps
+remain part of that inventory at the XL and A stages. Validate their reference
+digests and the required original values independently. Use `prepare::prepare`
+and `baseline::assess` for EN 319 132-1 baseline conformance.
+
 ## Creating and augmenting signatures
 
 `produce` supplies construction and append planning for the EN 319 132-1

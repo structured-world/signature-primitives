@@ -188,6 +188,15 @@ pub fn read<X: Xml, W: Work>(
     bound: &Bound<X::Id, X::Document, X::Generation>,
     requirements: Requirements,
 ) -> PropertyResult<Reading<X>, X> {
+    read_in(access, bound, requirements, None)
+}
+
+pub(crate) fn read_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    bound: &Bound<X::Id, X::Document, X::Generation>,
+    requirements: Requirements,
+    extended: Option<crate::timestamp::ReferenceSyntax>,
+) -> PropertyResult<Reading<X>, X> {
     let layout = bound.containers();
     let signature = layout.signature();
     if access.snapshot() != layout.snapshot() {
@@ -203,7 +212,7 @@ pub fn read<X: Xml, W: Work>(
     if let Some(parent) = parent {
         for child in access.children(parent) {
             let node = child.map_err(Error::Child)?;
-            let role = classify(access, node)?;
+            let role = classify(access, node, extended)?;
             // Reference-only forms are not validation-material service options
             // for B-LT/B-LTA, even if an XML schema accepts their syntax.
             let singleton = match role {
@@ -224,18 +233,21 @@ pub fn read<X: Xml, W: Work>(
                 }
                 singletons[index] = true;
             }
-            if matches!(
-                requirements,
-                Requirements::LongTerm | Requirements::Archival
-            ) && matches!(
-                role,
-                Role::CertificateReferences
-                    | Role::RevocationReferences
-                    | Role::AttributeCertificateReferences
-                    | Role::AttributeRevocationReferences
-                    | Role::SignatureAndReferencesTimestamp
-                    | Role::ReferencesTimestamp
-            ) {
+            if extended.is_none()
+                && matches!(
+                    requirements,
+                    Requirements::LongTerm | Requirements::Archival
+                )
+                && matches!(
+                    role,
+                    Role::CertificateReferences
+                        | Role::RevocationReferences
+                        | Role::AttributeCertificateReferences
+                        | Role::AttributeRevocationReferences
+                        | Role::SignatureAndReferencesTimestamp
+                        | Role::ReferencesTimestamp
+                )
+            {
                 return Err(Error::Forbidden { node });
             }
             signature_timestamp |= role == Role::SignatureTimestamp;
@@ -343,13 +355,24 @@ pub(crate) fn containers<X: Xml, W: Work>(
     Ok(fields)
 }
 
-fn classify<X: Xml, W: Work>(access: &Access<'_, X, W>, node: X::Id) -> PropertyResult<Role, X> {
-    for local in [
-        "CompleteCertificateRefs",
-        "AttributeCertificateRefs",
-        "SigAndRefsTimeStamp",
-        "RefsOnlyTimeStamp",
-        "ArchiveTimeStamp",
+fn historical_role<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+    extended: Option<crate::timestamp::ReferenceSyntax>,
+) -> PropertyResult<Option<Role>, X> {
+    use crate::timestamp::ReferenceSyntax;
+    // TS 101 903 V1.4.2 §§7.4–7.7 use the original reference vocabulary.
+    // EN 319 132-1 §6.3 treats those properties under its own level constraints.
+    // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
+    for (local, role) in [
+        ("CompleteCertificateRefs", Role::CertificateReferences),
+        (
+            "AttributeCertificateRefs",
+            Role::AttributeCertificateReferences,
+        ),
+        ("SigAndRefsTimeStamp", Role::SignatureAndReferencesTimestamp),
+        ("RefsOnlyTimeStamp", Role::ReferencesTimestamp),
+        ("ArchiveTimeStamp", Role::Archive),
     ] {
         if access
             .has_name(
@@ -361,8 +384,25 @@ fn classify<X: Xml, W: Work>(access: &Access<'_, X, W>, node: X::Id) -> Property
             )
             .map_err(Error::Access)?
         {
+            if extended == Some(ReferenceSyntax::Original)
+                || (role == Role::Archive && extended.is_some())
+            {
+                return Ok(Some(role));
+            }
             return Err(Error::Forbidden { node });
         }
+    }
+    Ok(None)
+}
+
+fn classify<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+    extended: Option<crate::timestamp::ReferenceSyntax>,
+) -> PropertyResult<Role, X> {
+    use crate::timestamp::ReferenceSyntax;
+    if let Some(role) = historical_role(access, node, extended)? {
+        return Ok(role);
     }
     for (namespace, local, role) in [
         (XADES, "CounterSignature", Role::Counter),
@@ -415,6 +455,18 @@ fn classify<X: Xml, W: Work>(access: &Access<'_, X, W>, node: X::Id) -> Property
             .has_name(node, Name { namespace, local })
             .map_err(Error::Access)?
         {
+            if extended == Some(ReferenceSyntax::Original)
+                && namespace == XADES_141
+                && matches!(
+                    role,
+                    Role::CertificateReferences
+                        | Role::AttributeCertificateReferences
+                        | Role::SignatureAndReferencesTimestamp
+                        | Role::ReferencesTimestamp
+                )
+            {
+                return Err(Error::Forbidden { node });
+            }
             return Ok(role);
         }
     }

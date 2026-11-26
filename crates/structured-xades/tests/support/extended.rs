@@ -394,13 +394,25 @@ fn p256_tsa_response_is_bound_to_the_exact_x_request_and_transaction() {
         Err(produce::Error::Foreign)
     ));
 
+    check_original_x1(&mut xml, method, token, &query, &provider, &context);
+}
+
+fn check_original_x1(
+    xml: &mut Tree,
+    method: usize,
+    token: Vec<u8>,
+    query: &structured_asn1::Reader<'_>,
+    provider: &timestamp_oracle::Oracle,
+    context: &CheckContext<'_, '_>,
+) {
     // The same original X1 token must drive both TSA selection and the check.
-    let name = kind.name();
-    let property = add(&mut xml, 7, name.namespace, name.local);
+    let name = ExtendedKind::SignatureAndReferences(ReferenceSyntax::V2).name();
+    let property = add(xml, 7, name.namespace, name.local);
     xml.nodes[method].parent = Some(property);
-    let token_node = add(&mut xml, property, XADES, "EncapsulatedTimeStamp");
+    let token_node = add(xml, property, XADES, "EncapsulatedTimeStamp");
     xml.binary = token;
-    let access = Access::new(&xml, xml.snapshot(), &work);
+    let work = query.execution();
+    let access = Access::new(xml, xml.snapshot(), &work);
     let layout = container::locate(&access, 0).unwrap();
     let bound = binding::bind(&access, &layout).unwrap();
     let properties = extended::prepare(&access, &bound, ReferenceSyntax::V2).unwrap();
@@ -414,14 +426,14 @@ fn p256_tsa_response_is_bound_to_the_exact_x_request_and_transaction() {
         Role::SignatureAndReferences.purpose()
     );
     let check = timestamp::Check {
-        xml: &xml,
-        provider: &provider,
-        context: &context,
+        xml,
+        provider,
+        context,
     };
     timestamp::with_extended_tokens(
-        &xml,
+        xml,
         &properties,
-        &query,
+        query,
         timestamp::TokenProfile::Etsi,
         |current, view| {
             let entry = view.entry(1).unwrap();

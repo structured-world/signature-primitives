@@ -95,7 +95,7 @@ impl<X: Xml> Stamp<X> {
     }
 }
 
-fn role(local: &str) -> Option<Role> {
+pub(super) fn role(local: &str) -> Option<Role> {
     match local {
         "SignatureTimeStamp" => Some(Role::Signature),
         "AllDataObjectsTimeStamp" => Some(Role::AllDataObjects),
@@ -104,6 +104,27 @@ fn role(local: &str) -> Option<Role> {
         "RefsOnlyTimeStamp" => Some(Role::ReferencesOnly),
         "ArchiveTimeStamp" => Some(Role::Archive),
         _ => None,
+    }
+}
+
+impl<N> Token<N> {
+    pub(super) fn encoded(&self) -> &[N] {
+        match self {
+            Self::Encapsulated(node) => core::slice::from_ref(node),
+            Self::Xml(_) => &[],
+        }
+    }
+
+    pub(super) fn all(&self) -> &[N] {
+        match self {
+            Self::Encapsulated(node) | Self::Xml(node) => core::slice::from_ref(node),
+        }
+    }
+}
+
+impl<X: Xml> Stamp<X> {
+    pub(super) fn original_token(&self) -> &Token<X::Id> {
+        &self.token
     }
 }
 
@@ -705,5 +726,28 @@ impl<X: LegacyXml> Source for Input<'_, X> {
             }
         }
         Ok(())
+    }
+}
+
+impl<X: LegacyXml> Input<'_, X> {
+    pub(super) fn coverage<W: Work>(
+        &self,
+        stamp: &Stamp<X>,
+        work: &W,
+    ) -> Result<crate::timestamp::CoverageFor<X, W>, crate::timestamp::CoverageError<X::Error, X::Id>>
+    {
+        crate::timestamp::coverage::elements(
+            &Access::new(self.xml, self.snapshot, work),
+            crate::binary::Location {
+                snapshot: self.snapshot,
+                node: stamp.node,
+            },
+            self.signature,
+            stamp.role,
+            self.parts.iter().map(|part| match part {
+                Part::Element(node) => Some(*node),
+                Part::Reference(_) => None,
+            }),
+        )
     }
 }

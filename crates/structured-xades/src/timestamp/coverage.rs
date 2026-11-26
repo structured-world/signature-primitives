@@ -43,77 +43,99 @@ impl<X: TimestampXml> Input<'_, X> {
     /// Iterative O(depth) cursor frames and an identity set avoid recursive
     /// traversal and repeated scans of overlapping original subtrees.
     pub fn element_coverage<W: Work>(&self, execution: &W) -> Result<CoverageFor<X, W>, X> {
-        let access = Access::new(self.xml, self.snapshot, execution);
-        access
-            .query(self.timestamp, |_, _, _| Ok(()))
-            .map_err(CoverageError::Access)?;
-        let mut elements = execution.map();
-        let mut frames = execution.vector();
-        for ordinal in 0..self.parts.len() {
-            access
-                .query(self.timestamp, |_, _, work| Ok(work.charge_work(1)))
-                .map_err(CoverageError::Access)?
-                .map_err(|cause| CoverageError::Resource {
-                    node: self.timestamp,
-                    cause,
-                })?;
-            let root = match self.parts[ordinal] {
+        elements(
+            &Access::new(self.xml, self.snapshot, execution),
+            structured_ltv::source::Location {
+                snapshot: self.snapshot,
+                node: self.timestamp,
+            },
+            self.signature,
+            self.role,
+            self.parts.iter().map(|part| match *part {
                 Part::Element(root)
                 | Part::Reference {
                     covered: Some(root),
                     ..
-                } => root,
-                Part::Reference { covered: None, .. } => continue,
+                } => Some(root),
+                Part::Reference { covered: None, .. } => None,
+            }),
+        )
+    }
+}
+
+pub(crate) fn elements<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    location: structured_ltv::source::Location<X::Id, X::Document, X::Generation>,
+    signature: X::Id,
+    role: super::Role,
+    roots: impl Iterator<Item = Option<X::Id>>,
+) -> Result<CoverageFor<X, W>, X> {
+    let execution = access.execution();
+    let timestamp = location.node;
+    access
+        .query(timestamp, |_, _, _| Ok(()))
+        .map_err(CoverageError::Access)?;
+    let mut elements = execution.map();
+    let mut frames = execution.vector();
+    for root in roots {
+        access
+            .query(timestamp, |_, _, work| Ok(work.charge_work(1)))
+            .map_err(CoverageError::Access)?
+            .map_err(|cause| CoverageError::Resource {
+                node: timestamp,
+                cause,
+            })?;
+        let Some(root) = root else {
+            continue;
+        };
+        let resource = |cause| CoverageError::Resource { node: root, cause };
+        if elements.get(&root, execution).map_err(resource)?.is_some() {
+            continue;
+        }
+        // A reference may identify the XML document's virtual root. It
+        // carries descendants but is not itself an element claim. Keep
+        // its visited flag too, avoiding repeated root traversal.
+        let element = access
+            .inspect(root, |value| matches!(value, Node::Element(_)))
+            .map_err(CoverageError::Access)?;
+        elements.try_insert(root, element).map_err(resource)?;
+        let next = access.first_child(root).map_err(CoverageError::Access)?;
+        frames
+            .try_push(Frame { parent: root, next })
+            .map_err(resource)?;
+        while let Some(frame) = frames.last_mut() {
+            let Some(node) = frame.next else {
+                frames.pop();
+                continue;
             };
-            let resource = |cause| CoverageError::Resource { node: root, cause };
-            if elements.get(&root, execution).map_err(resource)?.is_some() {
+            frame.next = access
+                .next_sibling(frame.parent, node)
+                .map_err(CoverageError::Access)?;
+            let element = access
+                .inspect(node, |value| matches!(value, Node::Element(_)))
+                .map_err(CoverageError::Access)?;
+            if !element {
                 continue;
             }
-            // A reference may identify the XML document's virtual root. It
-            // carries descendants but is not itself an element claim. Keep
-            // its visited flag too, avoiding repeated root traversal.
-            let element = access
-                .inspect(root, |value| matches!(value, Node::Element(_)))
-                .map_err(CoverageError::Access)?;
-            elements.try_insert(root, element).map_err(resource)?;
-            let next = access.first_child(root).map_err(CoverageError::Access)?;
-            frames
-                .try_push(Frame { parent: root, next })
-                .map_err(resource)?;
-            while let Some(frame) = frames.last_mut() {
-                let Some(node) = frame.next else {
-                    frames.pop();
-                    continue;
-                };
-                frame.next = access
-                    .next_sibling(frame.parent, node)
-                    .map_err(CoverageError::Access)?;
-                let element = access
-                    .inspect(node, |value| matches!(value, Node::Element(_)))
-                    .map_err(CoverageError::Access)?;
-                if !element {
-                    continue;
-                }
-                if elements.get(&node, execution).map_err(resource)?.is_some() {
-                    continue;
-                }
-                elements.try_insert(node, true).map_err(resource)?;
-                let next = access.first_child(node).map_err(CoverageError::Access)?;
-                frames
-                    .try_push(Frame { parent: node, next })
-                    .map_err(resource)?;
+            if elements.get(&node, execution).map_err(resource)?.is_some() {
+                continue;
             }
+            elements.try_insert(node, true).map_err(resource)?;
+            let next = access.first_child(node).map_err(CoverageError::Access)?;
+            frames
+                .try_push(Frame { parent: node, next })
+                .map_err(resource)?;
         }
-        access
-            .query(self.timestamp, |_, _, _| Ok(()))
-            .map_err(CoverageError::Access)?;
-        Ok(Coverage::new(
-            ISSUER,
-            self.snapshot,
-            self.signature,
-            self.timestamp,
-            self.role.purpose(),
-            elements,
-        ))
     }
+    access
+        .query(timestamp, |_, _, _| Ok(()))
+        .map_err(CoverageError::Access)?;
+    Ok(Coverage::new(
+        ISSUER,
+        location.snapshot,
+        signature,
+        timestamp,
+        role.purpose(),
+        elements,
+    ))
 }

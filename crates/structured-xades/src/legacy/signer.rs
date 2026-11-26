@@ -3,6 +3,7 @@ use crate::binary::{self, BinaryXml, Location};
 use crate::certificate::{self, Agreement, CertificateXml, DigestProvider, KeyAssociation};
 use crate::xml::{Access, AccessError, Xml};
 use structured_asn1::memory::Work;
+use structured_ltv::pki::{CheckedPath, SignerReceipt};
 use structured_pkix::{Certificate, path::EffectiveKey};
 
 /// Original V1 certificate identifications. Their issuer hint is an XML
@@ -55,6 +56,83 @@ pub type SignerResult<X, P> = Result<
     SignerCheck<<X as Xml>::Id>,
     SignerError<<X as Xml>::Error, P, <X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>,
 >;
+
+/// Evaluated original historical signer against the actual checked path target.
+pub struct CheckedSigner<'path, 'document, N, D, G> {
+    location: Location<N, D, G>,
+    result: SignerCheck<N>,
+    path: &'path CheckedPath<'document>,
+}
+
+impl<N: Copy, D, G> CheckedSigner<'_, '_, N, D, G> {
+    /// Independent key and historical certificate-reference outcomes.
+    #[must_use]
+    pub fn result(&self) -> SignerCheck<N> {
+        self.result
+    }
+}
+
+impl<'path, 'document, N: Copy, D: Copy, G: Copy> SignerReceipt<'path, 'document>
+    for CheckedSigner<'path, 'document, N, D, G>
+{
+    type Id = N;
+    type Document = D;
+    type Generation = G;
+
+    fn signature(&self) -> Location<N, D, G> {
+        self.location
+    }
+
+    fn path(&self) -> Option<&'path CheckedPath<'document>> {
+        (self.result.key == KeyAssociation::Same
+            && matches!(
+                self.result.certificate,
+                CertificateMatch::Digest(_) | CertificateMatch::Embedded(_)
+            ))
+        .then_some(self.path)
+    }
+}
+
+/// Historical path-target check using the actual selected key and certificate.
+pub type CheckedSignerResult<'path, 'document, X, P> = Result<
+    CheckedSigner<'path, 'document, <X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>,
+    SignerError<<X as Xml>::Error, P, <X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>,
+>;
+
+/// Bind an existing checked path to the selected historical signer. The same
+/// candidate and effective key are used for the comparison and retained path.
+pub fn check_path<
+    'p,
+    'path,
+    'document,
+    X: BinaryXml + CertificateXml,
+    P: DigestProvider<'p, X>,
+    W: Work,
+>(
+    xml: &X,
+    prepared: &Prepared<X>,
+    path: &'path CheckedPath<'document>,
+    provider: &'p P,
+    current: &W,
+) -> CheckedSignerResult<'path, 'document, X, P::Error> {
+    let layout = prepared.binding().containers();
+    let result = check_signer(
+        xml,
+        prepared,
+        path.target().certificate(),
+        path.facts().key,
+        provider,
+        current,
+    )?;
+    Ok(CheckedSigner {
+        location: Location {
+            snapshot: layout.snapshot(),
+            node: layout.signature(),
+        },
+        result,
+        path,
+    })
+}
 
 /// Check coverage of the candidate certificate and its actual verification key.
 ///

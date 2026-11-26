@@ -123,6 +123,10 @@ impl<X: Xml> HashDataStamp<X> {
         self.token
     }
 
+    pub(in crate::legacy) fn original_token(&self) -> &Token<X::Id> {
+        &self.token
+    }
+
     /// Original input declarations in document order.
     #[must_use]
     pub fn sources(&self) -> &[HashDataInfo<X::Id>] {
@@ -463,5 +467,28 @@ impl<X: HashDataXml> Source for HashDataInput<'_, X> {
             }
         }
         Ok(())
+    }
+}
+
+impl<X: HashDataXml> HashDataInput<'_, X> {
+    pub(in crate::legacy) fn coverage<W: Work>(
+        &self,
+        stamp: &HashDataStamp<X>,
+        work: &W,
+    ) -> Result<crate::timestamp::CoverageFor<X, W>, crate::timestamp::CoverageError<X::Error, X::Id>>
+    {
+        crate::timestamp::coverage::elements(
+            &Access::new(self.xml, self.snapshot, work),
+            crate::binary::Location {
+                snapshot: self.snapshot,
+                node: stamp.node,
+            },
+            self.signature,
+            stamp.role,
+            self.parts.iter().map(|(_, target)| match target {
+                HashDataTarget::Element(node) => Some(*node),
+                HashDataTarget::Reference(_) => None,
+            }),
+        )
     }
 }

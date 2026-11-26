@@ -39,7 +39,7 @@ pub(super) fn collect_counters<X: OwnedBinaryXml, W: Work, VE>(
     Ok(())
 }
 
-fn collect_key_info<X: OwnedBinaryXml, W: Work, VE>(
+pub(super) fn collect_key_info<X: OwnedBinaryXml, W: Work, VE>(
     xml: &X,
     access: &Access<'_, X, W>,
     signature: X::Id,

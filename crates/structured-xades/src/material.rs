@@ -9,7 +9,10 @@ use structured_pkix::{Certificate, crl::CertificateList, ocsp::Response};
 
 mod catalogue;
 mod checks;
-pub use checks::{CheckError, CheckResult, Checks, check_participants};
+pub use checks::{
+    CheckError, CheckResult, Checks, HistoricalError, HistoricalIncorporation, check_participants,
+    historical_incorporation,
+};
 mod conditional;
 pub use conditional::{
     ConditionalError, ConditionalFailure, ConditionalFinding, ConditionalPlacement,
@@ -22,7 +25,7 @@ pub use catalogue::{Catalogue, Entry, read, retain_entry};
 mod pipeline;
 pub use pipeline::{
     Basic, Error as PipelineError, Opaque, PipelineResult, Placement, Retained, View,
-    with_counter_values, with_values,
+    with_counter_values, with_historical_counter_values, with_historical_values, with_values,
 };
 pub(crate) mod exclusivity;
 #[cfg(test)]

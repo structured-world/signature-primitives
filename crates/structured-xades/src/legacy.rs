@@ -12,9 +12,16 @@ use structured_asn1::memory::{OwnedVec, Work};
 
 mod signer;
 pub mod timestamp;
+mod validation;
 pub use signer::{
-    CertificateMatch, SignerCheck, SignerError, SignerResult, SigningReferences, check_signer,
+    CertificateMatch, CheckedSigner, CheckedSignerResult, SignerCheck, SignerError, SignerResult,
+    SigningReferences, check_path, check_signer,
 };
+pub use validation::{
+    CheckResult, Inventory, Occurrence, ValidationError, ValidationResult, inventory,
+    inventory_with_counters,
+};
+pub use validation::{CredentialError, CredentialResult, check_credentials};
 
 /// The caller-selected historical vocabulary and profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,6 +273,44 @@ impl<X: Xml> Prepared<X> {
         &self.signer
     }
 
+    /// Original certified and claimed roles in the selected historical vocabulary.
+    pub fn roles<W: Work>(
+        &self,
+        access: &Access<'_, X, W>,
+    ) -> properties::PropertyResult<Option<crate::role::Catalogue<X>>, X> {
+        let layout = self.bound.containers();
+        if layout.snapshot() != access.snapshot() {
+            return Err(properties::Error::Access(
+                crate::xml::AccessError::Changed {
+                    node: layout.signed(),
+                },
+            ));
+        }
+        access
+            .query(layout.signed(), |_, _, _| Ok(()))
+            .map_err(properties::Error::Access)?;
+        for entry in &self.signed {
+            access
+                .execution()
+                .charge_work(1)
+                .map_err(|cause| properties::Error::Resource {
+                    node: entry.node,
+                    cause,
+                })?;
+            if entry.name == "SignerRole" {
+                return crate::role::read_in(
+                    access,
+                    layout.snapshot(),
+                    layout.signature(),
+                    entry.node,
+                    layout.syntax(),
+                )
+                .map(Some);
+            }
+        }
+        Ok(None)
+    }
+
     /// Original signed signature properties, in schema/document order.
     #[must_use]
     pub fn signed(&self) -> &[Property<X::Id>] {
@@ -454,7 +499,7 @@ pub fn prepare<X: SignatureXml + ScalarXml, W: Work>(
 
 type Pair<N> = (Option<N>, Option<N>);
 
-fn pair<X: Xml, W: Work>(
+pub(crate) fn pair<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     parent: X::Id,
     namespace: &str,

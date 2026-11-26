@@ -11,6 +11,9 @@ mod token_profiles;
 #[path = "support/lifecycle.rs"]
 mod lifecycle;
 
+#[path = "support/qualifying_production.rs"]
+mod qualifying_production;
+
 #[path = "support/independent_corpus.rs"]
 pub mod independent_corpus;
 

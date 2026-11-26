@@ -12,11 +12,28 @@ use crate::{
 use structured_asn1::memory::{MemoryError, Work};
 
 mod basic;
+mod content;
 mod material;
+mod policy;
+mod qualifying;
 mod timestamp;
 pub use basic::{Basic, BasicReferences, DataObject, ReferenceKind};
+pub use content::{
+    CheckedContent, ContentInput, ContentInputError, ContentReference, ContentRequest,
+    ContentRequestError, ContentRequestResult, ContentResponseError, ContentResponseResult,
+    ContentScope, ContentSource, ContentWriter, PendingContent,
+};
 pub use material::write_material;
 pub use material::{Material, MaterialKind, Materials};
+pub use policy::{
+    ExplicitPolicy, NoticeReference, PolicyDocument, PolicyQualifier, PolicyStore, PolicyTransform,
+    PolicyWriter, SignaturePolicy, UserNotice,
+};
+pub use qualifying::{
+    CertifiedRole, Commitment, CommitmentScope, DataObjectFormat, FragmentSlot, Identifier,
+    ObjectMetadata, ProductionPlace, PropertyWriter, RoleCertificate, RoleCertificateError,
+    SignerRole,
+};
 pub use timestamp::{Timestamp, TimestampKind};
 
 mod augmentation;
@@ -142,7 +159,7 @@ impl<B: Writer, W: Work> Emit<'_, B, W> {
     pub fn attribute(&mut self, local: &'static str, value: &str) -> Result<(), Error<B::Error>> {
         let datatype = match local {
             "Id" => Datatype::Id,
-            "Target" | "ObjectReference" | "Algorithm" => Datatype::AnyUri,
+            "Target" | "ObjectReference" | "Algorithm" | "URI" => Datatype::AnyUri,
             _ => Datatype::String,
         };
         self.event(Event::Attribute(
@@ -159,10 +176,19 @@ impl<B: Writer, W: Work> Emit<'_, B, W> {
         local: &'static str,
         value: &str,
     ) -> Result<(), Error<B::Error>> {
+        self.scalar(namespace, local, value, Datatype::String)
+    }
+    pub fn scalar(
+        &mut self,
+        namespace: &'static str,
+        local: &'static str,
+        value: &str,
+        datatype: Datatype,
+    ) -> Result<(), Error<B::Error>> {
         self.begin(namespace, local)?;
         self.event(Event::Text(Value {
             lexical: value,
-            datatype: Datatype::String,
+            datatype,
         }))?;
         self.end()
     }

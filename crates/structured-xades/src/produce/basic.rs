@@ -1,6 +1,6 @@
 //! Baseline signed-property construction and `XMLDSig` reference instructions.
 
-use super::{DS, Datatype, Emit, Error, Event, Value, Work, Writer, XADES};
+use super::{DS, DataObjectFormat, Datatype, Emit, Error, Event, Value, Work, Writer, XADES};
 use structured_pkix::Certificate;
 
 /// One original data-object reference and its required MIME description.
@@ -82,6 +82,42 @@ impl Basic<'_, '_> {
         writer: &mut B,
         work: &W,
     ) -> Result<BasicReferences<'a>, Error<B::Error>> {
+        self.write_with_properties(
+            writer,
+            work,
+            |_, _| Ok(()),
+            |writer, work| {
+                let mut emit = Emit { writer, work };
+                for object in self.objects {
+                    DataObjectFormat {
+                        reference: object.reference,
+                        description: None,
+                        identifier: None,
+                        mime_type: Some(object.mime_type),
+                        encoding: None,
+                    }
+                    .emit(&mut emit)?;
+                }
+                Ok(())
+            },
+            |_, _| Ok(()),
+        )
+    }
+
+    /// Compose the mandatory signed properties with additional producers.
+    /// The object callback controls all data-object properties and must write
+    /// one baseline `DataObjectFormat` per ordinary reference in `self.objects`.
+    /// A pure countersignature with no ordinary objects skips that callback.
+    /// The unsigned callback owns the optional `UnsignedProperties` wrapper;
+    /// no unsigned output is covered by the `SignedProperties` reference.
+    pub fn write_with_properties<'a, B: Writer, W: Work>(
+        &'a self,
+        writer: &mut B,
+        work: &W,
+        signature: impl FnOnce(&mut B, &W) -> Result<(), Error<B::Error>>,
+        objects: impl FnOnce(&mut B, &W) -> Result<(), Error<B::Error>>,
+        unsigned: impl FnOnce(&mut B, &W) -> Result<(), Error<B::Error>>,
+    ) -> Result<BasicReferences<'a>, Error<B::Error>> {
         work.charge_work(1).map_err(Error::Resource)?;
         if self.target.is_empty()
             || self.signed_properties_id.is_empty()
@@ -99,10 +135,7 @@ impl Basic<'_, '_> {
             if object.reference.is_empty() {
                 return Err(Error::Value("dataObject.reference"));
             }
-            let mut mime = structured_cms::mime::Syntax::<true>::new();
-            if !mime.feed(object.mime_type, work).map_err(Error::Resource)? || !mime.complete() {
-                return Err(Error::Value("dataObject.mimeType"));
-            }
+            check_mime(object.mime_type, work)?;
         }
         let mut emit = Emit { writer, work };
         emit.begin(XADES, "QualifyingProperties")?;
@@ -123,18 +156,15 @@ impl Basic<'_, '_> {
         emit.end()?;
         emit.end()?;
         emit.end()?;
+        signature(emit.writer, work)?;
         emit.end()?;
         if !self.objects.is_empty() {
             emit.begin(XADES, "SignedDataObjectProperties")?;
-            for object in self.objects {
-                emit.begin(XADES, "DataObjectFormat")?;
-                emit.attribute("ObjectReference", object.reference)?;
-                emit.text(XADES, "MimeType", object.mime_type)?;
-                emit.end()?;
-            }
+            objects(emit.writer, work)?;
             emit.end()?;
         }
         emit.end()?;
+        unsigned(emit.writer, work)?;
         emit.end()?;
         Ok(BasicReferences {
             signed_properties: self.signed_properties_id,
@@ -160,4 +190,12 @@ impl Basic<'_, '_> {
         emit.end()?;
         emit.end()
     }
+}
+
+pub(super) fn check_mime<E, W: Work>(value: &str, work: &W) -> Result<(), Error<E>> {
+    let mut mime = structured_cms::mime::Syntax::<true>::new();
+    if !mime.feed(value, work).map_err(Error::Resource)? || !mime.complete() {
+        return Err(Error::Value("dataObject.mimeType"));
+    }
+    Ok(())
 }

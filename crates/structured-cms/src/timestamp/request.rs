@@ -17,7 +17,8 @@ pub struct Request<'a> {
     nonce: Option<Integer<'a>>,
     cert_req: bool,
     extensions: Option<Extensions<'a>>,
-    span: Span,
+    bytes: &'a [u8],
+    offset: u64,
     parser: &'a Parser,
 }
 
@@ -81,7 +82,8 @@ impl<'a> Request<'a> {
             nonce: None,
             cert_req: false,
             extensions: None,
-            span: element.span(),
+            bytes: element.as_bytes(),
+            offset: element.span().start,
             parser: parent.parser(),
         };
         let mut previous = 0;
@@ -193,7 +195,15 @@ impl<'a> Request<'a> {
     /// Whole original request span, in its producing source coordinates.
     #[must_use]
     pub fn span(&self) -> Span {
-        self.span
+        Span {
+            start: self.offset,
+            length: self.bytes.len() as u64,
+        }
+    }
+    /// Exact complete original request, including the outer SEQUENCE.
+    #[must_use]
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.bytes
     }
     /// Original session identity, independent of shared account identity.
     #[must_use]

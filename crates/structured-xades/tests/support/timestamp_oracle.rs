@@ -6,7 +6,7 @@ use p256::ecdsa::{
     Signature, SigningKey, VerifyingKey,
     signature::hazmat::{PrehashSigner, PrehashVerifier},
 };
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use structured_asn1::digest::Resolution;
 use structured_asn1::{
     Encoding, Reader,
@@ -51,46 +51,87 @@ pub struct Oracle {
     pub verified: Cell<usize>,
 }
 
+pub enum State {
+    Sha256(Sha256),
+    Sha512(Sha512),
+}
+
+pub enum Output {
+    Sha256([u8; 32]),
+    Sha512([u8; 64]),
+}
+
+impl AsRef<[u8]> for Output {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Sha256(bytes) => bytes,
+            Self::Sha512(bytes) => bytes,
+        }
+    }
+}
+
 impl<'a> structured_asn1::digest::Digest<'a> for Oracle {
-    type Identity = ();
-    type State = Sha256;
-    type Output = [u8; 32];
+    type Identity = Algorithm;
+    type State = State;
+    type Output = Output;
     type Error = Failure;
-    fn width(&self, (): &()) -> Option<usize> {
-        Some(32)
+    fn width(&self, algorithm: &Algorithm) -> Option<usize> {
+        Some(algorithm.width())
     }
-    fn compare<W: Work>(&self, (): &(), (): &(), work: &W) -> Result<Ordering, Failure> {
+    fn compare<W: Work>(
+        &self,
+        left: &Algorithm,
+        right: &Algorithm,
+        work: &W,
+    ) -> Result<Ordering, Failure> {
         work.charge_work(1)?;
-        Ok(Ordering::Equal)
+        Ok(left
+            .identifier()
+            .as_bytes()
+            .cmp(right.identifier().as_bytes()))
     }
-    fn start<W: Work>(&'a self, (): &(), work: &W) -> Result<Resolution<Sha256>, Failure> {
+    fn start<W: Work>(
+        &'a self,
+        algorithm: &Algorithm,
+        work: &W,
+    ) -> Result<Resolution<State>, Failure> {
         work.charge_work(64)?;
-        Ok(Resolution::Supported(Sha256::new()))
+        Ok(match algorithm {
+            Algorithm::Sha256 => Resolution::Supported(State::Sha256(Sha256::new())),
+            Algorithm::Sha512 => Resolution::Supported(State::Sha512(Sha512::new())),
+            _ => Resolution::Unsupported,
+        })
     }
-    fn update<W: Work>(&self, state: &mut Sha256, bytes: &[u8], work: &W) -> Result<(), Failure> {
+    fn update<W: Work>(&self, state: &mut State, bytes: &[u8], work: &W) -> Result<(), Failure> {
         work.charge_work(bytes.len() as u64 + 64)?;
-        state.update(bytes);
+        match state {
+            State::Sha256(state) => state.update(bytes),
+            State::Sha512(state) => state.update(bytes),
+        }
         Ok(())
     }
-    fn finish<W: Work>(&self, state: Sha256, work: &W) -> Result<[u8; 32], Failure> {
+    fn finish<W: Work>(&self, state: State, work: &W) -> Result<Output, Failure> {
         work.charge_work(128)?;
-        Ok(state.finalize().into())
+        Ok(match state {
+            State::Sha256(state) => Output::Sha256(state.finalize().into()),
+            State::Sha512(state) => Output::Sha512(state.finalize().into()),
+        })
     }
     fn matches<W: Work>(
         &self,
-        (): &(),
-        output: &[u8; 32],
+        algorithm: &Algorithm,
+        output: &Output,
         expected: &[u8],
         work: &W,
     ) -> Result<bool, Failure> {
-        work.charge_work(32)?;
-        Ok(output.as_slice() == expected)
+        work.charge_work(algorithm.width() as u64)?;
+        Ok(output.as_ref() == expected)
     }
 }
 
 impl AsnDigest<'_> for Oracle {
-    fn identity(&self, algorithm: Algorithm) -> Option<()> {
-        (algorithm == Algorithm::Sha256).then_some(())
+    fn identity(&self, algorithm: Algorithm) -> Option<Algorithm> {
+        matches!(algorithm, Algorithm::Sha256 | Algorithm::Sha512).then_some(algorithm)
     }
 }
 
@@ -100,13 +141,14 @@ impl<'a> SignatureProvider<'a> for Oracle {
     fn resolve_signature(
         &'a self,
         algorithm: AlgorithmIdentifier<'a>,
-        (): &(),
+        digest: &Algorithm,
         key: EffectiveKey<'a>,
         _encoding: Encoding,
         reader: &Reader<'a>,
     ) -> Result<Resolution<SignatureMode<()>>, Failure> {
         reader.execution().charge_work(200)?;
-        if algorithm.algorithm().as_bytes() != ECDSA
+        if *digest != Algorithm::Sha256
+            || algorithm.algorithm().as_bytes() != ECDSA
             || key.key().algorithm().algorithm().as_bytes() != EC
         {
             return Ok(Resolution::Unsupported);
@@ -145,7 +187,7 @@ impl<'a> SignatureProvider<'a> for Oracle {
         (): &(),
         _key: EffectiveKey<'a>,
         signature: &Octets<'a>,
-        digest: Prehash<'_, '_, Self, ()>,
+        digest: Prehash<'_, '_, Self, Algorithm>,
         work: &W,
     ) -> Result<SignatureAnswer, Failure> {
         // Test-only conservative admission; no production cost-model claim.
@@ -185,6 +227,19 @@ pub fn tlv(tag: u8, contents: &[u8]) -> Vec<u8> {
 /// Generates test data only; no production signing API is introduced.
 pub fn fixture(covered: &[u8]) -> (Oracle, Vec<u8>, Vec<u8>) {
     fixture_carriage(covered, false, None, true, None)
+}
+
+/// A SHA-512 message imprint inside an independently SHA-256-signed CMS token.
+pub fn fixture_sha512(covered: &[u8]) -> (Oracle, Vec<u8>, Vec<u8>) {
+    let imprint = tlv(
+        0x30,
+        &[
+            tlv(0x30, &tlv(6, Algorithm::Sha512.identifier().as_bytes())),
+            tlv(4, &Sha512::digest(covered)),
+        ]
+        .concat(),
+    );
+    fixture_imprint(&imprint, false, None, true, None, FixtureDigest::Allowed)
 }
 
 /// Generates a token carrying its exact selected TSA certificate as well.
@@ -769,7 +824,7 @@ fn fixture_carriage(
 
 /// A real SHA256/P256 CMS signature carrying the RFC1321 A.5 MD5("abc")
 /// imprint. This tests baseline refusal before selected-provider resolution;
-/// the SHA256-only oracle does not pretend to implement an MD5 provider.
+/// the oracle does not pretend to implement an MD5 provider.
 pub fn fixture_md5_imprint() -> (Oracle, Vec<u8>, Vec<u8>) {
     let imprint = tlv(
         0x30,

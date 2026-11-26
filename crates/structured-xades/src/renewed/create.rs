@@ -222,6 +222,7 @@ where
         .map_err(CreationError::Input)?,
         None => None,
     };
+    crate::evidence::require_unsealed(&access, parent).map_err(CreationError::Input)?;
     access
         .query(layout.signature(), |_, _, _| Ok(()))
         .map_err(|e| processing(super::CheckError::Access(e)))?;

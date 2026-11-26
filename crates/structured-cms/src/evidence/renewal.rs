@@ -39,6 +39,25 @@ impl<'d> Prefix<'_, 'd> {
     }
 }
 impl<'r, 'd> PriorSequence<'r, 'd> {
+    /// Prepares the entire original sequence before issuing the first
+    /// timestamp of a new hash-tree renewal chain.
+    pub fn for_renewal(record: &'r EvidenceRecord<'d>, operation: &Reader<'d>) -> Result<Self> {
+        let before = record.chains.len();
+        let projected = Self::project(record, before, operation)?;
+        let origin = record.original.reader_in(operation)?;
+        let length = prefix_length(
+            &projected,
+            &origin.execution_query(operation),
+            record.original.element.span().start,
+        )?;
+        Ok(Self {
+            record,
+            before,
+            length,
+            projected: Prefix::Owned(projected),
+        })
+    }
+
     /// Binds the prefix to the actual new chain and admits it before hashing.
     pub fn new(
         record: &'r EvidenceRecord<'d>,
@@ -173,28 +192,81 @@ impl<'r, 'd> PriorSequence<'r, 'd> {
         self.before
     }
     pub(super) fn contains(&self, stamp: &super::ArchiveTimeStamp<'_>) -> bool {
-        core::ptr::eq(
-            stamp,
-            &raw const self.record.timestamps[self.record.chains[self.before].first],
-        )
+        let Some(chain) = self.record.chains.get(self.before) else {
+            return false;
+        };
+        core::ptr::eq(stamp, &raw const self.record.timestamps[chain.first])
     }
+
+    /// Streams the original preceding chains' DER, including their sequence
+    /// framing, for a hash-tree renewal request. Callback refusal remains
+    /// separate and stops the stream before any subsequent byte range.
+    pub fn stream_der<E>(
+        &self,
+        operation: &Reader<'d>,
+        mut write: impl FnMut(
+            &[u8],
+            &structured_asn1::memory::Execution<'_>,
+        ) -> core::result::Result<(), E>,
+    ) -> core::result::Result<(), PriorError<E>> {
+        let origin = self
+            .record
+            .original
+            .reader_in(operation)
+            .map_err(PriorError::Processing)?;
+        let work = origin.execution_query(operation);
+        work.charge_work(1).map_err(|cause| {
+            PriorError::Processing(Error::resource(
+                cause,
+                FIELD,
+                self.record.original.element.span().start,
+            ))
+        })?;
+        self.feed(&work, |bytes| write(bytes, &work))
+            .map_err(|cause| match cause {
+                FeedError::Resource(cause) => PriorError::Processing(Error::resource(
+                    cause,
+                    FIELD,
+                    self.record.original.element.span().start,
+                )),
+                FeedError::Callback(cause) => PriorError::Callback(cause),
+            })
+    }
+
     pub(super) fn hash<'p, P: AsnDigest<'p>, W: Work, SE>(
         &self,
         hasher: &Hasher<'p, '_, P, W>,
     ) -> core::result::Result<P::Output, InputError<SE, P::Error>> {
         let mut state = hasher.start()?;
-        hasher.update(&mut state, &[0x30])?;
-        hasher.update(&mut state, DerLength::new(self.length).as_bytes())?;
-        for chain in self.projected.values() {
-            chain
-                .feed(&hasher.work, |bytes| hasher.update(&mut state, bytes))
-                .map_err(|cause| match cause {
-                    FeedError::Resource(cause) => hasher.resource(cause),
-                    FeedError::Callback(cause) => cause,
-                })?;
-        }
+        self.feed(&hasher.work, |bytes| hasher.update(&mut state, bytes))
+            .map_err(|cause| match cause {
+                FeedError::Resource(cause) => hasher.resource(cause),
+                FeedError::Callback(cause) => cause,
+            })?;
         hasher.finish(state)
     }
+
+    fn feed<W: Work, E>(
+        &self,
+        work: &W,
+        mut write: impl FnMut(&[u8]) -> core::result::Result<(), E>,
+    ) -> core::result::Result<(), FeedError<E>> {
+        write(&[0x30]).map_err(FeedError::Callback)?;
+        write(DerLength::new(self.length).as_bytes()).map_err(FeedError::Callback)?;
+        for chain in self.projected.values() {
+            chain.feed(work, &mut write)?;
+        }
+        Ok(())
+    }
+}
+
+/// Original refusal while streaming an ASN.1 renewal's previous sequence.
+#[derive(Debug)]
+pub enum PriorError<E> {
+    /// Original reader, storage or work refusal.
+    Processing(Error),
+    /// Refusal from the selected sink.
+    Callback(E),
 }
 fn prefix_length<W: Work>(values: &[Projection<'_>], work: &W, at: u64) -> Result<u64> {
     let mut length = 0u64;

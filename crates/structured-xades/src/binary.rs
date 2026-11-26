@@ -408,7 +408,7 @@ pub fn with_der_reader<X: BinaryXml, R, C>(
     with_reader_as(xml, location, operation, Encoding::Der, visitor)
 }
 
-fn with_reader_as<X: BinaryXml, R, C>(
+pub(crate) fn with_reader_as<X: BinaryXml, R, C>(
     xml: &X,
     location: Location<X::Id, X::Document, X::Generation>,
     operation: &Reader<'_>,

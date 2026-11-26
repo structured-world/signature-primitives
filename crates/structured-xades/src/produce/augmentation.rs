@@ -264,6 +264,9 @@ impl<'a, X: TimestampXml> Augmentation<'a, X> {
         B: Transaction<Id = X::Id, Document = X::Document, Generation = X::Generation>,
     {
         let layout = self.prepared.bound().containers();
+        if self.prepared.unsigned().seal().is_some() {
+            return Err(Error::Prerequisites);
+        }
         work.charge_work(2).map_err(Error::Resource)?;
         if self.xml.snapshot() != layout.snapshot()
             || writer.base() != layout.snapshot()

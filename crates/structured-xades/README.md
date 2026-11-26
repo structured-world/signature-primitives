@@ -62,6 +62,26 @@ remain part of that inventory at the XL and A stages. Validate their reference
 digests and the required original values independently. Use `prepare::prepare`
 and `baseline::assess` for EN 319 132-1 baseline conformance.
 
+## Direct evidence records
+
+The `evidence` module handles `SealingEvidenceRecords` for directly
+incorporated signatures under ETSI TS 119 132-3. It selects the complete
+protected object group, including authenticated Manifest leaves, and keeps
+parallel members separate from serial groups. Use `evidence::read` on the bound
+signature, then `Records::with_asn1` for RFC 4998 or `evidence::xmlers::Check`
+for RFC 6283. Both preserve the original timestamp and renewal sources for the
+caller's authority and historical validation.
+
+For construction, obtain the original sources with `Records::serial_objects`
+or `Records::objects`. `Objects::initial_imprint` streams the complete group
+through the selected digest provider. Renewal input is available from the
+opened `Asn1` or XMLERS `Record`. Stage in the original XML owner's
+unpublished transaction using `Records::edit` and the plan's writer methods.
+Check the staged record and pass its source-bound receipt to
+`EditPlan::authorize_commit`. The owner closes material placement and enforces
+the exact permitted delta before committing the transaction. Reference replay,
+canonicalization, certificate selection and acquisition remain with the owner.
+
 ## Creating and augmenting signatures
 
 `produce` supplies construction and append planning for the EN 319 132-1

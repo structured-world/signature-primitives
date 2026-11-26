@@ -77,6 +77,7 @@ pub struct Catalogue<N, D, G> {
     signature: N,
     parent: Option<N>,
     data: Option<N>,
+    seal: Option<N>,
     entries: OwnedVec<Entry<N>>,
 }
 
@@ -101,6 +102,11 @@ impl<N: Copy, D: Copy, G: Copy> Catalogue<N, D, G> {
     #[must_use]
     pub fn data_objects(&self) -> Option<N> {
         self.data
+    }
+    /// First ETSI sealing property, including one with invalid contents.
+    #[must_use]
+    pub fn seal(&self) -> Option<N> {
+        self.seal
     }
     /// All original entries, preserving order for archive coverage.
     #[must_use]
@@ -209,10 +215,19 @@ pub(crate) fn read_in<X: Xml, W: Work>(
     let mut singletons = [false; 9];
     let mut signature_timestamp = false;
     let mut archive_timestamp = false;
+    let mut seal = None;
     if let Some(parent) = parent {
         for child in access.children(parent) {
             let node = child.map_err(Error::Child)?;
             let role = classify(access, node, extended)?;
+            if role == Role::Extension
+                && seal.is_none()
+                && access
+                    .has_name(node, crate::evidence::PROPERTY)
+                    .map_err(Error::Access)?
+            {
+                seal = Some(node);
+            }
             // Reference-only forms are not validation-material service options
             // for B-LT/B-LTA, even if an XML schema accepts their syntax.
             let singleton = match role {
@@ -280,6 +295,7 @@ pub(crate) fn read_in<X: Xml, W: Work>(
         signature,
         parent,
         data,
+        seal,
         entries: entries.into_owned(),
     })
 }

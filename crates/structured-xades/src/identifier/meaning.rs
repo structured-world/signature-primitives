@@ -1,9 +1,11 @@
 //! Qualifier interpretation over the XML owner's complete normalized URI.
 
 use super::{Qualifier, Reading};
+use crate::container::{XADES, XADES_111, XADES_122};
+use crate::properties::Error;
 use crate::reference::{LexicalSource, VisitError};
 use crate::scalar::{UriValue, UriXml};
-use crate::xml::{Access, AccessError, Xml};
+use crate::xml::{Access, AccessError, Node, Xml};
 use structured_asn1::memory::{MemoryError, Work};
 use structured_asn1::value::OwnedOid;
 
@@ -77,15 +79,41 @@ pub fn check<X: UriXml + crate::scalar::ScalarXml, W: Work>(
     reading: &Reading<X::Id>,
 ) -> CheckResult<X> {
     let meaning = check_value(access, reading).map_err(CheckError::Meaning)?;
-    super::documentation_with(access, reading.documentation, super::XADES, |node| {
-        crate::scalar::check(
-            access,
-            node,
-            LexicalSource::SimpleContent,
-            crate::scalar::Datatype::AnyUri,
-        )
-        .map_err(CheckError::Scalar)
-    })?;
+    if let Some(parent) = reading.documentation {
+        let identifier = reading.identifier;
+        // TS 101 903 V1.1.1 §7.1.2 and the V1.2.2 schema declare both
+        // children in their own vocabulary. Recover it from the original Identifier.
+        // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.01.01_60/ts_101903v010101p.pdf
+        // https://uri.etsi.org/01903/v1.2.2/XAdES.xsd
+        let namespace = access
+            .inspect(identifier, |value| {
+                if let Node::Element(name) = value
+                    && access.equal(name.local, "Identifier")?
+                {
+                    for namespace in [XADES, XADES_111, XADES_122] {
+                        if access.equal(name.namespace, namespace)? {
+                            return Ok(Some(namespace));
+                        }
+                    }
+                }
+                Ok(None)
+            })
+            .map_err(Error::Access)?
+            .map_err(|cause| Error::Resource {
+                node: identifier,
+                cause,
+            })?
+            .ok_or(Error::Unexpected { node: identifier })?;
+        super::documentation_with(access, Some(parent), namespace, |node| {
+            crate::scalar::check(
+                access,
+                node,
+                LexicalSource::SimpleContent,
+                crate::scalar::Datatype::AnyUri,
+            )
+            .map_err(CheckError::Scalar)
+        })?;
+    }
     Ok(meaning)
 }
 

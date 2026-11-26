@@ -244,6 +244,65 @@ fn profile_tree(profile: Profile) -> Tree {
     xml
 }
 
+#[test]
+fn historical_policy_checks_documentation_in_the_original_namespace() {
+    // Both older schemas carry the documentation URI in their own namespace.
+    use structured_xades::{identifier, policy::Declaration};
+    let work = funded();
+    for profile in [Profile::V111, Profile::V122] {
+        let mut xml = profile_tree(profile);
+        let explicit = xml.nodes.len() - 1;
+        let namespace = profile.namespace();
+        let parent = xml.nodes[explicit].parent;
+        xml.nodes[explicit] = element(parent, namespace, "SignaturePolicyId");
+        let policy = append(&mut xml, explicit, namespace, "SigPolicyId");
+        let id = append(&mut xml, policy, namespace, "Identifier");
+        let refs = append(&mut xml, policy, namespace, "DocumentationReferences");
+        let doc = append(&mut xml, refs, namespace, "DocumentationReference");
+        let hash = append(&mut xml, explicit, namespace, "SigPolicyHash");
+        append(&mut xml, hash, profile.digest_namespace(), "DigestMethod");
+        append(&mut xml, hash, profile.digest_namespace(), "DigestValue");
+        let uri = "https://example.test/policy";
+        xml.uri_routes.push(scalar_checks::UriRoute::valid(id, uri));
+        xml.scalar_routes
+            .push(scalar_checks::route(doc, Datatype::AnyUri, Fact::Valid));
+        let access = Access::new(&xml, xml.snapshot(), &work);
+        let layout = legacy::locate(&access, 0, profile).unwrap();
+        let prepared = legacy::prepare(&access, &layout).unwrap();
+        let policy = prepared.policy(&access).unwrap().unwrap();
+        let Declaration::Explicit(policy) = policy.declaration() else {
+            panic!("explicit policy")
+        };
+        assert!(matches!(
+            identifier::check(&access, &policy.identifier),
+            Ok(identifier::Meaning::Uri)
+        ));
+        assert_eq!(xml.scalar_calls.get(), 2);
+    }
+}
+
+#[test]
+fn historical_signature_timestamp_tail_respects_unsigned_schema_order() {
+    // The old ordered sequences cannot append a T timestamp after C material.
+    use structured_xades::produce::ExtendedAugmentation;
+    let work = funded();
+    for profile in [Profile::V111, Profile::V122, Profile::PreEn] {
+        let mut xml = profile_tree(profile);
+        let method = append(&mut xml, 0, DS, "CanonicalizationMethod");
+        let tail = append(&mut xml, 7, profile.namespace(), "CompleteCertificateRefs");
+        let access = Access::new(&xml, xml.snapshot(), &work);
+        let layout = legacy::locate(&access, 0, profile).unwrap();
+        let prepared = legacy::prepare(&access, &layout).unwrap();
+        let result =
+            ExtendedAugmentation::prepare_historical_signature(&xml, &prepared, method, &work);
+        if profile == Profile::PreEn {
+            assert!(result.is_ok());
+        } else {
+            assert!(matches!(result, Err(InputError::Order { node }) if node == tail));
+        }
+    }
+}
+
 /// Exercise the common signer check with original data extracted independently.
 /// # Panics
 /// Fails when the pinned fixture's XML vocabulary or certificate hash disagrees.

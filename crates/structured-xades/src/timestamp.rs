@@ -126,9 +126,9 @@ pub enum InputError<E, N> {
         /// Repeated original node.
         node: N,
     },
-    /// The original `CanonicalizationMethod` occurs after token content.
+    /// A timestamp field or append position violates schema order.
     Order {
-        /// Original out-of-order method.
+        /// Original field or tail property at the invalid position.
         node: N,
     },
     /// Timestamp is not a direct unsigned property of the selected signature.

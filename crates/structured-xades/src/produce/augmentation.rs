@@ -419,6 +419,9 @@ impl<'a, X: TimestampXml> ExtendedAugmentation<'a, X> {
             }
             None => None,
         };
+        if let Some(node) = prepared.after_signature_timestamp() {
+            return Err(timestamp::InputError::Order { node });
+        }
         let input = Input::prepare_append(xml, bound, AppendKind::Signature, method, work)?;
         let historical_signature = if profile == Profile::PreEn {
             None

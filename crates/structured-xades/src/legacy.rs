@@ -284,6 +284,20 @@ impl<X: Xml> Prepared<X> {
         &self.unsigned
     }
 
+    pub(crate) fn after_signature_timestamp(&self) -> Option<X::Id> {
+        if self.profile() == Profile::PreEn {
+            return None;
+        }
+        let tail = self.unsigned.last()?;
+        // The tail is sufficient because preparation enforces the same ranks.
+        // TS 101 903 V1.1.1 §6.2.5 and V1.2.2 UnsignedSignaturePropertiesType.
+        // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.01.01_60/ts_101903v010101p.pdf
+        UNSIGNED
+            .iter()
+            .find(|rule| rule.0 == tail.name && rule.1 > SIGNATURE_TIMESTAMP.1)?;
+        Some(tail.node)
+    }
+
     /// Original unsigned data-object properties, in document order.
     #[must_use]
     pub fn unsigned_objects(&self) -> &[Property<X::Id>] {
@@ -315,9 +329,10 @@ const DATA: &[Rule] = &[
     Rule("AllDataObjectsTimeStamp", 2, true),
     Rule("IndividualDataObjectsTimeStamp", 3, true),
 ];
+const SIGNATURE_TIMESTAMP: Rule = Rule("SignatureTimeStamp", 1, true);
 const UNSIGNED: &[Rule] = &[
     Rule("CounterSignature", 0, true),
-    Rule("SignatureTimeStamp", 1, true),
+    SIGNATURE_TIMESTAMP,
     Rule("CompleteCertificateRefs", 2, false),
     Rule("CompleteRevocationRefs", 3, false),
     Rule("AttributeCertificateRefs", 4, false),

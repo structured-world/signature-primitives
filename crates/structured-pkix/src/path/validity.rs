@@ -1,8 +1,71 @@
 //! Explicit certificate path validity selection and original issuance dates.
 
+use crate::crl::Reason;
 use crate::error::Located;
+use crate::temporal::{Instant, LeapTable, Reading, Uncertainty};
 use crate::{Certificate, Error, ErrorCode, Result, Time, oid};
-use structured_asn1::{Tag, memory::Work, universal};
+use structured_asn1::{
+    Tag,
+    memory::{MemoryError, Work},
+    universal,
+};
+
+/// Whether a recorded CA revocation permits the Chain issuance exception.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssuanceEffect {
+    /// This revocation leaves the earlier issuance intact.
+    Preserved,
+    /// The revocation does not qualify for the issuance exception.
+    NoException,
+    /// The supplied UTC facts cannot establish the required date ordering.
+    Uncertain(Uncertainty),
+}
+
+/// Assess the Chain exception for an already applicable CA revocation.
+///
+/// Common PKI v2.0 Part 9 §6, applied by EN 319 102-1 V1.4.1 §5.2.6.4 step 4,
+/// permits the exception only for a known reason that preserves the reliability
+/// of previously issued certificates. The recorded revocation must be strictly
+/// after issuance. Only a potential exception needs UTC qualification.
+/// Authentication, freshness and applicability at the validation date remain
+/// obligations of the caller.
+/// <https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf>
+/// <https://www.bundesnetzagentur.de/EVD/SharedDocuments/Downloads/QES/Common_PKI_v2.0_02.pdf?__blob=publicationFile&v=1>
+///
+/// # Errors
+///
+/// Returns a resource error if the work budget cannot qualify the dates.
+pub fn chain_issuance_effect<W: Work>(
+    revoked_at: Instant,
+    reason: Option<Reason>,
+    issued: Reading,
+    utc: &LeapTable<'_>,
+    work: &W,
+) -> core::result::Result<IssuanceEffect, MemoryError> {
+    // The recorded date has nanosecond precision. When its label exceeds
+    // the issuance label, it also exceeds any subnanosecond remainder.
+    if revoked_at <= issued.start()
+        || !matches!(
+            reason,
+            Some(
+                Reason::AffiliationChanged
+                    | Reason::Superseded
+                    | Reason::CessationOfOperation
+                    | Reason::PrivilegeWithdrawn
+            )
+        )
+    {
+        return Ok(IssuanceEffect::NoException);
+    }
+    let bits = usize::BITS - utc.transitions().len().leading_zeros();
+    work.charge_work(2 * (8 + 3 * (u64::from(bits) + 1)))?;
+    for label in [revoked_at, issued.start()] {
+        if let Err(cause) = utc.shift(label, 0) {
+            return Ok(IssuanceEffect::Uncertain(cause));
+        }
+    }
+    Ok(IssuanceEffect::Preserved)
+}
 
 /// Time at which each issuer in the prospective path must be valid.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

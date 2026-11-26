@@ -260,7 +260,47 @@ pub fn with_tokens<X: OwnedBinaryXml, R, VE>(
         TokenView<'source, X::Id, X::Document, X::Generation>,
     ) -> Result<R, VE>,
 ) -> TokenPipelineResult<R, X, VE> {
-    with_inputs(xml, prepared, None, operation, profile, visitor)
+    let layout = prepared.bound().containers();
+    with_inputs(
+        xml,
+        Location {
+            snapshot: layout.snapshot(),
+            node: layout.signature(),
+        },
+        prepared.timestamps(),
+        None,
+        operation,
+        profile,
+        visitor,
+    )
+}
+
+/// Decode and parse the original root timestamps in one frozen pool.
+/// The returned property and token ordinals match [`crate::extended::Properties::timestamps`].
+/// Each entry can be used for TSA selection, carried material and checking
+/// that original timestamp with [`super::Check::check_actor_from`].
+pub fn with_extended_tokens<X: OwnedBinaryXml, R, VE>(
+    xml: &X,
+    properties: &crate::extended::Properties<X>,
+    operation: &Reader<'_>,
+    profile: TokenProfile,
+    visitor: impl for<'source> FnOnce(
+        &Reader<'source>,
+        TokenView<'source, X::Id, X::Document, X::Generation>,
+    ) -> Result<R, VE>,
+) -> TokenPipelineResult<R, X, VE> {
+    with_inputs(
+        xml,
+        Location {
+            snapshot: properties.snapshot(),
+            node: properties.signature(),
+        },
+        properties.timestamps(),
+        None,
+        operation,
+        profile,
+        visitor,
+    )
 }
 
 /// Freeze root AND every nested counter's timestamp tokens in one pool.
@@ -288,7 +328,19 @@ pub fn with_counter_tokens<X: OwnedBinaryXml, R, VE>(
         TokenView<'source, X::Id, X::Document, X::Generation>,
     ) -> Result<R, VE>,
 ) -> TokenPipelineResult<R, X, VE> {
-    with_inputs(xml, prepared, Some(counters), operation, profile, visitor)
+    let layout = prepared.bound().containers();
+    with_inputs(
+        xml,
+        Location {
+            snapshot: layout.snapshot(),
+            node: layout.signature(),
+        },
+        prepared.timestamps(),
+        Some(counters),
+        operation,
+        profile,
+        visitor,
+    )
 }
 
 impl<N: Copy, D: Copy, G: Copy> TokenEntry<'_, '_, N, D, G> {
@@ -304,7 +356,8 @@ impl<N: Copy, D: Copy, G: Copy> TokenEntry<'_, '_, N, D, G> {
 
 fn with_inputs<X: OwnedBinaryXml, R, VE>(
     xml: &X,
-    prepared: &Prepared<X>,
+    root: Location<X::Id, X::Document, X::Generation>,
+    stamps: &[super::Timestamp<X>],
     counters: Option<&super::CounterTimestamps<X::Id, X::Document, X::Generation>>,
     operation: &Reader<'_>,
     profile: TokenProfile,
@@ -313,30 +366,27 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
         TokenView<'source, X::Id, X::Document, X::Generation>,
     ) -> Result<R, VE>,
 ) -> TokenPipelineResult<R, X, VE> {
-    let layout = prepared.bound().containers();
     let execution = operation.execution();
-    let access = Access::new(xml, layout.snapshot(), &execution);
-    admit(&access, layout.signature())?;
+    let access = Access::new(xml, root.snapshot, &execution);
+    admit(&access, root.node)?;
     if let Some(counters) = counters
-        && (counters.snapshot != layout.snapshot()
+        && (counters.snapshot != root.snapshot
             || !access
-                .equal_id(counters.signature, layout.signature())
+                .equal_id(counters.signature, root.node)
                 .map_err(|cause| TokenPipelineError::Resource {
-                    node: layout.signature(),
+                    node: root.node,
                     cause,
                 })?)
     {
-        return Err(TokenPipelineError::Foreign {
-            node: layout.signature(),
-        });
+        return Err(TokenPipelineError::Foreign { node: root.node });
     }
     let mut sources = execution.vector();
     let children = counters
         .into_iter()
         .flat_map(|counters| counters.entries.iter().map(super::CounterStamp::stamp));
-    let mut timestamps = prepared.timestamps().iter().chain(children).enumerate();
+    let mut timestamps = stamps.iter().chain(children).enumerate();
     loop {
-        admit(&access, layout.signature())?;
+        admit(&access, root.node)?;
         let Some((stamp, timestamp)) = timestamps.next() else {
             break;
         };
@@ -344,7 +394,7 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
             admit(&access, timestamp.node())?;
             let node = timestamp.tokens()[ordinal];
             let location = Location {
-                snapshot: layout.snapshot(),
+                snapshot: root.snapshot,
                 node,
             };
             let (declaration, encoding) = select_encoding(profile, &access, location)?;
@@ -376,7 +426,7 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
     }
     let mut readings = execution.vector();
     for index in 0..sources.len() {
-        admit(&access, layout.signature())?;
+        admit(&access, root.node)?;
         let source = &sources[index];
         let mut reader = source
             .source
@@ -396,18 +446,18 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
                 cause,
             })?;
     }
-    admit(&access, layout.signature())?;
+    admit(&access, root.node)?;
     let result = visitor(
         operation,
         TokenView {
             sources: &sources,
             readings: &readings,
-            snapshot: layout.snapshot(),
-            signature: layout.signature(),
+            snapshot: root.snapshot,
+            signature: root.node,
         },
     )
     .map_err(TokenPipelineError::Visitor)?;
-    admit(&access, layout.signature())?;
+    admit(&access, root.node)?;
     Ok(result)
 }
 

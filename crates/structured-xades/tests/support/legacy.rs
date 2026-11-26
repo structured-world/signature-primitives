@@ -229,7 +229,7 @@ fn with_serial_in(
     (xml, serial)
 }
 
-fn profile_tree(profile: Profile) -> Tree {
+pub(super) fn profile_tree(profile: Profile) -> Tree {
     let namespace = profile.namespace();
     let mut xml = tree();
     for node in &mut xml.nodes[2..8] {
@@ -242,6 +242,20 @@ fn profile_tree(profile: Profile) -> Tree {
     let policy = append(&mut xml, 4, namespace, "SignaturePolicyIdentifier");
     append(&mut xml, policy, namespace, "SignaturePolicyImplied");
     xml
+}
+
+#[test]
+fn original_extended_preparation_accepts_original_signed_certificate() {
+    // Original C/X/XL/A signatures protect SigningCertificate, not its
+    // later V2 replacement. The same wire input remains outside EN baseline.
+    let xml = profile_tree(Profile::PreEn);
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    assert!(
+        prepare::prepare_extended_original(&access, 0, unsigned::Requirements::Basic, None,)
+            .is_ok()
+    );
+    assert!(prepare::prepare(&access, 0, unsigned::Requirements::Basic, None).is_err());
 }
 
 #[test]

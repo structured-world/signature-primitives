@@ -195,6 +195,10 @@ fn c_x_xl_and_archive_inventory_retains_every_occurrence_in_its_scope() {
         let revocation = add(&mut xml, 7, XADES, "RevocationValues");
         let (a, _) = append_timestamp(&mut xml, 7, Role::Archive, 1);
         let (renewal, _) = append_timestamp(&mut xml, 7, Role::Archive, 1);
+        let objects = add(&mut xml, 3, XADES, "SignedDataObjectProperties");
+        let signed_stamp = add(&mut xml, objects, XADES, "AllDataObjectsTimeStamp");
+        add(&mut xml, signed_stamp, DS, "CanonicalizationMethod");
+        let signed_token = add(&mut xml, signed_stamp, XADES, "EncapsulatedTimeStamp");
         let work = funded();
         let access = Access::new(&xml, xml.snapshot(), &work);
         let layout = container::locate(&access, 0).unwrap();
@@ -228,8 +232,23 @@ fn c_x_xl_and_archive_inventory_retains_every_occurrence_in_its_scope() {
                 .iter()
                 .map(timestamp::Stamp::node)
                 .collect::<Vec<_>>(),
-            [8, x, a, renewal]
+            [8, x, a, renewal, signed_stamp]
         );
+        let prior = timestamp::extended_requirements(
+            &access,
+            &prepared,
+            timestamp::TimestampSelection::BeforeArchive(2),
+        )
+        .unwrap();
+        assert_eq!(
+            prior
+                .entries()
+                .iter()
+                .map(|entry| entry.property)
+                .collect::<Vec<_>>(),
+            [8, x, signed_stamp]
+        );
+        assert_eq!(prior.entries()[2].token, signed_token);
         assert_eq!(prepared.first_unverified(&[], &work).unwrap(), Some(8));
     }
 }
@@ -239,8 +258,14 @@ fn extended_stage_preparation_progresses_from_c_to_a_without_relaxing_baseline()
     // References stay available for X and do not disqualify the XL material
     // census or A archives when the caller explicitly selects this profile.
     for syntax in [ReferenceSyntax::Original, ReferenceSyntax::V2] {
-        let mut xml = preparation_tree();
-        let signature_stamp = 8;
+        let (mut xml, signature_stamp) = if syntax == ReferenceSyntax::Original {
+            let mut xml =
+                super::legacy_tests::profile_tree(structured_xades::legacy::Profile::PreEn);
+            let (stamp, _) = append_timestamp(&mut xml, 7, Role::Signature, 1);
+            (xml, stamp)
+        } else {
+            (preparation_tree(), 8)
+        };
         let refs = reference_prefix(&mut xml, syntax);
         check_extended_stage(
             &xml,
@@ -294,28 +319,41 @@ fn extended_stage_preparation_progresses_from_c_to_a_without_relaxing_baseline()
 
         let work = funded();
         let access = Access::new(&xml, xml.snapshot(), &work);
-        let prepared =
-            prepare::prepare_extended(&access, 0, syntax, unsigned::Requirements::LongTerm, None)
-                .unwrap();
         let parser = Parser::der(work.clone());
         let operation = parser.read(&[], 0).unwrap();
-        material::with_values(&xml, &prepared, &operation, |_, indexed| {
-            let value = indexed
-                .values()
-                .iter()
-                .find(|entry| entry.location.node == value)
-                .unwrap();
-            let material::Value::Certificate(certificate) = &value.value else {
-                panic!("original certificate")
-            };
-            assert_eq!(certificate.as_bytes(), artifact);
-            Ok::<_, ()>(())
-        })
-        .unwrap();
-        assert!(
-            matches!(prepare::prepare(&access, 0, unsigned::Requirements::Archival, None),
-            Err(prepare::Error::Property(properties::Error::Forbidden { node })) if refs.contains(&node))
-        );
+        if syntax == ReferenceSyntax::Original {
+            let prepared = prepare::prepare_extended_original(
+                &access,
+                0,
+                unsigned::Requirements::LongTerm,
+                None,
+            )
+            .unwrap();
+            let retained =
+                material::retain_entry(&xml, &prepared.properties.values()[0], 0, &operation)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(retained.location().node, value);
+            assert_eq!(retained.bytes(), artifact);
+        } else {
+            let prepared =
+                prepare::prepare_extended_v2(&access, 0, unsigned::Requirements::LongTerm, None)
+                    .unwrap();
+            material::with_values(&xml, &prepared, &operation, |_, indexed| {
+                let value = indexed
+                    .values()
+                    .iter()
+                    .find(|entry| entry.location.node == value)
+                    .unwrap();
+                let material::Value::Certificate(certificate) = &value.value else {
+                    panic!("original certificate")
+                };
+                assert_eq!(certificate.as_bytes(), artifact);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        }
+        assert!(prepare::prepare(&access, 0, unsigned::Requirements::Archival, None).is_err());
     }
 }
 
@@ -329,40 +367,58 @@ fn check_extended_stage(
 ) {
     let work = funded();
     let access = Access::new(xml, xml.snapshot(), &work);
-    let prepared = prepare::prepare_extended(&access, 0, syntax, stage, None).unwrap();
-    assert_eq!(prepared.extended_syntax(), Some(syntax));
+    let original;
+    let v2;
+    let prior = (stage == unsigned::Requirements::Archival)
+        .then(|| timestamp::TimestampSelection::BeforeArchive(timestamps.len() - 1));
+    let (references, material, stamps, required) = if syntax == ReferenceSyntax::Original {
+        original = prepare::prepare_extended_original(&access, 0, stage, None).unwrap();
+        assert!(matches!(
+            original.prepared.signer(),
+            structured_xades::legacy::SignerCertificate::References(_)
+        ));
+        let properties = &original.properties;
+        (
+            properties.references(),
+            properties.values(),
+            properties.timestamps(),
+            prior.map(|selection| {
+                timestamp::extended_requirements(&access, properties, selection).unwrap()
+            }),
+        )
+    } else {
+        v2 = prepare::prepare_extended_v2(&access, 0, stage, None).unwrap();
+        assert_eq!(v2.extended_syntax(), Some(syntax));
+        (
+            v2.validation_references(),
+            v2.material(),
+            v2.timestamps(),
+            prior.map(|selection| timestamp::requirements(&access, &v2, selection).unwrap()),
+        )
+    };
     assert_eq!(
-        prepared
-            .validation_references()
+        references
             .iter()
             .map(validation::ReferenceProperty::node)
             .collect::<Vec<_>>(),
         refs
     );
     assert_eq!(
-        prepared
-            .material()
+        material
             .iter()
             .map(material::Catalogue::parent)
             .collect::<Vec<_>>(),
         values
     );
     assert_eq!(
-        prepared
-            .timestamps()
+        stamps
             .iter()
             .map(timestamp::Stamp::node)
             .collect::<Vec<_>>(),
         timestamps
     );
-    if stage == unsigned::Requirements::Archival {
+    if let Some(required) = required {
         let at = timestamps.len() - 1;
-        let required = timestamp::requirements(
-            &access,
-            &prepared,
-            timestamp::TimestampSelection::BeforeArchive(at),
-        )
-        .unwrap();
         assert_eq!(
             required
                 .entries()
@@ -372,6 +428,32 @@ fn check_extended_stage(
             timestamps[..at]
         );
     }
+}
+
+#[test]
+fn signed_data_timestamps_use_the_default_only_in_the_historical_profile() {
+    // TS 101 903 permits the implicit method on both signed timestamp forms.
+    let (mut xml, _, _) = Tree::stamped(Role::Signature);
+    let objects = add(&mut xml, 3, XADES, "SignedDataObjectProperties");
+    let all = add(&mut xml, objects, XADES, "AllDataObjectsTimeStamp");
+    add(&mut xml, all, XADES, "EncapsulatedTimeStamp");
+    let one = add(&mut xml, objects, XADES, "IndividualDataObjectsTimeStamp");
+    add(&mut xml, one, XADES, "Include");
+    add(&mut xml, one, XADES, "EncapsulatedTimeStamp");
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let layout = container::locate(&access, 0).unwrap();
+    let bound = binding::bind(&access, &layout).unwrap();
+    let historical = extended::prepare(&access, &bound, ReferenceSyntax::Original).unwrap();
+    for (stamp, node) in historical.timestamps()[1..].iter().zip([all, one]) {
+        assert_eq!(stamp.node(), node);
+        assert_eq!(stamp.explicit_method(), None);
+    }
+    assert_eq!(historical.timestamps().len(), 3);
+    assert!(matches!(
+        extended::prepare(&access, &bound, ReferenceSyntax::V2),
+        Err(extended::Error::Timestamp(InputError::Missing { node, local: "CanonicalizationMethod" })) if node == all
+    ));
 }
 
 #[test]
@@ -508,12 +590,66 @@ fn p256_tsa_response_is_bound_to_the_exact_x_request_and_transaction() {
         draft.events[0],
         Written::Begin(XADES_141, "SigAndRefsTimeStampV2")
     );
-    assert!(draft.events.contains(&Written::Binary(token)));
+    assert!(draft.events.contains(&Written::Binary(token.clone())));
     xml.generation.set(2);
     assert!(matches!(
         plan.write_timestamp(&checked, &mut draft, &work),
         Err(produce::Error::Foreign)
     ));
+
+    check_original_x1(&mut xml, method, token, &query, &provider, &context);
+}
+
+fn check_original_x1(
+    xml: &mut Tree,
+    method: usize,
+    token: Vec<u8>,
+    query: &structured_asn1::Reader<'_>,
+    provider: &timestamp_oracle::Oracle,
+    context: &CheckContext<'_, '_>,
+) {
+    // The same original X1 token must drive both TSA selection and the check.
+    let name = ExtendedKind::SignatureAndReferences(ReferenceSyntax::V2).name();
+    let property = add(xml, 7, name.namespace, name.local);
+    xml.nodes[method].parent = Some(property);
+    let token_node = add(xml, property, XADES, "EncapsulatedTimeStamp");
+    xml.binary = token;
+    let work = query.execution();
+    let access = Access::new(xml, xml.snapshot(), &work);
+    let layout = container::locate(&access, 0).unwrap();
+    let bound = binding::bind(&access, &layout).unwrap();
+    let properties = extended::prepare(&access, &bound, ReferenceSyntax::V2).unwrap();
+    let census =
+        timestamp::extended_requirements(&access, &properties, timestamp::TimestampSelection::All)
+            .unwrap();
+    assert_eq!(census.entries().len(), 2);
+    assert_eq!(census.entries()[1].token, token_node);
+    assert_eq!(
+        census.entries()[1].purpose,
+        Role::SignatureAndReferences.purpose()
+    );
+    let check = timestamp::Check {
+        xml,
+        provider,
+        context,
+    };
+    timestamp::with_extended_tokens(
+        xml,
+        &properties,
+        query,
+        timestamp::TokenProfile::Etsi,
+        |current, view| {
+            let entry = view.entry(1).unwrap();
+            let stamp = &properties.timestamps()[1];
+            let actor = check
+                .retain_actor_from(&bound, stamp, entry, current, |_, _| Ok::<_, ()>(false))
+                .unwrap()
+                .unwrap();
+            assert_eq!(actor.verified().token().node, token_node);
+            Ok::<_, ()>(())
+        },
+    )
+    .unwrap();
 }
 
 impl produce::ReferenceWriter for Draft {

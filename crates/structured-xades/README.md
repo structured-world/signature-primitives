@@ -54,9 +54,11 @@ Use the same timestamp check as for the baseline with the appropriate
 TS 101 903 and EN 319 132-2 properties. The original archive recipe and the
 1.4.1 recipe select their respective source inputs.
 
-Use `prepare::prepare_extended` with `ReferenceSyntax::Original` or `V2`
-to run the shared certificate, token and material pipeline for the selected
-extended vocabulary. Select `Timestamped`, `LongTerm` or `Archival` according
+Use `prepare::prepare_extended_original` for the original 1.3.2 signing
+certificate and extended properties. It returns the historical signer
+preparation and the original extended catalogue. Use
+`prepare::prepare_extended_v2` with the current signing-certificate vocabulary.
+Select `Timestamped`, `LongTerm` or `Archival` according
 to the processing stage. Complete reference properties and X timestamps
 remain part of that inventory at the XL and A stages. Validate their reference
 digests and the required original values independently. Use `prepare::prepare`

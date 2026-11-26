@@ -21,6 +21,7 @@ from lxml import etree
 
 
 REVISION = "9f3af8f2ca672b8948e0a3ee8687e53adf9f5c33"
+EXTENDED_REVISION = "98ab6c136fc90bfca78352b4e673e2eae72b7d5a"
 BASE = f"https://raw.githubusercontent.com/esig/dss/{REVISION}/"
 VALIDATION = "dss-xades/src/test/resources/validation/"
 DS = "http://www.w3.org/2000/09/xmldsig#"
@@ -48,11 +49,11 @@ def run(arguments):
     return result
 
 
-def fetch(path):
+def fetch(path, base=BASE):
     # curl uses the host's normal verified TLS store; no disabled verification.
     return run(["curl", "--fail", "--silent", "--show-error", "--location",
                 "--proto", "=https", "--proto-redir", "=https",
-                "--max-time", "60", BASE + path]).stdout
+                "--max-time", "60", base + path]).stdout
 
 
 def fixture_bytes(output, spec):
@@ -412,6 +413,43 @@ def harness_hash(root):
     return digest.hexdigest()
 
 
+def qualify_extended(output):
+    base = f"https://raw.githubusercontent.com/esig/dss/{EXTENDED_REVISION}/"
+    edition = "http://uri.etsi.org/01903/v1.4.1#"
+    fixtures = [
+        ("original", "xades-x-level.xml", XADES, "SigAndRefsTimeStamp",
+         "CompleteCertificateRefs",
+         "33dadd6de402f233081ed11b917a4c83353aca96016328e5d31ca2c4af2b5e11"),
+        ("v2", "xades-x-level-v2.xml", edition, "SigAndRefsTimeStampV2",
+         "CompleteCertificateRefsV2",
+         "8cc8f5506946240087cf260729b35c1d58bb32b105ad68a50e2b168e95d5a830"),
+    ]
+    for variant, file, namespace, timestamp, certificates, checksum in fixtures:
+        target = output / "extended" / variant
+        target.mkdir(parents=True, exist_ok=True)
+        original = fetch(VALIDATION + file, base)
+        if hashlib.sha256(original).hexdigest() != checksum:
+            raise RuntimeError(f"independent extended fixture checksum changed: {file}")
+        tree = etree.fromstring(original, etree.XMLParser(resolve_entities=False, no_network=True))
+        selected = next(tree.iter(f"{{{namespace}}}{timestamp}"))
+        if selected.find(f"{{{DS}}}CanonicalizationMethod").get("Algorithm") != EXCLUSIVE:
+            raise RuntimeError(f"independent canonicalization method changed: {file}")
+        parts = [
+            next(tree.iter(f"{{{DS}}}SignatureValue")),
+            selected.getparent().find(f"{{{XADES}}}SignatureTimeStamp"),
+            selected.getparent().find(f"{{{namespace}}}{certificates}"),
+            selected.getparent().find(f"{{{XADES}}}CompleteRevocationRefs"),
+        ]
+        if list(reversed(list(selected.itersiblings(preceding=True)))) != parts[1:]:
+            raise RuntimeError(f"independent timestamp prefix changed: {file}")
+        for index, part in enumerate(parts):
+            (target / f"part-{index}.bin").write_bytes(
+                etree.tostring(part, method="c14n", exclusive=True, with_comments=False)
+            )
+        token = base64.b64decode(selected.findtext(f"{{{XADES}}}EncapsulatedTimeStamp"))
+        (target / "token-0.der").write_bytes(token)
+
+
 def qualify_shared(output):
     root = Path(__file__).resolve().parent.parent
     helpers = runpy.run_path(str(root / "scripts/qualify-xades-key.py"))
@@ -439,14 +477,16 @@ def qualify_shared(output):
     if drift:
         raise RuntimeError(f"corpus runner resolved outside the locked graph: {drift}")
     environment = dict(os.environ, XADES_DSS_CORPUS=str(output), CARGO_INCREMENTAL="0")
+    target = Path(os.environ.get("CARGO_TARGET_DIR", root / "target")).resolve()
     subprocess.run(["cargo", "nextest", "run", "--manifest-path", str(cargo),
-                    "--locked", "--offline", "--target-dir", str(root / "target"),
+                    "--locked", "--offline", "--target-dir", str(target),
                     "--status-level", "fail", "--final-status-level", "fail"],
                    env=environment, check=True)
     if source_hash(root) != before or harness_hash(root) != fixture_before:
         raise RuntimeError("source changed during independent qualification")
     (output / "qualification.json").write_text(json.dumps({
         "upstream_revision": REVISION,
+        "extended_upstream_revision": EXTENDED_REVISION,
         "fixtures": {level: {"file": spec["file"], "sha256": spec["sha256"]}
                      for level, spec in FIXTURES.items()},
         "negative": {name: {"file": spec["file"], "sha256": spec["sha256"],
@@ -462,7 +502,9 @@ def qualify_shared(output):
 
 
 def main():
-    output = Path(__file__).resolve().parent.parent / "target/xades-corpus-qualification"
+    root = Path(__file__).resolve().parent.parent
+    target = Path(os.environ.get("CARGO_TARGET_DIR", root / "target")).resolve()
+    output = target / "xades-corpus-qualification"
     output.mkdir(parents=True, exist_ok=True)
     # Preserve the original publisher notice next to all downloaded test data.
     if not (output / "LICENSE.upstream").exists():
@@ -483,6 +525,7 @@ def main():
     archive_inputs(output / "lta", output / "lta" / FIXTURES["lta"]["file"])
     qualify_negative(output)
     qualify_multiple(output)
+    qualify_extended(output)
     qualify_shared(output)
     print(f"Independent DSS {REVISION} B-B/B-LT/B-LTA fixtures: "
           "XML signatures + references PASS; isolated signature and data mutations refused; "

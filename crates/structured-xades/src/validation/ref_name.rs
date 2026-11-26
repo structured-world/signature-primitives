@@ -66,7 +66,10 @@ pub fn matches_reference_name<X: TextXml>(
             responder: ResponderIdentifier::Name(node),
             ..
         } => node,
-        _ => return Ok(None),
+        _ => match entry.xml_issuer_serial() {
+            Some([issuer, _]) => issuer,
+            None => return Ok(None),
+        },
     };
     let compared = access
         .query(node, |xml, snapshot, work| {

@@ -29,6 +29,24 @@ and streams the original V1.2.2 imprint input through the XML adapter. Its
 These entry points expose legacy property, signer and timestamp facts. Current
 EN baseline levels and application trust use their own evidence.
 
+## Direct C, X, XL and A
+
+Use `produce::References` to write the certificate and revocation references
+for the selected validation artifacts. `produce::write_extended_values`
+places their original encodings in the direct XL values properties.
+`produce::ExtendedAugmentation` prepares the RFC 3161 request for X type 1,
+X type 2 or A and binds the verified response to the exact staged input.
+
+`extended::prepare` inventories the reference and material properties and
+all original timestamps, including archive renewals.
+`validation::check_required_references` checks the required whole-artifact
+digests. `extended::check_incorporation` checks the exact original XML values
+for the selected artifacts that the format requires to be embedded.
+Use the same timestamp check as for the baseline with the appropriate
+`timestamp::ExtendedKind`. The explicit reference vocabulary distinguishes
+TS 101 903 and EN 319 132-2 properties. The original archive recipe and the
+1.4.1 recipe select their respective source inputs.
+
 ## Creating and augmenting signatures
 
 `produce` supplies construction and append planning for the EN 319 132-1

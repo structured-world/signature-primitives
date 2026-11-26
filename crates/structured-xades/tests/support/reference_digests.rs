@@ -467,7 +467,7 @@ fn certificate_catalogue_does_not_hash_unreferenced_crls() {
                     let node = add(&mut xml, crls, XADES, "EncapsulatedCRLValue");
                     xml.binary_routes.push((
                         node,
-                        crate::timestamp_oracle::complete_crl_number(2, number),
+                        super::super::timestamp_oracle::complete_crl_number(2, number),
                     ));
                 }
             }

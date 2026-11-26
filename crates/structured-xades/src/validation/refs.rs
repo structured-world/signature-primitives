@@ -4,7 +4,7 @@ use crate::{
     certificate,
     container::XADES,
     properties::{self, Error, PropertyResult},
-    timestamp::XADES_141,
+    timestamp::{self, ReferenceSyntax},
     unsigned,
     xml::{Access, Name, Snapshot, Xml},
 };
@@ -85,6 +85,7 @@ pub struct ReferenceEntry<N> {
     kind: ReferenceKind,
     digest: Option<(N, N)>,
     identifier: ReferenceIdentifier<N>,
+    xml_issuer_serial: Option<[N; 2]>,
 }
 
 impl<N: Copy> ReferenceEntry<N> {
@@ -108,11 +109,24 @@ impl<N: Copy> ReferenceEntry<N> {
     pub fn identifier(&self) -> ReferenceIdentifier<N> {
         self.identifier
     }
+    /// Original issuer-name and decimal serial nodes in a V1 certificate reference.
+    #[must_use]
+    pub fn xml_issuer_serial(&self) -> Option<[N; 2]> {
+        self.xml_issuer_serial
+    }
     /// Fixed-size scalar obligations derived from the same identifier model.
     /// No copied catalogue or normalized string storage is retained.
     #[must_use]
     pub fn fields(&self) -> [Option<ReferenceField<N>>; 4] {
         let digest = self.digest.map(|(_, node)| ReferenceField::Binary(node));
+        if let Some([_, serial]) = self.xml_issuer_serial {
+            return [
+                digest,
+                Some(ReferenceField::Uri(self.node)),
+                Some(ReferenceField::Integer(serial)),
+                None,
+            ];
+        }
         match self.identifier {
             ReferenceIdentifier::Certificate { issuer_serial } => [
                 digest,
@@ -193,7 +207,64 @@ impl<N: Copy, D: Copy, G: Copy> ReferenceProperty<N, D, G> {
     }
 }
 
-type Reading<X> = ReferenceProperty<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>;
+/// Original reference property using this XML adapter's identity types.
+pub type Reading<X> =
+    ReferenceProperty<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>::Generation>;
+
+/// Read one original complete validation-reference property on the selected
+/// bound signature. The selected certificate vocabulary is explicit.
+pub fn read_extended_references<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    bound: &crate::binding::Selected<X>,
+    node: X::Id,
+    syntax: ReferenceSyntax,
+) -> super::ValidationResult<Reading<X>, X> {
+    let parent = timestamp::unsigned_parent(access, bound, node).map_err(super::Error::Input)?;
+    for child in access.children(parent) {
+        let child = child.map_err(|cause| super::Error::Property(Error::Child(cause)))?;
+        if !access
+            .equal_id(child, node)
+            .map_err(|cause| super::Error::Property(Error::Resource { node, cause }))?
+        {
+            continue;
+        }
+        let Some(role) = role(access, node, syntax).map_err(super::Error::Property)? else {
+            return Err(super::Error::Property(Error::Unexpected { node }));
+        };
+        return read_in(access, bound.containers().signature(), node, role, syntax)
+            .map_err(super::Error::Property);
+    }
+    Err(super::Error::Input(timestamp::InputError::Foreign { node }))
+}
+
+pub(crate) fn role<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+    syntax: ReferenceSyntax,
+) -> PropertyResult<Option<unsigned::Role>, X> {
+    use unsigned::Role;
+    let cert = syntax.certificates(false);
+    let attr = syntax.certificates(true);
+    for (namespace, local, role) in [
+        (cert.namespace, cert.local, Role::CertificateReferences),
+        (
+            attr.namespace,
+            attr.local,
+            Role::AttributeCertificateReferences,
+        ),
+        (XADES, "CompleteRevocationRefs", Role::RevocationReferences),
+        (
+            XADES,
+            "AttributeRevocationRefs",
+            Role::AttributeRevocationReferences,
+        ),
+    ] {
+        if named(access, node, namespace, local)? {
+            return Ok(Some(role));
+        }
+    }
+    Ok(None)
+}
 
 // EN319132-1 V1.3.1 Annex A.1.1–A.1.4/C: each written group is nonempty.
 // A.1.2 additionally forbids empty CompleteRevocationRefs despite the XSD's
@@ -205,15 +276,41 @@ pub(crate) fn read<X: Xml, W: Work>(
     signature: X::Id,
     original: unsigned::Entry<X::Id>,
 ) -> PropertyResult<Reading<X>, X> {
-    let node = original.node;
+    read_in(
+        access,
+        signature,
+        original.node,
+        original.role,
+        ReferenceSyntax::V2,
+    )
+}
+
+pub(crate) fn read_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    node: X::Id,
+    role: unsigned::Role,
+    syntax: ReferenceSyntax,
+) -> PropertyResult<Reading<X>, X> {
     let mut entries = access.execution().vector();
-    match original.role {
+    match role {
         unsigned::Role::CertificateReferences | unsigned::Role::AttributeCertificateReferences => {
             let mut children = access.children(node);
             let list = required(&mut children, node, "CertRefs")?;
-            expect(access, list, XADES_141, "CertRefs")?;
+            expect(
+                access,
+                list,
+                syntax.certificates(false).namespace,
+                "CertRefs",
+            )?;
             finish(&mut children)?;
-            read_group(access, list, ReferenceKind::Certificate, &mut entries)?;
+            read_group(
+                access,
+                list,
+                ReferenceKind::Certificate,
+                syntax,
+                &mut entries,
+            )?;
         }
         unsigned::Role::RevocationReferences | unsigned::Role::AttributeRevocationReferences => {
             let mut prior = None;
@@ -237,9 +334,12 @@ pub(crate) fn read<X: Xml, W: Work>(
                     }
                 }
                 prior = Some(rank);
-                read_group(access, child, kind, &mut entries)?;
+                read_group(access, child, kind, syntax, &mut entries)?;
             }
-            if original.role == unsigned::Role::RevocationReferences && entries.is_empty() {
+            if role == unsigned::Role::RevocationReferences
+                && entries.is_empty()
+                && syntax == ReferenceSyntax::V2
+            {
                 return Err(Error::Missing {
                     parent: node,
                     local: "CRLRefs, OCSPRefs or OtherRefs",
@@ -252,7 +352,7 @@ pub(crate) fn read<X: Xml, W: Work>(
         snapshot: access.snapshot(),
         signature,
         node,
-        role: original.role,
+        role,
         entries: entries.into_owned(),
     })
 }
@@ -261,6 +361,7 @@ fn read_group<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     parent: X::Id,
     kind: ReferenceKind,
+    syntax: ReferenceSyntax,
     entries: &mut OwnedVec<ReferenceEntry<X::Id>, W>,
 ) -> PropertyResult<(), X> {
     let local = match kind {
@@ -278,12 +379,21 @@ fn read_group<X: Xml, W: Work>(
             kind,
             digest: None,
             identifier: ReferenceIdentifier::Absent,
+            xml_issuer_serial: None,
         };
         match kind {
             ReferenceKind::Certificate => {
-                let reference = certificate::read_entry(access, node)?;
+                let reference = if syntax == ReferenceSyntax::Original {
+                    let (reference, fields) = certificate::read_original_reference(access, node)?;
+                    entry.xml_issuer_serial = Some(fields);
+                    reference
+                } else {
+                    certificate::read_entry(access, node)?
+                };
                 entry.digest = Some((reference.method(), reference.digest()));
-                if let Some(issuer) = reference.issuer_serial() {
+                if syntax == ReferenceSyntax::V2
+                    && let Some(issuer) = reference.issuer_serial()
+                {
                     properties::simple_content(access, issuer)?;
                     entry.identifier = ReferenceIdentifier::Certificate {
                         issuer_serial: issuer,

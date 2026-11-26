@@ -265,6 +265,15 @@ impl<'a> TbsCertList<'a> {
         self.bytes
     }
 
+    /// Read the original CRL number, if present, under source and current Work.
+    /// The indexed extension and nonnegative INTEGER rules are shared with
+    /// complete/delta list binding. No finite integer width is imposed.
+    pub fn number<W: Work>(&self, work: &W) -> Result<Option<Integer<'a>>> {
+        self.crl_number(work)?
+            .map(|extension| delta::number(extension, work))
+            .transpose()
+    }
+
     fn indexed_extension<W: Work>(
         &self,
         slot: Option<NonZeroUsize>,

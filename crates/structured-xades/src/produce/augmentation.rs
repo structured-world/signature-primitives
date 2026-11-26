@@ -1,21 +1,27 @@
 //! Source-bound append operations over a caller-owned unpublished XML draft.
 
-use super::{Error, Materials, Timestamp, TimestampKind, Writer};
+use super::{ContentRequest, Error, Materials, Timestamp, TimestampKind, Writer};
 use crate::{
     baseline::Assessment,
+    binding::Selected,
     prepare::Prepared,
-    timestamp::{self, AppendKind, Input, TimestampXml},
+    timestamp::{self, AppendKind, ExtendedKind, Input, TimestampXml},
     unsigned::Requirements,
-    xml::Snapshot,
+    xml::{Access, Name, Snapshot},
 };
 use structured_asn1::{
     Reader,
-    memory::{Execution, Work},
+    digest::Resolution,
+    memory::{Execution, OwnedVec, Work},
 };
 use structured_cms::{
+    digest::{DigestError, PassError, SingleDigest},
     provider::SignatureProvider,
-    timestamp::{CheckContext, ProfileCheckError, TokenExtension},
+    timestamp::{
+        CheckContext, NewRequest, ProfileCheckError, RequestEncodingError, TokenExtension,
+    },
 };
+use structured_pkix::algorithm::digest::{self, AsnDigest};
 
 /// Append-only transaction opened by the XML owner at the exact original tail.
 /// Base identities remain fixed while new draft generations are unpublished.
@@ -162,7 +168,8 @@ impl<'a, X: TimestampXml> Augmentation<'a, X> {
             snapshot: self.prepared.bound().containers().snapshot(),
             signature: self.prepared.bound().containers().signature(),
             method,
-            kind,
+            name: kind.name(),
+            request: None,
             response: check.response,
             facts,
         })
@@ -289,7 +296,8 @@ pub struct Checked<'a, D, G, N> {
     snapshot: Snapshot<D, G>,
     signature: N,
     method: N,
-    kind: TimestampKind,
+    name: Name<'static>,
+    request: Option<&'a [u8]>,
     response: &'a structured_cms::timestamp::Response<'a>,
     facts: structured_cms::timestamp::response::CheckedResponse<'a>,
 }
@@ -316,12 +324,253 @@ impl<D: Copy, G: Copy, N: Copy> Checked<'_, D, G, N> {
             snapshot: self.snapshot,
             signature: self.signature,
             method: self.method,
-            kind: self.kind,
+            name: self.name,
             token,
             producer,
             evidence,
         })
     }
+}
+
+/// Source-bound extended augmentation on an authenticated XML signature.
+/// Callers separately establish the selected profile's path, status and
+/// material prerequisites before issuing the request. The same prepared
+/// input is used to check the returned token before it can be written.
+pub struct ExtendedAugmentation<'a, X: TimestampXml> {
+    input: Input<'a, X>,
+    kind: ExtendedKind,
+    unsigned_parent: Option<X::Id>,
+    request: Option<OwnedVec<u8>>,
+}
+
+/// Original failure to construct an extended timestamp request.
+#[derive(Debug)]
+pub enum ExtendedRequestError<E, N, P> {
+    /// The supplied query does not belong to this original algorithm identifier.
+    Foreign,
+    /// Original algorithm reading or work refusal.
+    Identifier(structured_pkix::Error),
+    /// The selected algorithm could not be used by this provider.
+    Algorithm(Resolution<()>),
+    /// Original CMS digest preparation refusal.
+    Prepare(DigestError<P>),
+    /// Original XML replay, resource, or provider refusal.
+    Digest(PassError<timestamp::InputError<E, N>, P>),
+    /// Original RFC 3161 request encoding refusal.
+    Encoding(RequestEncodingError),
+}
+
+/// Request result in the original XML and provider error domains.
+pub type ExtendedRequestResult<'a, X, P> = Result<
+    &'a [u8],
+    ExtendedRequestError<<X as crate::xml::Xml>::Error, <X as crate::xml::Xml>::Id, P>,
+>;
+
+impl<'a, X: TimestampXml> ExtendedAugmentation<'a, X> {
+    /// Prepare the exact future input from an immutable generation with
+    /// required subordinate properties and validation material staged.
+    pub fn prepare<W: Work>(
+        xml: &'a X,
+        bound: &Selected<X>,
+        kind: ExtendedKind,
+        method: X::Id,
+        work: &W,
+    ) -> InputResultExt<Self, X> {
+        let layout = bound.containers();
+        let access = Access::new(xml, layout.snapshot(), work);
+        let unsigned_parent = match layout.unsigned() {
+            Some(unsigned) => timestamp::optional(
+                &access,
+                unsigned,
+                super::XADES,
+                "UnsignedSignatureProperties",
+            )?,
+            None => None,
+        };
+        let input = Input::prepare_extended_append(xml, bound, kind, method, work)?;
+        Ok(Self {
+            input,
+            kind,
+            unsigned_parent,
+            request: None,
+        })
+    }
+
+    /// Compute the original imprint and retain the exact DER request to send.
+    /// A new request replaces the previous request only after it succeeds.
+    pub fn request<'p, P: AsnDigest<'p>>(
+        &mut self,
+        provider: &'p P,
+        parent: &Reader<'_>,
+        request: &ContentRequest<'_>,
+    ) -> ExtendedRequestResult<'_, X, P::Error> {
+        if !request.algorithm.same_session(parent) {
+            return Err(ExtendedRequestError::Foreign);
+        }
+        let work = parent.execution();
+        let identity = match digest::resolve(provider, &request.algorithm, &work)
+            .map_err(ExtendedRequestError::Identifier)?
+        {
+            Resolution::Supported(identity) => identity,
+            Resolution::Unsupported => {
+                return Err(ExtendedRequestError::Algorithm(Resolution::Unsupported));
+            }
+            Resolution::Malformed => {
+                return Err(ExtendedRequestError::Algorithm(Resolution::Malformed));
+            }
+        };
+        let output = SingleDigest::prepare(
+            provider,
+            identity,
+            &work,
+            "extendedTimeStamp.request",
+            request.algorithm.offset(),
+        )
+        .map_err(ExtendedRequestError::Prepare)?
+        .run(&mut self.input, &work)
+        .map_err(ExtendedRequestError::Digest)?;
+        let request = NewRequest {
+            algorithm: request.algorithm,
+            hashed_message: output.as_bytes(),
+            policy: request.policy,
+            nonce: request.nonce,
+            cert_req: request.cert_req,
+            extensions: request.extensions,
+        }
+        .encode_der(parent)
+        .map_err(ExtendedRequestError::Encoding)?;
+        Ok(self.request.insert(request))
+    }
+
+    /// Authenticate the exact response and check the proposed imprint.
+    #[expect(
+        clippy::result_large_err,
+        reason = "carry the original provider, XML, resource and profile causes"
+    )]
+    pub fn check_response<'q, P, PE, RE>(
+        &mut self,
+        check: &ResponseCheck<'q, '_, P>,
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+    ) -> ResponseResult<CheckedFor<'q, X>, X, PE, RE>
+    where
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+    {
+        let expected = self
+            .request
+            .as_deref()
+            .ok_or(ResponseError::Admission(Error::Prerequisites))?;
+        let requested = check
+            .context
+            .requested
+            .as_ref()
+            .ok_or(ResponseError::Admission(Error::Prerequisites))?;
+        let actual = requested.request.as_bytes();
+        if !requested.request.same_session(requested.parent) || expected.len() != actual.len() {
+            return Err(ResponseError::Admission(Error::Foreign));
+        }
+        requested
+            .parent
+            .execution_query(check.query)
+            .charge_work(actual.len() as u64)
+            .map_err(|cause| ResponseError::Admission(Error::Resource(cause)))?;
+        if expected != actual {
+            return Err(ResponseError::Admission(Error::Foreign));
+        }
+        check_extended_input(&mut self.input, self.kind, actual, check, recognizes)
+    }
+
+    /// Write a positive response at the exact original unsigned tail.
+    pub fn write_timestamp<B, W: Work>(
+        &self,
+        checked: &CheckedFor<'_, X>,
+        writer: &mut B,
+        work: &W,
+    ) -> Result<(), Error<B::Error>>
+    where
+        B: Transaction<Id = X::Id, Document = X::Document, Generation = X::Generation>,
+    {
+        self.require(writer, work)?;
+        let (snapshot, method) = self.input.location();
+        let signature = self.input.signature();
+        work.charge_work(1).map_err(Error::Resource)?;
+        if checked.snapshot != snapshot
+            || checked.name != self.kind.name()
+            || !structured_ltv::source::equal_id(checked.signature, signature, work)
+                .map_err(Error::Resource)?
+            || !structured_ltv::source::equal_id(checked.method, method, work)
+                .map_err(Error::Resource)?
+        {
+            return Err(Error::Foreign);
+        }
+        let expected = self.request.as_deref().ok_or(Error::Prerequisites)?;
+        let actual = checked.request.ok_or(Error::Foreign)?;
+        work.charge_work(actual.len() as u64)
+            .map_err(Error::Resource)?;
+        if expected != actual {
+            return Err(Error::Foreign);
+        }
+        let timestamp = checked.timestamp().ok_or(Error::Prerequisites)?;
+        timestamp.write(writer, work, |writer, work| writer.method(method, work))?;
+        self.require(writer, work)
+    }
+
+    fn require<B, W: Work>(&self, writer: &B, work: &W) -> Result<(), Error<B::Error>>
+    where
+        B: Transaction<Id = X::Id, Document = X::Document, Generation = X::Generation>,
+    {
+        let (snapshot, _) = self.input.location();
+        work.charge_work(2).map_err(Error::Resource)?;
+        if self.input.current_snapshot() != snapshot
+            || writer.base() != snapshot
+            || !structured_ltv::source::equal_id(writer.signature(), self.input.signature(), work)
+                .map_err(Error::Resource)?
+            || !super::same_parent(writer.unsigned_parent(), self.unsigned_parent, work)
+                .map_err(Error::Resource)?
+        {
+            return Err(Error::Foreign);
+        }
+        Ok(())
+    }
+}
+
+type InputResultExt<T, X> = timestamp::InputResult<T, X>;
+
+#[expect(
+    clippy::result_large_err,
+    reason = "carry the original provider, XML, resource and profile causes"
+)]
+fn check_extended_input<'q, X: TimestampXml, P, PE, RE>(
+    input: &mut Input<'_, X>,
+    kind: ExtendedKind,
+    request: &'q [u8],
+    check: &ResponseCheck<'q, '_, P>,
+    recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+) -> ResponseResult<CheckedFor<'q, X>, X, PE, RE>
+where
+    P: for<'scope> SignatureProvider<'scope, Error = PE>,
+{
+    let (snapshot, method) = input.location();
+    let signature = input.signature();
+    let facts = check
+        .response
+        .check_with_profile(
+            check.provider,
+            check.query,
+            check.context,
+            input,
+            recognizes,
+            |fields| timestamp::profile::check(&fields),
+        )
+        .map_err(ResponseError::Check)?;
+    Ok(Checked {
+        snapshot,
+        signature,
+        method,
+        name: kind.name(),
+        request: Some(request),
+        response: check.response,
+        facts,
+    })
 }
 /// Source/stage failures during future-input preparation.
 #[derive(Debug)]

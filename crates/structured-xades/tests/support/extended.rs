@@ -254,6 +254,32 @@ fn c_x_xl_and_archive_inventory_retains_every_occurrence_in_its_scope() {
 }
 
 #[test]
+fn signed_data_timestamps_use_the_default_only_in_the_historical_profile() {
+    // TS 101 903 permits the implicit method on both signed timestamp forms.
+    let (mut xml, _, _) = Tree::stamped(Role::Signature);
+    let objects = add(&mut xml, 3, XADES, "SignedDataObjectProperties");
+    let all = add(&mut xml, objects, XADES, "AllDataObjectsTimeStamp");
+    add(&mut xml, all, XADES, "EncapsulatedTimeStamp");
+    let one = add(&mut xml, objects, XADES, "IndividualDataObjectsTimeStamp");
+    add(&mut xml, one, XADES, "Include");
+    add(&mut xml, one, XADES, "EncapsulatedTimeStamp");
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let layout = container::locate(&access, 0).unwrap();
+    let bound = binding::bind(&access, &layout).unwrap();
+    let historical = extended::prepare(&access, &bound, ReferenceSyntax::Original).unwrap();
+    for (stamp, node) in historical.timestamps()[1..].iter().zip([all, one]) {
+        assert_eq!(stamp.node(), node);
+        assert_eq!(stamp.explicit_method(), None);
+    }
+    assert_eq!(historical.timestamps().len(), 3);
+    assert!(matches!(
+        extended::prepare(&access, &bound, ReferenceSyntax::V2),
+        Err(extended::Error::Timestamp(InputError::Missing { node, local: "CanonicalizationMethod" })) if node == all
+    ));
+}
+
+#[test]
 fn archive_names_select_distinct_original_object_and_property_coverage() {
     // The older archive omits referenced Objects and unlisted extension
     // properties. The 1.4.1 archive includes both and seals any earlier A.

@@ -292,7 +292,7 @@ pub fn prepare<X: Xml, W: Work>(
             }
         }
     }
-    append_signed_timestamps(access, layout, &mut timestamps)?;
+    append_signed_timestamps(access, layout, syntax, &mut timestamps)?;
     Ok(Properties {
         snapshot: layout.snapshot(),
         signature,
@@ -306,6 +306,7 @@ pub fn prepare<X: Xml, W: Work>(
 fn append_signed_timestamps<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     layout: &crate::container::Layout<X>,
+    syntax: ReferenceSyntax,
     timestamps: &mut OwnedVec<Timestamp<X>, W>,
 ) -> ResultFor<(), X> {
     let (_, signed_objects) = properties::sections(access, layout).map_err(Error::Property)?;
@@ -330,9 +331,18 @@ fn append_signed_timestamps<X: Xml, W: Work>(
             } else {
                 continue;
             };
-            let stamp =
-                timestamp::read_fields_in(access, layout.signature(), parent, node, role, false)
-                    .map_err(Error::Timestamp)?;
+            // TS 101 903 V1.4.2 §§7.1.4.2, 7.2.9 and 7.2.10 apply the
+            // same optional method to signed and unsigned historical stamps.
+            // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
+            let stamp = timestamp::read_fields_in(
+                access,
+                layout.signature(),
+                parent,
+                node,
+                role,
+                syntax == ReferenceSyntax::Original,
+            )
+            .map_err(Error::Timestamp)?;
             timestamps
                 .try_push(stamp)
                 .map_err(|cause| Error::Property(properties::Error::Resource { node, cause }))?;

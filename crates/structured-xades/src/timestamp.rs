@@ -22,12 +22,15 @@ pub const XADES_141: &str = "http://uri.etsi.org/01903/v1.4.1#";
 
 mod counters;
 mod coverage;
+mod extended;
 mod material;
 pub use counters::{
     CounterStamp, CounterTimestampError, CounterTimestampResult, CounterTimestamps,
     counter_timestamps,
 };
 pub use coverage::{CoverageError, CoverageFor};
+pub(crate) use extended::read_at as read_extended_at;
+pub use extended::{ExtendedKind, ReferenceSyntax, read_extended};
 pub(crate) mod profile;
 mod selection;
 mod tokens;
@@ -167,6 +170,33 @@ pub trait TimestampXml: ReferenceXml {
         receiver: &mut impl Receiver,
         execution: &W,
     ) -> Result<(), Self::Error>;
+
+    /// Stream with the `XMLDSig` default canonicalization selected by an
+    /// original historical timestamp with no method element. None denotes
+    /// an adapter without this capability; no bytes may have been emitted.
+    fn canonicalize_timestamp_default<W: Work>(
+        &self,
+        _snapshot: Snapshot<Self::Document, Self::Generation>,
+        _node: Self::Id,
+        _receiver: &mut impl Receiver,
+        _execution: &W,
+    ) -> Result<Option<()>, Self::Error> {
+        Ok(None)
+    }
+
+    /// Replay the original post-transform reference, applying the `XMLDSig`
+    /// default to a final node-set. Octet output is streamed unchanged. None
+    /// means the adapter lacks this capability and has emitted no bytes.
+    fn replay_timestamp_default<W: Work>(
+        &self,
+        _snapshot: Snapshot<Self::Document, Self::Generation>,
+        _signature: Self::Id,
+        _reference: Self::Id,
+        _receiver: &mut impl Receiver,
+        _execution: &W,
+    ) -> Result<Option<ReplayOutcome<Self::Error>>, Self::Error> {
+        Ok(None)
+    }
 }
 
 /// One original timestamp container, before RFC3161 mathematical/authority checks.
@@ -177,7 +207,9 @@ pub struct Stamp<N, D, G> {
     node: N,
     parent: N,
     method: N,
+    implicit_method: bool,
     role: Role,
+    extended: Option<ExtendedKind>,
     tokens: OwnedVec<N>,
     includes: OwnedVec<N>,
 }
@@ -198,10 +230,16 @@ impl<N: Copy, D: Copy, G: Copy> Stamp<N, D, G> {
     pub fn node(&self) -> N {
         self.node
     }
-    /// Original canonicalization method and parameters, owned by the XML adapter.
+    /// Original method node, or the enclosing timestamp when it uses an
+    /// implicit method. Use `explicit_method` when reading its parameters.
     #[must_use]
     pub fn method(&self) -> N {
         self.method
+    }
+    /// Original method node, absent only for a historical implicit default.
+    #[must_use]
+    pub fn explicit_method(&self) -> Option<N> {
+        (!self.implicit_method).then_some(self.method)
     }
     /// Exact input role; this is not proof of an attained signature level.
     #[must_use]
@@ -832,6 +870,17 @@ fn read_fields<X: Xml, W: Work>(
     node: X::Id,
     role: Role,
 ) -> InputResult<Timestamp<X>, X> {
+    read_fields_in(access, signature, parent, node, role, false)
+}
+
+pub(crate) fn read_fields_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    parent: X::Id,
+    node: X::Id,
+    role: Role,
+    historical: bool,
+) -> InputResult<Timestamp<X>, X> {
     let mut method = None;
     let mut tokens = access
         .query(node, |_, _, work| Ok(work.vector()))
@@ -860,7 +909,7 @@ fn read_fields<X: Xml, W: Work>(
             }
             method = Some(child);
         } else if named(access, child, XADES, "EncapsulatedTimeStamp")? {
-            if role == Role::Signature && !tokens.is_empty() {
+            if role == Role::Signature && !historical && !tokens.is_empty() {
                 return Err(InputError::Duplicate { node: child });
             }
             tokens
@@ -874,10 +923,20 @@ fn read_fields<X: Xml, W: Work>(
     // and exactly one RFC3161 token per SignatureTimeStamp. Archive and
     // AllDataObjectsTimeStamp (§5.2.8.1) may each carry multiple tokens.
     // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
-    let method = method.ok_or(InputError::Missing {
-        node,
-        local: "CanonicalizationMethod",
-    })?;
+    let implicit_method = method.is_none();
+    let method = match method {
+        Some(method) => method,
+        // TS 101 903 V1.4.2 §7.1.4.2 and V1.3.2 §7.7.1 use XMLDSig's
+        // default when the historical timestamp carries no method.
+        // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
+        None if historical => node,
+        None => {
+            return Err(InputError::Missing {
+                node,
+                local: "CanonicalizationMethod",
+            });
+        }
+    };
     if tokens.is_empty() {
         return Err(InputError::Missing {
             node,
@@ -896,7 +955,9 @@ fn read_fields<X: Xml, W: Work>(
         node,
         parent,
         method,
+        implicit_method,
         role,
+        extended: None,
         tokens: tokens.into_owned(),
         includes: includes.into_owned(),
     })
@@ -915,6 +976,7 @@ pub struct Input<'a, X: TimestampXml> {
     signature: X::Id,
     timestamp: X::Id,
     method: X::Id,
+    implicit_method: bool,
     role: Role,
     parts: OwnedVec<Part<X::Id>>,
 }
@@ -965,6 +1027,7 @@ impl<'a, X: TimestampXml> Input<'a, X> {
             signature: layout.signature(),
             timestamp: method,
             method,
+            implicit_method: false,
             role,
             parts: parts.into_owned(),
         })
@@ -1001,38 +1064,49 @@ impl<'a, X: TimestampXml> Input<'a, X> {
             return Err(InputError::Foreign { node: stamp.node });
         }
         let mut parts = execution.vector();
-        match stamp.role {
-            Role::Signature => {
-                let value = singleton(&access, stamp.signature, DS, "SignatureValue")?;
-                parts.try_push(Part::Element(value)).map_err(refusal)?;
-            }
-            Role::AllDataObjects => {
-                // EN319132-1 §5.2.8.1: direct SignedInfo references only, in order,
-                // except those referencing SignedProperties. A signed Manifest's
-                // referenced targets do not add another traversal to this input.
-                // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
-                append_references(
-                    &access,
-                    stamp.signature,
-                    stamp.node,
-                    Some(layout.signed()),
-                    &mut parts,
-                )?;
-            }
-            Role::IndividualDataObjects => {
-                append_includes(&access, stamp, layout.signed(), &mut parts)?;
-            }
-            Role::SignatureAndReferences | Role::ReferencesOnly => {
-                append_validation_references(&access, stamp, &mut parts)?;
-            }
-            Role::Archive => {
-                append_archive(
-                    &access,
-                    layout,
-                    stamp.node,
-                    Some((stamp.parent, stamp.node)),
-                    &mut parts,
-                )?;
+        if let Some(kind) = stamp.extended {
+            extended::append(
+                &access,
+                layout,
+                kind,
+                stamp.node,
+                Some((stamp.parent, stamp.node)),
+                &mut parts,
+            )?;
+        } else {
+            match stamp.role {
+                Role::Signature => {
+                    let value = singleton(&access, stamp.signature, DS, "SignatureValue")?;
+                    parts.try_push(Part::Element(value)).map_err(refusal)?;
+                }
+                Role::AllDataObjects => {
+                    // EN319132-1 §5.2.8.1: direct SignedInfo references only, in order,
+                    // except those referencing SignedProperties. A signed Manifest's
+                    // referenced targets do not add another traversal to this input.
+                    // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
+                    append_references(
+                        &access,
+                        stamp.signature,
+                        stamp.node,
+                        Some(layout.signed()),
+                        &mut parts,
+                    )?;
+                }
+                Role::IndividualDataObjects => {
+                    append_includes(&access, stamp, layout.signed(), &mut parts)?;
+                }
+                Role::SignatureAndReferences | Role::ReferencesOnly => {
+                    append_validation_references(&access, stamp, &mut parts)?;
+                }
+                Role::Archive => {
+                    append_archive(
+                        &access,
+                        layout,
+                        stamp.node,
+                        Some((stamp.parent, stamp.node)),
+                        &mut parts,
+                    )?;
+                }
             }
         }
         Ok(Self {
@@ -1041,6 +1115,7 @@ impl<'a, X: TimestampXml> Input<'a, X> {
             signature: stamp.signature,
             timestamp: stamp.node,
             method: stamp.method,
+            implicit_method: stamp.implicit_method,
             role: stamp.role,
             parts: parts.into_owned(),
         })
@@ -1052,6 +1127,14 @@ impl<'a, X: TimestampXml> Input<'a, X> {
     pub fn location(&self) -> (Snapshot<X::Document, X::Generation>, X::Id) {
         (self.snapshot, self.timestamp)
     }
+
+    pub(crate) fn signature(&self) -> X::Id {
+        self.signature
+    }
+
+    pub(crate) fn current_snapshot(&self) -> Snapshot<X::Document, X::Generation> {
+        self.xml.snapshot()
+    }
 }
 
 fn append_validation_references<X: TimestampXml, W: Work>(
@@ -1059,33 +1142,67 @@ fn append_validation_references<X: TimestampXml, W: Work>(
     stamp: &Timestamp<X>,
     parts: &mut OwnedVec<Part<X::Id>, W>,
 ) -> InputResult<(), X> {
-    // EN319132-1 A.1.5.1.2/A.1.5.2.2: implicit same-parent input uses
-    // ORIGINAL preceding property order, not the order of the role list.
+    append_reference_properties(
+        access,
+        ReferencePrefix {
+            signature: stamp.signature,
+            parent: stamp.parent,
+            context: stamp.node,
+            before: Some(stamp.node),
+            syntax: ReferenceSyntax::V2,
+            with_signature: stamp.role == Role::SignatureAndReferences,
+        },
+        parts,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct ReferencePrefix<N> {
+    signature: N,
+    parent: N,
+    context: N,
+    before: Option<N>,
+    syntax: ReferenceSyntax,
+    with_signature: bool,
+}
+
+fn append_reference_properties<X: TimestampXml, W: Work>(
+    access: &Access<'_, X, W>,
+    prefix: ReferencePrefix<X::Id>,
+    parts: &mut OwnedVec<Part<X::Id>, W>,
+) -> InputResult<(), X> {
+    // EN 319 132-1 A.1.5.1.2/A.1.5.2.2 and TS 101 903 V1.4.2
+    // §§7.5.1.1/7.5.2.1 use the preceding properties in document order.
     // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
+    // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
     let refusal = |cause| InputError::Resource {
-        node: stamp.node,
+        node: prefix.context,
         cause,
     };
-    let with_signature = stamp.role == Role::SignatureAndReferences;
-    if with_signature {
-        let value = singleton(access, stamp.signature, DS, "SignatureValue")?;
+    if prefix.with_signature {
+        let value = singleton(access, prefix.signature, DS, "SignatureValue")?;
         parts.try_push(Part::Element(value)).map_err(refusal)?;
     }
     let mut found = [false; 4];
+    let cert = prefix.syntax.certificates(false);
+    let attribute = prefix.syntax.certificates(true);
     let roles = [
-        (XADES_141, "CompleteCertificateRefsV2"),
+        (cert.namespace, cert.local),
         (XADES, "CompleteRevocationRefs"),
-        (XADES_141, "AttributeCertificateRefsV2"),
+        (attribute.namespace, attribute.local),
         (XADES, "AttributeRevocationRefs"),
     ];
-    let mut reached = false;
-    for child in access.children(stamp.parent) {
+    let mut reached = prefix.before.is_none();
+    for child in access.children(prefix.parent) {
         let node = child.map_err(InputError::Child)?;
-        if access.equal_id(node, stamp.node).map_err(refusal)? {
+        if let Some(before) = prefix.before
+            && access.equal_id(node, before).map_err(refusal)?
+        {
             reached = true;
             break;
         }
-        let mut selected = with_signature && named(access, node, XADES, "SignatureTimeStamp")?;
+        let mut selected =
+            prefix.with_signature && named(access, node, XADES, "SignatureTimeStamp")?;
         for (index, (namespace, local)) in roles.iter().enumerate() {
             if named(access, node, namespace, local)? {
                 if found[index] {
@@ -1101,12 +1218,14 @@ fn append_validation_references<X: TimestampXml, W: Work>(
         }
     }
     if !reached {
-        return Err(InputError::Foreign { node: stamp.node });
+        return Err(InputError::Foreign {
+            node: prefix.context,
+        });
     }
     for index in 0..2 {
         if !found[index] {
             return Err(InputError::Missing {
-                node: stamp.node,
+                node: prefix.context,
                 local: roles[index].1,
             });
         }
@@ -1217,6 +1336,17 @@ fn append_references<X: TimestampXml, W: Work>(
     excluded: Option<X::Id>,
     parts: &mut OwnedVec<Part<X::Id>, W>,
 ) -> InputResult<(), X> {
+    append_references_with(access, signature, context, excluded, parts, |_| Ok(()))
+}
+
+fn append_references_with<X: TimestampXml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    context: X::Id,
+    excluded: Option<X::Id>,
+    parts: &mut OwnedVec<Part<X::Id>, W>,
+    mut visit: impl FnMut(X::Id) -> Result<(), MemoryError>,
+) -> InputResult<(), X> {
     let count = access
         .query(signature, |xml, snapshot, work| {
             xml.reference_count(snapshot, signature, work)
@@ -1252,6 +1382,12 @@ fn append_references<X: TimestampXml, W: Work>(
         {
             continue;
         }
+        if let Some(target) = target {
+            visit(target).map_err(|cause| InputError::Resource {
+                node: context,
+                cause,
+            })?;
+        }
         parts.try_push(part).map_err(|cause| InputError::Resource {
             node: context,
             cause,
@@ -1269,12 +1405,38 @@ fn append_archive<X: TimestampXml, W: Work>(
     before: Option<(X::Id, X::Id)>,
     parts: &mut OwnedVec<Part<X::Id>, W>,
 ) -> InputResult<(), X> {
+    append_archive_in::<false, X, W>(access, layout, context, before, parts)
+}
+
+fn append_archive_132<X: TimestampXml, W: Work>(
+    access: &Access<'_, X, W>,
+    layout: &crate::container::Layout<X>,
+    context: X::Id,
+    before: Option<(X::Id, X::Id)>,
+    parts: &mut OwnedVec<Part<X::Id>, W>,
+) -> InputResult<(), X> {
+    append_archive_in::<true, X, W>(access, layout, context, before, parts)
+}
+
+fn append_archive_in<const OLD: bool, X: TimestampXml, W: Work>(
+    access: &Access<'_, X, W>,
+    layout: &crate::container::Layout<X>,
+    context: X::Id,
+    before: Option<(X::Id, X::Id)>,
+    parts: &mut OwnedVec<Part<X::Id>, W>,
+) -> InputResult<(), X> {
     let refusal = |cause| InputError::Resource {
         node: context,
         cause,
     };
     let signature = layout.signature();
-    append_references(access, signature, context, None, parts)?;
+    let mut targets = OLD.then(|| access.execution().map());
+    append_references_with(access, signature, context, None, parts, |target| {
+        if let Some(targets) = &mut targets {
+            targets.try_insert(target, ())?;
+        }
+        Ok(())
+    })?;
     parts
         .try_push(Part::Element(singleton(
             access,
@@ -1302,6 +1464,7 @@ fn append_archive<X: TimestampXml, W: Work>(
         },
     };
     let mut reached = before.is_none();
+    let mut required_values = [false; 2];
     if let Some(parent) = parent {
         for child in access.children(parent) {
             let node = child.map_err(InputError::Child)?;
@@ -1311,21 +1474,78 @@ fn append_archive<X: TimestampXml, W: Work>(
                 reached = true;
                 break;
             }
-            parts.try_push(Part::Element(node)).map_err(refusal)?;
+            if !OLD || old_archive_property(access, node)? {
+                if OLD {
+                    required_values[0] |= named(access, node, XADES, "CertificateValues")?;
+                    required_values[1] |= named(access, node, XADES, "RevocationValues")?;
+                }
+                parts.try_push(Part::Element(node)).map_err(refusal)?;
+            }
         }
     }
     if !reached {
         return Err(InputError::Foreign { node: context });
+    }
+    if OLD {
+        for (present, local) in required_values
+            .into_iter()
+            .zip(["CertificateValues", "RevocationValues"])
+        {
+            if !present {
+                return Err(InputError::Missing {
+                    node: context,
+                    local,
+                });
+            }
+        }
     }
     for child in access.children(signature) {
         let node = child.map_err(InputError::Child)?;
         if !access.equal_id(node, layout.object()).map_err(refusal)?
             && named(access, node, DS, "Object")?
         {
+            if let Some(targets) = &targets
+                && targets
+                    .get(&node, access.execution())
+                    .map_err(refusal)?
+                    .is_some()
+            {
+                continue;
+            }
             parts.try_push(Part::Element(node)).map_err(refusal)?;
         }
     }
     Ok(())
+}
+
+fn old_archive_property<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+) -> InputResult<bool, X> {
+    // TS 101 903 V1.3.2 §7.7.1 steps 4–5 select the listed earlier properties
+    // and omit already referenced Objects from the final XMLDSig component list.
+    // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.03.02_60/ts_101903v010302p.pdf
+    const PROPERTIES: [&str; 13] = [
+        "SignatureTimeStamp",
+        "CounterSignature",
+        "CompleteCertificateRefs",
+        "CompleteRevocationRefs",
+        "AttributeCertificateRefs",
+        "AttributeRevocationRefs",
+        "SigAndRefsTimeStamp",
+        "RefsOnlyTimeStamp",
+        "ArchiveTimeStamp",
+        "CertificateValues",
+        "RevocationValues",
+        "AttrAuthoritiesCertValues",
+        "AttributeRevocationValues",
+    ];
+    for local in PROPERTIES {
+        if named(access, node, XADES, local)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 impl<X: TimestampXml> Source for Input<'_, X> {
@@ -1336,6 +1556,20 @@ impl<X: TimestampXml> Source for Input<'_, X> {
         receiver: &mut impl Receiver,
         execution: &W,
     ) -> Result<(), Self::Error> {
+        if self.implicit_method {
+            self.stream_with::<true, W>(receiver, execution)
+        } else {
+            self.stream_with::<false, W>(receiver, execution)
+        }
+    }
+}
+
+impl<X: TimestampXml> Input<'_, X> {
+    fn stream_with<const IMPLICIT: bool, W: Work>(
+        &self,
+        receiver: &mut impl Receiver,
+        execution: &W,
+    ) -> InputResult<(), X> {
         let access = Access::new(self.xml, self.snapshot, execution);
         let mut receiver = Stop {
             receiver,
@@ -1349,14 +1583,39 @@ impl<X: TimestampXml> Source for Input<'_, X> {
                     cause,
                 })?;
             match self.parts[index] {
-                Part::Element(node) => access
-                    .query(node, |xml, snapshot, work| {
-                        xml.canonicalize(snapshot, node, self.method, &mut receiver, work)
-                    })
-                    .map_err(InputError::Access)?,
+                Part::Element(node) => {
+                    access
+                        .query(node, |xml, snapshot, work| {
+                            if IMPLICIT {
+                                xml.canonicalize_timestamp_default(
+                                    snapshot,
+                                    node,
+                                    &mut receiver,
+                                    work,
+                                )
+                            } else {
+                                xml.canonicalize(snapshot, node, self.method, &mut receiver, work)
+                                    .map(Some)
+                            }
+                        })
+                        .map_err(InputError::Access)?
+                        .ok_or(InputError::Missing {
+                            node: self.timestamp,
+                            local: "implicit canonicalization capability",
+                        })?;
+                }
                 Part::Reference { node, .. } => {
                     let outcome = access
                         .query(node, |xml, snapshot, work| {
+                            if IMPLICIT {
+                                return xml.replay_timestamp_default(
+                                    snapshot,
+                                    self.signature,
+                                    node,
+                                    &mut receiver,
+                                    work,
+                                );
+                            }
                             xml.replay_reference(
                                 snapshot,
                                 self.signature,
@@ -1365,8 +1624,13 @@ impl<X: TimestampXml> Source for Input<'_, X> {
                                 &mut receiver,
                                 work,
                             )
+                            .map(Some)
                         })
-                        .map_err(InputError::Access)?;
+                        .map_err(InputError::Access)?
+                        .ok_or(InputError::Missing {
+                            node: self.timestamp,
+                            local: "implicit reference replay capability",
+                        })?;
                     if let ReplayOutcome::Unavailable(cause) = outcome {
                         return Err(InputError::Unavailable { node, cause });
                     }

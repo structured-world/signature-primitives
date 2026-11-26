@@ -53,6 +53,56 @@ pub fn check_signature(directory: &Path) {
     compare_signature(directory, 0, true);
 }
 
+/// Check common X1 selection from SHA-256-pinned DSS canonicalized elements.
+/// # Panics
+/// Fails when the original data is absent or when common input selection
+/// differs from the timestamp's actual imprint.
+pub fn check_extended_x1(directory: &Path, syntax: timestamp::ReferenceSyntax) {
+    use sha2::{Digest, Sha256};
+    let (mut xml, _, _) = Tree::stamped(Role::Signature);
+    let cert = match syntax {
+        timestamp::ReferenceSyntax::Original => {
+            append(&mut xml, 7, XADES, "CompleteCertificateRefs")
+        }
+        timestamp::ReferenceSyntax::V2 => {
+            append(&mut xml, 7, XADES_141, "CompleteCertificateRefsV2")
+        }
+    };
+    let rev = append(&mut xml, 7, XADES, "CompleteRevocationRefs");
+    let kind = timestamp::ExtendedKind::SignatureAndReferences(syntax);
+    let name = kind.name();
+    let stamp = append(&mut xml, 7, name.namespace, name.local);
+    append(&mut xml, stamp, DS, "CanonicalizationMethod");
+    append(&mut xml, stamp, XADES, "EncapsulatedTimeStamp");
+    for (index, node) in [12, 8, cert, rev].into_iter().enumerate() {
+        xml.canonical_routes.push((
+            node,
+            std::fs::read(directory.join(format!("part-{index}.bin"))).unwrap(),
+        ));
+    }
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let bound = binding::bind(&access, &container::locate(&access, 0).unwrap()).unwrap();
+    let stamp = timestamp::read_extended(&access, &bound, stamp, kind).unwrap();
+    let mut input = Input::prepare(&xml, &bound, &stamp, &work).unwrap();
+    let mut sink = Collect::new(&work);
+    stream::run(&mut input, &mut sink, &work, "independent.extended", 0).unwrap();
+    let original = std::fs::read(directory.join("token-0.der")).unwrap();
+    let parser = structured_asn1::Parser::ber(work.clone());
+    let token = structured_cms::timestamp::Token::read(&parser, &original, 500).unwrap();
+    let operation = parser.read(&[], 0).unwrap();
+    token
+        .with_info(&operation, |info, _, _| {
+            assert!(!info.has_faults());
+            assert_eq!(
+                Sha256::digest(sink.bytes()).as_slice(),
+                info.imprint().hashed().as_one().unwrap()
+            );
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+}
+
 /// Same input selection for a token copied from another signature: the
 /// common Input still equals the independent C14N, and its digest must
 /// differ from the copied imprint. `token` is the ordinal of the

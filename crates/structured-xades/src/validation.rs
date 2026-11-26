@@ -10,6 +10,7 @@ use structured_asn1::memory::Work;
 
 mod refs;
 pub(crate) use refs::read as read_references;
+pub(crate) use refs::read_in as read_references_in;
 mod ref_catalogue;
 mod ref_digest;
 pub use ref_catalogue::{
@@ -40,6 +41,8 @@ mod ref_crl;
 mod ref_crl_value;
 mod ref_path;
 mod ref_presence;
+mod ref_set;
+pub use ref_set::{RequiredReferenceResult, RequiredReferences, check_required_references};
 mod ref_roles;
 mod ref_status_required;
 pub use ref_credential_certificates::{
@@ -72,13 +75,13 @@ pub use ref_crl_value::{
     CrlValueError, CrlValueReference, CrlValueResult, check_crl_value_reference,
 };
 pub use ref_digest::{
-    ReferenceDigest, ReferenceDigestError, ReferenceTarget, compare_reference_digest,
+    ReferenceDigest, ReferenceDigestError, ReferenceTarget, TargetFor, compare_reference_digest,
     compare_reference_target,
 };
 pub use ref_fields::{ReferenceFieldError, ReferenceFieldResult, check_reference_fields};
 pub use refs::{
     ReferenceEntry, ReferenceField, ReferenceIdentifier, ReferenceKind, ReferenceProperty,
-    ResponderIdentifier,
+    ResponderIdentifier, read_extended_references,
 };
 
 /// Validation-data container's actual schema role.

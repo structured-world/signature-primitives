@@ -11,6 +11,9 @@ mod token_profiles;
 #[path = "support/lifecycle.rs"]
 mod lifecycle;
 
+#[path = "support/extended.rs"]
+mod extended_signatures;
+
 #[path = "support/qualifying_production.rs"]
 mod qualifying_production;
 

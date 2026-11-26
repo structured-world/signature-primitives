@@ -38,6 +38,18 @@ fn independent_signature_timestamp_input_matches_its_signed_imprint() {
 }
 
 #[test]
+fn independent_original_and_v2_reference_imprints_agree() {
+    // The upstream RFC3161 tokens name exact octets. Feed independent
+    // canonicalization results to common source selection in both vocabularies.
+    for (variant, syntax) in [
+        ("extended/original", structured_xades::timestamp::ReferenceSyntax::Original),
+        ("extended/v2", structured_xades::timestamp::ReferenceSyntax::V2),
+    ] {
+        common_inputs::independent_corpus::check_extended_x1(&corpus(variant), syntax);
+    }
+}
+
+#[test]
 fn independent_copied_signature_timestamp_does_not_cover_this_signature() {
     // DSS copied a genuine token from another signature: OpenSSL accepts its
     // CMS signature, but EN319132-1 §5.3 coverage of THIS SignatureValue fails.

@@ -821,6 +821,21 @@ pub(crate) fn read_entry<X: Xml, W: Work>(
     })
 }
 
+type OriginalReference<N> = (Reference<N>, [N; 2]);
+
+pub(crate) fn read_original_reference<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+) -> PropertyResult<OriginalReference<X::Id>, X> {
+    let mut fields = None;
+    let reference = read_entry_in(access, node, XADES, |issuer| {
+        let fields_at = xml_issuer_serial(access, node, XADES, issuer)?;
+        fields = Some([fields_at.name, fields_at.serial]);
+        Ok(Some(fields_at.parent))
+    })?;
+    Ok((reference, fields.expect("issuer callback succeeded")))
+}
+
 fn read_entry_in<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
     access: &Access<'_, X, W>,
     node: X::Id,
@@ -851,37 +866,54 @@ fn read_legacy_issuer<X: ScalarXml, W: Work>(
     parent: X::Id,
     issuer: Option<X::Id>,
 ) -> crate::legacy::Result<X::Id, X> {
+    let fields = xml_issuer_serial(access, parent, crate::container::XADES_122, issuer)?;
+    // TS 101 903 V1.2.2 §7.2.2 uses XMLDSig X509IssuerSerialType.
+    // https://www.w3.org/TR/xmldsig-core1/#sec-X509Data
+    scalar::check(
+        access,
+        fields.serial,
+        LexicalSource::SimpleContent,
+        Datatype::Integer,
+    )
+    .map_err(crate::legacy::Error::Serial)?;
+    Ok(fields.parent)
+}
+
+struct XmlIssuerSerial<N> {
+    parent: N,
+    name: N,
+    serial: N,
+}
+
+fn xml_issuer_serial<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    parent: X::Id,
+    namespace: &str,
+    issuer: Option<X::Id>,
+) -> PropertyResult<XmlIssuerSerial<X::Id>, X> {
     const SERIAL: &str = "X509SerialNumber";
     let issuer = issuer.ok_or(Error::Missing {
         parent,
         local: "IssuerSerial",
     })?;
-    expect_name(access, issuer, crate::container::XADES_122, "IssuerSerial")?;
+    expect_name(access, issuer, namespace, "IssuerSerial")?;
     let mut pair = access.children(issuer);
     let name = required(&mut pair, issuer, "X509IssuerName")?;
     expect_name(access, name, DS, "X509IssuerName")?;
     crate::properties::simple_content(access, name)?;
     let serial = required(&mut pair, issuer, SERIAL)?;
     expect_name(access, serial, DS, SERIAL)?;
+    crate::properties::simple_content(access, serial)?;
     if let Some(extra) = pair.next() {
         return Err(Error::Unexpected {
             node: extra.map_err(Error::Child)?,
-        }
-        .into());
+        });
     }
-    // TS 101 903 V1.2.2 §7.2.2 uses XMLDSig X509IssuerSerialType, which
-    // declares xs:integer for the serial. The XML owner checks its lexical space.
-    // https://uri.etsi.org/01903/v1.2.2/XAdES.xsd
-    // https://www.w3.org/TR/xmldsig-core1/#sec-X509Data
-    // https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/#integer
-    scalar::check(
-        access,
+    Ok(XmlIssuerSerial {
+        parent: issuer,
+        name,
         serial,
-        LexicalSource::SimpleContent,
-        Datatype::Integer,
-    )
-    .map_err(crate::legacy::Error::Serial)?;
-    Ok(issuer)
+    })
 }
 
 fn required<X: Xml, W: Work>(

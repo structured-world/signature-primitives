@@ -1,6 +1,6 @@
 //! Append missing whole validation artifacts through one general container.
 
-use super::{Emit, Error, Work, Writer, XADES};
+use super::{Emit, Error, ReferenceRole, Work, Writer, XADES};
 use crate::timestamp::XADES_141;
 use structured_asn1::memory::{Execution, OwnedVec};
 use structured_ltv::material::{ArtifactRef, Incorporation};
@@ -21,7 +21,7 @@ pub enum MaterialKind {
     Ocsp,
 }
 
-enum Value<'a, 'source> {
+pub(super) enum Value<'a, 'source> {
     Certificate(&'a Certificate<'source>),
     Crl(&'a CertificateList<'source>),
     Ocsp(&'a ResponseBytes<'source>),
@@ -30,7 +30,7 @@ enum Value<'a, 'source> {
 /// Whole original material with its actual producing execution capability.
 /// Parsing or construction establishes no status, authority or trust.
 pub struct Material<'a, 'source> {
-    value: Value<'a, 'source>,
+    pub(super) value: Value<'a, 'source>,
 }
 impl<'a, 'source> Material<'a, 'source> {
     /// Retain a borrowed original certificate, without copying its DER.
@@ -90,14 +90,14 @@ impl<'a, 'source> Material<'a, 'source> {
             Value::Ocsp(_) => MaterialKind::Ocsp,
         }
     }
-    fn bytes(&self) -> &'source [u8] {
+    pub(super) fn bytes(&self) -> &'source [u8] {
         match self.value {
             Value::Certificate(value) => value.as_bytes(),
             Value::Crl(value) => value.as_bytes(),
             Value::Ocsp(value) => value.as_bytes(),
         }
     }
-    fn execution_in<'q, W: Work>(&self, work: &'q W) -> Execution<'q>
+    pub(super) fn execution_in<'q, W: Work>(&self, work: &'q W) -> Execution<'q>
     where
         'source: 'q,
     {
@@ -188,6 +188,29 @@ pub fn write_material<B: Writer, W: Work>(
     }
     let mut emit = Emit { writer, work };
     emit.begin(XADES_141, "AnyValidationData")?;
+    write_values(entries, &mut emit, ReferenceRole::Signature)?;
+    emit.end()
+}
+
+/// Emit original complete validation values as direct unsigned properties.
+/// Select ordinary or attribute-authority placement from the validated set.
+/// The caller opens an unpublished transaction at the intended insertion point.
+/// An empty set emits nothing.
+pub fn write_extended_values<B: Writer, W: Work>(
+    entries: &[Material<'_, '_>],
+    role: ReferenceRole,
+    writer: &mut B,
+    work: &W,
+) -> Result<(), Error<B::Error>> {
+    write_values(entries, &mut Emit { writer, work }, role)
+}
+
+fn write_values<B: Writer, W: Work>(
+    entries: &[Material<'_, '_>],
+    emit: &mut Emit<'_, B, W>,
+    role: ReferenceRole,
+) -> Result<(), Error<B::Error>> {
+    let work = emit.work;
     let mut certificates = false;
     for value in entries {
         work.charge_work(1).map_err(Error::Resource)?;
@@ -197,11 +220,16 @@ pub fn write_material<B: Writer, W: Work>(
         }
     }
     if certificates {
-        emit.begin(XADES, "CertificateValues")?;
+        let local = if role == ReferenceRole::AttributeAuthority {
+            "AttrAuthoritiesCertValues"
+        } else {
+            "CertificateValues"
+        };
+        emit.begin(XADES, local)?;
         for value in entries {
             work.charge_work(1).map_err(Error::Resource)?;
             if value.kind() == MaterialKind::Certificate {
-                write_one(value, &mut emit)?;
+                write_one(value, emit)?;
             }
         }
         emit.end()?;
@@ -217,7 +245,12 @@ pub fn write_material<B: Writer, W: Work>(
         }
     }
     if crls || ocsps {
-        emit.begin(XADES, "RevocationValues")?;
+        let local = if role == ReferenceRole::AttributeAuthority {
+            "AttributeRevocationValues"
+        } else {
+            "RevocationValues"
+        };
+        emit.begin(XADES, local)?;
         for (kind, local) in [
             (MaterialKind::Crl, "CRLValues"),
             (MaterialKind::Ocsp, "OCSPValues"),
@@ -229,14 +262,14 @@ pub fn write_material<B: Writer, W: Work>(
             for value in entries {
                 work.charge_work(1).map_err(Error::Resource)?;
                 if value.kind() == kind {
-                    write_one(value, &mut emit)?;
+                    write_one(value, emit)?;
                 }
             }
             emit.end()?;
         }
         emit.end()?;
     }
-    emit.end()
+    Ok(())
 }
 fn write_one<B: Writer, W: Work>(
     value: &Material<'_, '_>,

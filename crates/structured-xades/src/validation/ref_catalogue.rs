@@ -421,13 +421,13 @@ impl<'provider, P: Digest<'provider>, W: Work> Memo<'provider, P, W> {
         Ok(index)
     }
 
-    pub(super) fn compare(
+    pub(super) fn compare<Q: Work>(
         &mut self,
         source: usize,
         bytes: &[u8],
         method: usize,
         expected: &[u8],
-        work: &W,
+        work: &Q,
     ) -> Result<Agreement, digest::Error<RangesError, P::Error>> {
         let key = CacheKey { source, method };
         if let Some(output) = self
@@ -444,7 +444,7 @@ impl<'provider, P: Digest<'provider>, W: Work> Memo<'provider, P, W> {
             .map_err(digest::Error::Resource)?;
         let identity = &self.identities[method];
         let output =
-            digest::compute_resolved::<P, _, W>(identity, &mut [bytes], self.provider, work)?;
+            digest::compute_resolved::<P, _, Q>(identity, &mut [bytes], self.provider, work)?;
         let answer = self.matches(identity, &output, expected, work)?;
         *self
             .entries
@@ -454,12 +454,12 @@ impl<'provider, P: Digest<'provider>, W: Work> Memo<'provider, P, W> {
         Ok(answer)
     }
 
-    fn matches(
+    fn matches<Q: Work>(
         &self,
         identity: &FormatDigest<P::Identity>,
         output: &Resolution<P::Output>,
         expected: &[u8],
-        work: &W,
+        work: &Q,
     ) -> Result<Agreement, digest::Error<RangesError, P::Error>> {
         let output = match output {
             Resolution::Supported(output) => output,

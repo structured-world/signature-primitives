@@ -160,6 +160,25 @@ pub fn matches_once<'a, D: Digest<'a> + ?Sized, W: Work>(
     expected: &[u8],
     execution: &W,
 ) -> Result<Resolution<bool>, OnceError<D::Error>> {
+    match hash_once(digest, identity, input, execution)? {
+        Resolution::Supported(output) => digest
+            .matches(identity, &output, expected, execution)
+            .map(Resolution::Supported)
+            .map_err(OnceError::Provider),
+        Resolution::Unsupported => Ok(Resolution::Unsupported),
+        Resolution::Malformed => Ok(Resolution::Malformed),
+    }
+}
+
+/// Hash one original contiguous input with an already resolved identity.
+/// Uses one update and checks the provider's declared width. The caller
+/// supplies the complete current and producing execution.
+pub fn hash_once<'a, D: Digest<'a> + ?Sized, W: Work>(
+    digest: &'a D,
+    identity: &D::Identity,
+    input: &[u8],
+    execution: &W,
+) -> Result<Resolution<D::Output>, OnceError<D::Error>> {
     let mut state = match digest
         .start(identity, execution)
         .map_err(OnceError::Provider)?
@@ -180,8 +199,5 @@ pub fn matches_once<'a, D: Digest<'a> + ?Sized, W: Work>(
             return Err(OnceError::OutputWidth { expected, actual });
         }
     }
-    digest
-        .matches(identity, &output, expected, execution)
-        .map(Resolution::Supported)
-        .map_err(OnceError::Provider)
+    Ok(Resolution::Supported(output))
 }

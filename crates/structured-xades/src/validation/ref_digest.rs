@@ -32,6 +32,63 @@ pub enum ReferenceTarget<'view, 'document, N, D, G> {
     Encapsulated(&'view material::Source<N, D, G>),
 }
 
+/// A reference target using the XML owner's source identities.
+pub type TargetFor<'v, 'd, X> = ReferenceTarget<
+    'v,
+    'd,
+    <X as crate::xml::Xml>::Id,
+    <X as crate::xml::Xml>::Document,
+    <X as crate::xml::Xml>::Generation,
+>;
+
+impl<'v, 'd, N, D, G> ReferenceTarget<'v, 'd, N, D, G>
+where
+    N: Copy,
+    D: Copy,
+    G: Copy,
+{
+    pub(crate) fn bytes_in(
+        self,
+    ) -> (
+        material::Kind,
+        &'v [u8],
+        Option<structured_pkix::algorithm::Producer<'v>>,
+    )
+    where
+        'd: 'v,
+    {
+        match self {
+            Self::Certificate(value) => (
+                material::Kind::Certificate,
+                value.as_bytes(),
+                Some(value.signature_algorithm().execution_origin()),
+            ),
+            Self::Crl(value) => (
+                material::Kind::Crl,
+                value.as_bytes(),
+                Some(value.signature_algorithm().execution_origin()),
+            ),
+            Self::Ocsp(value) => (
+                material::Kind::Ocsp,
+                value.as_bytes(),
+                Some(value.execution_origin()),
+            ),
+            Self::Encapsulated(source) => (source.kind(), source.bytes(), None),
+        }
+    }
+
+    pub(super) fn same_source(self, snapshot: crate::xml::Snapshot<D, G>) -> bool
+    where
+        D: Eq,
+        G: Eq,
+    {
+        match self {
+            Self::Encapsulated(source) => source.location().snapshot == snapshot,
+            _ => true,
+        }
+    }
+}
+
 /// Exact digest processing, independent of identifier/path/authority checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReferenceDigest {
@@ -93,8 +150,8 @@ pub fn compare_reference_digest<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: W
 
 /// Compare an original reference against an actual external parsed certificate
 /// or CRL, or a retained whole XML envelope, through the SAME digest kernel.
-/// External acquisition/path trust stays with the caller; only the CURRENT
-/// operation pays this comparison and original storage ownership is unchanged.
+/// External acquisition/path trust stays with the caller. The comparison
+/// retains the original artifact's producing limits and current limits.
 /// This does not imply that an external value is incorporated in the signature.
 /// The Annex A full-DER/whole-response and separate identifier obligations are
 /// identical to [`compare_reference_digest`]; no basic-only OCSP hash is allowed.
@@ -102,7 +159,7 @@ pub fn compare_reference_target<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: W
     xml: &X,
     references: &ReferenceProperty<X::Id, X::Document, X::Generation>,
     index: usize,
-    target: ReferenceTarget<'_, '_, X::Id, X::Document, X::Generation>,
+    target: TargetFor<'_, '_, X>,
     provider: &'p P,
     execution: &W,
 ) -> binary::BinaryResult<ReferenceDigest, X, ReferenceDigestError<P::Error>> {
@@ -114,20 +171,13 @@ pub fn compare_reference_target<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: W
     access
         .query(references.node(), |_, _, _| Ok(()))
         .map_err(|cause| binary::Error::Access { location, cause })?;
-    let (kind, bytes) = match target {
-        ReferenceTarget::Certificate(value) => (material::Kind::Certificate, value.as_bytes()),
-        ReferenceTarget::Crl(value) => (material::Kind::Crl, value.as_bytes()),
-        ReferenceTarget::Ocsp(value) => (material::Kind::Ocsp, value.as_bytes()),
-        ReferenceTarget::Encapsulated(source) => {
-            if source.location().snapshot != references.snapshot() {
-                return Err(binary::Error::Callback {
-                    location,
-                    cause: ReferenceDigestError::Foreign,
-                });
-            }
-            (source.kind(), source.bytes())
-        }
-    };
+    if !target.same_source(references.snapshot()) {
+        return Err(binary::Error::Callback {
+            location,
+            cause: ReferenceDigestError::Foreign,
+        });
+    }
+    let (kind, bytes, producer) = target.bytes_in();
     let Some(entry) = references.entries().get(index) else {
         return Err(binary::Error::Callback {
             location,
@@ -146,17 +196,22 @@ pub fn compare_reference_target<'p, X: BinaryXml, P: DigestProvider<'p, X>, W: W
     let Some((method, value)) = entry.digest() else {
         return Ok(ReferenceDigest::IdentifierOnly);
     };
-    digest::check(
-        xml,
-        digest::Reference {
-            snapshot: references.snapshot(),
-            method,
-            value,
-        },
-        &mut [bytes],
-        provider,
-        execution,
-    )
-    .map(ReferenceDigest::Compared)
-    .map_err(|cause| cause.map_callback(ReferenceDigestError::Digest))
+    let declared = digest::Reference {
+        snapshot: references.snapshot(),
+        method,
+        value,
+    };
+    let answer = match producer {
+        Some(producer) => digest::check(
+            xml,
+            declared,
+            &mut [bytes],
+            provider,
+            &producer.execution_in(execution),
+        ),
+        None => digest::check(xml, declared, &mut [bytes], provider, execution),
+    };
+    answer
+        .map(ReferenceDigest::Compared)
+        .map_err(|cause| cause.map_callback(ReferenceDigestError::Digest))
 }

@@ -19,7 +19,7 @@ pub struct Timestamp<'a, D, G, N> {
     pub(super) snapshot: crate::xml::Snapshot<D, G>,
     pub(super) signature: N,
     pub(super) method: N,
-    pub(super) kind: TimestampKind,
+    pub(super) name: crate::xml::Name<'static>,
     pub(super) token: &'a structured_asn1::Element<'a>,
     pub(super) producer: structured_pkix::algorithm::Producer<'a>,
     pub(super) evidence: &'a structured_cms::timestamp::Evidence,
@@ -52,16 +52,21 @@ impl<D: Copy, G: Copy, N: Copy> Timestamp<'_, D, G, N> {
             writer,
             work: &scoped,
         };
-        let (namespace, local) = match self.kind {
-            TimestampKind::Signature => (XADES, "SignatureTimeStamp"),
-            TimestampKind::Archive => (XADES_141, "ArchiveTimeStamp"),
-        };
-        emit.begin(namespace, local)?;
+        emit.begin(self.name.namespace, self.name.local)?;
         // Method XML (including PrefixList) must be copied by its XML owner,
         // never reconstructed from only a URI or an invented ASN.1 identifier.
         scoped.charge_work(1).map_err(Error::Resource)?;
         method(emit.writer, &scoped).map_err(Error::Writer)?;
         emit.binary(XADES, "EncapsulatedTimeStamp", self.token.as_bytes())?;
         emit.end()
+    }
+}
+
+impl TimestampKind {
+    pub(super) const fn name(self) -> crate::xml::Name<'static> {
+        match self {
+            Self::Signature => super::name(XADES, "SignatureTimeStamp"),
+            Self::Archive => super::name(XADES_141, "ArchiveTimeStamp"),
+        }
     }
 }

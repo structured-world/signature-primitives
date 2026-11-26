@@ -16,6 +16,7 @@ mod content;
 mod material;
 mod policy;
 mod qualifying;
+mod references;
 mod timestamp;
 pub use basic::{Basic, BasicReferences, DataObject, ReferenceKind};
 pub use content::{
@@ -23,8 +24,8 @@ pub use content::{
     ContentRequestError, ContentRequestResult, ContentResponseError, ContentResponseResult,
     ContentScope, ContentSource, ContentWriter, PendingContent,
 };
-pub use material::write_material;
 pub use material::{Material, MaterialKind, Materials};
+pub use material::{write_extended_values, write_material};
 pub use policy::{
     ExplicitPolicy, NoticeReference, PolicyDocument, PolicyQualifier, PolicyStore, PolicyTransform,
     PolicyWriter, SignaturePolicy, SuppliedPolicy, UserNotice,
@@ -34,12 +35,16 @@ pub use qualifying::{
     ObjectMetadata, ProductionPlace, PropertyWriter, RoleCertificate, RoleCertificateError,
     SignerRole,
 };
+pub use references::{
+    ReferenceArtifact, ReferenceError, ReferenceRole, ReferenceWriter, References,
+};
 pub use timestamp::{Timestamp, TimestampKind};
 
 mod augmentation;
 pub use augmentation::{
-    Augmentation, Checked, CheckedFor, InputResult, PreparationError, Presence, ResponseCheck,
-    ResponseError, ResponseResult, Transaction,
+    Augmentation, Checked, CheckedFor, ExtendedAugmentation, ExtendedRequestError,
+    ExtendedRequestResult, InputResult, PreparationError, Presence, ResponseCheck, ResponseError,
+    ResponseResult, Transaction,
 };
 
 /// XML-owned lexical validation requested by the shared property generator.

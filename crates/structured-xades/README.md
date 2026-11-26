@@ -45,8 +45,22 @@ serializer, signing backend, network client or clock is added here.
   returned reference instructions identify the signed-properties and optional
   countersignature reference roles. `write_key_info` includes the actual complete
   signing certificate. The XML signer installs the references and signs through
-  its selected provider. Optional policy, role, commitment and object timestamps
-  can be staged before signing and use the existing complete validation pipeline.
+  its selected provider.
+- `Basic::write_with_properties` opens the signed-signature, signed-data-object,
+  and unsigned property slots for additional producers. `SignaturePolicy`
+  writes explicit or implied policy, with policy digest and transform emission
+  tied to the same XML-owned plan. `ExplicitPolicy::write_store` checks the
+  selected signature's explicit policy and uses its original document bytes for
+  an embedded store. `DataObjectFormat`, `Commitment`, `ProductionPlace`, and
+  `SignerRole` emit the other qualifying properties in their schema order.
+- `ContentInput::prepare` selects the staged data references for an all-objects
+  or individual-objects timestamp. `request` streams their actual post-transform
+  input into the common digest and RFC 3161 request encoder. Keep that plan
+  through acquisition. `PendingContent::check_response` checks the exact request
+  and recomputes the imprint from the same plan. The matching draft can emit
+  only the original tokens with positive check evidence. The XML owner ensures
+  that dependent references, canonicalization context, and immutable resources
+  are ready before acquisition and stay fixed through signing.
 - `produce::Augmentation::input` prepares a future signature or archive timestamp
   without inserting a placeholder token. It requires a positive assessment of
   the same preparation. Archive creation requires LT or LTA material facts.

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1](https://github.com/structured-world/signature-primitives/compare/v0.31.0...v0.31.1) - 2026-11-26
+
+### Added
+
+- *(xades)* add direct evidence records ([#389](https://github.com/structured-world/signature-primitives/pull/389))
+
 ## [0.31.0](https://github.com/structured-world/signature-primitives/compare/v0.30.4...v0.31.0) - 2026-11-26
 
 ### Added

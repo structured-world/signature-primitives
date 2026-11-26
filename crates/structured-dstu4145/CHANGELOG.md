@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.4](https://github.com/structured-world/signature-primitives/compare/structured-dstu4145-v0.30.3...structured-dstu4145-v0.30.4) - 2026-11-26
+
+### Added
+
+- *(xades)* support extended signatures ([#380](https://github.com/structured-world/signature-primitives/pull/380))
+
 ## [0.30.3](https://github.com/structured-world/signature-primitives/compare/structured-dstu4145-v0.30.2...structured-dstu4145-v0.30.3) - 2026-11-26
 
 ### Added

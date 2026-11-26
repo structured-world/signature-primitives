@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.1](https://github.com/structured-world/signature-primitives/compare/structured-xades-v0.30.0...structured-xades-v0.30.1) - 2026-11-26
+
+### Added
+
+- *(pkix)* share chain revocation effect ([#371](https://github.com/structured-world/signature-primitives/pull/371))
+
 ## [0.30.0](https://github.com/structured-world/signature-primitives/compare/structured-xades-v0.29.0...structured-xades-v0.30.0) - 2026-11-25
 
 ### Added

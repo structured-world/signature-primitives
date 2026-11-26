@@ -84,6 +84,10 @@ choosing and trusting anchors remains the caller's responsibility.
 validity model. Shell checks issuing certificates at the validation interval.
 Chain checks each in-path issuer at its immediate subordinate's signed
 `DateOfCertGen` or, when that extension is absent, its `notBefore`.
+After authenticating revocation evidence and establishing applicability,
+`path::chain_issuance_effect` determines whether a later, non-compromise
+CA revocation preserves that issuance. A CRL entry exposes the same check
+through `RevokedCertificate::chain_issuance_effect` with its original scope.
 `path::ValidityPolicy::ades` leaves the target time check to
 EN 319 102-1 V1.4.1 §5.2.6.4 step 7.
 To reuse signature math across discovery and supplied-path validation, keep one

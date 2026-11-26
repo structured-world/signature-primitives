@@ -142,6 +142,39 @@ impl<'a> RevokedCertificate<'a> {
         )
     }
 
+    /// Assess the Chain exception for this already applicable CA revocation.
+    ///
+    /// Check applicability at the validation date before asking for the reason.
+    /// A written reason is decoded under the original and current ceilings.
+    /// See [`crate::path::chain_issuance_effect`] for the shared rule.
+    pub fn chain_issuance_effect<W: Work>(
+        &self,
+        issued: crate::temporal::Reading,
+        utc: &crate::temporal::LeapTable<'_>,
+        execution: &W,
+    ) -> Result<crate::path::IssuanceEffect> {
+        // Every entry extension belongs to the same original parser. An
+        // empty catalogue has no reason and cannot establish the exception.
+        let Some(first) = self.extensions.by_ordinal(0) else {
+            return Ok(crate::path::IssuanceEffect::NoException);
+        };
+        let scoped = execution.execution_for(first.parser());
+        crate::path::chain_issuance_effect(
+            self.revocation_date.instant(),
+            self.reason(&scoped)?,
+            issued,
+            utc,
+            &scoped,
+        )
+        .map_err(|cause| {
+            Error::resource(
+                cause,
+                "certificateList.revokedCertificates.revocationDate",
+                self.revocation_date_offset,
+            )
+        })
+    }
+
     /// Entry extensions, including unknown critical demands.
     #[must_use]
     pub fn extensions(&self) -> &Extensions<'a> {

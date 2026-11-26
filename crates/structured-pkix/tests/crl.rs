@@ -552,6 +552,109 @@ fn entry_date_relation_is_utc_qualified_and_resource_error_locates_original_date
     assert_eq!(error.offset(), entry.span().start + 5);
 }
 
+#[test]
+fn chain_issuance_requires_qualified_dates_and_a_noncompromise_reason() {
+    use structured_pkix::crl::Reason;
+    use structured_pkix::path::{IssuanceEffect, chain_issuance_effect};
+    use structured_pkix::temporal::{Instant, LeapTable, Uncertainty};
+
+    // Only the four known non-compromise reasons preserve earlier issuance.
+    let utc = LeapTable::new(10, 20, &[]).unwrap();
+    let work = memory(0, 1000);
+    let revoked = Instant::new(15, 0).unwrap();
+    let earlier = Instant::new(14, 0).unwrap().into();
+    for reason in [
+        Reason::AffiliationChanged,
+        Reason::Superseded,
+        Reason::CessationOfOperation,
+        Reason::PrivilegeWithdrawn,
+    ] {
+        assert_eq!(
+            chain_issuance_effect(revoked, Some(reason), earlier, &utc, &work).unwrap(),
+            IssuanceEffect::Preserved,
+        );
+        for issued in [revoked, Instant::new(16, 0).unwrap()] {
+            assert_eq!(
+                chain_issuance_effect(revoked, Some(reason), issued.into(), &utc, &work).unwrap(),
+                IssuanceEffect::NoException,
+            );
+        }
+    }
+    for reason in [
+        None,
+        Some(Reason::Unspecified),
+        Some(Reason::KeyCompromise),
+        Some(Reason::AuthorityCompromise),
+        Some(Reason::CertificateHold),
+        Some(Reason::RemoveFromCrl),
+        Some(Reason::AttributeAuthorityCompromise),
+    ] {
+        assert_eq!(
+            chain_issuance_effect(revoked, reason, earlier, &utc, &memory(0, 0)).unwrap(),
+            IssuanceEffect::NoException,
+        );
+    }
+
+    // Unknown UTC coverage cannot establish an exception even with known reason.
+    let reason = Some(Reason::Superseded);
+    let outside = Instant::new(9, 0).unwrap().into();
+    assert_eq!(
+        chain_issuance_effect(revoked, reason, outside, &utc, &work).unwrap(),
+        IssuanceEffect::Uncertain(Uncertainty::OutsideCoverage),
+    );
+    assert!(chain_issuance_effect(revoked, reason, earlier, &utc, &memory(0, 0)).is_err());
+}
+
+#[test]
+fn chain_issuance_from_crl_preserves_the_reason_and_original_work_ceiling() {
+    use structured_asn1::memory::Work;
+    use structured_pkix::path::IssuanceEffect;
+    use structured_pkix::temporal::{Instant, LeapTable};
+
+    // A malformed written reason is a located error, and a new query
+    // cannot reopen an exhausted producing parser's cumulative budget.
+    for number in [4, 7] {
+        let ext = tlv(
+            48,
+            &[&[6, 3, 0x55, 0x1d, 0x15][..], &[4, 3, 10, 1, number]].concat(),
+        );
+        let bytes = crl(&tbs(Some(1), &tlv(48, &entry(1, &tlv(48, &ext)))));
+        let source = Parser::new(
+            Encoding::Der,
+            Limits {
+                max_work: 10_000,
+                ..Limits::default()
+            },
+            memory(128 * 1024, 1_000_000),
+        );
+        let current = memory(128 * 1024, 1_000_000);
+        let parsed = CertificateList::read(&source, &bytes, 600).unwrap();
+        let entry = &parsed.tbs().revoked_certificates()[0];
+        let at = entry.revocation_date().instant().seconds();
+        let utc = LeapTable::new(at - 2, at + 2, &[]).unwrap();
+        let issued = Instant::new(at - 1, 0).unwrap().into();
+        let result = entry.chain_issuance_effect(issued, &utc, &current);
+        if number == 7 {
+            assert_eq!(result.unwrap_err(), entry.reason(&current).unwrap_err());
+            continue;
+        }
+        assert_eq!(result.unwrap(), IssuanceEffect::Preserved);
+        let error = entry
+            .chain_issuance_effect(issued, &utc, &memory(0, 0))
+            .unwrap_err();
+        assert!(error.is_resource());
+        let scoped = source.execution_in(source.memory());
+        scoped.charge_work(scoped.work_remaining() as u64).unwrap();
+        assert!(source.memory().work_remaining() > 0);
+        let error = entry
+            .chain_issuance_effect(issued, &utc, &current)
+            .unwrap_err();
+        assert!(error.is_resource());
+        let span = entry.span();
+        assert!((span.start..span.end()).contains(&error.offset()));
+    }
+}
+
 fn reason_scoped_crl(flags: &[u8]) -> Vec<u8> {
     let idp = tlv(48, &tlv(0x83, flags));
     let extension = tlv(

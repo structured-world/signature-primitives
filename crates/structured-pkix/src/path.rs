@@ -37,7 +37,10 @@ pub use validation::{
     Validation, ValidationBounds, ValidationContext, ValidationFacts, validate, validate_effective,
     validate_effective_with_validity, validate_with_validity,
 };
-pub use validity::{TargetValidity, ValidityModel, ValidityPolicy, issuance_time};
+pub use validity::{
+    IssuanceEffect, TargetValidity, ValidityModel, ValidityPolicy, chain_issuance_effect,
+    issuance_time,
+};
 
 use crate::algorithm::AlgorithmIdentifier;
 use crate::certificate::{Certificate, Validity};

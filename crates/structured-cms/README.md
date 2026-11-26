@@ -16,6 +16,16 @@ checking. Existing `Response::read`/`check_with_profile`, `CheckContext::request
 and the token request-comparison APIs provide correlation and mathematical
 checking. A granted status or nonce match alone is not timestamp evidence.
 
+## Computing an ASN.1 signature-policy digest
+
+`signature_policy::Asn1Policy` reads a complete policy digest envelope under a
+producing reader. It hashes the adjacent original DER encodings of
+`signPolicyHashAlg` and `signPolicyInfo` in one update and checks an optional
+stored hash against that same output. The caller selects the digest provider
+and the enclosing CAdES or XAdES digest method. Policy selection and trust belong
+to the caller.
+[ETSI TR 102 272 §6.1](https://www.etsi.org/deliver/etsi_tr/102200_102299/102272/01.01.01_60/tr_102272v010101p.pdf)
+
 ## Processing personal key containers
 
 `personal::Pfx` reads PKCS#12 v3 over the same borrowed BER/DER readers as CMS.

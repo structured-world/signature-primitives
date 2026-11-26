@@ -387,6 +387,60 @@ fn implied_policy_has_its_own_choice_and_retains_budget_refusal() {
 }
 
 #[test]
+fn supplied_policy_resolves_only_the_method_and_preserves_the_asserted_digest() {
+    // These bytes already belong to a policy version. Producer admission
+    // checks the method and width without ever requesting policy bytes.
+    let tree = Tree::normal();
+    let mut draft = Draft::new(&tree, None);
+    let work = memory(100_000);
+    let policy = produce::SuppliedPolicy {
+        identifier: id("urn:policy:v1"),
+        digest_method: "urn:digest",
+        digest: &[7; 32],
+        transform: PolicyTransform::None,
+        qualifiers: &[produce::PolicyQualifier::Uri("urn:location")],
+    };
+    assert!(matches!(
+        policy.write(&mut draft, &work, |_, _| Ok(48)),
+        Err(Error::Value("signaturePolicyId.digestWidth"))
+    ));
+    assert!(matches!(
+        policy.write(&mut draft, &work, |_, _| Err(Cause::Source)),
+        Err(Error::Writer(Cause::Source))
+    ));
+    assert!(matches!(
+        policy.write(&mut draft, &memory(0), |_, _| panic!(
+            "resource refusal must precede resolution"
+        )),
+        Err(Error::Resource(_))
+    ));
+    assert_eq!(draft.events, [] as [Written; 0]);
+    policy
+        .write(&mut draft, &work, |method, execution| {
+            assert_eq!(method, "urn:digest");
+            execution.charge_work(1).map_err(Cause::Resource)?;
+            Ok(32)
+        })
+        .unwrap();
+    assert_eq!(
+        names(&draft),
+        [
+            (XADES, "SignaturePolicyIdentifier"),
+            (XADES, "SignaturePolicyId"),
+            (XADES, "SigPolicyId"),
+            (XADES, "Identifier"),
+            (XADES, "SigPolicyHash"),
+            (super::DS, "DigestMethod"),
+            (super::DS, "DigestValue"),
+            (XADES, "SigPolicyQualifiers"),
+            (XADES, "SigPolicyQualifier"),
+            (XADES, "SPURI"),
+        ]
+    );
+    assert!(draft.events.contains(&Written::Binary(vec![7; 32])));
+}
+
+#[test]
 fn certified_role_preserves_whole_der_and_rejects_a_ber_envelope() {
     // A valid signed acinfo can sit in a non-DER outer envelope accepted in
     // CMS. The XAdES certified-role producer requires the whole DER value.

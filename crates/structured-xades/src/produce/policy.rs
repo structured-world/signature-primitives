@@ -89,6 +89,62 @@ pub struct ExplicitPolicy<'a, F> {
     pub qualifiers: &'a [PolicyQualifier<'a, F>],
 }
 
+/// An explicit policy whose digest was obtained outside this operation.
+pub struct SuppliedPolicy<'a, F> {
+    /// Exact policy version identifier.
+    pub identifier: Identifier<'a>,
+    /// The digest method URI written in the signature.
+    pub digest_method: &'a str,
+    /// Finished digest for this policy version and declared transformation.
+    pub digest: &'a [u8],
+    /// Exact transform declaration associated with the supplied digest.
+    pub transform: PolicyTransform<'a, F>,
+    /// Ordered policy qualifiers.
+    pub qualifiers: &'a [PolicyQualifier<'a, F>],
+}
+
+impl<F> SuppliedPolicy<'_, F> {
+    /// Write the explicit signed declaration using the supplied digest.
+    /// The resolver checks the exact method with the caller's selected
+    /// provider and policy and returns its fixed output width. This path
+    /// does not acquire the document or issue an unsigned policy store.
+    ///
+    /// EN 319 132-1 §§5.2.9–5.2.10 define the declaration and policy store
+    /// independently.
+    /// <https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf>
+    pub fn write<B: PropertyWriter<Fragment = F>, W: Work>(
+        &self,
+        writer: &mut B,
+        work: &W,
+        resolve_width: impl FnOnce(&str, &W) -> Result<usize, B::Error>,
+    ) -> Result<(), Error<B::Error>> {
+        require_declaration(
+            self.identifier,
+            self.digest_method,
+            &self.transform,
+            self.qualifiers,
+            work,
+        )?;
+        if self.digest.is_empty() {
+            return Err(Error::Value("signaturePolicyId.digest"));
+        }
+        work.charge_work(1).map_err(Error::Resource)?;
+        let width = resolve_width(self.digest_method, work).map_err(Error::Writer)?;
+        if width != self.digest.len() {
+            return Err(Error::Value("signaturePolicyId.digestWidth"));
+        }
+        emit_explicit(
+            writer,
+            work,
+            self.identifier,
+            self.digest_method,
+            self.digest,
+            &self.transform,
+            self.qualifiers,
+        )
+    }
+}
+
 /// Signed `SignaturePolicyIdentifier` choice.
 pub enum SignaturePolicy<'a, F> {
     /// The signature's policy is implied by application context.
@@ -113,18 +169,13 @@ impl<F> SignaturePolicy<'_, F> {
             emit.end()?;
             return emit.end();
         };
-        if policy.identifier.uri.is_empty() || policy.digest_method.is_empty() {
-            return Err(Error::Value("signaturePolicyId.required"));
-        }
-        if let PolicyTransform::InSpecification(spec) = policy.transform {
-            require_specification(spec)?;
-        }
-        for qualifier in policy.qualifiers {
-            work.charge_work(1).map_err(Error::Resource)?;
-            if let PolicyQualifier::DocumentSpecification(specification) = qualifier {
-                require_specification(*specification)?;
-            }
-        }
+        require_declaration(
+            policy.identifier,
+            policy.digest_method,
+            &policy.transform,
+            policy.qualifiers,
+            work,
+        )?;
         work.charge_work(1).map_err(Error::Resource)?;
         let digest = writer
             .policy_digest(
@@ -137,30 +188,74 @@ impl<F> SignaturePolicy<'_, F> {
         if digest.as_ref().is_empty() {
             return Err(Error::Value("signaturePolicyId.digest"));
         }
-        let mut emit = Emit { writer, work };
-        emit.begin(XADES, "SignaturePolicyIdentifier")?;
-        emit.begin(XADES, "SignaturePolicyId")?;
-        policy.identifier.write(XADES, "SigPolicyId", &mut emit)?;
-        match policy.transform {
-            PolicyTransform::None => {}
-            PolicyTransform::Xml(value) => {
-                fragment(&mut emit, FragmentSlot::PolicyTransforms, value)?;
-            }
-            PolicyTransform::InSpecification(_) => {
-                emit.begin(DS, "Transforms")?;
-                emit.begin(DS, "Transform")?;
-                emit.attribute("Algorithm", SPECIFICATION_TRANSFORM)?;
-                emit.end()?;
-                emit.end()?;
-            }
-        }
-        emit.begin(XADES, "SigPolicyHash")?;
-        emit.digest(policy.digest_method, digest.as_ref())?;
-        emit.end()?;
-        qualifiers(&mut emit, policy)?;
-        emit.end()?;
-        emit.end()
+        emit_explicit(
+            writer,
+            work,
+            policy.identifier,
+            policy.digest_method,
+            digest.as_ref(),
+            &policy.transform,
+            policy.qualifiers,
+        )
     }
+}
+
+fn require_declaration<E, F, W: Work>(
+    identifier: Identifier<'_>,
+    method: &str,
+    transform: &PolicyTransform<'_, F>,
+    qualifiers: &[PolicyQualifier<'_, F>],
+    work: &W,
+) -> Result<(), Error<E>> {
+    if identifier.uri.is_empty() || method.is_empty() {
+        return Err(Error::Value("signaturePolicyId.required"));
+    }
+    if let PolicyTransform::InSpecification(spec) = transform {
+        require_specification(*spec)?;
+    }
+    for qualifier in qualifiers {
+        work.charge_work(1).map_err(Error::Resource)?;
+        if let PolicyQualifier::DocumentSpecification(specification) = qualifier {
+            require_specification(*specification)?;
+        }
+    }
+    Ok(())
+}
+
+fn emit_explicit<B: PropertyWriter, W: Work>(
+    writer: &mut B,
+    work: &W,
+    identifier: Identifier<'_>,
+    method: &str,
+    digest: &[u8],
+    transform: &PolicyTransform<'_, B::Fragment>,
+    qualifiers: &[PolicyQualifier<'_, B::Fragment>],
+) -> Result<(), Error<B::Error>> {
+    let mut emit = Emit { writer, work };
+    emit.begin(XADES, "SignaturePolicyIdentifier")?;
+    emit.begin(XADES, "SignaturePolicyId")?;
+    identifier.write(XADES, "SigPolicyId", &mut emit)?;
+    let specification = match transform {
+        PolicyTransform::None => None,
+        PolicyTransform::Xml(value) => {
+            fragment(&mut emit, FragmentSlot::PolicyTransforms, value)?;
+            None
+        }
+        PolicyTransform::InSpecification(spec) => {
+            emit.begin(DS, "Transforms")?;
+            emit.begin(DS, "Transform")?;
+            emit.attribute("Algorithm", SPECIFICATION_TRANSFORM)?;
+            emit.end()?;
+            emit.end()?;
+            Some(*spec)
+        }
+    };
+    emit.begin(XADES, "SigPolicyHash")?;
+    emit.digest(method, digest)?;
+    emit.end()?;
+    emit_qualifiers(&mut emit, specification, qualifiers)?;
+    emit.end()?;
+    emit.end()
 }
 
 /// How the unsigned policy store makes the same policy document available.
@@ -226,15 +321,12 @@ fn require_specification<E>(specification: Identifier<'_>) -> Result<(), Error<E
     Ok(())
 }
 
-fn qualifiers<B: PropertyWriter<Fragment = F>, F, W: Work>(
+fn emit_qualifiers<B: PropertyWriter, W: Work>(
     emit: &mut Emit<'_, B, W>,
-    policy: &ExplicitPolicy<'_, F>,
+    specification: Option<Identifier<'_>>,
+    qualifiers: &[PolicyQualifier<'_, B::Fragment>],
 ) -> Result<(), Error<B::Error>> {
-    let specification = match policy.transform {
-        PolicyTransform::InSpecification(specification) => Some(specification),
-        _ => None,
-    };
-    if specification.is_none() && policy.qualifiers.is_empty() {
+    if specification.is_none() && qualifiers.is_empty() {
         return Ok(());
     }
     emit.begin(XADES, "SigPolicyQualifiers")?;
@@ -243,7 +335,7 @@ fn qualifiers<B: PropertyWriter<Fragment = F>, F, W: Work>(
         spec.write(XADES_141, "SPDocSpecification", emit)?;
         emit.end()?;
     }
-    for qualifier in policy.qualifiers {
+    for qualifier in qualifiers {
         emit.begin(XADES, "SigPolicyQualifier")?;
         match qualifier {
             PolicyQualifier::Uri(uri) => emit.scalar(XADES, "SPURI", uri, Datatype::AnyUri)?,

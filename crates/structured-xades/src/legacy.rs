@@ -1,11 +1,10 @@
-//! Directly incorporated ETSI TS 101 903 V1.2.2 qualifying properties.
+//! Directly incorporated ETSI TS 101 903 and TS 103 171 historical profiles.
 //!
-//! Read the original layout with [`crate::container::locate_with_syntax`].
-//! Legacy evidence has a separate type from the EN baseline preparation.
+//! Select the original layout with [`locate`] and its historical profile.
 //! <https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.02.02_60/ts_101903v010202p.pdf>
 
 use crate::binding::{self, SignatureXml};
-use crate::container::{self, DS, XADES_122};
+use crate::container::{self, DS, Syntax, XADES_111};
 use crate::properties;
 use crate::scalar::{self, ScalarXml};
 use crate::xml::{Access, Name, Node, Snapshot, Xml};
@@ -17,12 +16,74 @@ pub use signer::{
     CertificateMatch, SignerCheck, SignerError, SignerResult, SigningReferences, check_signer,
 };
 
-/// Original V1.2.2 container identities selected under caller policy.
+/// The caller-selected historical vocabulary and profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    /// ETSI TS 101 903 V1.1.1.
+    V111,
+    /// ETSI TS 101 903 V1.2.2.
+    V122,
+    /// ETSI TS 103 171 V2.1.1 over the 1.3.2 vocabulary.
+    PreEn,
+}
+
+impl Profile {
+    pub(crate) const fn syntax(self) -> Syntax {
+        match self {
+            Self::V111 => Syntax::Ts101903V111,
+            Self::V122 => Syntax::Ts101903V122,
+            Self::PreEn => Syntax::Ts103171,
+        }
+    }
+
+    /// Exact namespace used by the qualifying properties.
+    #[must_use]
+    pub const fn namespace(self) -> &'static str {
+        self.syntax().namespace()
+    }
+
+    /// Exact namespace used by the digest pair inside historical properties.
+    #[must_use]
+    pub const fn digest_namespace(self) -> &'static str {
+        match self {
+            Self::V111 => XADES_111,
+            Self::V122 | Self::PreEn => DS,
+        }
+    }
+
+    /// Required Type of the reference that signs the historical properties.
+    #[must_use]
+    pub const fn signed_properties_type(self) -> &'static str {
+        match self {
+            Self::V111 => binding::SIGNED_PROPERTIES_111,
+            Self::V122 => binding::SIGNED_PROPERTIES_122,
+            Self::PreEn => binding::SIGNED_PROPERTIES,
+        }
+    }
+}
+
+/// Locate an explicitly chosen historical profile. The 1.3.2 namespace alone
+/// does not authorize interpretation as a pre-EN signature.
+pub fn locate<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    profile: Profile,
+) -> container::ContainerResult<Layout<X>, X> {
+    container::locate_historical(access, signature, profile.syntax()).map(Layout::new)
+}
+
+/// Original historical container identities selected under caller policy.
 pub struct Layout<X: Xml>(container::Layout<X>);
 
 impl<X: Xml> Layout<X> {
     pub(crate) fn new(original: container::Layout<X>) -> Self {
         Self(original)
+    }
+
+    /// Explicit historical processing profile for this source.
+    #[must_use]
+    pub fn profile(&self) -> Profile {
+        profile(self.0.syntax())
     }
 
     /// Original signature carrying the qualifying properties.
@@ -47,6 +108,15 @@ impl<X: Xml> Layout<X> {
     #[must_use]
     pub fn unsigned(&self) -> Option<X::Id> {
         self.0.unsigned()
+    }
+}
+
+fn profile(syntax: Syntax) -> Profile {
+    match syntax {
+        Syntax::Ts101903V111 => Profile::V111,
+        Syntax::Ts101903V122 => Profile::V122,
+        Syntax::Ts103171 => Profile::PreEn,
+        Syntax::En319132 => unreachable!("historical layout"),
     }
 }
 
@@ -85,7 +155,7 @@ pub enum SignerCertificate<X: Xml> {
     },
 }
 
-/// An original property and its position in a V1.2.2 schema sequence.
+/// An original property in the selected historical vocabulary.
 #[derive(Debug, Clone, Copy)]
 pub struct Property<N> {
     /// Original element identity.
@@ -108,6 +178,88 @@ pub struct Prepared<X: Xml> {
 }
 
 impl<X: Xml> Prepared<X> {
+    /// Explicit historical processing profile for this signature.
+    #[must_use]
+    pub fn profile(&self) -> Profile {
+        profile(self.bound.containers().syntax())
+    }
+
+    /// Original authenticated signed-properties receipt for this profile.
+    #[must_use]
+    pub fn binding(&self) -> &binding::Selected<X> {
+        &self.bound
+    }
+
+    /// Read the original signed policy in this historical vocabulary.
+    pub fn policy<W: Work>(
+        &self,
+        access: &Access<'_, X, W>,
+    ) -> properties::PropertyResult<Option<crate::policy::Original<X>>, X> {
+        let layout = self.bound.containers();
+        if layout.snapshot() != access.snapshot() {
+            return Err(properties::Error::Access(
+                crate::xml::AccessError::Changed {
+                    node: layout.signed(),
+                },
+            ));
+        }
+        let profile = self.profile();
+        for entry in &self.signed {
+            access
+                .execution()
+                .charge_work(1)
+                .map_err(|cause| properties::Error::Resource {
+                    node: entry.node,
+                    cause,
+                })?;
+            if entry.name == "SignaturePolicyIdentifier" {
+                return crate::policy::read_in(
+                    access,
+                    layout.signature(),
+                    entry.node,
+                    (profile.namespace(), profile.digest_namespace()),
+                )
+                .map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Read the exact original material enclosure selected by this signature.
+    /// The result is a structural catalogue and carries no authentication or
+    /// path decision.
+    pub fn values<W: Work>(
+        &self,
+        access: &Access<'_, X, W>,
+        node: X::Id,
+    ) -> properties::PropertyResult<crate::extended::ValuesFor<X>, X> {
+        if self.bound.containers().snapshot() != access.snapshot() {
+            return Err(properties::Error::Access(
+                crate::xml::AccessError::Changed { node },
+            ));
+        }
+        for entry in &self.unsigned {
+            if !access
+                .equal_id(node, entry.node)
+                .map_err(|cause| properties::Error::Resource { node, cause })?
+            {
+                continue;
+            }
+            let certificates = match entry.name {
+                "CertificateValues" | "AttrAuthoritiesCertValues" => true,
+                "RevocationValues" | "AttributeRevocationValues" => false,
+                _ => return Err(properties::Error::Unexpected { node }),
+            };
+            return crate::material::read_values_in(
+                access,
+                node,
+                self.profile().namespace(),
+                certificates,
+            );
+        }
+        Err(properties::Error::Unexpected { node })
+    }
+
     /// Original signer-certificate protection offered by the document.
     #[must_use]
     pub fn signer(&self) -> &SignerCertificate<X> {
@@ -176,21 +328,60 @@ const UNSIGNED: &[Rule] = &[
     Rule("RevocationValues", 8, false),
     Rule("ArchiveTimeStamp", 9, true),
 ];
+const PRE_EN_UNSIGNED: &[Rule] = &[
+    Rule("CounterSignature", 0, true),
+    Rule("SignatureTimeStamp", 0, true),
+    Rule("CompleteCertificateRefs", 0, false),
+    Rule("CompleteRevocationRefs", 0, false),
+    Rule("AttributeCertificateRefs", 0, false),
+    Rule("AttributeRevocationRefs", 0, false),
+    Rule("SigAndRefsTimeStamp", 0, true),
+    Rule("RefsOnlyTimeStamp", 0, true),
+    Rule("CertificateValues", 0, false),
+    Rule("RevocationValues", 0, false),
+    Rule("AttrAuthoritiesCertValues", 0, false),
+    Rule("AttributeRevocationValues", 0, false),
+    Rule("TimeStampValidationData", 0, true),
+    Rule("ArchiveTimeStamp", 0, true),
+];
 
-/// Authenticate the original `SignedProperties` and read the legacy sequences.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Group {
+    Signature,
+    Data,
+    Unsigned,
+    UnsignedObjects,
+}
+
+impl Group {
+    const fn rules(self, profile: Profile) -> &'static [Rule] {
+        match self {
+            Self::Signature => SIGNED,
+            Self::Data => DATA,
+            Self::Unsigned if matches!(profile, Profile::PreEn) => PRE_EN_UNSIGNED,
+            Self::Unsigned => UNSIGNED,
+            Self::UnsignedObjects => &[Rule("UnsignedDataObjectProperty", 0, true)],
+        }
+    }
+}
+
+/// Authenticate the original `SignedProperties` and read its historical fields.
 ///
-/// The caller supplies an opt-in layout from the same XML generation. §4.4.1
-/// requires a signed `SigningCertificate` or a signed `KeyInfo` containing the
-/// selected certificate. This stage locates the protected certificate claims.
+/// The caller supplies an opt-in layout from the same XML generation. The
+/// certificate claim is taken from the signed `SigningCertificate`; V1.2.2
+/// §4.4.1 also allows a signed `KeyInfo` containing the selected certificate.
 /// The XML owner checks each `X509SerialNumber` as an unbounded XML Schema integer.
 pub fn prepare<X: SignatureXml + ScalarXml, W: Work>(
     access: &Access<'_, X, W>,
     layout: &Layout<X>,
 ) -> Result<Prepared<X>, X> {
     let bound = binding::bind(access, &layout.0).map_err(Error::Binding)?;
+    let profile = layout.profile();
+    let namespace = profile.namespace();
     let (signed_node, data) = pair(
         access,
         layout.signed(),
+        namespace,
         "SignedSignatureProperties",
         "SignedDataObjectProperties",
     )
@@ -199,31 +390,40 @@ pub fn prepare<X: SignatureXml + ScalarXml, W: Work>(
         parent: layout.signed(),
         local: "SignedSignatureProperties",
     }))?;
-    let signed = sequence(access, Some(signed_node), SIGNED).map_err(Error::Property)?;
-    let data = sequence(access, data, DATA).map_err(Error::Property)?;
+    let signed =
+        sequence(access, Some(signed_node), profile, Group::Signature).map_err(Error::Property)?;
+    let data = sequence(access, data, profile, Group::Data).map_err(Error::Property)?;
+    if profile != Profile::V122 {
+        for required in &SIGNED[..if profile == Profile::V111 { 3 } else { 2 }] {
+            if !signed.iter().any(|property| property.name == required.0) {
+                return Err(properties::Error::Missing {
+                    parent: signed_node,
+                    local: required.0,
+                }
+                .into());
+            }
+        }
+    }
     let (unsigned, objects) = match layout.unsigned() {
         Some(parent) => pair(
             access,
             parent,
+            namespace,
             "UnsignedSignatureProperties",
             "UnsignedDataObjectProperties",
         )
         .map_err(Error::Property)?,
         None => (None, None),
     };
-    let unsigned = sequence(access, unsigned, UNSIGNED).map_err(Error::Property)?;
-    let objects = sequence(
-        access,
-        objects,
-        &[Rule("UnsignedDataObjectProperty", 0, true)],
-    )
-    .map_err(Error::Property)?;
+    let unsigned = sequence(access, unsigned, profile, Group::Unsigned).map_err(Error::Property)?;
+    let objects =
+        sequence(access, objects, profile, Group::UnsignedObjects).map_err(Error::Property)?;
     let protection = match signed
         .iter()
         .find(|entry| entry.name == "SigningCertificate")
     {
         Some(entry) => SignerCertificate::References(SigningReferences(
-            crate::certificate::read_legacy(access, layout.signature(), entry.node)?,
+            crate::certificate::read_legacy(access, layout.signature(), entry.node, profile)?,
         )),
         None => signed_key_info(access, layout.signature())?,
     };
@@ -242,18 +442,19 @@ type Pair<N> = (Option<N>, Option<N>);
 fn pair<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     parent: X::Id,
+    namespace: &str,
     first: &'static str,
     second: &'static str,
 ) -> properties::PropertyResult<Pair<X::Id>, X> {
     let mut slots = (None, None);
     for child in access.children(parent) {
         let node = child.map_err(properties::Error::Child)?;
-        let slot = if named(access, node, XADES_122, first)? {
+        let slot = if named(access, node, namespace, first)? {
             if slots.1.is_some() {
                 return Err(properties::Error::Order { node });
             }
             &mut slots.0
-        } else if named(access, node, XADES_122, second)? {
+        } else if named(access, node, namespace, second)? {
             &mut slots.1
         } else {
             return Err(properties::Error::Unexpected { node });
@@ -268,21 +469,33 @@ fn pair<X: Xml, W: Work>(
 fn sequence<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     parent: Option<X::Id>,
-    rules: &[Rule],
+    profile: Profile,
+    group: Group,
 ) -> properties::PropertyResult<OwnedVec<Property<X::Id>>, X> {
     let mut entries = access.execution().vector();
     if let Some(parent) = parent {
         let mut previous: Option<&Rule> = None;
+        let rules = group.rules(profile);
+        let unordered = group == Group::Unsigned && profile == Profile::PreEn;
+        let mut seen = 0u32;
         for child in access.children(parent) {
             let node = child.map_err(properties::Error::Child)?;
             let rule = access
                 .inspect(node, |item| -> core::result::Result<_, _> {
-                    if let Node::Element(name) = item
-                        && access.equal(name.namespace, XADES_122)?
-                    {
-                        for rule in rules {
-                            if access.equal(name.local, rule.0)? {
-                                return Ok(Some(rule));
+                    if let Node::Element(name) = item {
+                        let original = access.equal(name.namespace, profile.namespace())?;
+                        let archive_namespace = unordered
+                            && access.equal(name.namespace, crate::timestamp::XADES_141)?;
+                        if original || archive_namespace {
+                            for (index, rule) in rules.iter().enumerate() {
+                                if (if archive_namespace {
+                                    matches!(rule.0, "TimeStampValidationData" | "ArchiveTimeStamp")
+                                } else {
+                                    rule.0 != "TimeStampValidationData"
+                                }) && access.equal(name.local, rule.0)?
+                                {
+                                    return Ok(Some((index, rule)));
+                                }
                             }
                         }
                     }
@@ -291,7 +504,22 @@ fn sequence<X: Xml, W: Work>(
                 .map_err(properties::Error::Access)?
                 .map_err(|cause| properties::Error::Resource { node, cause })?
                 .ok_or(properties::Error::Unexpected { node })?;
-            if let Some(prior) = previous {
+            let (index, rule) = rule;
+            if profile == Profile::V111
+                && matches!(
+                    rule.0,
+                    "AttributeCertificateRefs" | "AttributeRevocationRefs"
+                )
+            {
+                return Err(properties::Error::Unexpected { node });
+            }
+            if unordered {
+                let mask = 1 << index;
+                if !rule.2 && seen & mask != 0 {
+                    return Err(properties::Error::Duplicate { node });
+                }
+                seen |= mask;
+            } else if let Some(prior) = previous {
                 if prior.1 > rule.1 {
                     return Err(properties::Error::Order { node });
                 }

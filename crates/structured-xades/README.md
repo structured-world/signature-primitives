@@ -12,22 +12,29 @@ trust inputs and decides whether the resulting evidence meets its policy.
 
 ## Legacy directly incorporated properties
 
-Use `container::locate_with_syntax` with `Syntaxes::WithTs101903V122` to allow
-the ETSI TS 101 903 V1.2.2 namespace as well as the current EN syntax. The
-selected layout records which grammar applies. The default reader accepts only
-the EN syntax.
+Use `legacy::locate` with an explicit `Profile` for TS 101 903 V1.1.1, V1.2.2
+or the TS 103 171 pre-EN profile. The default reader accepts the current EN
+syntax. `legacy::prepare` checks the historical reference type, binds the
+original signed properties and reads the XML issuer and serial. The resulting
+preparation can read the original policy and validation values. Use
+`legacy::check_signer` to compare the original certificate protection and
+the verification key.
 
-For a V1.2.2 layout, `legacy::prepare` checks the original signed-properties
-binding and reads the ordered property sequences. It uses the adapter's
-`ScalarXml` implementation to check each `X509SerialNumber` as an XML Schema
-integer. `legacy::check_signer`
-compares the actual candidate to signed certificate digests or a certificate
-in the authenticated `KeyInfo`. `legacy::timestamp` resolves explicit Includes
-and streams the original V1.2.2 imprint input through the XML adapter. Its
-`XMLTimeStamp` branch preserves the original node for inspection.
+For V1.1.1, `legacy::timestamp::HashDataStamp` retains the original
+`HashDataInfo` instructions. `HashDataInput` authorizes their targets for
+the actual timestamp role and asks `HashDataXml` to replay the original XML
+transforms. V1.2.2 uses the original `Include` instructions through
+`legacy::timestamp::input`. Pass either input to the CMS timestamp checker
+with the original encapsulated token. The `XMLTimeStamp` branch preserves
+its original node for inspection. For the pre-EN profile,
+`legacy::timestamp::read_pre_en` supplies the common timestamp checker.
 
-These entry points expose legacy property, signer and timestamp facts. Current
-EN baseline levels and application trust use their own evidence.
+`produce::Basic::write_historical` writes the historical signing-certificate
+and policy vocabulary. `ExtendedAugmentation::prepare_historical_signature`
+binds the request and checked response to the staged `SignatureValue`.
+`HistoricalTimestampWriter` writes the original XML target and method for
+the explicit V1.1.1 and V1.2.2 forms. The historical values writers emit the
+direct material and pre-EN TSA validation containers.
 
 ## Direct C, X, XL and A
 

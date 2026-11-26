@@ -77,7 +77,7 @@ pub fn check<X: UriXml + crate::scalar::ScalarXml, W: Work>(
     reading: &Reading<X::Id>,
 ) -> CheckResult<X> {
     let meaning = check_value(access, reading).map_err(CheckError::Meaning)?;
-    super::documentation_with(access, reading.documentation, |node| {
+    super::documentation_with(access, reading.documentation, super::XADES, |node| {
         crate::scalar::check(
             access,
             node,

@@ -7,6 +7,8 @@ use structured_asn1::memory::Work;
 pub const DS: &str = "http://www.w3.org/2000/09/xmldsig#";
 /// Namespace containing the qualifying-property containers.
 pub const XADES: &str = "http://uri.etsi.org/01903/v1.3.2#";
+/// Namespace specified by ETSI TS 101 903 V1.1.1 §5.
+pub const XADES_111: &str = "http://uri.etsi.org/01903/v1.1.1#";
 /// Namespace specified by ETSI TS 101 903 V1.2.2 §5.
 pub const XADES_122: &str = "http://uri.etsi.org/01903/v1.2.2#";
 
@@ -15,6 +17,10 @@ pub const XADES_122: &str = "http://uri.etsi.org/01903/v1.2.2#";
 pub enum Syntax {
     /// EN 319 132-1.
     En319132,
+    /// TS 103 171, with the 1.3.2 namespace and original certificate properties.
+    Ts103171,
+    /// TS 101 903 V1.1.1.
+    Ts101903V111,
     /// TS 101 903 V1.2.2.
     Ts101903V122,
 }
@@ -24,7 +30,8 @@ impl Syntax {
     #[must_use]
     pub const fn namespace(self) -> &'static str {
         match self {
-            Self::En319132 => XADES,
+            Self::En319132 | Self::Ts103171 => XADES,
+            Self::Ts101903V111 => XADES_111,
             Self::Ts101903V122 => XADES_122,
         }
     }
@@ -150,7 +157,7 @@ pub fn locate<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     signature: X::Id,
 ) -> ContainerResult<Layout<X>, X> {
-    locate_in(access, signature, Syntaxes::En319132)
+    locate_in(access, signature, None, Syntax::En319132)
 }
 
 /// Locates an original layout under the caller's expressly selected syntax set.
@@ -159,17 +166,39 @@ pub fn locate_with_syntax<X: Xml, W: Work>(
     signature: X::Id,
     allowed: Syntaxes,
 ) -> ContainerResult<Selected<X>, X> {
-    let layout = locate_in(access, signature, allowed)?;
+    let layout = locate_in(
+        access,
+        signature,
+        (allowed == Syntaxes::WithTs101903V122).then_some(Syntax::Ts101903V122),
+        Syntax::En319132,
+    )?;
     Ok(match layout.syntax() {
         Syntax::En319132 => Selected::En319132(layout),
         Syntax::Ts101903V122 => Selected::Ts101903V122(crate::legacy::Layout::new(layout)),
+        Syntax::Ts101903V111 | Syntax::Ts103171 => unreachable!("not selected by Syntaxes"),
     })
+}
+
+pub(crate) fn locate_historical<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    syntax: Syntax,
+) -> ContainerResult<Layout<X>, X> {
+    let layout = locate_in(access, signature, Some(syntax), syntax)?;
+    if layout.syntax() == syntax {
+        Ok(layout)
+    } else {
+        Err(ContainerError::Unexpected {
+            node: layout.qualifying(),
+        })
+    }
 }
 
 fn locate_in<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     signature: X::Id,
-    allowed: Syntaxes,
+    historical: Option<Syntax>,
+    current: Syntax,
 ) -> ContainerResult<Layout<X>, X> {
     // EN 319 132-1 V1.3.1 §§4.4.1–4.4.2: direct incorporation within one Object,
     // at most one QualifyingProperties and all signed properties in one container.
@@ -177,6 +206,7 @@ fn locate_in<X: Xml, W: Work>(
     if !named(access, signature, DS, "Signature")? {
         return Err(ContainerError::Unexpected { node: signature });
     }
+    let historical = historical.filter(|syntax| syntax.namespace() != XADES);
     let mut selected = None;
     for child in access.children(signature) {
         let object = child.map_err(ContainerError::Child)?;
@@ -194,17 +224,29 @@ fn locate_in<X: Xml, W: Work>(
             // searched or reinterpreted as a protocol property container.
             // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
             if named(access, node, XADES, "QualifyingPropertiesReference")?
-                || (allowed == Syntaxes::WithTs101903V122
-                    && named(access, node, XADES_122, "QualifyingPropertiesReference")?)
+                || (if let Some(historical) = historical {
+                    named(
+                        access,
+                        node,
+                        historical.namespace(),
+                        "QualifyingPropertiesReference",
+                    )?
+                } else {
+                    false
+                })
             {
                 return Err(ContainerError::Unexpected { node });
             }
             let syntax = if named(access, node, XADES, "QualifyingProperties")? {
-                Some(Syntax::En319132)
-            } else if allowed == Syntaxes::WithTs101903V122
-                && named(access, node, XADES_122, "QualifyingProperties")?
+                Some(if current == Syntax::Ts103171 {
+                    current
+                } else {
+                    Syntax::En319132
+                })
+            } else if let Some(historical) = historical
+                && named(access, node, historical.namespace(), "QualifyingProperties")?
             {
-                Some(Syntax::Ts101903V122)
+                Some(historical)
             } else {
                 None
             };

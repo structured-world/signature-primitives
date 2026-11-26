@@ -23,6 +23,7 @@ pub enum Declaration<N> {
 /// Source-bound declaration selected from the authenticated signed properties.
 /// Public schema values alone cannot construct this original-source association.
 pub struct Reading<N, D, G> {
+    namespace: &'static str,
     snapshot: Snapshot<D, G>,
     signature: N,
     node: N,
@@ -242,9 +243,18 @@ pub fn read<X: Xml, W: Work>(
     access
         .query(signed.parent(), |_, _, _| Ok(()))
         .map_err(Error::Access)?;
-    let Some(parent) = signed.policy() else {
-        return Ok(None);
-    };
+    signed
+        .policy()
+        .map(|parent| read_in(access, signed.signature(), parent, (XADES, DS)))
+        .transpose()
+}
+
+pub(crate) fn read_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    parent: X::Id,
+    (namespace, digest_namespace): (&'static str, &'static str),
+) -> PropertyResult<Original<X>, X> {
     let mut children = access.children(parent);
     let node = children
         .next()
@@ -259,35 +269,37 @@ pub fn read<X: Xml, W: Work>(
             node: extra.map_err(Error::Child)?,
         });
     }
-    if named(access, node, XADES, "SignaturePolicyImplied")? {
+    if named(access, node, namespace, "SignaturePolicyImplied")? {
         if let Some(extra) = access.children(node).next() {
             return Err(Error::Unexpected {
                 node: extra.map_err(Error::Child)?,
             });
         }
-        return Ok(Some(Reading {
-            snapshot: signed.snapshot(),
-            signature: signed.signature(),
+        return Ok(Reading {
+            namespace,
+            snapshot: access.snapshot(),
+            signature,
             node: parent,
             declaration: Declaration::Implied(node),
-        }));
+        });
     }
-    if !named(access, node, XADES, "SignaturePolicyId")? {
+    if !named(access, node, namespace, "SignaturePolicyId")? {
         return Err(Error::Unexpected { node });
     }
-    explicit(access, node).map(|value| {
-        Some(Reading {
-            snapshot: signed.snapshot(),
-            signature: signed.signature(),
-            node: parent,
-            declaration: Declaration::Explicit(value),
-        })
+    explicit(access, node, namespace, digest_namespace).map(|value| Reading {
+        namespace,
+        snapshot: access.snapshot(),
+        signature,
+        node: parent,
+        declaration: Declaration::Explicit(value),
     })
 }
 
 fn explicit<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     node: X::Id,
+    namespace: &str,
+    digest_namespace: &str,
 ) -> PropertyResult<Explicit<X::Id>, X> {
     let mut fields = [None; 4];
     let mut previous = 0;
@@ -295,10 +307,10 @@ fn explicit<X: Xml, W: Work>(
         let child = child.map_err(Error::Child)?;
         let mut selected = None;
         for (rank, (ns, local)) in [
-            (XADES, "SigPolicyId"),
+            (namespace, "SigPolicyId"),
             (DS, "Transforms"),
-            (XADES, "SigPolicyHash"),
-            (XADES, "SigPolicyQualifiers"),
+            (namespace, "SigPolicyHash"),
+            (namespace, "SigPolicyQualifiers"),
         ]
         .iter()
         .enumerate()
@@ -318,21 +330,23 @@ fn explicit<X: Xml, W: Work>(
         fields[rank] = Some(child);
         previous = rank;
     }
-    let identifier = identifier::read(
+    let identifier = identifier::read_in(
         access,
         fields[0].ok_or(Error::Missing {
             parent: node,
             local: "SigPolicyId",
         })?,
+        namespace,
     )?;
-    let (method, digest) = properties::digest_value(
+    let (method, digest) = properties::digest_value_in(
         access,
         fields[2].ok_or(Error::Missing {
             parent: node,
             local: "SigPolicyHash",
         })?,
+        digest_namespace,
     )?;
-    let qualifiers = qualifiers(access, node, fields[3])?;
+    let qualifiers = qualifiers(access, node, fields[3], namespace)?;
     if let Some(transforms) = fields[1] {
         check_transforms(access, transforms, &qualifiers)?;
     }
@@ -350,6 +364,7 @@ fn qualifiers<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     enclosure: X::Id,
     parent: Option<X::Id>,
+    namespace: &str,
 ) -> PropertyResult<OwnedVec<Qualifier<X::Id>>, X> {
     let mut output = access
         .query(enclosure, |_, _, work| Ok(work.vector()))
@@ -357,7 +372,7 @@ fn qualifiers<X: Xml, W: Work>(
     if let Some(parent) = parent {
         for child in access.children(parent) {
             let node = child.map_err(Error::Child)?;
-            if !named(access, node, XADES, "SigPolicyQualifier")? {
+            if !named(access, node, namespace, "SigPolicyQualifier")? {
                 return Err(Error::Unexpected { node });
             }
             // AnyType may mix text and arbitrary elements. Inspect its direct
@@ -372,10 +387,12 @@ fn qualifiers<X: Xml, W: Work>(
                     specifications
                         .try_push(value)
                         .map_err(|cause| Error::Resource { node: value, cause })?;
-                } else if named(access, value, XADES, "SPURI")? {
+                } else if named(access, value, namespace, "SPURI")? {
                     properties::simple_content(access, value)?;
-                } else if named(access, value, XADES, "SPUserNotice")? {
-                    user_notice(access, value)?;
+                } else if named(access, value, namespace, "SPUserNotice")? {
+                    user_notice_with(access, value, namespace, |number| {
+                        properties::simple_content(access, number)
+                    })?;
                 }
                 child = access.next_sibling(node, value).map_err(Error::Access)?;
             }
@@ -396,24 +413,19 @@ fn qualifiers<X: Xml, W: Work>(
     Ok(output.into_owned())
 }
 
-fn user_notice<X: Xml, W: Work>(access: &Access<'_, X, W>, parent: X::Id) -> PropertyResult<(), X> {
-    user_notice_with(access, parent, |number| {
-        properties::simple_content(access, number)
-    })
-}
-
 // Both structural inspection and lexical qualification use this same grammar.
 // Integer validity belongs to the XML owner's arbitrary-precision scalar kernel.
 fn user_notice_with<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
     access: &Access<'_, X, W>,
     parent: X::Id,
+    namespace: &str,
     mut integer: impl FnMut(X::Id) -> Result<(), E>,
 ) -> Result<(), E> {
     let mut notice = None;
     let mut text = None;
     for child in access.children(parent) {
         let node = child.map_err(Error::Child)?;
-        if named(access, node, XADES, "NoticeRef")? {
+        if named(access, node, namespace, "NoticeRef")? {
             if notice.is_some() {
                 return Err(Error::Duplicate { node }.into());
             }
@@ -431,7 +443,7 @@ fn user_notice_with<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
                         parent: node,
                         local: "Organization",
                     })?;
-            if !named(access, organization, XADES, "Organization")? {
+            if !named(access, organization, namespace, "Organization")? {
                 return Err(Error::Unexpected { node: organization }.into());
             }
             properties::simple_content(access, organization)?;
@@ -444,7 +456,7 @@ fn user_notice_with<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
                         parent: node,
                         local: "NoticeNumbers",
                     })?;
-            if !named(access, numbers, XADES, "NoticeNumbers")? {
+            if !named(access, numbers, namespace, "NoticeNumbers")? {
                 return Err(Error::Unexpected { node: numbers }.into());
             }
             if let Some(extra) = fields.next() {
@@ -455,12 +467,12 @@ fn user_notice_with<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
             }
             for number in access.children(numbers) {
                 let number = number.map_err(Error::Child)?;
-                if !named(access, number, XADES, "int")? {
+                if !named(access, number, namespace, "int")? {
                     return Err(Error::Unexpected { node: number }.into());
                 }
                 integer(number)?;
             }
-        } else if named(access, node, XADES, "ExplicitText")? {
+        } else if named(access, node, namespace, "ExplicitText")? {
             if text.is_some() {
                 return Err(Error::Duplicate { node }.into());
             }

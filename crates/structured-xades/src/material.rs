@@ -17,7 +17,8 @@ pub use conditional::{
 };
 mod counters;
 pub mod credentials;
-pub use catalogue::{Catalogue, Entry, read};
+pub(crate) use catalogue::read_in as read_values_in;
+pub use catalogue::{Catalogue, Entry, read, retain_entry};
 mod pipeline;
 pub use pipeline::{
     Basic, Error as PipelineError, Opaque, PipelineResult, Placement, Retained, View,

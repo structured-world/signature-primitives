@@ -1,7 +1,8 @@
 //! Completed-response construction, distinct from an attained baseline grade.
 
-use super::{Emit, Error, Work, Writer, XADES};
+use super::{Emit, Error, Transaction, Work, Writer, XADES};
 use crate::timestamp::XADES_141;
+use crate::xml::Name;
 
 /// New unsigned timestamp property to append at the staged tail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,6 +11,26 @@ pub enum TimestampKind {
     Signature,
     /// `ArchiveTimeStamp` in the v1.4.1 namespace for B-LTA or renewal.
     Archive,
+}
+
+/// XML-owned output specific to the explicit references of historical stamps.
+pub trait HistoricalTimestampWriter: Transaction {
+    /// Write the given URI attribute with a unique reference to the exact
+    /// original `SignatureValue`. A missing or foreign XML ID is an owner error.
+    fn signature_value_uri<W: Work>(
+        &mut self,
+        value: Self::Id,
+        attribute: Name<'static>,
+        work: &W,
+    ) -> Result<(), Self::Error>;
+
+    /// Write a single ds:Transform using this exact approved canonicalization
+    /// method and its parameters from the same original staged snapshot.
+    fn canonicalization_transform<W: Work>(
+        &mut self,
+        method: Self::Id,
+        work: &W,
+    ) -> Result<(), Self::Error>;
 }
 
 /// Original token accepted by the request-bound common checker for the exact
@@ -47,6 +68,20 @@ impl<D: Copy, G: Copy, N: Copy> Timestamp<'_, D, G, N> {
         work: &W,
         method: impl FnOnce(&mut B, &structured_asn1::memory::Execution<'_>) -> Result<(), B::Error>,
     ) -> Result<(), Error<B::Error>> {
+        self.write_in(XADES, writer, work, |emit| {
+            method(emit.writer, emit.work).map_err(Error::Writer)
+        })
+    }
+
+    pub(super) fn write_in<B: Writer, W: Work>(
+        &self,
+        token_namespace: &'static str,
+        writer: &mut B,
+        work: &W,
+        prefix: impl FnOnce(
+            &mut Emit<'_, B, structured_asn1::memory::Execution<'_>>,
+        ) -> Result<(), Error<B::Error>>,
+    ) -> Result<(), Error<B::Error>> {
         let scoped = self.producer.execution_in(work);
         let mut emit = Emit {
             writer,
@@ -56,8 +91,12 @@ impl<D: Copy, G: Copy, N: Copy> Timestamp<'_, D, G, N> {
         // Method XML (including PrefixList) must be copied by its XML owner,
         // never reconstructed from only a URI or an invented ASN.1 identifier.
         scoped.charge_work(1).map_err(Error::Resource)?;
-        method(emit.writer, &scoped).map_err(Error::Writer)?;
-        emit.binary(XADES, "EncapsulatedTimeStamp", self.token.as_bytes())?;
+        prefix(&mut emit)?;
+        emit.binary(
+            token_namespace,
+            "EncapsulatedTimeStamp",
+            self.token.as_bytes(),
+        )?;
         emit.end()
     }
 }

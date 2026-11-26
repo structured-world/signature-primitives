@@ -1,8 +1,11 @@
+//! Historical profile construction and original-source checks.
+
 use super::*;
+use structured_xades::legacy::timestamp::LegacyXml as _;
 use structured_xades::{
     binding::SIGNED_PROPERTIES_122,
     container::{Selected, Syntaxes, XADES_122},
-    legacy::{self, SignerCertificate, timestamp as old},
+    legacy::{self, Profile, SignerCertificate, timestamp as old},
     scalar::{Datatype, Error as ScalarError, Fact},
 };
 
@@ -68,13 +71,153 @@ fn with_cert_reference(xml: Tree) -> Tree {
     with_serial(xml, "42", Fact::Valid).0
 }
 
-fn with_serial(mut xml: Tree, text: &'static str, fact: Fact) -> (Tree, usize) {
-    let signing = append(&mut xml, 4, XADES_122, "SigningCertificate");
-    let cert = append(&mut xml, signing, XADES_122, "Cert");
-    let digest = append(&mut xml, cert, XADES_122, "CertDigest");
-    append(&mut xml, digest, DS, "DigestMethod");
-    append(&mut xml, digest, DS, "DigestValue");
-    let issuer = append(&mut xml, cert, XADES_122, "IssuerSerial");
+fn with_serial(xml: Tree, text: &'static str, fact: Fact) -> (Tree, usize) {
+    with_serial_in(xml, text, fact, Profile::V122)
+}
+
+impl structured_xades::produce::HistoricalTimestampWriter for lifecycle::Draft {
+    fn signature_value_uri<W: Work>(
+        &mut self,
+        value: usize,
+        attribute: Name<'static>,
+        work: &W,
+    ) -> Result<(), Cause> {
+        assert_eq!(value, 12);
+        work.charge_work(1).map_err(Cause::Resource)?;
+        self.events.push(lifecycle::Written::Attribute(
+            attribute.local,
+            "#value".into(),
+        ));
+        Ok(())
+    }
+
+    fn canonicalization_transform<W: Work>(
+        &mut self,
+        method: usize,
+        work: &W,
+    ) -> Result<(), Cause> {
+        use structured_xades::produce::Transaction;
+        self.events.push(lifecycle::Written::Begin(DS, "Transform"));
+        self.method(method, work)?;
+        self.events.push(lifecycle::Written::End);
+        Ok(())
+    }
+}
+
+#[test]
+fn historical_request_and_response_emit_the_same_source_in_each_profile() {
+    // Exercise the shared request and actual RFC 3161 signature check with
+    // the original SignatureValue for every historical wire variant.
+    use structured_cms::timestamp::{HashAlgorithmReading, Request, Requested, Response};
+    use structured_xades::produce;
+    for profile in [Profile::V111, Profile::V122, Profile::PreEn] {
+        let mut xml = profile_tree(profile);
+        let method = append(&mut xml, 0, DS, "CanonicalizationMethod");
+        let source = [b'E', 12, b'M', u8::try_from(method).unwrap()];
+        let (provider, token, certificate, request_bytes) =
+            timestamp_oracle::fixture_unstated_accuracy(&source);
+        let work = funded();
+        let parser = structured_asn1::Parser::der(work.clone());
+        let mut query = parser.read(&request_bytes, 1000).unwrap();
+        let element = query.next_element().unwrap().unwrap();
+        let original = Request::read(&query, &element).unwrap();
+        let HashAlgorithmReading::Identifier(algorithm) = *original.imprint().algorithm() else {
+            panic!("generated SHA-256");
+        };
+        let response_bytes = timestamp_oracle::tlv(48, &[&[48, 3, 2, 1, 0][..], &token].concat());
+        let mut response_reader = parser.read(&response_bytes, 2000).unwrap();
+        let response = Response::read(&mut response_reader).unwrap();
+        let tsa = structured_pkix::Certificate::read(&parser, &certificate, 3000).unwrap();
+        let utc = structured_pkix::temporal::LeapTable::new(0, 2_000_000_000, &[]).unwrap();
+        let context = CheckContext {
+            certificate: &tsa,
+            certificate_parent: &query,
+            key: structured_pkix::path::EffectiveKey::standing(tsa.tbs().public_key()),
+            requested: Some(Requested {
+                request: &original,
+                parent: &query,
+            }),
+            utc: &utc,
+            reference: Some(structured_pkix::temporal::Instant::new(1_800_000_000, 0).unwrap()),
+            window: None,
+            policy_accuracy: None,
+        };
+        let access = Access::new(&xml, xml.snapshot(), &work);
+        let bound =
+            legacy::prepare(&access, &legacy::locate(&access, 0, profile).unwrap()).unwrap();
+        let mut plan = produce::ExtendedAugmentation::prepare_historical_signature(
+            &xml, &bound, method, &work,
+        )
+        .unwrap();
+        let request = produce::ContentRequest {
+            algorithm,
+            nonce: Some(&[7]),
+            policy: None,
+            cert_req: true,
+            extensions: &[],
+        };
+        assert_eq!(
+            plan.request(&provider, &query, &request).unwrap(),
+            request_bytes
+        );
+        let check = produce::ResponseCheck {
+            response: &response,
+            provider: &provider,
+            query: &response_reader,
+            context: &context,
+        };
+        let checked = plan
+            .check_response(&check, |_, _| Ok::<_, ()>(false))
+            .unwrap();
+        let mut writer = lifecycle::Draft::new(&xml, Some(7));
+        let namespace = profile.namespace();
+        let explicit = match profile {
+            Profile::V111 => Some(("HashDataInfo", "uri")),
+            Profile::V122 => Some(("Include", "URI")),
+            Profile::PreEn => None,
+        };
+        if let Some((element, attribute)) = explicit {
+            plan.write_historical_timestamp(&checked, &mut writer, &work)
+                .unwrap();
+            assert!(
+                writer
+                    .events
+                    .contains(&lifecycle::Written::Begin(namespace, element))
+            );
+            assert!(
+                writer
+                    .events
+                    .contains(&lifecycle::Written::Attribute(attribute, "#value".into()))
+            );
+        } else {
+            plan.write_timestamp(&checked, &mut writer, &work).unwrap();
+            assert_eq!(writer.events[1], lifecycle::Written::Method(method));
+        }
+        assert_eq!(
+            writer.events[0],
+            lifecycle::Written::Begin(namespace, "SignatureTimeStamp")
+        );
+        assert!(writer.events.contains(&lifecycle::Written::Begin(
+            namespace,
+            "EncapsulatedTimeStamp"
+        )));
+        assert!(writer.events.contains(&lifecycle::Written::Binary(token)));
+    }
+}
+
+fn with_serial_in(
+    mut xml: Tree,
+    text: &'static str,
+    fact: Fact,
+    profile: Profile,
+) -> (Tree, usize) {
+    let namespace = profile.namespace();
+    let signing = append(&mut xml, 4, namespace, "SigningCertificate");
+    let cert = append(&mut xml, signing, namespace, "Cert");
+    let digest = append(&mut xml, cert, namespace, "CertDigest");
+    append(&mut xml, digest, profile.digest_namespace(), "DigestMethod");
+    append(&mut xml, digest, profile.digest_namespace(), "DigestValue");
+    let issuer = append(&mut xml, cert, namespace, "IssuerSerial");
     append(&mut xml, issuer, DS, "X509IssuerName");
     let serial = append(&mut xml, issuer, DS, "X509SerialNumber");
     xml.nodes.push(Record {
@@ -84,6 +227,277 @@ fn with_serial(mut xml: Tree, text: &'static str, fact: Fact) -> (Tree, usize) {
     xml.scalar_routes
         .push(scalar_checks::route(serial, Datatype::Integer, fact));
     (xml, serial)
+}
+
+fn profile_tree(profile: Profile) -> Tree {
+    let namespace = profile.namespace();
+    let mut xml = tree();
+    for node in &mut xml.nodes[2..8] {
+        if let Node::Element(name) = &mut node.value {
+            name.namespace = namespace;
+        }
+    }
+    xml.references[1].kind = Some(profile.signed_properties_type());
+    let (mut xml, _) = with_serial_in(xml, "42", Fact::Valid, profile);
+    let policy = append(&mut xml, 4, namespace, "SignaturePolicyIdentifier");
+    append(&mut xml, policy, namespace, "SignaturePolicyImplied");
+    xml
+}
+
+#[test]
+fn historical_policy_checks_documentation_in_the_original_namespace() {
+    // Both older schemas carry the documentation URI in their own namespace.
+    use structured_xades::{identifier, policy::Declaration};
+    let work = funded();
+    for profile in [Profile::V111, Profile::V122] {
+        let mut xml = profile_tree(profile);
+        let explicit = xml.nodes.len() - 1;
+        let namespace = profile.namespace();
+        let parent = xml.nodes[explicit].parent;
+        xml.nodes[explicit] = element(parent, namespace, "SignaturePolicyId");
+        let policy = append(&mut xml, explicit, namespace, "SigPolicyId");
+        let id = append(&mut xml, policy, namespace, "Identifier");
+        let refs = append(&mut xml, policy, namespace, "DocumentationReferences");
+        let doc = append(&mut xml, refs, namespace, "DocumentationReference");
+        let hash = append(&mut xml, explicit, namespace, "SigPolicyHash");
+        append(&mut xml, hash, profile.digest_namespace(), "DigestMethod");
+        append(&mut xml, hash, profile.digest_namespace(), "DigestValue");
+        let uri = "https://example.test/policy";
+        xml.uri_routes.push(scalar_checks::UriRoute::valid(id, uri));
+        xml.scalar_routes
+            .push(scalar_checks::route(doc, Datatype::AnyUri, Fact::Valid));
+        let access = Access::new(&xml, xml.snapshot(), &work);
+        let layout = legacy::locate(&access, 0, profile).unwrap();
+        let prepared = legacy::prepare(&access, &layout).unwrap();
+        let policy = prepared.policy(&access).unwrap().unwrap();
+        let Declaration::Explicit(policy) = policy.declaration() else {
+            panic!("explicit policy")
+        };
+        assert!(matches!(
+            identifier::check(&access, &policy.identifier),
+            Ok(identifier::Meaning::Uri)
+        ));
+        assert_eq!(xml.scalar_calls.get(), 2);
+    }
+}
+
+#[test]
+fn historical_signature_timestamp_tail_respects_unsigned_schema_order() {
+    // The old ordered sequences cannot append a T timestamp after C material.
+    use structured_xades::produce::ExtendedAugmentation;
+    let work = funded();
+    for profile in [Profile::V111, Profile::V122, Profile::PreEn] {
+        let mut xml = profile_tree(profile);
+        let method = append(&mut xml, 0, DS, "CanonicalizationMethod");
+        let tail = append(&mut xml, 7, profile.namespace(), "CompleteCertificateRefs");
+        let access = Access::new(&xml, xml.snapshot(), &work);
+        let layout = legacy::locate(&access, 0, profile).unwrap();
+        let prepared = legacy::prepare(&access, &layout).unwrap();
+        let result =
+            ExtendedAugmentation::prepare_historical_signature(&xml, &prepared, method, &work);
+        if profile == Profile::PreEn {
+            assert!(result.is_ok());
+        } else {
+            assert!(matches!(result, Err(InputError::Order { node }) if node == tail));
+        }
+    }
+}
+
+/// Exercise the common signer check with original data extracted independently.
+/// # Panics
+/// Fails when the pinned fixture's XML vocabulary or certificate hash disagrees.
+pub fn check_independent_signer(directory: &std::path::Path, profile: Profile) {
+    let vocabulary = std::fs::read_to_string(directory.join("vocabulary.txt")).unwrap();
+    assert_eq!(
+        vocabulary.lines().collect::<Vec<_>>(),
+        [
+            profile.signed_properties_type(),
+            profile.digest_namespace(),
+            profile.digest_namespace()
+        ]
+    );
+    let mut xml = profile_tree(profile);
+    xml.binary = std::fs::read(directory.join("digest.bin")).unwrap();
+    xml.digest_algorithm = Some("http://www.w3.org/2001/04/xmlenc#sha256");
+    let bytes = std::fs::read(directory.join("signer.der")).unwrap();
+    let work = funded();
+    let parser = structured_asn1::Parser::der(work.clone());
+    let certificate = structured_pkix::Certificate::read(&parser, &bytes, 0).unwrap();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let layout = legacy::locate(&access, 0, profile).unwrap();
+    let prepared = legacy::prepare(&access, &layout).unwrap();
+    let digest = xml_digest::Oracle::new(xml_digest::Mode::Ready);
+    let facts = legacy::check_signer(
+        &xml,
+        &prepared,
+        &certificate,
+        structured_pkix::path::EffectiveKey::standing(certificate.tbs().public_key()),
+        &digest,
+        &work,
+    )
+    .unwrap();
+    assert!(matches!(
+        facts.certificate,
+        legacy::CertificateMatch::Digest(_)
+    ));
+}
+
+impl old::HashDataXml for Tree {
+    fn resolve_hash_data<W: Work>(
+        &self,
+        snapshot: Snapshot<u8, u8>,
+        signature: usize,
+        data: old::HashDataInfo<usize>,
+        work: &W,
+    ) -> Result<Resolution<old::HashDataTarget<usize>>, Cause> {
+        self.check(snapshot, signature)?;
+        assert!(data.transforms.is_some());
+        self.resolve_legacy_element(snapshot, data.node, work)
+            .map(|answer| answer.map(old::HashDataTarget::Element))
+    }
+
+    fn replay_hash_data<W: Work>(
+        &self,
+        snapshot: Snapshot<u8, u8>,
+        signature: usize,
+        data: old::HashDataInfo<usize>,
+        expected: old::HashDataTarget<usize>,
+        receiver: &mut impl Receiver,
+        work: &W,
+    ) -> Result<ReplayOutcome<Cause>, Cause> {
+        if self.resolve_hash_data(snapshot, signature, data, work)?
+            != Resolution::Resolved(expected)
+        {
+            return Err(Cause::Source);
+        }
+        let old::HashDataTarget::Element(target) = expected else {
+            return Err(Cause::Source);
+        };
+        self.canonicalize_legacy_default(snapshot, target, receiver, work)?;
+        Ok(ReplayOutcome::Complete)
+    }
+}
+
+#[test]
+fn v111_hash_data_cannot_timestamp_the_whole_signature_instead_of_its_value() {
+    // TS 101 903 V1.1.1 §7.3 selects the actual SignatureValue. Uppercase
+    // compatibility changes only syntax; source matching remains mandatory.
+    let profile = Profile::V111;
+    let ns = profile.namespace();
+    let mut xml = profile_tree(profile);
+    let stamp = append(&mut xml, 7, ns, "SignatureTimeStamp");
+    let input = append(&mut xml, stamp, ns, "HashDataInfo");
+    let transforms = append(&mut xml, input, ns, "Transforms");
+    let transform = append(&mut xml, transforms, DS, "Transform");
+    xml.digest_algorithms
+        .push((transform, "http://www.w3.org/2001/10/xml-exc-c14n#"));
+    let token = append(&mut xml, stamp, ns, "EncapsulatedTimeStamp");
+    let work = funded();
+    for (attribute, target) in [("uri", 12), ("URI", 0)] {
+        xml.hash_data_uri = Some((attribute, "#selected"));
+        xml.include_routes = vec![(input, target, Boolean::Absent)];
+        let access = Access::new(&xml, xml.snapshot(), &work);
+        let prepared =
+            legacy::prepare(&access, &legacy::locate(&access, 0, profile).unwrap()).unwrap();
+        assert!(matches!(
+            prepared.policy(&access).unwrap().unwrap().declaration(),
+            structured_xades::policy::Declaration::Implied(_)
+        ));
+        if target == 12 {
+            let stamp =
+                old::HashDataStamp::read(&access, &prepared, stamp, old::HashDataUri::Standard)
+                    .unwrap();
+            assert_eq!(stamp.token(), old::Token::Encapsulated(token));
+            let mut source = old::HashDataInput::prepare(&access, &prepared, &stamp).unwrap();
+            let mut sink = Collect::new(&work);
+            stream::run(&mut source, &mut sink, &work, "historical.timestamp", 0).unwrap();
+            assert_eq!(sink.bytes(), &[b'E', 12]);
+        } else {
+            assert!(
+                matches!(old::HashDataStamp::read(&access, &prepared, stamp, old::HashDataUri::Standard), Err(InputError::Unexpected { node }) if node == input)
+            );
+            let stamp =
+                old::HashDataStamp::read(&access, &prepared, stamp, old::HashDataUri::Uppercase)
+                    .unwrap();
+            assert!(
+                matches!(old::HashDataInput::prepare(&access, &prepared, &stamp), Err(InputError::Reference { node, .. }) if node == input)
+            );
+        }
+    }
+}
+
+#[test]
+fn historical_writers_use_the_selected_digest_and_material_namespaces() {
+    // All three historical writers bind the V1 certificate and preserve the
+    // source DER while placing it in the actual historical values vocabulary.
+    use structured_xades::produce;
+    let work = funded();
+    let bytes = candidate_certificate();
+    let parser = structured_asn1::Parser::der(work.clone());
+    let certificate = structured_pkix::Certificate::read(&parser, &bytes, 0).unwrap();
+    let data = [produce::DataObject {
+        reference: "#content-reference",
+        mime_type: "text/plain",
+    }];
+    let basic = produce::Basic {
+        target: "#sig",
+        signed_properties_id: "properties",
+        signing_time: "2025-01-30T00:00:00Z",
+        certificate: &certificate,
+        certificate_digest_method: "urn:digest",
+        certificate_digest: &[1, 0],
+        objects: &data,
+        counter_signature: None,
+    };
+    for profile in [Profile::V111, Profile::V122, Profile::PreEn] {
+        let mut xml = profile_tree(profile);
+        let namespace = profile.namespace();
+        let value_container = append(&mut xml, 7, namespace, "CertificateValues");
+        let value = append(
+            &mut xml,
+            value_container,
+            namespace,
+            "EncapsulatedX509Certificate",
+        );
+        xml.binary_routes.push((value, bytes.clone()));
+        let access = Access::new(&xml, xml.snapshot(), &work);
+        let layout = legacy::locate(&access, 0, profile).unwrap();
+        let prepared = legacy::prepare(&access, &layout).unwrap();
+        assert_eq!(layout.profile(), profile);
+        let mut draft = lifecycle::Draft::new(&xml, Some(7));
+        let policy = produce::SignaturePolicy::Implied;
+        basic
+            .write_historical(profile, Some(&policy), &mut draft, &work)
+            .unwrap();
+        assert!(
+            draft
+                .events
+                .contains(&lifecycle::Written::Begin(namespace, "SigningCertificate"))
+        );
+        assert!(draft.events.contains(&lifecycle::Written::Begin(
+            profile.digest_namespace(),
+            "DigestMethod"
+        )));
+        assert!(
+            draft
+                .events
+                .contains(&lifecycle::Written::Begin(DS, "X509SerialNumber"))
+        );
+        produce::write_historical_values(
+            &[produce::Material::certificate(&certificate)],
+            profile,
+            produce::ReferenceRole::Signature,
+            &mut draft,
+            &work,
+        )
+        .unwrap();
+        let values = prepared.values(&access, value_container).unwrap();
+        let operation = parser.read(&[], 0).unwrap();
+        let value = material::retain_entry(&xml, &values, 0, &operation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(value.bytes(), bytes);
+    }
 }
 
 fn layout<W: Work>(access: &Access<'_, Tree, W>) -> legacy::Layout<Tree> {

@@ -29,7 +29,7 @@ pub fn read_uri_syntax<X: crate::scalar::ScalarXml, W: Work>(
 ) -> UriResult<X> {
     use crate::reference::LexicalSource;
     use crate::scalar::{Datatype, check};
-    read_with(access, parent, |node| {
+    read_with(access, parent, XADES, |node| {
         check(access, node, LexicalSource::SimpleContent, Datatype::AnyUri)
             .map_err(UriError::Scalar)
     })
@@ -88,7 +88,15 @@ pub fn read<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     parent: X::Id,
 ) -> PropertyResult<Reading<X::Id>, X> {
-    read_with(access, parent, |node| {
+    read_in(access, parent, XADES)
+}
+
+pub(crate) fn read_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    parent: X::Id,
+    namespace: &str,
+) -> PropertyResult<Reading<X::Id>, X> {
+    read_with(access, parent, namespace, |node| {
         properties::simple_content(access, node)
     })
 }
@@ -99,6 +107,7 @@ pub fn read<X: Xml, W: Work>(
 fn read_with<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
     access: &Access<'_, X, W>,
     parent: X::Id,
+    namespace: &str,
     mut uri: impl FnMut(X::Id) -> Result<(), E>,
 ) -> Result<Reading<X::Id>, E> {
     let mut fields = [None; 3];
@@ -111,13 +120,7 @@ fn read_with<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
             .enumerate()
         {
             if access
-                .has_name(
-                    node,
-                    Name {
-                        namespace: XADES,
-                        local,
-                    },
-                )
+                .has_name(node, Name { namespace, local })
                 .map_err(Error::Access)?
             {
                 selected = Some(rank);
@@ -166,7 +169,7 @@ fn read_with<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
             },
         )
         .map_err(Error::Access)??;
-    documentation_with(access, fields[2], &mut uri)?;
+    documentation_with(access, fields[2], namespace, &mut uri)?;
     Ok(Reading {
         identifier,
         qualifier,
@@ -180,6 +183,7 @@ fn read_with<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
 fn documentation_with<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
     access: &Access<'_, X, W>,
     parent: Option<X::Id>,
+    namespace: &str,
     mut uri: impl FnMut(X::Id) -> Result<(), E>,
 ) -> Result<(), E> {
     if let Some(parent) = parent {
@@ -190,7 +194,7 @@ fn documentation_with<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
                 .has_name(
                     node,
                     Name {
-                        namespace: XADES,
+                        namespace,
                         local: "DocumentationReference",
                     },
                 )

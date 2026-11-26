@@ -241,6 +241,14 @@ pub(crate) fn digest_value<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     parent: X::Id,
 ) -> PropertyResult<(X::Id, X::Id), X> {
+    digest_value_in(access, parent, DS)
+}
+
+pub(crate) fn digest_value_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    parent: X::Id,
+    namespace: &str,
+) -> PropertyResult<(X::Id, X::Id), X> {
     let mut children = access.children(parent);
     let method = children
         .next()
@@ -254,7 +262,7 @@ pub(crate) fn digest_value<X: Xml, W: Work>(
         .has_name(
             method,
             Name {
-                namespace: DS,
+                namespace,
                 local: "DigestMethod",
             },
         )
@@ -274,7 +282,7 @@ pub(crate) fn digest_value<X: Xml, W: Work>(
         .has_name(
             value,
             Name {
-                namespace: DS,
+                namespace,
                 local: "DigestValue",
             },
         )

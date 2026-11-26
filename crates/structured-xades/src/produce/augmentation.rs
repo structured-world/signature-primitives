@@ -338,7 +338,8 @@ impl<D: Copy, G: Copy, N: Copy> Checked<'_, D, G, N> {
 /// input is used to check the returned token before it can be written.
 pub struct ExtendedAugmentation<'a, X: TimestampXml> {
     input: Input<'a, X>,
-    kind: ExtendedKind,
+    name: Name<'static>,
+    historical_signature: Option<(crate::legacy::Profile, X::Id)>,
     unsigned_parent: Option<X::Id>,
     request: Option<OwnedVec<u8>>,
 }
@@ -390,7 +391,49 @@ impl<'a, X: TimestampXml> ExtendedAugmentation<'a, X> {
         let input = Input::prepare_extended_append(xml, bound, kind, method, work)?;
         Ok(Self {
             input,
-            kind,
+            name: kind.name(),
+            historical_signature: None,
+            unsigned_parent,
+            request: None,
+        })
+    }
+
+    /// Prepare a historical signature timestamp before its property exists.
+    /// The exact `SignatureValue` is common to all three direct profiles. The
+    /// final writer uses the corresponding `HashDataInfo` or `Include` syntax.
+    pub fn prepare_historical_signature<W: Work>(
+        xml: &'a X,
+        prepared: &crate::legacy::Prepared<X>,
+        method: X::Id,
+        work: &W,
+    ) -> InputResultExt<Self, X> {
+        use crate::legacy::Profile;
+        let bound = prepared.binding();
+        let layout = bound.containers();
+        let access = Access::new(xml, layout.snapshot(), work);
+        let profile = prepared.profile();
+        let namespace = profile.namespace();
+        let unsigned_parent = match layout.unsigned() {
+            Some(unsigned) => {
+                timestamp::optional(&access, unsigned, namespace, "UnsignedSignatureProperties")?
+            }
+            None => None,
+        };
+        if let Some(node) = prepared.after_signature_timestamp() {
+            return Err(timestamp::InputError::Order { node });
+        }
+        let input = Input::prepare_append(xml, bound, AppendKind::Signature, method, work)?;
+        let historical_signature = if profile == Profile::PreEn {
+            None
+        } else {
+            let value =
+                timestamp::singleton(&access, layout.signature(), super::DS, "SignatureValue")?;
+            Some((profile, value))
+        };
+        Ok(Self {
+            input,
+            name: super::name(namespace, "SignatureTimeStamp"),
+            historical_signature,
             unsigned_parent,
             request: None,
         })
@@ -476,7 +519,7 @@ impl<'a, X: TimestampXml> ExtendedAugmentation<'a, X> {
         if expected != actual {
             return Err(ResponseError::Admission(Error::Foreign));
         }
-        check_extended_input(&mut self.input, self.kind, actual, check, recognizes)
+        check_extended_input(&mut self.input, self.name, actual, check, recognizes)
     }
 
     /// Write a positive response at the exact original unsigned tail.
@@ -489,12 +532,77 @@ impl<'a, X: TimestampXml> ExtendedAugmentation<'a, X> {
     where
         B: Transaction<Id = X::Id, Document = X::Document, Generation = X::Generation>,
     {
+        if self.historical_signature.is_some() {
+            return Err(Error::Prerequisites);
+        }
+        let timestamp = self.admit(checked, writer, work)?;
+        let (_, method) = self.input.location();
+        timestamp.write(writer, work, |writer, work| writer.method(method, work))?;
+        self.require(writer, work)
+    }
+
+    /// Write the checked response using its original V1.1.1 or V1.2.2
+    /// property grammar. The owner writes the exact URI to `SignatureValue`.
+    pub fn write_historical_timestamp<B, W: Work>(
+        &self,
+        checked: &CheckedFor<'_, X>,
+        writer: &mut B,
+        work: &W,
+    ) -> Result<(), Error<B::Error>>
+    where
+        B: super::HistoricalTimestampWriter<
+                Id = X::Id,
+                Document = X::Document,
+                Generation = X::Generation,
+            >,
+    {
+        use crate::legacy::Profile;
+        let (profile, value) = self.historical_signature.ok_or(Error::Prerequisites)?;
+        let timestamp = self.admit(checked, writer, work)?;
+        let namespace = profile.namespace();
+        let (_, method) = self.input.location();
+        timestamp.write_in(namespace, writer, work, |emit| {
+            if profile == Profile::V111 {
+                emit.begin(namespace, "HashDataInfo")?;
+                emit.writer
+                    .signature_value_uri(value, super::attr("uri"), emit.work)
+                    .map_err(Error::Writer)?;
+                emit.begin(namespace, "Transforms")?;
+                emit.writer
+                    .canonicalization_transform(method, emit.work)
+                    .map_err(Error::Writer)?;
+                emit.end()?;
+                emit.end()?;
+            } else {
+                emit.begin(namespace, "Include")?;
+                emit.writer
+                    .signature_value_uri(value, super::attr("URI"), emit.work)
+                    .map_err(Error::Writer)?;
+                emit.end()?;
+                emit.writer
+                    .method(method, emit.work)
+                    .map_err(Error::Writer)?;
+            }
+            Ok(())
+        })?;
+        self.require(writer, work)
+    }
+
+    fn admit<'r, B, W: Work>(
+        &self,
+        checked: &'r CheckedFor<'_, X>,
+        writer: &B,
+        work: &W,
+    ) -> AdmittedTimestamp<'r, X, B::Error>
+    where
+        B: Transaction<Id = X::Id, Document = X::Document, Generation = X::Generation>,
+    {
         self.require(writer, work)?;
         let (snapshot, method) = self.input.location();
         let signature = self.input.signature();
         work.charge_work(1).map_err(Error::Resource)?;
         if checked.snapshot != snapshot
-            || checked.name != self.kind.name()
+            || checked.name != self.name
             || !structured_ltv::source::equal_id(checked.signature, signature, work)
                 .map_err(Error::Resource)?
             || !structured_ltv::source::equal_id(checked.method, method, work)
@@ -509,9 +617,7 @@ impl<'a, X: TimestampXml> ExtendedAugmentation<'a, X> {
         if expected != actual {
             return Err(Error::Foreign);
         }
-        let timestamp = checked.timestamp().ok_or(Error::Prerequisites)?;
-        timestamp.write(writer, work, |writer, work| writer.method(method, work))?;
-        self.require(writer, work)
+        checked.timestamp().ok_or(Error::Prerequisites)
     }
 
     fn require<B, W: Work>(&self, writer: &B, work: &W) -> Result<(), Error<B::Error>>
@@ -534,6 +640,15 @@ impl<'a, X: TimestampXml> ExtendedAugmentation<'a, X> {
 }
 
 type InputResultExt<T, X> = timestamp::InputResult<T, X>;
+type AdmittedTimestamp<'r, X, E> = Result<
+    Timestamp<
+        'r,
+        <X as crate::xml::Xml>::Document,
+        <X as crate::xml::Xml>::Generation,
+        <X as crate::xml::Xml>::Id,
+    >,
+    Error<E>,
+>;
 
 #[expect(
     clippy::result_large_err,
@@ -541,7 +656,7 @@ type InputResultExt<T, X> = timestamp::InputResult<T, X>;
 )]
 fn check_extended_input<'q, X: TimestampXml, P, PE, RE>(
     input: &mut Input<'_, X>,
-    kind: ExtendedKind,
+    name: Name<'static>,
     request: &'q [u8],
     check: &ResponseCheck<'q, '_, P>,
     recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
@@ -566,7 +681,7 @@ where
         snapshot,
         signature,
         method,
-        name: kind.name(),
+        name,
         request: Some(request),
         response: check.response,
         facts,

@@ -188,7 +188,7 @@ pub fn write_material<B: Writer, W: Work>(
     }
     let mut emit = Emit { writer, work };
     emit.begin(XADES_141, "AnyValidationData")?;
-    write_values(entries, &mut emit, ReferenceRole::Signature)?;
+    write_values(entries, &mut emit, XADES, ReferenceRole::Signature)?;
     emit.end()
 }
 
@@ -202,12 +202,53 @@ pub fn write_extended_values<B: Writer, W: Work>(
     writer: &mut B,
     work: &W,
 ) -> Result<(), Error<B::Error>> {
-    write_values(entries, &mut Emit { writer, work }, role)
+    write_values(entries, &mut Emit { writer, work }, XADES, role)
+}
+
+/// Emit the exact historical certificate and revocation values vocabulary.
+/// Both early schemas use the ordinary values containers. TS 103 171 also
+/// specifies separate attribute-authority values when required.
+pub fn write_historical_values<B: Writer, W: Work>(
+    entries: &[Material<'_, '_>],
+    profile: crate::legacy::Profile,
+    role: ReferenceRole,
+    writer: &mut B,
+    work: &W,
+) -> Result<(), Error<B::Error>> {
+    if role == ReferenceRole::AttributeAuthority && profile != crate::legacy::Profile::PreEn {
+        return Err(Error::Value("historicalValues.role"));
+    }
+    write_values(
+        entries,
+        &mut Emit { writer, work },
+        profile.namespace(),
+        role,
+    )
+}
+
+/// Write historical TSA validation material immediately after its timestamp.
+/// The caller selects the actual material and the timestamp's insertion point.
+/// TS 103 171 V2.1.1 §8.1.5 uses the 1.4.1 `TimeStampValidationData` container.
+/// <https://www.etsi.org/deliver/etsi_ts/103100_103199/103171/02.01.01_60/ts_103171v020101p.pdf>
+pub fn write_historical_timestamp_values<B: Writer, W: Work>(
+    entries: &[Material<'_, '_>],
+    writer: &mut B,
+    work: &W,
+) -> Result<(), Error<B::Error>> {
+    work.charge_work(1).map_err(Error::Resource)?;
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let mut emit = Emit { writer, work };
+    emit.begin(XADES_141, "TimeStampValidationData")?;
+    write_values(entries, &mut emit, XADES, ReferenceRole::Signature)?;
+    emit.end()
 }
 
 fn write_values<B: Writer, W: Work>(
     entries: &[Material<'_, '_>],
     emit: &mut Emit<'_, B, W>,
+    namespace: &'static str,
     role: ReferenceRole,
 ) -> Result<(), Error<B::Error>> {
     let work = emit.work;
@@ -225,11 +266,11 @@ fn write_values<B: Writer, W: Work>(
         } else {
             "CertificateValues"
         };
-        emit.begin(XADES, local)?;
+        emit.begin(namespace, local)?;
         for value in entries {
             work.charge_work(1).map_err(Error::Resource)?;
             if value.kind() == MaterialKind::Certificate {
-                write_one(value, emit)?;
+                write_one(value, namespace, emit)?;
             }
         }
         emit.end()?;
@@ -250,7 +291,7 @@ fn write_values<B: Writer, W: Work>(
         } else {
             "RevocationValues"
         };
-        emit.begin(XADES, local)?;
+        emit.begin(namespace, local)?;
         for (kind, local) in [
             (MaterialKind::Crl, "CRLValues"),
             (MaterialKind::Ocsp, "OCSPValues"),
@@ -258,11 +299,11 @@ fn write_values<B: Writer, W: Work>(
             if (kind == MaterialKind::Crl && !crls) || (kind == MaterialKind::Ocsp && !ocsps) {
                 continue;
             }
-            emit.begin(XADES, local)?;
+            emit.begin(namespace, local)?;
             for value in entries {
                 work.charge_work(1).map_err(Error::Resource)?;
                 if value.kind() == kind {
-                    write_one(value, emit)?;
+                    write_one(value, namespace, emit)?;
                 }
             }
             emit.end()?;
@@ -273,6 +314,7 @@ fn write_values<B: Writer, W: Work>(
 }
 fn write_one<B: Writer, W: Work>(
     value: &Material<'_, '_>,
+    namespace: &'static str,
     emit: &mut Emit<'_, B, W>,
 ) -> Result<(), Error<B::Error>> {
     let scoped = value.execution_in(emit.work);
@@ -285,5 +327,5 @@ fn write_one<B: Writer, W: Work>(
         MaterialKind::Crl => "EncapsulatedCRLValue",
         MaterialKind::Ocsp => "EncapsulatedOCSPValue",
     };
-    actual.binary(XADES, local, value.bytes())
+    actual.binary(namespace, local, value.bytes())
 }

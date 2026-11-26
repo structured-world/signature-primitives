@@ -450,6 +450,44 @@ def qualify_extended(output):
         (target / "token-0.der").write_bytes(token)
 
 
+def qualify_historical(output):
+    base = f"https://raw.githubusercontent.com/esig/dss/{EXTENDED_REVISION}/"
+    fixtures = (
+        ("1.1.1", "Signature-X-AT-1.xml",
+         "872c4bb4114411fe22c6fae09d007268d6253329c56cca5427e2bf870ef9363b"),
+        ("1.2.2", "Signature-X-FR_NOT-3.xml",
+         "0f7f8fcefb793dbbb438e3a877643785fa94c7ae48fa37ff06a98327ea538ab1"),
+    )
+    for version, file, checksum in fixtures:
+        target = output / "historical" / version
+        target.mkdir(parents=True, exist_ok=True)
+        source = fetch(VALIDATION + file, base)
+        if hashlib.sha256(source).hexdigest() != checksum:
+            raise RuntimeError(f"independent historical fixture checksum changed: {file}")
+        tree = etree.fromstring(source, etree.XMLParser(resolve_entities=False, no_network=True))
+        namespace = f"http://uri.etsi.org/01903/v{version}#"
+        qualifying = next(tree.iter(f"{{{namespace}}}QualifyingProperties"))
+        signature = qualifying.getparent().getparent()
+        references = signature.findall(f"{{{DS}}}SignedInfo/{{{DS}}}Reference")
+        signed_type = next(ref.get("Type") for ref in references
+                           if ref.get("Type", "").endswith("#SignedProperties"))
+        digest = qualifying.find(f".//{{{namespace}}}SigningCertificate/"
+                                 f"{{{namespace}}}Cert/{{{namespace}}}CertDigest")
+        method = digest[0]
+        if method.get("Algorithm") != "http://www.w3.org/2001/04/xmlenc#sha256":
+            raise RuntimeError(f"independent historical digest method changed: {file}")
+        declared = base64.b64decode(digest[1].text)
+        candidates = signature.findall(f"{{{DS}}}KeyInfo/{{{DS}}}X509Data/{{{DS}}}X509Certificate")
+        candidates = [base64.b64decode(value.text) for value in candidates]
+        signer, = [der for der in candidates if hashlib.sha256(der).digest() == declared]
+        (target / "signer.der").write_bytes(signer)
+        (target / "digest.bin").write_bytes(declared)
+        (target / "vocabulary.txt").write_text(
+            f"{signed_type}\n{etree.QName(method).namespace}\n{etree.QName(digest[1]).namespace}\n",
+            encoding="ascii",
+        )
+
+
 def qualify_shared(output):
     root = Path(__file__).resolve().parent.parent
     helpers = runpy.run_path(str(root / "scripts/qualify-xades-key.py"))
@@ -526,6 +564,7 @@ def main():
     qualify_negative(output)
     qualify_multiple(output)
     qualify_extended(output)
+    qualify_historical(output)
     qualify_shared(output)
     print(f"Independent DSS {REVISION} B-B/B-LT/B-LTA fixtures: "
           "XML signatures + references PASS; isolated signature and data mutations refused; "

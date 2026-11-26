@@ -1,6 +1,10 @@
 //! Baseline signed-property construction and `XMLDSig` reference instructions.
 
-use super::{DS, DataObjectFormat, Datatype, Emit, Error, Event, Value, Work, Writer, XADES};
+use super::{
+    DS, DataObjectFormat, Datatype, Emit, Error, Event, PolicyWriter, ReferenceWriter,
+    SignaturePolicy, Value, Work, Writer, XADES, references::write_issuer_serial,
+};
+use crate::legacy::Profile;
 use structured_pkix::Certificate;
 
 /// One original data-object reference and its required MIME description.
@@ -86,20 +90,7 @@ impl Basic<'_, '_> {
             writer,
             work,
             |_, _| Ok(()),
-            |writer, work| {
-                let mut emit = Emit { writer, work };
-                for object in self.objects {
-                    DataObjectFormat {
-                        reference: object.reference,
-                        description: None,
-                        identifier: None,
-                        mime_type: Some(object.mime_type),
-                        encoding: None,
-                    }
-                    .emit(&mut emit)?;
-                }
-                Ok(())
-            },
+            |writer, work| self.write_objects(XADES, &mut Emit { writer, work }),
             |_, _| Ok(()),
         )
     }
@@ -118,6 +109,73 @@ impl Basic<'_, '_> {
         objects: impl FnOnce(&mut B, &W) -> Result<(), Error<B::Error>>,
         unsigned: impl FnOnce(&mut B, &W) -> Result<(), Error<B::Error>>,
     ) -> Result<BasicReferences<'a>, Error<B::Error>> {
+        self.validate(work)?;
+        let mut emit = Emit { writer, work };
+        self.begin(XADES, &mut emit)?;
+        emit.begin(XADES, "SigningCertificateV2")?;
+        self.write_certificate_digest(XADES, DS, &mut emit)?;
+        emit.end()?;
+        emit.end()?;
+        signature(emit.writer, work)?;
+        emit.end()?;
+        if !self.objects.is_empty() {
+            emit.begin(XADES, "SignedDataObjectProperties")?;
+            objects(emit.writer, work)?;
+            emit.end()?;
+        }
+        emit.end()?;
+        unsigned(emit.writer, work)?;
+        emit.end()?;
+        Ok(self.references())
+    }
+
+    /// Emit the historical certificate and policy vocabulary explicitly.
+    /// Install the returned reference using [`Profile::signed_properties_type`].
+    /// The original certificate can be included through [`Self::write_key_info`].
+    /// V1.1.1 requires a policy choice. Only the pre-EN profile requires
+    /// MIME descriptions for every signed data object.
+    pub fn write_historical<'a, B: ReferenceWriter + PolicyWriter, W: Work>(
+        &'a self,
+        profile: Profile,
+        policy: Option<&SignaturePolicy<'_, B::Fragment>>,
+        writer: &mut B,
+        work: &W,
+    ) -> Result<BasicReferences<'a>, Error<B::Error>> {
+        self.validate(work)?;
+        if profile == Profile::V111 && policy.is_none() {
+            return Err(Error::Value("signaturePolicy.required"));
+        }
+        let namespace = profile.namespace();
+        let mut emit = Emit { writer, work };
+        self.begin(namespace, &mut emit)?;
+        emit.begin(namespace, "SigningCertificate")?;
+        self.write_certificate_digest(namespace, profile.digest_namespace(), &mut emit)?;
+        let scoped = self.certificate.execution_in(work);
+        write_issuer_serial(
+            &mut Emit {
+                writer: emit.writer,
+                work: &scoped,
+            },
+            namespace,
+            self.certificate,
+        )?;
+        emit.end()?;
+        emit.end()?;
+        if let Some(policy) = policy {
+            policy.write_historical(profile, emit.writer, work)?;
+        }
+        emit.end()?;
+        if !self.objects.is_empty() {
+            emit.begin(namespace, "SignedDataObjectProperties")?;
+            self.write_objects(namespace, &mut emit)?;
+            emit.end()?;
+        }
+        emit.end()?;
+        emit.end()?;
+        Ok(self.references())
+    }
+
+    fn validate<E, W: Work>(&self, work: &W) -> Result<(), Error<E>> {
         work.charge_work(1).map_err(Error::Resource)?;
         if self.target.is_empty()
             || self.signed_properties_id.is_empty()
@@ -137,39 +195,66 @@ impl Basic<'_, '_> {
             }
             check_mime(object.mime_type, work)?;
         }
-        let mut emit = Emit { writer, work };
-        emit.begin(XADES, "QualifyingProperties")?;
+        Ok(())
+    }
+
+    fn references(&self) -> BasicReferences<'_> {
+        BasicReferences {
+            signed_properties: self.signed_properties_id,
+            counter_signature: self.counter_signature,
+        }
+    }
+
+    fn begin<B: Writer, W: Work>(
+        &self,
+        namespace: &'static str,
+        emit: &mut Emit<'_, B, W>,
+    ) -> Result<(), Error<B::Error>> {
+        emit.begin(namespace, "QualifyingProperties")?;
         emit.attribute("Target", self.target)?;
-        emit.begin(XADES, "SignedProperties")?;
+        emit.begin(namespace, "SignedProperties")?;
         emit.attribute("Id", self.signed_properties_id)?;
-        emit.begin(XADES, "SignedSignatureProperties")?;
-        emit.begin(XADES, "SigningTime")?;
+        emit.begin(namespace, "SignedSignatureProperties")?;
+        emit.begin(namespace, "SigningTime")?;
         emit.event(Event::Text(Value {
             lexical: self.signing_time,
             datatype: Datatype::ZonedDateTime,
         }))?;
-        emit.end()?;
-        emit.begin(XADES, "SigningCertificateV2")?;
-        emit.begin(XADES, "Cert")?;
-        emit.begin(XADES, "CertDigest")?;
-        emit.digest(self.certificate_digest_method, self.certificate_digest)?;
-        emit.end()?;
-        emit.end()?;
-        emit.end()?;
-        signature(emit.writer, work)?;
-        emit.end()?;
-        if !self.objects.is_empty() {
-            emit.begin(XADES, "SignedDataObjectProperties")?;
-            objects(emit.writer, work)?;
-            emit.end()?;
+        emit.end()
+    }
+
+    fn write_certificate_digest<B: Writer, W: Work>(
+        &self,
+        namespace: &'static str,
+        digest_namespace: &'static str,
+        emit: &mut Emit<'_, B, W>,
+    ) -> Result<(), Error<B::Error>> {
+        emit.begin(namespace, "Cert")?;
+        emit.begin(namespace, "CertDigest")?;
+        emit.digest_in(
+            digest_namespace,
+            self.certificate_digest_method,
+            self.certificate_digest,
+        )?;
+        emit.end()
+    }
+
+    fn write_objects<B: Writer, W: Work>(
+        &self,
+        namespace: &'static str,
+        emit: &mut Emit<'_, B, W>,
+    ) -> Result<(), Error<B::Error>> {
+        for object in self.objects {
+            DataObjectFormat {
+                reference: object.reference,
+                description: None,
+                identifier: None,
+                mime_type: Some(object.mime_type),
+                encoding: None,
+            }
+            .emit_in(namespace, emit)?;
         }
-        emit.end()?;
-        unsigned(emit.writer, work)?;
-        emit.end()?;
-        Ok(BasicReferences {
-            signed_properties: self.signed_properties_id,
-            counter_signature: self.counter_signature,
-        })
+        Ok(())
     }
 
     /// Emit the mandatory original signing certificate in one `X509Data`,

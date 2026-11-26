@@ -762,18 +762,18 @@ pub(crate) fn read_legacy<X: ScalarXml, W: Work>(
     access: &Access<'_, X, W>,
     signature: X::Id,
     node: X::Id,
+    profile: crate::legacy::Profile,
 ) -> crate::legacy::Result<Catalogue<X>, X> {
-    read_in(
-        access,
-        signature,
-        node,
-        crate::container::XADES_122,
-        |child| {
-            read_entry_in(access, child, crate::container::XADES_122, |issuer| {
-                read_legacy_issuer(access, child, issuer).map(Some)
-            })
-        },
-    )
+    let namespace = profile.namespace();
+    read_in(access, signature, node, namespace, |child| {
+        read_entry_in(
+            access,
+            child,
+            namespace,
+            profile.digest_namespace(),
+            |issuer| read_legacy_issuer(access, child, namespace, issuer).map(Some),
+        )
+    })
 }
 
 fn read_in<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
@@ -813,7 +813,7 @@ pub(crate) fn read_entry<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     node: X::Id,
 ) -> PropertyResult<Reference<X::Id>, X> {
-    read_entry_in(access, node, XADES, |issuer| {
+    read_entry_in(access, node, XADES, DS, |issuer| {
         if let Some(issuer) = issuer {
             expect_name(access, issuer, XADES, "IssuerSerialV2")?;
         }
@@ -828,7 +828,7 @@ pub(crate) fn read_original_reference<X: Xml, W: Work>(
     node: X::Id,
 ) -> PropertyResult<OriginalReference<X::Id>, X> {
     let mut fields = None;
-    let reference = read_entry_in(access, node, XADES, |issuer| {
+    let reference = read_entry_in(access, node, XADES, DS, |issuer| {
         let fields_at = xml_issuer_serial(access, node, XADES, issuer)?;
         fields = Some([fields_at.name, fields_at.serial]);
         Ok(Some(fields_at.parent))
@@ -840,6 +840,7 @@ fn read_entry_in<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
     access: &Access<'_, X, W>,
     node: X::Id,
     namespace: &str,
+    digest_namespace: &str,
     read_issuer: impl FnOnce(Option<X::Id>) -> Result<Option<X::Id>, E>,
 ) -> Result<Reference<X::Id>, E> {
     let mut children = access.children(node);
@@ -852,7 +853,7 @@ fn read_entry_in<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
         }
         .into());
     }
-    let (method, value) = crate::properties::digest_value(access, digest)?;
+    let (method, value) = crate::properties::digest_value_in(access, digest, digest_namespace)?;
     Ok(Reference {
         node,
         method,
@@ -864,9 +865,10 @@ fn read_entry_in<X: Xml, W: Work, E: From<Error<X::Error, X::Id>>>(
 fn read_legacy_issuer<X: ScalarXml, W: Work>(
     access: &Access<'_, X, W>,
     parent: X::Id,
+    namespace: &str,
     issuer: Option<X::Id>,
 ) -> crate::legacy::Result<X::Id, X> {
-    let fields = xml_issuer_serial(access, parent, crate::container::XADES_122, issuer)?;
+    let fields = xml_issuer_serial(access, parent, namespace, issuer)?;
     // TS 101 903 V1.2.2 §7.2.2 uses XMLDSig X509IssuerSerialType.
     // https://www.w3.org/TR/xmldsig-core1/#sec-X509Data
     scalar::check(

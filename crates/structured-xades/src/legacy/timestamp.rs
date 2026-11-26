@@ -1,6 +1,6 @@
 //! Explicit Include-based timestamp inputs from TS 101 903 V1.2.2 §§7.1.4–7.7.
 
-use super::Prepared;
+use super::{Prepared, Profile};
 use crate::binding::Status;
 use crate::container::{DS, XADES_122};
 use crate::reference::{
@@ -10,6 +10,11 @@ use crate::timestamp::{InputError, InputResult, Role, Stop, TimestampXml};
 use crate::xml::{Access, AccessError, Name, Snapshot, Xml};
 use structured_asn1::memory::{OwnedVec, Work};
 use structured_cms::stream::{Receiver, Refused, Source};
+
+mod hash_data;
+pub use hash_data::{
+    HashDataInfo, HashDataInput, HashDataStamp, HashDataTarget, HashDataUri, HashDataXml,
+};
 
 const URI: Name<'_> = Name {
     namespace: "",
@@ -108,6 +113,65 @@ pub fn read<X: Xml, W: Work>(
     prepared: &Prepared<X>,
     node: X::Id,
 ) -> InputResult<Stamp<X>, X> {
+    if prepared.profile() != Profile::V122 {
+        return Err(InputError::Unexpected { node });
+    }
+    let (signature, role) = read_role(access, prepared, node)?;
+    read_stamp(access, signature, node, role)
+}
+
+/// Read an original TS 103 171 timestamp through the common replay and check
+/// path. Both archive vocabularies use their own source recipes.
+/// <https://www.etsi.org/deliver/etsi_ts/103100_103199/103171/02.01.01_60/ts_103171v020101p.pdf>
+pub fn read_pre_en<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    prepared: &Prepared<X>,
+    node: X::Id,
+) -> InputResult<crate::timestamp::Timestamp<X>, X> {
+    use crate::timestamp::{self, ExtendedKind, ReferenceSyntax, XADES_141};
+    if prepared.profile() != Profile::PreEn {
+        return Err(InputError::Unexpected { node });
+    }
+    let (signature, role) = read_role(access, prepared, node)?;
+    let bound = prepared.binding();
+    let kind = match role {
+        Role::Archive if is(access, node, XADES_141, "ArchiveTimeStamp")? => {
+            ExtendedKind::Archive141
+        }
+        Role::Archive => ExtendedKind::Archive132,
+        Role::SignatureAndReferences => {
+            ExtendedKind::SignatureAndReferences(ReferenceSyntax::Original)
+        }
+        Role::ReferencesOnly => ExtendedKind::ReferencesOnly(ReferenceSyntax::Original),
+        _ => {
+            let layout = bound.containers();
+            let namespace = Profile::PreEn.namespace();
+            let parent = match role {
+                Role::Signature => timestamp::unsigned_parent(access, bound, node)?,
+                _ => timestamp::singleton(
+                    access,
+                    layout.signed(),
+                    namespace,
+                    "SignedDataObjectProperties",
+                )?,
+            };
+            let stamp = timestamp::read_fields_in(access, signature, parent, node, role, true)?;
+            if role == Role::Signature && stamp.tokens().len() != 1 {
+                return Err(InputError::Duplicate {
+                    node: stamp.tokens()[1],
+                });
+            }
+            return Ok(stamp);
+        }
+    };
+    timestamp::read_extended(access, bound, node, kind)
+}
+
+fn read_role<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    prepared: &Prepared<X>,
+    node: X::Id,
+) -> InputResult<(X::Id, Role), X> {
     let snapshot = prepared.bound.containers().snapshot();
     if access.snapshot() != snapshot {
         return Err(InputError::Access(AccessError::Changed { node }));
@@ -115,7 +179,7 @@ pub fn read<X: Xml, W: Work>(
     for property in prepared.data.iter().chain(prepared.unsigned.iter()) {
         if same(access, property.node, node)? {
             let role = role(property.name).ok_or(InputError::Foreign { node })?;
-            return read_stamp(access, prepared.bound.containers().signature(), node, role);
+            return Ok((prepared.bound.containers().signature(), role));
         }
     }
     Err(InputError::Foreign { node })
@@ -417,14 +481,14 @@ fn expected_parts<X: ReferenceXml, W: Work>(
                 append_group(
                     access,
                     prepared,
-                    stamp,
+                    stamp.node,
                     "SignatureTimeStamp",
                     true,
                     &mut add,
                 )?;
             }
             for (local, required) in REFERENCES {
-                append_group(access, prepared, stamp, local, required, &mut add)?;
+                append_group(access, prepared, stamp.node, local, required, &mut add)?;
             }
             Ok(())
         }
@@ -443,14 +507,14 @@ const REFERENCES: [(&str, bool); 4] = [
 fn append_group<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     prepared: &Prepared<X>,
-    stamp: &Stamp<X>,
+    before: X::Id,
     name: &'static str,
     required: bool,
     add: &mut impl FnMut(X::Id) -> InputResult<(), X>,
 ) -> InputResult<(), X> {
     let mut found = false;
     for entry in &prepared.unsigned {
-        if same(access, entry.node, stamp.node)? {
+        if same(access, entry.node, before)? {
             break;
         }
         if entry.name == name {
@@ -460,7 +524,7 @@ fn append_group<X: Xml, W: Work>(
     }
     if required && !found {
         return Err(InputError::Missing {
-            node: stamp.node,
+            node: before,
             local: name,
         });
     }
@@ -559,7 +623,7 @@ fn archive<X: ReferenceXml, W: Work>(
         ("RefsOnlyTimeStamp", false),
         ("ArchiveTimeStamp", false),
     ] {
-        append_group(access, prepared, stamp, name, required, &mut add)?;
+        append_group(access, prepared, stamp.node, name, required, &mut add)?;
     }
     for child in access.children(signature) {
         let object = child.map_err(InputError::Child)?;

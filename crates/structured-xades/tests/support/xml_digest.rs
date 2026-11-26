@@ -26,14 +26,14 @@ use structured_xades::{
 const SHA256: &str = "http://www.w3.org/2001/04/xmlenc#sha256";
 
 #[derive(Clone, Copy)]
-enum Mode {
+pub(super) enum Mode {
     Ready,
     Unsupported,
     RefuseUpdate,
     ShortOutput,
 }
 #[derive(Debug)]
-enum Failure {
+pub(super) enum Failure {
     Access(AccessError<super::Cause, usize>),
     Resource(MemoryError),
     Refused,
@@ -48,7 +48,7 @@ impl core::fmt::Display for Failure {
     }
 }
 
-struct Oracle {
+pub(super) struct Oracle {
     mode: Mode,
     started: Cell<usize>,
     updated: Cell<usize>,
@@ -56,7 +56,7 @@ struct Oracle {
     resolved: Cell<usize>,
 }
 impl Oracle {
-    fn new(mode: Mode) -> Self {
+    pub(super) fn new(mode: Mode) -> Self {
         Self {
             mode,
             started: Cell::new(0),
@@ -66,7 +66,7 @@ impl Oracle {
         }
     }
 }
-enum Output {
+pub(super) enum Output {
     Full([u8; 32]),
     Short([u8; 31]),
 }

@@ -50,6 +50,13 @@ fn independent_original_and_v2_reference_imprints_agree() {
 }
 
 #[test]
+fn independent_historical_signing_certificate_digests_agree() {
+    use structured_xades::legacy::Profile;
+    common_inputs::legacy_tests::check_independent_signer(&corpus("historical/1.1.1"), Profile::V111);
+    common_inputs::legacy_tests::check_independent_signer(&corpus("historical/1.2.2"), Profile::V122);
+}
+
+#[test]
 fn independent_copied_signature_timestamp_does_not_cover_this_signature() {
     // DSS copied a genuine token from another signature: OpenSSL accepts its
     // CMS signature, but EN319132-1 §5.3 coverage of THIS SignatureValue fails.

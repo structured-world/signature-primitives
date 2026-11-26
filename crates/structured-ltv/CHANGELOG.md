@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0](https://github.com/structured-world/signature-primitives/compare/structured-ltv-v0.30.4...structured-ltv-v0.31.0) - 2026-11-26
+
+### Added
+
+- *(xades)* [**breaking**] support historical profiles ([#383](https://github.com/structured-world/signature-primitives/pull/383))
+
 ## [0.30.4](https://github.com/structured-world/signature-primitives/compare/structured-ltv-v0.30.3...structured-ltv-v0.30.4) - 2026-11-26
 
 ### Added

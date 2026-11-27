@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0](https://github.com/structured-world/signature-primitives/compare/structured-ltv-v0.31.3...structured-ltv-v0.32.0) - 2026-11-27
+
+### Added
+
+- *(xades)* [**breaking**] report historical TSA material ([#397](https://github.com/structured-world/signature-primitives/pull/397))
+
 ## [0.31.3](https://github.com/structured-world/signature-primitives/compare/structured-ltv-v0.31.2...structured-ltv-v0.31.3) - 2026-11-27
 
 ### Fixed

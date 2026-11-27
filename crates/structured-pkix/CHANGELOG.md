@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.2](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.31.1...structured-pkix-v0.31.2) - 2026-11-27
+
+### Added
+
+- *(xades)* retain historical validation inputs ([#393](https://github.com/structured-world/signature-primitives/pull/393))
+
+### Fixed
+
+- *(xades)* prepare extended validation stages ([#388](https://github.com/structured-world/signature-primitives/pull/388))
+- *(xades)* retain extended timestamp tokens ([#385](https://github.com/structured-world/signature-primitives/pull/385))
+
 ## [0.31.1](https://github.com/structured-world/signature-primitives/compare/structured-pkix-v0.31.0...structured-pkix-v0.31.1) - 2026-11-26
 
 ### Added

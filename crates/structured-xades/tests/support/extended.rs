@@ -330,42 +330,9 @@ fn extended_stage_preparation_progresses_from_c_to_a_without_relaxing_baseline()
             &values,
         );
 
+        check_extended_certificate(&xml, syntax, value, &artifact);
         let work = funded();
         let access = Access::new(&xml, xml.snapshot(), &work);
-        let parser = Parser::der(work.clone());
-        let operation = parser.read(&[], 0).unwrap();
-        if syntax == ReferenceSyntax::Original {
-            let prepared = prepare::prepare_extended_original(
-                &access,
-                0,
-                unsigned::Requirements::LongTerm,
-                None,
-            )
-            .unwrap();
-            let retained =
-                material::retain_entry(&xml, &prepared.properties.values()[0], 0, &operation)
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(retained.location().node, value);
-            assert_eq!(retained.bytes(), artifact);
-        } else {
-            let prepared =
-                prepare::prepare_extended_v2(&access, 0, unsigned::Requirements::LongTerm, None)
-                    .unwrap();
-            material::with_values(&xml, &prepared, &operation, |_, indexed| {
-                let value = indexed
-                    .values()
-                    .iter()
-                    .find(|entry| entry.location.node == value)
-                    .unwrap();
-                let material::Value::Certificate(certificate) = &value.value else {
-                    panic!("original certificate")
-                };
-                assert_eq!(certificate.as_bytes(), artifact);
-                Ok::<_, ()>(())
-            })
-            .unwrap();
-        }
         let baseline = prepare::prepare(&access, 0, unsigned::Requirements::Archival, None);
         if syntax == ReferenceSyntax::V2 {
             assert!(matches!(
@@ -375,6 +342,40 @@ fn extended_stage_preparation_progresses_from_c_to_a_without_relaxing_baseline()
         } else {
             assert!(baseline.is_err());
         }
+    }
+}
+
+fn check_extended_certificate(xml: &Tree, syntax: ReferenceSyntax, value: usize, artifact: &[u8]) {
+    let work = funded();
+    let access = Access::new(xml, xml.snapshot(), &work);
+    let parser = Parser::der(work.clone());
+    let operation = parser.read(&[], 0).unwrap();
+    if syntax == ReferenceSyntax::Original {
+        let prepared =
+            prepare::prepare_extended_original(&access, 0, unsigned::Requirements::LongTerm, None)
+                .unwrap();
+        let retained = material::retain_entry(xml, &prepared.properties.values()[0], 0, &operation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.location().node, value);
+        assert_eq!(retained.bytes(), artifact);
+    } else {
+        let prepared =
+            prepare::prepare_extended_v2(&access, 0, unsigned::Requirements::LongTerm, None)
+                .unwrap();
+        material::with_values(xml, &prepared, &operation, |_, indexed| {
+            let value = indexed
+                .values()
+                .iter()
+                .find(|entry| entry.location.node == value)
+                .unwrap();
+            let material::Value::Certificate(certificate) = &value.value else {
+                panic!("original certificate")
+            };
+            assert_eq!(certificate.as_bytes(), artifact);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
     }
 }
 

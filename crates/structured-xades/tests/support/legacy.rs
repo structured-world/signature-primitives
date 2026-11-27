@@ -464,9 +464,20 @@ impl old::HashDataXml for Tree {
         work: &W,
     ) -> Result<Resolution<old::HashDataTarget<usize>>, Cause> {
         self.check(snapshot, signature)?;
-        assert!(data.transforms.is_some());
-        self.resolve_legacy_element(snapshot, data.node, work)
-            .map(|answer| answer.map(old::HashDataTarget::Element))
+        self.check(snapshot, data.node)?;
+        work.charge_work(self.include_routes.len() as u64)
+            .map_err(Cause::Resource)?;
+        Ok(self
+            .include_routes
+            .iter()
+            .find(|route| route.0 == data.node)
+            .map_or(Resolution::Unresolved, |(_, node, flag)| {
+                Resolution::Resolved(if *flag == Boolean::Value(true) {
+                    old::HashDataTarget::Reference(*node)
+                } else {
+                    old::HashDataTarget::Element(*node)
+                })
+            }))
     }
 
     fn replay_hash_data<W: Work>(
@@ -906,6 +917,63 @@ fn archive_indexes_reference_targets_without_reordering_inputs() {
         expected.extend([b'E', u8::try_from(node).unwrap()]);
     }
     assert_eq!(sink.bytes(), expected);
+}
+
+#[test]
+fn v111_archive_covers_only_subtrees_preserved_by_the_original_transforms() {
+    // XMLDSig 1.1 §6.6.3 permits filtering descendants out of the imprint.
+    // Genuine C14N-only and implicit conversions still protect their subtrees.
+    let profile = Profile::V111;
+    let ns = profile.namespace();
+    let mut xml = profile_tree(profile);
+    xml.hash_data_uri = Some(("uri", "#value"));
+    let signature = append(&mut xml, 7, ns, "SignatureTimeStamp");
+    let link = append(&mut xml, signature, ns, "HashDataInfo");
+    xml.include_routes.push((link, 12, Boolean::Absent));
+    append(&mut xml, signature, ns, "EncapsulatedTimeStamp");
+    let certificates = append(&mut xml, 7, ns, "CompleteCertificateRefs");
+    let revocations = append(&mut xml, 7, ns, "CompleteRevocationRefs");
+    let values = append(&mut xml, 7, ns, "CertificateValues");
+    let value = append(&mut xml, values, ns, "EncapsulatedX509Certificate");
+    let status = append(&mut xml, 7, ns, "RevocationValues");
+    let archive = append(&mut xml, 7, ns, "ArchiveTimeStamp");
+    let reference = append(&mut xml, archive, ns, "HashDataInfo");
+    xml.include_routes
+        .push((reference, xml.references[0].node, Boolean::Value(true)));
+    let mut transform = None;
+    for target in [
+        9,
+        4,
+        12,
+        signature,
+        certificates,
+        revocations,
+        values,
+        status,
+    ] {
+        let link = append(&mut xml, archive, ns, "HashDataInfo");
+        xml.include_routes.push((link, target, Boolean::Absent));
+        if target == values {
+            let wrapper = append(&mut xml, link, ns, "Transforms");
+            transform = Some(append(&mut xml, wrapper, DS, "Transform"));
+        }
+    }
+    append(&mut xml, archive, ns, "EncapsulatedTimeStamp");
+    let transform = transform.unwrap();
+    for (algorithm, covered) in [
+        ("http://www.w3.org/TR/1999/REC-xpath-19991116", false),
+        ("http://www.w3.org/2001/10/xml-exc-c14n#", true),
+    ] {
+        xml.digest_algorithms = vec![(transform, algorithm)];
+        let work = funded();
+        let access = Access::new(&xml, xml.snapshot(), &work);
+        let prepared =
+            legacy::prepare(&access, &legacy::locate(&access, 0, profile).unwrap()).unwrap();
+        let inventory = legacy::inventory(&access, &prepared, old::HashDataUri::Standard).unwrap();
+        let coverage = inventory.archive_coverage(&access, 1).unwrap();
+        assert_eq!(coverage.selects(value, &access).unwrap(), covered);
+        assert!(coverage.selects(status, &access).unwrap());
+    }
 }
 
 #[test]

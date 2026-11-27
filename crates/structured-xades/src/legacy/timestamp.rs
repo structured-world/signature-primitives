@@ -744,9 +744,11 @@ impl<X: LegacyXml> Input<'_, X> {
             },
             self.signature,
             stamp.role,
-            self.parts.iter().map(|part| match part {
-                Part::Element(node) => Some(*node),
-                Part::Reference(_) => None,
+            self.parts.iter().map(|part| {
+                Ok(match part {
+                    Part::Element(node) => Some(*node),
+                    Part::Reference(_) => None,
+                })
             }),
         )
     }

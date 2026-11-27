@@ -51,13 +51,15 @@ impl<X: TimestampXml> Input<'_, X> {
             },
             self.signature,
             self.role,
-            self.parts.iter().map(|part| match *part {
-                Part::Element(root)
-                | Part::Reference {
-                    covered: Some(root),
-                    ..
-                } => Some(root),
-                Part::Reference { covered: None, .. } => None,
+            self.parts.iter().map(|part| {
+                Ok(match *part {
+                    Part::Element(root)
+                    | Part::Reference {
+                        covered: Some(root),
+                        ..
+                    } => Some(root),
+                    Part::Reference { covered: None, .. } => None,
+                })
             }),
         )
     }
@@ -68,7 +70,7 @@ pub(crate) fn elements<X: Xml, W: Work>(
     location: structured_ltv::source::Location<X::Id, X::Document, X::Generation>,
     signature: X::Id,
     role: super::Role,
-    roots: impl Iterator<Item = Option<X::Id>>,
+    roots: impl Iterator<Item = Result<Option<X::Id>, X>>,
 ) -> Result<CoverageFor<X, W>, X> {
     let execution = access.execution();
     let timestamp = location.node;
@@ -85,7 +87,7 @@ pub(crate) fn elements<X: Xml, W: Work>(
                 node: timestamp,
                 cause,
             })?;
-        let Some(root) = root else {
+        let Some(root) = root? else {
             continue;
         };
         let resource = |cause| CoverageError::Resource { node: root, cause };

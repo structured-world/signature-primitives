@@ -237,19 +237,7 @@ fn locate_in<X: Xml, W: Work>(
             {
                 return Err(ContainerError::Unexpected { node });
             }
-            let syntax = if named(access, node, XADES, "QualifyingProperties")? {
-                Some(if current == Syntax::Ts103171 {
-                    current
-                } else {
-                    Syntax::En319132
-                })
-            } else if let Some(historical) = historical
-                && named(access, node, historical.namespace(), "QualifyingProperties")?
-            {
-                Some(historical)
-            } else {
-                None
-            };
+            let syntax = qualifying_syntax(access, node, historical, current)?;
             if let Some(syntax) = syntax {
                 if selected.is_some() {
                     return Err(ContainerError::Duplicate { node });
@@ -316,6 +304,36 @@ pub type Layout<X> = Containers<<X as Xml>::Id, <X as Xml>::Document, <X as Xml>
 
 /// A structural result retaining the original XML cause and node location.
 pub type ContainerResult<T, X> = Result<T, ContainerError<<X as Xml>::Error, <X as Xml>::Id>>;
+
+fn qualifying_syntax<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+    historical: Option<Syntax>,
+    current: Syntax,
+) -> ContainerResult<Option<Syntax>, X> {
+    const QUALIFYING: &str = "QualifyingProperties";
+    if named(access, node, XADES, QUALIFYING)? {
+        return Ok(Some(if current == Syntax::Ts103171 {
+            current
+        } else {
+            Syntax::En319132
+        }));
+    }
+    if let Some(syntax) = historical
+        && named(access, node, syntax.namespace(), QUALIFYING)?
+    {
+        return Ok(Some(syntax));
+    }
+    if current != Syntax::En319132
+        && (named(access, node, XADES_111, QUALIFYING)?
+            || named(access, node, XADES_122, QUALIFYING)?
+            || named(access, node, XADES_111, "QualifyingPropertiesReference")?
+            || named(access, node, XADES_122, "QualifyingPropertiesReference")?)
+    {
+        return Err(ContainerError::Unexpected { node });
+    }
+    Ok(None)
+}
 
 fn named<X: Xml, W: Work>(
     access: &Access<'_, X, W>,

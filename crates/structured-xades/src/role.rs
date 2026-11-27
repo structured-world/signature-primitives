@@ -95,7 +95,18 @@ pub(crate) fn locate<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     layout: &crate::container::Layout<X>,
 ) -> PropertyResult<Option<X::Id>, X> {
-    let (parent, _) = crate::properties::sections(access, layout)?;
+    let syntax = layout.syntax();
+    let (parent, _) = if syntax == crate::container::Syntax::En319132 {
+        crate::properties::sections(access, layout)?
+    } else {
+        crate::legacy::pair(
+            access,
+            layout.signed(),
+            syntax.namespace(),
+            "SignedSignatureProperties",
+            "SignedDataObjectProperties",
+        )?
+    };
     let Some(parent) = parent else {
         return Ok(None);
     };
@@ -106,8 +117,12 @@ pub(crate) fn locate<X: Xml, W: Work>(
             .has_name(
                 node,
                 Name {
-                    namespace: XADES,
-                    local: "SignerRoleV2",
+                    namespace: syntax.namespace(),
+                    local: if syntax == crate::container::Syntax::En319132 {
+                        "SignerRoleV2"
+                    } else {
+                        "SignerRole"
+                    },
                 },
             )
             .map_err(Error::Access)?
@@ -129,6 +144,22 @@ pub(crate) fn read_node<X: Xml, W: Work>(
     signature: X::Id,
     node: X::Id,
 ) -> PropertyResult<Catalogue<X>, X> {
+    read_in(
+        access,
+        snapshot,
+        signature,
+        node,
+        crate::container::Syntax::En319132,
+    )
+}
+
+pub(crate) fn read_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    snapshot: Snapshot<X::Document, X::Generation>,
+    signature: X::Id,
+    node: X::Id,
+    syntax: crate::container::Syntax,
+) -> PropertyResult<Catalogue<X>, X> {
     if snapshot != access.snapshot() {
         return Err(Error::Access(AccessError::Changed { node }));
     }
@@ -138,7 +169,7 @@ pub(crate) fn read_node<X: Xml, W: Work>(
     let mut previous = None;
     for child in access.children(node) {
         let group = child.map_err(Error::Child)?;
-        let rank = rank(access, group)?;
+        let rank = rank(access, group, syntax)?;
         if previous == Some(rank) {
             return Err(Error::Duplicate { node: group });
         }
@@ -151,12 +182,19 @@ pub(crate) fn read_node<X: Xml, W: Work>(
             let child = child.map_err(Error::Child)?;
             let (payload, kind) = match rank {
                 0 => {
-                    expect(access, child, "ClaimedRole")?;
+                    expect_in(access, child, syntax.namespace(), "ClaimedRole")?;
                     (child, Kind::Claimed)
                 }
                 1 => {
-                    expect(access, child, "CertifiedRole")?;
-                    credential(access, child)?
+                    expect_in(access, child, syntax.namespace(), "CertifiedRole")?;
+                    if syntax == crate::container::Syntax::En319132 {
+                        credential(access, child)?
+                    } else {
+                        // TS 101 903 V1.1.1 and V1.2.2 SignerRoleType: the
+                        // original CertifiedRole itself carries the certificate.
+                        // https://uri.etsi.org/01903/v1.2.2/XAdES.xsd
+                        (child, Kind::AttributeCertificate)
+                    }
                 }
                 _ => {
                     expect(access, child, "SignedAssertion")?;
@@ -187,16 +225,22 @@ pub(crate) fn read_node<X: Xml, W: Work>(
     })
 }
 
-fn rank<X: Xml, W: Work>(access: &Access<'_, X, W>, node: X::Id) -> PropertyResult<usize, X> {
-    for (rank, local) in ["ClaimedRoles", "CertifiedRolesV2", "SignedAssertions"]
-        .into_iter()
-        .enumerate()
-    {
+fn rank<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+    syntax: crate::container::Syntax,
+) -> PropertyResult<usize, X> {
+    let groups: &[&str] = if syntax == crate::container::Syntax::En319132 {
+        &["ClaimedRoles", "CertifiedRolesV2", "SignedAssertions"]
+    } else {
+        &["ClaimedRoles", "CertifiedRoles"]
+    };
+    for (rank, &local) in groups.iter().enumerate() {
         if access
             .has_name(
                 node,
                 Name {
-                    namespace: XADES,
+                    namespace: syntax.namespace(),
                     local,
                 },
             )
@@ -213,14 +257,17 @@ fn expect<X: Xml, W: Work>(
     node: X::Id,
     local: &'static str,
 ) -> PropertyResult<(), X> {
+    expect_in(access, node, XADES, local)
+}
+
+fn expect_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+    namespace: &str,
+    local: &'static str,
+) -> PropertyResult<(), X> {
     if !access
-        .has_name(
-            node,
-            Name {
-                namespace: XADES,
-                local,
-            },
-        )
+        .has_name(node, Name { namespace, local })
         .map_err(Error::Access)?
     {
         return Err(Error::Unexpected { node });

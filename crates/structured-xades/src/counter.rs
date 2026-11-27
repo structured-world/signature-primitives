@@ -113,7 +113,13 @@ pub fn read<X: Xml, W: Work>(
     }
     let parent = bound.containers().signature();
     let value = timestamp::singleton(access, parent, DS, "SignatureValue").map_err(Error::Input)?;
-    walk::member(access, parent, value, node)
+    walk::member(
+        access,
+        parent,
+        value,
+        node,
+        bound.containers().syntax().namespace(),
+    )
 }
 
 /// Consumes one original counter using the actual child's `XMLDSig` receipt.

@@ -327,33 +327,166 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
     if let Some(counters) = counters {
         collect_counters(xml, &access, counters, operation, &mut sources, &mut opaque)?;
     }
+    visit_values(
+        &access,
+        layout.signature(),
+        &sources,
+        &opaque,
+        operation,
+        visitor,
+    )
+}
+
+/// Read original direct historical material without applying modern header or
+/// baseline conformance rules. `KeyInfo` and historical unsigned values enter
+/// the same admitted decoding, original-source and whole-OCSP pipeline.
+pub fn with_historical_values<X: OwnedBinaryXml, R, VE>(
+    xml: &X,
+    prepared: &crate::legacy::Prepared<X>,
+    operation: &Reader<'_>,
+    visitor: impl for<'source> FnOnce(
+        &Reader<'source>,
+        View<'source, X::Id, X::Document, X::Generation>,
+    ) -> Result<R, VE>,
+) -> PipelineResult<R, X, VE> {
+    let layout = prepared.binding().containers();
+    let execution = operation.execution();
+    let access = Access::new(xml, layout.snapshot(), &execution);
+    let mut sources = execution.vector();
+    let mut opaque = execution.vector();
+    collect_historical(xml, &access, prepared, operation, &mut sources, &mut opaque)?;
+    visit_values(
+        &access,
+        layout.signature(),
+        &sources,
+        &opaque,
+        operation,
+        visitor,
+    )
+}
+
+/// Retain direct historical values and every original checked counter's
+/// material. Use the same complete inventory for the separate token pool.
+pub fn with_historical_counter_values<X: OwnedBinaryXml, R, VE>(
+    xml: &X,
+    inventory: &crate::legacy::Inventory<'_, X>,
+    operation: &Reader<'_>,
+    visitor: impl for<'source> FnOnce(
+        &Reader<'source>,
+        View<'source, X::Id, X::Document, X::Generation>,
+    ) -> Result<R, VE>,
+) -> PipelineResult<R, X, VE> {
+    let layout = inventory.prepared.binding().containers();
+    let signature = layout.signature();
+    if !inventory.includes_counters() {
+        return Err(Error::Foreign { node: signature });
+    }
+    let execution = operation.execution();
+    let access = Access::new(xml, layout.snapshot(), &execution);
+    let mut sources = execution.vector();
+    let mut opaque = execution.vector();
+    collect_historical(
+        xml,
+        &access,
+        inventory.prepared,
+        operation,
+        &mut sources,
+        &mut opaque,
+    )?;
+    for (signature, child) in inventory.children() {
+        admit(&access, signature)?;
+        if let Some(child) = child {
+            collect_historical(xml, &access, child, operation, &mut sources, &mut opaque)?;
+        } else {
+            super::counters::collect_key_info(xml, &access, signature, operation, &mut sources)?;
+        }
+    }
+    visit_values(&access, signature, &sources, &opaque, operation, visitor)
+}
+
+fn collect_historical<X: OwnedBinaryXml, W: Work, VE>(
+    xml: &X,
+    access: &Access<'_, X, W>,
+    prepared: &crate::legacy::Prepared<X>,
+    operation: &Reader<'_>,
+    sources: &mut OwnedVec<Record<X>, W>,
+    opaque: &mut OwnedVec<Open<X>, W>,
+) -> PipelineResult<(), X, VE> {
+    let layout = prepared.binding().containers();
+    let signature = layout.signature();
+    admit(access, signature)?;
+    super::counters::collect_key_info(xml, access, signature, operation, sources)?;
+    let namespace = prepared.profile().namespace();
+    let mut previous = None;
+    for property in prepared.unsigned() {
+        let node = property.node;
+        admit(access, node)?;
+        let placement = match property.name {
+            "CertificateValues" | "RevocationValues" => Some(Placement::Signature(node)),
+            "AttrAuthoritiesCertValues" | "AttributeRevocationValues" => {
+                Some(Placement::Attribute(node))
+            }
+            _ => None,
+        };
+        if let Some(placement) = placement {
+            let certificates = matches!(
+                property.name,
+                "CertificateValues" | "AttrAuthoritiesCertValues"
+            );
+            let catalogue = super::read_values_in(access, node, namespace, certificates)
+                .map_err(Error::Property)?;
+            collect(
+                xml, access, &catalogue, placement, operation, sources, opaque,
+            )?;
+        } else if property.name == "TimeStampValidationData" {
+            let values = crate::validation::read_historical_at(access, signature, node, previous)
+                .map_err(Error::Validation)?;
+            collect_validation(xml, access, &values, operation, sources, opaque)?;
+        }
+        previous = Some(node);
+    }
+    Ok(())
+}
+
+fn visit_values<X: OwnedBinaryXml, W: Work, R, VE>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    sources: &[Record<X>],
+    opaque: &[Open<X>],
+    operation: &Reader<'_>,
+    visitor: impl for<'source> FnOnce(
+        &Reader<'source>,
+        View<'source, X::Id, X::Document, X::Generation>,
+    ) -> Result<R, VE>,
+) -> PipelineResult<R, X, VE> {
+    let execution = access.execution();
     let mut values = execution.vector();
-    for index in 0..sources.len() {
-        admit(&access, layout.signature())?;
-        let source = &sources[index].source;
+    for record in sources {
+        admit(access, signature)?;
+        let source = &record.source;
         let value = source.read_in(operation).map_err(Error::Parse)?;
         values.try_push(value).map_err(|cause| Error::Resource {
             node: source.location().node,
             cause,
         })?;
     }
-    let basic = read_basics(&access, layout.signature(), &values, operation, &execution)?;
-    admit(&access, layout.signature())?;
+    let basic = read_basics(access, signature, &values, operation, execution)?;
+    admit(access, signature)?;
     let result = visitor(
         operation,
         View {
-            snapshot: layout.snapshot(),
-            signature: layout.signature(),
-            sources: &sources,
+            snapshot: access.snapshot(),
+            signature,
+            sources,
             values: &values,
-            opaque: &opaque,
+            opaque,
             basic: &basic,
         },
     )
     .map_err(Error::Visitor)?;
     // A successful visitor result must not escape after a source generation
     // change. Returning Err drops that result and all temporary catalogues.
-    admit(&access, layout.signature())?;
+    admit(access, signature)?;
     Ok(result)
 }
 
@@ -500,8 +633,15 @@ pub(super) fn collect<X: OwnedBinaryXml, W: Work, VE>(
                     snapshot: catalogue.snapshot(),
                     node,
                 };
-                let source = super::retain(xml, location, kind, operation)
-                    .map_err(|cause| Error::Retain { location, cause })?;
+                let source = super::retain_expected(
+                    xml,
+                    location,
+                    kind,
+                    catalogue.namespace(),
+                    kind.local(),
+                    operation,
+                )
+                .map_err(|cause| Error::Retain { location, cause })?;
                 sources
                     .try_push(Retained { placement, source })
                     .map_err(|cause| Error::Resource { node, cause })?;

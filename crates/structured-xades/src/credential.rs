@@ -381,8 +381,24 @@ pub fn check_participants<'path, 'document, X: Xml, P: Provider<'path, 'document
     provider: &P,
     access: &Access<'_, X, W>,
 ) -> ParticipantResult<'path, 'document, X, P> {
+    check_scope(
+        prepared.bound(),
+        prepared.roles(),
+        counters,
+        provider,
+        access,
+    )
+}
+
+pub(crate) fn check_scope<'path, 'document, X: Xml, P: Provider<'path, 'document, X>, W: Work>(
+    bound: &crate::binding::Selected<X>,
+    roles: Option<&crate::role::Catalogue<X>>,
+    counters: &crate::pki::CounterPaths<'_, '_, X::Id, X::Document, X::Generation>,
+    provider: &P,
+    access: &Access<'_, X, W>,
+) -> ParticipantResult<'path, 'document, X, P> {
     use structured_asn1::memory::HashWork;
-    let layout = prepared.bound().containers();
+    let layout = bound.containers();
     let signature = layout.signature();
     if layout.snapshot() != access.snapshot() || counters.snapshot() != access.snapshot() {
         return Err(Error::Access(AccessError::Changed { node: signature }));
@@ -410,7 +426,7 @@ pub fn check_participants<'path, 'document, X: Xml, P: Provider<'path, 'document
     if signature != counters.signature() {
         return Err(Error::Foreign { signature });
     }
-    let root = match prepared.roles() {
+    let root = match roles {
         Some(roles) => Some(check(roles, provider, access)?),
         None => None,
     };

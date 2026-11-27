@@ -245,6 +245,119 @@ fn profile_tree(profile: Profile) -> Tree {
 }
 
 #[test]
+fn original_timestamp_and_values_share_the_historical_material_pipeline() {
+    // A real timestamp binds the original SignatureValue in each profile.
+    // Changing the imprint does not create a TSA actor or erase the obligation.
+    for profile in [Profile::V111, Profile::V122, Profile::PreEn] {
+        for matches in [true, false] {
+            check_original_timestamp_and_values(profile, matches);
+        }
+    }
+}
+
+fn check_original_timestamp_and_values(profile: Profile, matches: bool) {
+    use structured_xades::{material, timestamp};
+    let namespace = profile.namespace();
+    let mut xml = profile_tree(profile);
+    let stamp = append(&mut xml, 7, namespace, "SignatureTimeStamp");
+    let protected = match profile {
+        Profile::V111 => {
+            let input = append(&mut xml, stamp, namespace, "HashDataInfo");
+            let transforms = append(&mut xml, input, namespace, "Transforms");
+            let transform = append(&mut xml, transforms, DS, "Transform");
+            xml.digest_algorithms
+                .push((transform, "http://www.w3.org/2001/10/xml-exc-c14n#"));
+            xml.hash_data_uri = Some(("uri", "#value"));
+            xml.include_routes.push((input, 12, Boolean::Absent));
+            vec![b'E', 12]
+        }
+        Profile::V122 => {
+            xml.validation_uri = Some("#value");
+            include(&mut xml, stamp, 12, Boolean::Absent);
+            vec![b'E', 12]
+        }
+        Profile::PreEn => {
+            let method = append(&mut xml, stamp, DS, "CanonicalizationMethod");
+            vec![b'E', 12, b'M', u8::try_from(method).unwrap()]
+        }
+    };
+    let (provider, encoded, certificate) = timestamp_oracle::fixture(if matches {
+        &protected
+    } else {
+        b"different source"
+    });
+    let token = append(&mut xml, stamp, namespace, "EncapsulatedTimeStamp");
+    let values = append(&mut xml, 7, namespace, "CertificateValues");
+    let value = append(&mut xml, values, namespace, "EncapsulatedX509Certificate");
+    xml.binary_routes.push((token, encoded));
+    xml.binary_routes.push((value, certificate.clone()));
+    let work = funded();
+    let parser = structured_asn1::Parser::der(work.clone());
+    let operation = parser.read(&[], 0).unwrap();
+    let tsa = structured_pkix::Certificate::read(&parser, &certificate, 3000).unwrap();
+    let utc = structured_pkix::temporal::LeapTable::new(0, 2_000_000_000, &[]).unwrap();
+    let context = CheckContext {
+        certificate: &tsa,
+        certificate_parent: &operation,
+        key: structured_pkix::path::EffectiveKey::standing(tsa.tbs().public_key()),
+        requested: None,
+        utc: &utc,
+        reference: Some(structured_pkix::temporal::Instant::new(1_800_000_000, 0).unwrap()),
+        window: None,
+        policy_accuracy: None,
+    };
+    let checker = timestamp::Check {
+        xml: &xml,
+        provider: &provider,
+        context: &context,
+    };
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let prepared = legacy::prepare(&access, &legacy::locate(&access, 0, profile).unwrap()).unwrap();
+    let inventory = legacy::inventory(&access, &prepared, old::HashDataUri::Standard).unwrap();
+    assert_eq!(inventory.entries().len(), 1);
+    assert_eq!(inventory.entries()[0].tokens(), &[token]);
+    let held = work.used();
+    material::with_historical_values(&xml, &prepared, &operation, |_, values_view| {
+        let source = &values_view.sources()[0];
+        assert_eq!(source.source().location().node, value);
+        assert!(
+            matches!(source.placement(), material::Placement::Signature(parent) if parent == values)
+        );
+        assert!(matches!(
+            &values_view.values()[0].value,
+            material::Value::Certificate(_)
+        ));
+        inventory
+            .with_tokens(
+                &xml,
+                &operation,
+                timestamp::TokenProfile::Cms,
+                |_, tokens| {
+                    assert_eq!(tokens.sources().len(), 1);
+                    let source = &tokens.sources()[0];
+                    assert_eq!(source.property(), stamp);
+                    assert_eq!(source.location().node, token);
+                    let ((), actor) = inventory
+                        .check_actor_from(
+                            &checker,
+                            tokens.entry(0).unwrap(),
+                            &operation,
+                            |_, _| Ok::<_, ()>(false),
+                            |_| (),
+                        )
+                        .unwrap();
+                    assert_eq!(actor.is_some(), matches);
+                    Ok::<_, ()>(())
+                },
+            )
+            .unwrap();
+        Ok::<_, ()>(())
+    })
+    .unwrap();
+    assert_eq!(work.used(), held);
+}
+
+#[test]
 fn historical_policy_checks_documentation_in_the_original_namespace() {
     // Both older schemas carry the documentation URI in their own namespace.
     use structured_xades::{identifier, policy::Declaration};
@@ -351,9 +464,20 @@ impl old::HashDataXml for Tree {
         work: &W,
     ) -> Result<Resolution<old::HashDataTarget<usize>>, Cause> {
         self.check(snapshot, signature)?;
-        assert!(data.transforms.is_some());
-        self.resolve_legacy_element(snapshot, data.node, work)
-            .map(|answer| answer.map(old::HashDataTarget::Element))
+        self.check(snapshot, data.node)?;
+        work.charge_work(self.include_routes.len() as u64)
+            .map_err(Cause::Resource)?;
+        Ok(self
+            .include_routes
+            .iter()
+            .find(|route| route.0 == data.node)
+            .map_or(Resolution::Unresolved, |(_, node, flag)| {
+                Resolution::Resolved(if *flag == Boolean::Value(true) {
+                    old::HashDataTarget::Reference(*node)
+                } else {
+                    old::HashDataTarget::Element(*node)
+                })
+            }))
     }
 
     fn replay_hash_data<W: Work>(
@@ -682,6 +806,69 @@ fn include(xml: &mut Tree, stamp: usize, link: usize, flag: Boolean) -> usize {
 }
 
 #[test]
+fn historical_archive_census_retains_open_predecessors_and_refuses_foreign_work() {
+    // An open timestamp is still required by the following original archive.
+    // The selected archive and its later siblings cannot supply prior evidence.
+    use structured_xades::timestamp::{RequirementError, TimestampSelection};
+    let mut xml = profile_tree(Profile::V122);
+    let first = append(&mut xml, 7, XADES_122, "SignatureTimeStamp");
+    include(&mut xml, first, 12, Boolean::Absent);
+    let open = append(&mut xml, first, XADES_122, "XMLTimeStamp");
+    let archive = append(&mut xml, 7, XADES_122, "ArchiveTimeStamp");
+    include(&mut xml, archive, 12, Boolean::Absent);
+    let token = append(&mut xml, archive, XADES_122, "EncapsulatedTimeStamp");
+    xml.validation_uri = Some("#value");
+    let work = funded();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let prepared = legacy::prepare(&access, &layout(&access)).unwrap();
+    let inventory = legacy::inventory(&access, &prepared, old::HashDataUri::Standard).unwrap();
+    let whole = inventory
+        .requirements(&access, TimestampSelection::All)
+        .unwrap();
+    assert_eq!(
+        whole
+            .entries()
+            .iter()
+            .map(|item| item.token)
+            .collect::<Vec<_>>(),
+        [open, token]
+    );
+    let prior = inventory
+        .requirements(&access, TimestampSelection::BeforeArchive(1))
+        .unwrap();
+    assert_eq!(prior.scope().location().node, archive);
+    assert_eq!(prior.entries().len(), 1);
+    assert_eq!(prior.entries()[0].token, open);
+    assert!(
+        matches!(inventory.requirements(&access, TimestampSelection::BeforeArchive(0)),
+        Err(RequirementError::Role { property }) if property == first)
+    );
+
+    let exhausted = Memory::new(Arc::new(MemoryAccount::new(4096, 0)));
+    let short = Access::new(&xml, xml.snapshot(), &exhausted);
+    assert!(matches!(
+        inventory.requirements(&short, TimestampSelection::All),
+        Err(RequirementError::Input(
+            InputError::Access(AccessError::Resource {
+                cause: MemoryError::WorkExceeded,
+                ..
+            }) | InputError::Resource {
+                cause: MemoryError::WorkExceeded,
+                ..
+            }
+        ))
+    ));
+    xml.generation.set(2);
+    let changed = Access::new(&xml, xml.snapshot(), &work);
+    assert!(matches!(
+        inventory.requirements(&changed, TimestampSelection::All),
+        Err(RequirementError::Input(InputError::Access(
+            AccessError::Changed { node: 0 }
+        )))
+    ));
+}
+
+#[test]
 fn archive_indexes_reference_targets_without_reordering_inputs() {
     // Each original instruction is read once. Two references to one object
     // stay in the imprint, while that object's element occurs zero times.
@@ -730,6 +917,63 @@ fn archive_indexes_reference_targets_without_reordering_inputs() {
         expected.extend([b'E', u8::try_from(node).unwrap()]);
     }
     assert_eq!(sink.bytes(), expected);
+}
+
+#[test]
+fn v111_archive_covers_only_subtrees_preserved_by_the_original_transforms() {
+    // XMLDSig 1.1 §6.6.3 permits filtering descendants out of the imprint.
+    // Genuine C14N-only and implicit conversions still protect their subtrees.
+    let profile = Profile::V111;
+    let ns = profile.namespace();
+    let mut xml = profile_tree(profile);
+    xml.hash_data_uri = Some(("uri", "#value"));
+    let signature = append(&mut xml, 7, ns, "SignatureTimeStamp");
+    let link = append(&mut xml, signature, ns, "HashDataInfo");
+    xml.include_routes.push((link, 12, Boolean::Absent));
+    append(&mut xml, signature, ns, "EncapsulatedTimeStamp");
+    let certificates = append(&mut xml, 7, ns, "CompleteCertificateRefs");
+    let revocations = append(&mut xml, 7, ns, "CompleteRevocationRefs");
+    let values = append(&mut xml, 7, ns, "CertificateValues");
+    let value = append(&mut xml, values, ns, "EncapsulatedX509Certificate");
+    let status = append(&mut xml, 7, ns, "RevocationValues");
+    let archive = append(&mut xml, 7, ns, "ArchiveTimeStamp");
+    let reference = append(&mut xml, archive, ns, "HashDataInfo");
+    xml.include_routes
+        .push((reference, xml.references[0].node, Boolean::Value(true)));
+    let mut transform = None;
+    for target in [
+        9,
+        4,
+        12,
+        signature,
+        certificates,
+        revocations,
+        values,
+        status,
+    ] {
+        let link = append(&mut xml, archive, ns, "HashDataInfo");
+        xml.include_routes.push((link, target, Boolean::Absent));
+        if target == values {
+            let wrapper = append(&mut xml, link, ns, "Transforms");
+            transform = Some(append(&mut xml, wrapper, DS, "Transform"));
+        }
+    }
+    append(&mut xml, archive, ns, "EncapsulatedTimeStamp");
+    let transform = transform.unwrap();
+    for (algorithm, covered) in [
+        ("http://www.w3.org/TR/1999/REC-xpath-19991116", false),
+        ("http://www.w3.org/2001/10/xml-exc-c14n#", true),
+    ] {
+        xml.digest_algorithms = vec![(transform, algorithm)];
+        let work = funded();
+        let access = Access::new(&xml, xml.snapshot(), &work);
+        let prepared =
+            legacy::prepare(&access, &legacy::locate(&access, 0, profile).unwrap()).unwrap();
+        let inventory = legacy::inventory(&access, &prepared, old::HashDataUri::Standard).unwrap();
+        let coverage = inventory.archive_coverage(&access, 1).unwrap();
+        assert_eq!(coverage.selects(value, &access).unwrap(), covered);
+        assert!(coverage.selects(status, &access).unwrap());
+    }
 }
 
 #[test]

@@ -111,6 +111,58 @@ pub type CheckResult<'closure, 'requirements, 'view, 'certificate, 'document, X>
     CheckError<'certificate, 'document, <X as Xml>::Error, <X as Xml>::Id>,
 >;
 
+/// Historical artifact availability, retaining every actual original placement.
+pub type HistoricalIncorporation<'certificate, 'document, X> = Incorporation<
+    'certificate,
+    'document,
+    <X as Xml>::Id,
+    <X as Xml>::Document,
+    <X as Xml>::Generation,
+    Placement<<X as Xml>::Id>,
+>;
+
+/// Refusal of the historical whole-source authority or incorporated-value check.
+#[derive(Debug)]
+pub enum HistoricalError<N> {
+    /// The original scope is an archive and needs its specific coverage.
+    Archive {
+        /// Original selected archive.
+        node: N,
+    },
+    /// Original participant and status authority attribution refused.
+    Uses(UsesError<N>),
+    /// Original complete material lookup refused.
+    Presence(IncorporationError<N>),
+}
+
+/// Presence and placement facts for the actual historical participant closure.
+/// TS 103 171 V2.1.1 §8.1 and TS 101 903 use the original path and status inputs.
+/// The current EN profile's exclusive container rules do not apply here.
+/// <https://www.etsi.org/deliver/etsi_ts/103100_103199/103171/02.01.01_60/ts_103171v020101p.pdf>
+pub fn historical_incorporation<'certificate, 'document, X: Xml, W: Work, Q: Work>(
+    inputs: &ParticipantClosure<
+        '_,
+        '_,
+        'certificate,
+        'document,
+        X::Id,
+        X::Document,
+        X::Generation,
+        Xades,
+    >,
+    index: &Index<'_, X::Id, X::Document, X::Generation, W>,
+    access: &Access<'_, X, Q>,
+) -> Result<HistoricalIncorporation<'certificate, 'document, X>, HistoricalError<X::Id>> {
+    if let structured_ltv::timestamp::TimestampScope::BeforeArchive(archive) =
+        inputs.requirements().scope()
+    {
+        return Err(HistoricalError::Archive { node: archive.node });
+    }
+    let purposes = authority_uses(inputs, access).map_err(HistoricalError::Uses)?;
+    let artifacts = artifact_uses(&purposes, access).map_err(HistoricalError::Uses)?;
+    incorporation(&artifacts, index, access).map_err(HistoricalError::Presence)
+}
+
 /// Assess all whole-signature X.509 material rules in one path. The original
 /// prepared/counter/source/scope guards run first, then one purpose/artifact
 /// census is reused for presence and exclusivity. Per-TSA placement uses the

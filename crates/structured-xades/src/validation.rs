@@ -223,6 +223,25 @@ pub(crate) fn read_at<X: Xml, W: Work>(
     node: X::Id,
     previous: Option<X::Id>,
 ) -> ValidationResult<Reading<X>, X> {
+    read_at_in(access, signature, node, previous, false)
+}
+
+pub(crate) fn read_historical_at<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    node: X::Id,
+    previous: Option<X::Id>,
+) -> ValidationResult<Reading<X>, X> {
+    read_at_in(access, signature, node, previous, true)
+}
+
+fn read_at_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    node: X::Id,
+    previous: Option<X::Id>,
+    historical: bool,
+) -> ValidationResult<Reading<X>, X> {
     let role = if named(access, node, XADES_141, "AnyValidationData")? {
         Role::Any
     } else if named(access, node, XADES_141, "TimeStampValidationData")? {
@@ -247,10 +266,7 @@ pub(crate) fn read_at<X: Xml, W: Work>(
     if role == Role::Timestamp {
         hint = Some(Hint::Unresolved { uri_present });
         if let Some(prior) = previous
-            && (named(access, prior, XADES, "SignatureTimeStamp")?
-                || named(access, prior, XADES_141, "ArchiveTimeStamp")?
-                || named(access, prior, XADES_141, "SigAndRefsTimeStampV2")?
-                || named(access, prior, XADES_141, "RefsOnlyTimeStampV2")?)
+            && adjacent_timestamp(access, prior, historical)?
         {
             hint = Some(Hint::Adjacent(prior));
         }
@@ -295,6 +311,27 @@ pub(crate) fn read_at<X: Xml, W: Work>(
         certificates,
         revocations,
     })
+}
+
+fn adjacent_timestamp<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    node: X::Id,
+    historical: bool,
+) -> ValidationResult<bool, X> {
+    if named(access, node, XADES, "SignatureTimeStamp")?
+        || named(access, node, XADES_141, "ArchiveTimeStamp")?
+    {
+        return Ok(true);
+    }
+    // TS103171 V2.1.1 §§8–9 retains the original timestamp vocabulary.
+    // https://www.etsi.org/deliver/etsi_ts/103100_103199/103171/02.01.01_60/ts_103171v020101p.pdf
+    if historical {
+        return Ok(named(access, node, XADES, "ArchiveTimeStamp")?
+            || named(access, node, XADES, "SigAndRefsTimeStamp")?
+            || named(access, node, XADES, "RefsOnlyTimeStamp")?);
+    }
+    Ok(named(access, node, XADES_141, "SigAndRefsTimeStampV2")?
+        || named(access, node, XADES_141, "RefsOnlyTimeStampV2")?)
 }
 
 fn named<X: Xml, W: Work>(

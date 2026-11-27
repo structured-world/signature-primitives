@@ -2,7 +2,7 @@
 
 use super::{Binding, Counter, CounterResult, Error, Original, bind, named};
 use crate::binding::{Selected, SignatureXml};
-use crate::container::{self, ContainerError, DS, Layout, XADES};
+use crate::container::{self, ContainerError, DS, Layout};
 use crate::properties;
 use crate::timestamp::{self, InputError};
 use crate::unsigned;
@@ -98,14 +98,21 @@ pub fn walk<X: SignatureXml, W: Work, R, VE>(
         };
         let node =
             next.map_err(|cause| WalkError::Counter(Error::Input(InputError::Child(cause))))?;
-        if !named(access, node, XADES, "CounterSignature").map_err(WalkError::Counter)? {
+        let namespace = current.layout.syntax().namespace();
+        if !named(access, node, namespace, "CounterSignature").map_err(WalkError::Counter)? {
             continue;
         }
-        let original = member(access, current.layout.signature(), current.value, node)
-            .map_err(WalkError::Counter)?;
+        let original = member(
+            access,
+            current.layout.signature(),
+            current.value,
+            node,
+            namespace,
+        )
+        .map_err(WalkError::Counter)?;
         let checked = bind(access, original).map_err(WalkError::Counter)?;
         let child = checked.original().child();
-        let nested = match container::locate(access, child) {
+        let nested = match locate_child(access, child, current.layout.syntax()) {
             Ok(layout) => Some(layout),
             // Only absence of direct qualifying properties makes a plain
             // XMLDSig leaf. Every other schema/resource/source error is terminal.
@@ -151,12 +158,24 @@ pub fn walk<X: SignatureXml, W: Work, R, VE>(
     Ok(results.into_owned())
 }
 
+fn locate_child<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    child: X::Id,
+    syntax: container::Syntax,
+) -> container::ContainerResult<Layout<X>, X> {
+    if syntax == container::Syntax::En319132 {
+        return container::locate(access, child);
+    }
+    container::locate_historical(access, child, syntax)
+}
+
 fn frame<'a, 'xml, X: Xml, W: Work, VE>(
     access: &'a Access<'xml, X, W>,
     layout: Layout<X>,
 ) -> WalkResult<Option<Frame<'a, 'xml, X, W>>, X, VE> {
     let [parent, _] =
-        unsigned::containers(access, layout.unsigned()).map_err(WalkError::Property)?;
+        unsigned::containers_in(access, layout.unsigned(), layout.syntax().namespace())
+            .map_err(WalkError::Property)?;
     let Some(parent) = parent else {
         return Ok(None);
     };
@@ -176,8 +195,9 @@ pub(super) fn member<X: Xml, W: Work>(
     parent: X::Id,
     value: X::Id,
     node: X::Id,
+    namespace: &'static str,
 ) -> CounterResult<Original<X>, X> {
-    if !named(access, node, XADES, "CounterSignature")? {
+    if !named(access, node, namespace, "CounterSignature")? {
         return Err(Error::Input(InputError::Unexpected { node }));
     }
     let mut child = None;

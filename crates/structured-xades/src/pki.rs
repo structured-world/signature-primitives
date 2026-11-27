@@ -89,3 +89,36 @@ pub fn participants<'path, 'document, E, Q: Query>(
 ) -> ParticipantResult<'path, 'document, Q, Xades> {
     structured_ltv::pki::participants(ISSUER, signer, counters, credentials, timestamps, query)
 }
+
+/// Form the common participant census from the actual historical signer,
+/// checked countersigners, historical credential scope and original TSA paths.
+pub fn historical_participants<'path, 'document, E, Q: Query>(
+    signer: &'path crate::legacy::CheckedSigner<
+        'path,
+        'document,
+        Q::Id,
+        Q::Document,
+        Q::Generation,
+    >,
+    counters: &'path CounterPaths<'path, 'document, Q::Id, Q::Document, Q::Generation>,
+    credentials: &'path ParticipantCredentials<
+        'path,
+        'document,
+        E,
+        Q::Id,
+        Q::Document,
+        Q::Generation,
+    >,
+    timestamps: &'path TimestampPaths<
+        'path,
+        '_,
+        'document,
+        Q::Id,
+        Q::Document,
+        Q::Generation,
+        Xades,
+    >,
+    query: &Q,
+) -> ParticipantResult<'path, 'document, Q, Xades> {
+    structured_ltv::pki::participants(ISSUER, signer, counters, credentials, timestamps, query)
+}

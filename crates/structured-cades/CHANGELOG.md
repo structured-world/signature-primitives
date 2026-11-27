@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.3](https://github.com/structured-world/signature-primitives/compare/structured-cades-v0.31.2...structured-cades-v0.31.3) - 2026-11-27
+
+### Fixed
+
+- *(xades)* bind compact XMLERS groups ([#395](https://github.com/structured-world/signature-primitives/pull/395))
+
 ## [0.31.2](https://github.com/structured-world/signature-primitives/compare/structured-cades-v0.31.1...structured-cades-v0.31.2) - 2026-11-27
 
 ### Added

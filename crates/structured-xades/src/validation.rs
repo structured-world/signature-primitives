@@ -134,6 +134,7 @@ pub struct Data<N, D, G> {
     node: N,
     role: Role,
     hint: Option<Hint<N>>,
+    historical: bool,
     certificates: Option<Catalogue<N, D, G>>,
     revocations: Option<Catalogue<N, D, G>>,
 }
@@ -163,6 +164,12 @@ impl<N: Copy, D: Copy, G: Copy> Data<N, D, G> {
     #[must_use]
     pub fn hint(&self) -> Option<Hint<N>> {
         self.hint
+    }
+    pub(crate) fn historical_association(&self) -> Option<N> {
+        match self.hint {
+            Some(Hint::Adjacent(property)) if self.historical => Some(property),
+            _ => None,
+        }
     }
     /// Complete original certificate-value catalogue, if present.
     #[must_use]
@@ -307,6 +314,7 @@ fn read_at_in<X: Xml, W: Work>(
         node,
         role,
         hint,
+        historical,
         certificates,
         revocations,
     })

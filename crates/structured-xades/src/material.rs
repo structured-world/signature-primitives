@@ -20,8 +20,14 @@ pub use conditional::{
 };
 mod counters;
 pub mod credentials;
+mod historical_timestamp;
 pub(crate) use catalogue::read_in as read_values_in;
 pub use catalogue::{Catalogue, Entry, read, retain_entry};
+pub use historical_timestamp::{
+    HistoricalTimestampArtifact, HistoricalTimestampAuthority, HistoricalTimestampError,
+    HistoricalTimestampMaterial, HistoricalTimestampResult, historical_timestamp_material,
+    historical_timestamp_material_before_archive,
+};
 mod pipeline;
 pub use pipeline::{
     Basic, Error as PipelineError, Opaque, PipelineResult, Placement, Retained, View,

@@ -9,6 +9,9 @@ use structured_xades::{
     scalar::{Datatype, Error as ScalarError, Fact},
 };
 
+#[path = "legacy/renewed_archive.rs"]
+mod renewed_archive;
+
 impl old::LegacyXml for Tree {
     fn resolve_legacy_element<W: Work>(
         &self,
@@ -253,6 +256,37 @@ fn original_timestamp_and_values_share_the_historical_material_pipeline() {
             check_original_timestamp_and_values(profile, matches);
         }
     }
+}
+
+#[test]
+fn historical_timestamp_material_preserves_adjacent_archive() {
+    use structured_xades::material::{self, Placement};
+    // A value after an archive has an original container and a distinct
+    // timestamp property. A general signature value must keep its own role.
+    let profile = Profile::PreEn;
+    let mut xml = profile_tree(profile);
+    let ns = profile.namespace();
+    let v141 = "http://uri.etsi.org/01903/v1.4.1#";
+    let (_, _, certificate) = timestamp_oracle::fixture(b"archive");
+    let archive = append(&mut xml, 7, v141, "ArchiveTimeStamp");
+    let validation = append(&mut xml, 7, v141, "TimeStampValidationData");
+    let values = append(&mut xml, validation, ns, "CertificateValues");
+    let member = append(&mut xml, values, ns, "EncapsulatedX509Certificate");
+    xml.binary_routes.push((member, certificate));
+    let work = funded();
+    let parser = structured_asn1::Parser::der(work.clone());
+    let operation = parser.read(&[], 0).unwrap();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let prepared = legacy::prepare(&access, &legacy::locate(&access, 0, profile).unwrap()).unwrap();
+    material::with_historical_values(&xml, &prepared, &operation, |_, view| {
+        assert!(matches!(
+            view.sources()[0].placement(),
+            Placement::AssociatedTimestamp { container, property }
+                if container == validation && property == archive
+        ));
+        Ok::<_, ()>(())
+    })
+    .unwrap();
 }
 
 fn check_original_timestamp_and_values(profile: Profile, matches: bool) {

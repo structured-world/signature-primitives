@@ -249,7 +249,14 @@ pub fn fixture_with_certificate(covered: &[u8]) -> (Oracle, Vec<u8>, Vec<u8>) {
 
 /// A real issuer-to-TSA chain, rather than treating a self-signed TSA as a path.
 pub fn fixture_with_root(covered: &[u8]) -> (Oracle, Vec<u8>, Vec<u8>, Vec<u8>) {
-    let root = SigningKey::from_bytes((&[2; 32]).into()).unwrap();
+    fixture_with_root_seed(covered, 2)
+}
+
+pub(super) fn fixture_with_root_seed(
+    covered: &[u8],
+    seed: u8,
+) -> (Oracle, Vec<u8>, Vec<u8>, Vec<u8>) {
+    let root = SigningKey::from_bytes((&[seed; 32]).into()).unwrap();
     let (provider, token, tsa) = fixture_carriage(covered, true, Some(&root), true, None);
     let root = certificate_bytes(
         &root,

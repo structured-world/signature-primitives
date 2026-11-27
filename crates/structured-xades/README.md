@@ -43,6 +43,16 @@ Combine the retained values and tokens with `material::index_with_tokens`.
 same participant and material rules as current signatures. Path, status and
 policy inputs remain explicit.
 
+For another historical archive, use `material::historical_timestamp_material`
+with the complete participant and status closure. It reports each TSA's exact
+material in its own token, the adjacent `TimeStampValidationData`, and other
+original locations. Group only missing artifacts by timestamp property and
+stage them immediately after that property with
+`produce::write_historical_timestamp_values` before preparing the next archive.
+Keep the existing archive inputs intact when staging changes. For an existing
+archive, `material::historical_timestamp_material_before_archive` checks the
+original antecedent closure with that archive's verified token and coverage.
+
 `produce::Basic::write_historical` writes the historical signing-certificate
 and policy vocabulary. `ExtendedAugmentation::prepare_historical_signature`
 binds the request and checked response to the staged `SignatureValue`.

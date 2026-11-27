@@ -6,7 +6,8 @@ use structured_asn1::memory::{HashWork, MemoryError, OwnedVec, Work};
 use structured_ltv::material::status::{ArtifactVisitError, member_source, visit_artifacts};
 use structured_ltv::material::{ArtifactKey, ArtifactRef, IndexError};
 use structured_ltv::pki::{
-    AuthorityVisitError, Participant, ParticipantAuthority, ParticipantClosure, UsesError,
+    AuthorityNode, AuthorityVisitError, Participant, ParticipantAuthority, ParticipantClosure,
+    UsesError,
 };
 use structured_ltv::source::ScopeError;
 use structured_ltv::timestamp::TimestampScope;
@@ -113,7 +114,9 @@ fn allowed<N: Copy, E>(
 ) -> Result<bool, E> {
     match placement {
         // §6.3(x) names these properties; their URI is only a hint.
-        Placement::General(_) | Placement::Timestamp(_) => Ok(true),
+        Placement::General(_) | Placement::Timestamp(_) | Placement::AssociatedTimestamp { .. } => {
+            Ok(true)
+        }
         Placement::TimestampToken {
             property: actual_property,
             token: actual_token,
@@ -192,6 +195,48 @@ pub fn timestamp_placement<
     if !matches!(required.scope(), TimestampScope::All(_)) {
         return Err(TimestampPlacementError::Scope);
     }
+    let signature = admit_index(inputs, index, access)?;
+    let mut findings = access.execution().vector();
+    visit_timestamps(inputs, access, |(property, token), item| {
+        if let TimestampItem::Artifact(artifact) = item
+            && let Some(cause) = availability(index, artifact, signature, property, token, access)
+                .map_err(TimestampPlacementError::Index)?
+        {
+            findings
+                .try_push(TimestampPlacementFinding {
+                    property,
+                    token,
+                    artifact,
+                    cause,
+                })
+                .map_err(|cause| resource(signature, cause))?;
+        }
+        Ok(())
+    })?;
+    Ok(TimestampPlacement {
+        inputs,
+        findings: findings.into_owned(),
+        snapshot: access.snapshot(),
+    })
+}
+
+pub(super) type Closure<'requirements, 'view, 'certificate, 'document, X> = ParticipantClosure<
+    'requirements,
+    'view,
+    'certificate,
+    'document,
+    <X as Xml>::Id,
+    <X as Xml>::Document,
+    <X as Xml>::Generation,
+    Xades,
+>;
+
+pub(super) fn admit_index<X: Xml, W: Work, Q: Work>(
+    inputs: &Closure<'_, '_, '_, '_, X>,
+    index: &Index<'_, X::Id, X::Document, X::Generation, W>,
+    access: &Access<'_, X, Q>,
+) -> Result<X::Id, TimestampPlacementError<X::Id>> {
+    let required = inputs.requirements();
     let signature = required.signature();
     if required.scope().location().snapshot != access.snapshot() {
         return Err(TimestampPlacementError::Index(IndexError::Foreign {
@@ -201,9 +246,33 @@ pub fn timestamp_placement<
     index
         .require_signature(signature, access)
         .map_err(TimestampPlacementError::Index)?;
+    Ok(signature)
+}
+
+pub(super) fn resource<N>(signature: N, cause: MemoryError) -> TimestampPlacementError<N> {
+    TimestampPlacementError::Index(IndexError::Resource { signature, cause })
+}
+
+pub(super) enum TimestampItem<'view, 'certificate, 'document> {
+    Authority(&'view AuthorityNode<'view, 'certificate, 'document>),
+    Artifact(ArtifactRef<'certificate, 'document>),
+}
+
+pub(super) fn visit_timestamps<'view, 'certificate, 'document, X: Xml, Q: Work, E>(
+    inputs: &Closure<'_, 'view, 'certificate, 'document, X>,
+    access: &Access<'_, X, Q>,
+    mut visit: impl FnMut(
+        (X::Id, X::Id),
+        TimestampItem<'view, 'certificate, 'document>,
+    ) -> Result<(), E>,
+) -> Result<(), E>
+where
+    E: From<TimestampPlacementError<X::Id>>,
+{
+    let required = inputs.requirements();
+    let signature = required.signature();
     let work = access.execution();
-    let resource =
-        |cause| TimestampPlacementError::Index(IndexError::Resource { signature, cause });
+    let resource = |cause| E::from(resource(signature, cause));
     let mut actors = work.vector();
     for entry in required.entries() {
         work.charge_work(1).map_err(resource)?;
@@ -217,13 +286,13 @@ pub fn timestamp_placement<
         }
     }
     let mut seen = work.map();
-    let mut findings = work.vector();
     inputs
         .authorities()
         .visit_roots(work, |root, node| {
-            let Some((property, token)) = actors[root] else {
+            let Some(actor) = actors[root] else {
                 return Ok(());
             };
+            visit(actor, TimestampItem::Authority(node))?;
             let mut record = |artifact: ArtifactRef<'certificate, 'document>| {
                 let key = Seen {
                     root,
@@ -232,20 +301,7 @@ pub fn timestamp_placement<
                 if seen.try_insert(key, ()).map_err(resource)?.is_some() {
                     return Ok(());
                 }
-                if let Some(cause) =
-                    availability(index, artifact, signature, property, token, access)
-                        .map_err(TimestampPlacementError::Index)?
-                {
-                    findings
-                        .try_push(TimestampPlacementFinding {
-                            property,
-                            token,
-                            artifact,
-                            cause,
-                        })
-                        .map_err(resource)?;
-                }
-                Ok(())
+                visit(actor, TimestampItem::Artifact(artifact))
             };
             let path = node.statuses.path();
             if let Some(certificate) = path.anchor().certificate() {
@@ -264,7 +320,7 @@ pub fn timestamp_placement<
                             resource(cause)
                         }
                         ArtifactVisitError::Scope(cause) => {
-                            TimestampPlacementError::Uses(UsesError::Scope(cause))
+                            E::from(TimestampPlacementError::Uses(UsesError::Scope(cause)))
                         }
                         ArtifactVisitError::Visitor(cause) => cause,
                     })?;
@@ -274,15 +330,10 @@ pub fn timestamp_placement<
         })
         .map_err(|cause| match cause {
             AuthorityVisitError::Processing(cause) => {
-                TimestampPlacementError::Uses(UsesError::Closure(cause))
+                E::from(TimestampPlacementError::Uses(UsesError::Closure(cause)))
             }
             AuthorityVisitError::Visitor(cause) => cause,
-        })?;
-    Ok(TimestampPlacement {
-        inputs,
-        findings: findings.into_owned(),
-        snapshot: access.snapshot(),
-    })
+        })
 }
 
 #[cfg(test)]

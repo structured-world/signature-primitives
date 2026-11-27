@@ -26,6 +26,14 @@ pub enum Placement<N> {
     General(N),
     /// Timestamp-specific validation-data container; its URI is only a hint.
     Timestamp(N),
+    /// Historical validation data directly following its timestamp property
+    /// (ETSI TS 101 903 V1.4.2 §8.1.1).
+    AssociatedTimestamp {
+        /// Original validation-data container.
+        container: N,
+        /// Original preceding timestamp property.
+        property: N,
+    },
     /// Material carried in an actual CMS token, whose enclosing timestamp
     /// property and input role remain separate from mathematical evidence.
     TimestampToken {
@@ -676,7 +684,16 @@ pub(super) fn collect_validation<X: OwnedBinaryXml, W: Work, VE>(
     }
     let placement = match data.role() {
         crate::validation::Role::Any => Placement::General(data.node()),
-        crate::validation::Role::Timestamp => Placement::Timestamp(data.node()),
+        crate::validation::Role::Timestamp => {
+            if let Some(property) = data.historical_association() {
+                Placement::AssociatedTimestamp {
+                    container: data.node(),
+                    property,
+                }
+            } else {
+                Placement::Timestamp(data.node())
+            }
+        }
     };
     for catalogue in [data.certificates(), data.revocations()]
         .into_iter()

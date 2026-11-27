@@ -9,19 +9,21 @@ use structured_cms::{
 };
 use structured_pkix::algorithm::digest::{Algorithm, AsnDigest};
 
-/// The two ERS formats use the same single-group bare tree for a new seal.
+/// Initial digest of the complete protected group and its original leaf hashes.
 pub struct InitialImprint<'p, P: AsnDigest<'p>> {
     hashes: OwnedVec<DigestOutput<'p, P>>,
     root: DigestOutput<'p, P>,
 }
 
 impl<'p, P: AsnDigest<'p>> InitialImprint<'p, P> {
-    /// Complete binary ascending first list. Repeated digests are preserved.
+    /// Complete binary ascending leaf list for per-object encodings and renewal.
+    /// Repeated digests are preserved.
     pub fn hashes(&self) -> impl ExactSizeIterator<Item = &[u8]> {
         self.hashes.iter().map(DigestOutput::as_bytes)
     }
 
     /// Selected provider's finalized imprint for the RFC 3161 request.
+    /// For an initial XMLERS seal this is the sole first-list value.
     #[must_use]
     pub fn root(&self) -> &DigestOutput<'p, P> {
         &self.root

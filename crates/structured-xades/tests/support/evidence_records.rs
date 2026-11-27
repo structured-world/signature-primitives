@@ -431,6 +431,104 @@ fn xml_stamp<const WIDTH: usize>(
 }
 
 #[test]
+fn xades_xmlers_compact_initial_list_binds_the_complete_original_group() {
+    // ETSI TS 119 132-3 §5.2.2.1 puts the group digest in the first list.
+    // RFC 6283 §3.1.1 passes it unchanged into the next level, if one exists.
+    for (outer, matches_group) in [(false, true), (true, true), (false, false)] {
+        check_compact_initial(outer, matches_group);
+    }
+}
+
+fn check_compact_initial(outer: bool, matches_group: bool) {
+    let mut xml = preparation_tree();
+    let (_, member) = group(&mut xml, Format::Xml);
+    let work = funded();
+    let hashes = hash_original(&xml, 0, &work);
+    let group_preimage = if matches_group {
+        hashes.concat()
+    } else {
+        b"different group".to_vec()
+    };
+    let group_digest: [u8; 32] = Sha256::digest(&group_preimage).into();
+    xml.evidence_attributes.push((member, "Version", "1.0"));
+    let sequence = add(&mut xml, member, XML_ERS, "ArchiveTimeStampSequence");
+    let (chain, _) = xml_chain(
+        &mut xml,
+        sequence,
+        "1",
+        "http://www.w3.org/2001/04/xmlenc#sha256",
+    );
+    let token = xml_stamp(&mut xml, chain, "1", &[group_digest]);
+    let token_preimage = if outer {
+        let stamp = xml.nodes[xml.nodes[token].parent.unwrap()].parent.unwrap();
+        let hash_tree = xml.element_child(stamp, XML_ERS, "HashTree");
+        let level = add(&mut xml, hash_tree, XML_ERS, "Sequence");
+        xml.evidence_attributes.push((level, "Order", "2"));
+        let sibling = add(&mut xml, level, XML_ERS, "DigestValue");
+        let sibling_digest: [u8; 32] = Sha256::digest(b"independent group").into();
+        xml.binary_routes.push((sibling, sibling_digest.to_vec()));
+        let mut children = [group_digest, sibling_digest];
+        children.sort_unstable();
+        children.concat()
+    } else {
+        group_preimage
+    };
+    let (provider, encoded, cert) = fixture(&token_preimage);
+    xml.binary_routes.push((token, encoded));
+    let parser = Parser::der(work.clone());
+    let operation = parser.read(&[], 0).unwrap();
+    let certificate = Certificate::read(&parser, &cert, 3000).unwrap();
+    let authorities = Select {
+        parent: &operation,
+        certificate: &certificate,
+    };
+    let utc = LeapTable::new(0, 2_000_000_000, &[]).unwrap();
+    let access = Access::new(&xml, xml.snapshot(), &work);
+    let layout = container::locate(&access, 0).unwrap();
+    let bound = binding::bind(&access, &layout).unwrap();
+    let records = evidence::read(&access, &bound).unwrap();
+    let check = xmlers::Check {
+        provider: &provider,
+        operation: &operation,
+        authorities: &authorities,
+        utc: &utc,
+        reference: Instant::new(1_800_000_000, 0).unwrap(),
+    };
+    let outcome = check.xml(
+        &xml,
+        &records,
+        0,
+        |_, _, _| Ok::<_, ()>(false),
+        |_, _| Ok::<_, ()>(Decision::Valid),
+    );
+    if matches_group {
+        let report = outcome.unwrap();
+        assert!(report.verified().is_some());
+        assert!(report.findings().all(|stamp| stamp.evidence().is_some()));
+    } else {
+        // The token signs the recorded hash, but the original group differs.
+        use structured_cms::timestamp::{
+            CheckError, ImprintError, InfoCheckError, InfoError, ProfileCheckError,
+        };
+        let Err(xmlers::CheckError::Check(
+            at,
+            ProfileCheckError::Common(CheckError::Information(
+                structured_cms::content_source::ContentError::Callback { source, .. },
+            )),
+        )) = outcome
+        else {
+            panic!("expected an initial group membership refusal");
+        };
+        assert_eq!(at, token);
+        assert!(
+            matches!(source, InfoError::Callback(InfoCheckError::Imprint(
+            ImprintError::Pass(stream::StreamError::Source(xmlers::ImprintError::Membership(node))),
+        )) if node == token)
+        );
+    }
+}
+
+#[test]
 fn rfc6283_initial_and_renewal_follow_order_and_verify_actual_octets() {
     // The second timestamp appears first in the document. The explicit Order
     // determines which exact TimeStamp subtree is hashed during renewal.
@@ -607,6 +705,19 @@ fn xml_writer_preserves_sorted_full_hashes_and_stages_only_at_the_selected_tail(
         binary.split_last(),
         Some((&token.as_slice(), hashes.as_slice()))
     );
+    let mut compact = lifecycle::Draft::new(&xml, Some(7));
+    let first = [imprint.root().as_bytes()];
+    plan.write_xml(&mut compact, archive(&first), &work)
+        .unwrap();
+    let binary: Vec<_> = compact
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            lifecycle::Written::Binary(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(binary, [first[0], token.as_slice()]);
 }
 
 #[test]

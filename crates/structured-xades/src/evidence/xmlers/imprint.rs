@@ -5,7 +5,7 @@ use crate::{
     binary::{self, Location},
     xml::{Access, AccessError, Snapshot, Xml},
 };
-use core::cmp::Ordering;
+use core::{cmp::Ordering, ops::Deref};
 use structured_asn1::memory::{MemoryError, OwnedVec, Work};
 use structured_cms::{
     stream::{Receiver, Source},
@@ -111,25 +111,44 @@ impl<X: XmlRecordXml, P, PE> ComputedInput<P, PE> for Recipe<'_, X> {
         if let Some(prior) = &prior {
             expected.try_push(prior.as_bytes()).map_err(resource)?;
         }
-        ensure_membership(&tree[0], &mut expected, self.objects.is_some(), &work).map_err(
-            |failure| {
-                InputFailure::Source(match failure {
-                    MembershipError::Resource(cause) => Error::Resource(self.node, cause),
-                    MembershipError::Differs => Error::Membership(self.node),
-                })
-            },
-        )?;
-        drop(expected);
         let first = &tree[0];
-        let mut current = if first.len() == 1 {
-            // The direct singleton comes only from a prior TimeStamp hash.
-            prior.ok_or(InputFailure::Source(Error::Membership(self.node)))?
+        let mismatch = || InputFailure::Source(Error::Membership(self.node));
+        let mut current = if first.len() == 1 && self.objects.is_some() && prior.is_none() {
+            // ETSI TS 119 132-3 §5.2.2.1 places the whole protected group's
+            // digest in the first list. RFC 6283 §3.1.1 carries this singleton
+            // directly into the next level. Later chains still prove each
+            // object and the preceding sequence under RFC 6283 §4.3.
+            // https://www.etsi.org/deliver/etsi_ts/119100_119199/11913203/01.01.01_60/ts_11913203v010101p.pdf
+            // https://www.rfc-editor.org/rfc/rfc6283.html#section-3.1.1
+            sort_hashes(&mut expected, &work).map_err(resource)?;
+            let group = hash_level(context, expected.iter().copied(), None, self.node)?;
+            drop(expected);
+            if compare(group.as_bytes(), &first[0], &work).map_err(resource)? != Ordering::Equal {
+                return Err(mismatch());
+            }
+            group
         } else {
-            hash_level(context, first, None, self.node)?
+            ensure_membership(first, &mut expected, self.objects.is_some(), &work).map_err(
+                |failure| match failure {
+                    MembershipError::Resource(cause) => resource(cause),
+                    MembershipError::Differs => mismatch(),
+                },
+            )?;
+            drop(expected);
+            if first.len() == 1 {
+                prior.ok_or_else(mismatch)?
+            } else {
+                hash_level(context, first.iter().map(Deref::deref), None, self.node)?
+            }
         };
         for level in &tree[1..] {
             work.charge_work(1).map_err(resource)?;
-            current = hash_level(context, level, Some(current.as_bytes()), self.node)?;
+            current = hash_level(
+                context,
+                level.iter().map(Deref::deref),
+                Some(current.as_bytes()),
+                self.node,
+            )?;
         }
         context.compare(&current).map_err(InputFailure::Refused)
     }
@@ -199,9 +218,7 @@ fn ensure_membership<W: Work>(
         if first.len() != object_hashes.len() {
             return Err(MembershipError::Differs);
         }
-        object_hashes
-            .try_sort_unstable_by(|left, right| compare(left, right, work))
-            .map_err(|cause| resource(cause.into()))?;
+        sort_hashes(object_hashes, work).map_err(resource)?;
         for (actual, declared) in object_hashes.iter().zip(first) {
             if compare(actual, declared, work).map_err(resource)? != Ordering::Equal {
                 return Err(MembershipError::Differs);
@@ -221,6 +238,12 @@ fn ensure_membership<W: Work>(
     Ok(())
 }
 
+fn sort_hashes<W: Work>(hashes: &mut OwnedVec<&[u8], W>, work: &W) -> Result<(), MemoryError> {
+    hashes
+        .try_sort_unstable_by(|left, right| compare(left, right, work))
+        .map_err(Into::into)
+}
+
 fn compare<W: Work>(a: &[u8], b: &[u8], work: &W) -> Result<Ordering, MemoryError> {
     work.charge_work(1 + a.len().min(b.len()) as u64)?;
     Ok(a.cmp(b))
@@ -228,9 +251,9 @@ fn compare<W: Work>(a: &[u8], b: &[u8], work: &W) -> Result<Ordering, MemoryErro
 
 type LevelResult<'c, 'r, 'd, P, E> = Result<ImprintDigest<'c, 'r, 'd, P, E>, InputFailure<E>>;
 
-fn hash_level<'c, 'r, 'd, P: AsnDigest<'d>, E, N: Copy>(
+fn hash_level<'c, 'r, 'd, 'level, P: AsnDigest<'d>, E, N: Copy>(
     context: &'c ImprintContext<'r, 'd, P, Error<E, N>>,
-    level: &[OwnedVec<u8>],
+    level: impl Iterator<Item = &'level [u8]>,
     mut previous: Option<&[u8]>,
     node: N,
 ) -> LevelResult<'c, 'r, 'd, P, Error<E, N>> {

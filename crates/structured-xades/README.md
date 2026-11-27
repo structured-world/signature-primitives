@@ -90,8 +90,11 @@ caller's authority and historical validation.
 
 For construction, obtain the original sources with `Records::serial_objects`
 or `Records::objects`. `Objects::initial_imprint` streams the complete group
-through the selected digest provider. Renewal input is available from the
-opened `Asn1` or XMLERS `Record`. Stage in the original XML owner's
+through the selected digest provider. For initial XMLERS seals, pass
+`&[imprint.root().as_bytes()]` as the first list so the record carries the
+group digest required by TS 119 132-3 §5.2.2.1. The reader also verifies the
+full per-object list used by previously generated records. Renewal input is
+available from the opened `Asn1` or XMLERS `Record`. Stage in the original XML owner's
 unpublished transaction using `Records::edit` and the plan's writer methods.
 Check the staged record and pass its source-bound receipt to
 `EditPlan::authorize_commit`. The owner closes material placement and enforces

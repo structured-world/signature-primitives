@@ -32,9 +32,11 @@ pub struct Archive<'a, N> {
     /// A new chain requires both methods. Within-chain renewal uses the
     /// original chain methods and must supply `None`.
     pub methods: Option<Methods<'a, N>>,
-    /// Full binary ascending reduced first list for a new chain, containing
-    /// the protected group and, on hash-tree renewal, the prior-sequence hash.
-    /// Within-chain single-object renewal supplies an empty slice.
+    /// For a new seal, pass the sole digest of the protected group from
+    /// `InitialImprint::root`. The original full per-object list is also
+    /// accepted. Hash-tree renewal supplies the complete binary ascending list
+    /// of object hashes and the prior-sequence hash. Within-chain timestamp
+    /// renewal supplies an empty slice.
     pub first_hashes: &'a [&'a [u8]],
     /// Complete DER RFC 3161 token. The actual enclosure is verified after
     /// staging, before it can authorize committing this XML transaction.
@@ -107,7 +109,8 @@ where
     G: Copy + Eq,
 {
     /// Stage a new XMLERS record or one constrained RFC 6283 renewal.
-    /// First seals and hash-tree renewals emit a single complete first list.
+    /// The initial list may carry the `XAdES` group digest. Hash-tree renewal
+    /// always carries the complete per-object and prior-sequence list.
     /// The original material preparation belongs to the unpublished XML
     /// transaction. Call `authorize_commit` with verified staged evidence.
     pub fn write_xml<B, W>(
@@ -128,10 +131,12 @@ where
             _ => None,
         };
         let new_chain = renewal != Some(Renewal::Timestamp);
-        if new_chain != archive.methods.is_some()
-            || (new_chain && archive.first_hashes.len() < 2)
-            || (!new_chain && !archive.first_hashes.is_empty())
-        {
+        let invalid_list = match renewal {
+            None => archive.first_hashes.is_empty(),
+            Some(Renewal::HashTree) => archive.first_hashes.len() < 2,
+            Some(Renewal::Timestamp) => !archive.first_hashes.is_empty(),
+        };
+        if new_chain != archive.methods.is_some() || invalid_list {
             return Err(Error::Value("ArchiveTimeStampChain"));
         }
         admit_hashes(archive.first_hashes, work)?;

@@ -228,7 +228,12 @@ pub fn prepare<X: Xml, W: Work>(
 ) -> ResultFor<Properties<X>, X> {
     let layout = bound.containers();
     let signature = layout.signature();
-    if layout.snapshot() != access.snapshot() || layout.syntax() != Syntax::En319132 {
+    let permitted = match layout.syntax() {
+        Syntax::En319132 => true,
+        Syntax::Ts103171 => syntax == ReferenceSyntax::Original,
+        Syntax::Ts101903V111 | Syntax::Ts101903V122 => false,
+    };
+    if layout.snapshot() != access.snapshot() || !permitted {
         return Err(Error::Timestamp(InputError::Foreign { node: signature }));
     }
     let parent = match layout.unsigned() {

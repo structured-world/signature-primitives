@@ -139,8 +139,8 @@ pub enum LevelError {
         /// Level of the supplied stage reports.
         supplied: Requirements,
     },
-    /// The archive census uses another preparation, or one archive's material
-    /// uses another authenticated credential census than the whole signature.
+    /// The preparation uses an extended profile, or the original archive and
+    /// credential censuses are inconsistent with the other stage reports.
     Foreign,
 }
 
@@ -161,6 +161,9 @@ pub enum LevelError {
 pub fn assess<A, N: Copy, D: Copy, G: Copy>(
     evidence: Evidence<'_, A, N, D, G>,
 ) -> Result<Assessment<'_, A, N, D, G>, LevelError> {
+    if evidence.prepared().extended_syntax().is_some() {
+        return Err(LevelError::Foreign);
+    }
     let requested = evidence.prepared().requirements();
     let supplied = evidence.level();
     if requested != supplied {

@@ -229,7 +229,7 @@ fn with_serial_in(
     (xml, serial)
 }
 
-fn profile_tree(profile: Profile) -> Tree {
+pub(super) fn profile_tree(profile: Profile) -> Tree {
     let namespace = profile.namespace();
     let mut xml = tree();
     for node in &mut xml.nodes[2..8] {

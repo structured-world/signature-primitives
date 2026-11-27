@@ -9,7 +9,6 @@ use crate::xml::{Access, Name, Snapshot, Xml};
 use structured_asn1::memory::Work;
 
 mod refs;
-pub(crate) use refs::read as read_references;
 pub(crate) use refs::read_in as read_references_in;
 mod ref_catalogue;
 mod ref_digest;

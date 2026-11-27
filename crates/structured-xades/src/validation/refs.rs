@@ -271,20 +271,6 @@ pub(crate) fn role<X: Xml, W: Work>(
 // individually optional groups; schema optionality alone is insufficient.
 // V2's local CertRefs is in 1.4.1; the imported CertIDListV2's Cert is in 1.3.2.
 // https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf
-pub(crate) fn read<X: Xml, W: Work>(
-    access: &Access<'_, X, W>,
-    signature: X::Id,
-    original: unsigned::Entry<X::Id>,
-) -> PropertyResult<Reading<X>, X> {
-    read_in(
-        access,
-        signature,
-        original.node,
-        original.role,
-        ReferenceSyntax::V2,
-    )
-}
-
 pub(crate) fn read_in<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     signature: X::Id,

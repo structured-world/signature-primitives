@@ -49,6 +49,7 @@ pub enum Error<E, N> {
 /// exposed by this object, and unknown original properties remain in inventory.
 pub struct Preparation<N, D, G> {
     requirements: unsigned::Requirements,
+    extended: Option<timestamp::ReferenceSyntax>,
     bound: binding::Bound<N, D, G>,
     signed: properties::Signed<N, D, G>,
     header: header::Header<N, D, G>,
@@ -72,6 +73,12 @@ impl<N, D, G> Preparation<N, D, G> {
     #[must_use]
     pub fn requirements(&self) -> unsigned::Requirements {
         self.requirements
+    }
+    /// The caller-selected extended vocabulary, if this is a shared
+    /// processing preparation instead of an EN baseline preparation.
+    #[must_use]
+    pub fn extended_syntax(&self) -> Option<timestamp::ReferenceSyntax> {
+        self.extended
     }
     /// Original authenticated whole-SignedProperties binding.
     #[must_use]
@@ -184,6 +191,32 @@ pub type Prepared<X> = Preparation<<X as Xml>::Id, <X as Xml>::Document, <X as X
 /// Source preparation result retaining stage-specific original causes.
 pub type PrepareResult<T, X> = Result<T, Error<<X as Xml>::Error, <X as Xml>::Id>>;
 
+/// Original signed protection and the matching reference/timestamp catalogue.
+pub struct Original<X: Xml> {
+    /// Protected original properties and signing-certificate selection.
+    pub prepared: crate::legacy::Prepared<X>,
+    /// Original C/X/XL/A inputs for continued validation.
+    pub properties: crate::extended::Properties<X>,
+}
+
+/// Original failure while preparing either extended-signature vocabulary.
+#[derive(Debug)]
+pub enum ExtendedError<E, N> {
+    /// Layout, reference, timestamp or material preparation refusal.
+    Source(Error<E, N>),
+    /// Original historical signed-property or signing-certificate refusal.
+    Historical(crate::legacy::Error<E, N>),
+}
+
+impl<E, N> From<Error<E, N>> for ExtendedError<E, N> {
+    fn from(error: Error<E, N>) -> Self {
+        Self::Source(error)
+    }
+}
+
+/// Extended preparation using this XML owner's identity and error types.
+pub type OriginalResult<X> = Result<Original<X>, ExtendedError<<X as Xml>::Error, <X as Xml>::Id>>;
+
 /// Prepares the original selected signature with one shared structural path.
 /// No certificate hash, canonicalization, token/provider execution or implicit
 /// acquisition occurs here. All catalogues retain their actual capacity account;
@@ -194,6 +227,108 @@ pub fn prepare<X: ReferenceXml, W: Work>(
     requirements: unsigned::Requirements,
     counter: Option<&counter::Binding<X>>,
 ) -> PrepareResult<Prepared<X>, X> {
+    prepare_in(access, signature, requirements, counter, None)
+}
+
+/// Prepare directly incorporated C/X/XL/A inputs using the V2 vocabulary.
+/// `requirements` selects structural obligations without claiming a baseline
+/// level or treating C references as a substitute for incorporated XL values.
+pub fn prepare_extended_v2<X: ReferenceXml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    requirements: unsigned::Requirements,
+    counter: Option<&counter::Binding<X>>,
+) -> PrepareResult<Prepared<X>, X> {
+    prepare_in(
+        access,
+        signature,
+        requirements,
+        counter,
+        Some(timestamp::ReferenceSyntax::V2),
+    )
+}
+
+/// Prepare directly incorporated C/X/XL/A inputs with the original 1.3.2
+/// signed properties, signer certificate, references and replay recipes.
+pub fn prepare_extended_original<X: ReferenceXml + crate::scalar::ScalarXml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    requirements: unsigned::Requirements,
+    counter: Option<&counter::Binding<X>>,
+) -> OriginalResult<X> {
+    use crate::{extended, legacy};
+    // TS 101 903 V1.4.2 §§7.2.2–7.2.6 uses the original signed vocabulary.
+    // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
+    let layout =
+        legacy::locate(access, signature, legacy::Profile::PreEn).map_err(Error::Container)?;
+    if let Some(counter) = counter {
+        let original = counter.original();
+        if original.snapshot() != layout.snapshot()
+            || !access
+                .equal_id(original.child(), signature)
+                .map_err(|cause| Error::Resource { signature, cause })?
+        {
+            return Err(
+                Error::Timestamp(timestamp::InputError::Foreign { node: signature }).into(),
+            );
+        }
+    }
+    let prepared = legacy::prepare(access, &layout).map_err(ExtendedError::Historical)?;
+    let properties = extended::prepare(
+        access,
+        prepared.binding(),
+        timestamp::ReferenceSyntax::Original,
+    )
+    .map_err(|cause| match cause {
+        extended::Error::Property(cause) => Error::Property(cause),
+        extended::Error::Timestamp(cause) => Error::Timestamp(cause),
+    })?;
+    extended_requirements(access, signature, requirements, &properties)?;
+    Ok(Original {
+        prepared,
+        properties,
+    })
+}
+
+fn extended_requirements<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    requirements: unsigned::Requirements,
+    properties: &crate::extended::Properties<X>,
+) -> PrepareResult<(), X> {
+    if requirements == unsigned::Requirements::Basic {
+        return Ok(());
+    }
+    let mut signature_stamp = false;
+    let mut archive = false;
+    for stamp in properties.timestamps() {
+        access
+            .execution()
+            .charge_work(1)
+            .map_err(|cause| Error::Resource { signature, cause })?;
+        signature_stamp |= stamp.role() == timestamp::Role::Signature;
+        archive |= stamp.role() == timestamp::Role::Archive;
+    }
+    let missing = if !signature_stamp {
+        "SignatureTimeStamp"
+    } else if requirements == unsigned::Requirements::Archival && !archive {
+        "ArchiveTimeStamp"
+    } else {
+        return Ok(());
+    };
+    Err(Error::Property(properties::Error::Missing {
+        parent: signature,
+        local: missing,
+    }))
+}
+
+fn prepare_in<X: ReferenceXml, W: Work>(
+    access: &Access<'_, X, W>,
+    signature: X::Id,
+    requirements: unsigned::Requirements,
+    counter: Option<&counter::Binding<X>>,
+    extended: Option<timestamp::ReferenceSyntax>,
+) -> PrepareResult<Prepared<X>, X> {
     let layout = container::locate(access, signature).map_err(Error::Container)?;
     let bound = binding::bind(access, &layout).map_err(Error::Binding)?;
     let header = header::read(access, &bound).map_err(Error::Property)?;
@@ -201,31 +336,21 @@ pub fn prepare<X: ReferenceXml, W: Work>(
     let certificates = certificate::read(access, &signed).map_err(Error::Property)?;
     let roles = role::read(access, &signed).map_err(Error::Property)?;
     let policy = policy::read(access, &signed).map_err(Error::Property)?;
-    let unsigned = unsigned::read(access, &bound, requirements).map_err(Error::Property)?;
+    let unsigned =
+        unsigned::read_in(access, &bound, requirements, extended).map_err(Error::Property)?;
     let policy_store =
         policy::read_store(access, &unsigned, policy.as_ref()).map_err(Error::Property)?;
     unsigned::check_credential_material(access, &unsigned, roles.as_ref())
         .map_err(Error::Property)?;
     let formats =
         format::check_references(access, &bound, &signed, counter).map_err(Error::Format)?;
-    let mut commitments = access
-        .query(signature, |_, _, work| Ok(work.vector()))
-        .map_err(Error::Access)?;
-    let mut timestamps = access
-        .query(signature, |_, _, work| Ok(work.vector()))
-        .map_err(Error::Access)?;
-    let mut material = access
-        .query(signature, |_, _, work| Ok(work.vector()))
-        .map_err(Error::Access)?;
-    let mut validation = access
-        .query(signature, |_, _, work| Ok(work.vector()))
-        .map_err(Error::Access)?;
-    let mut renewed = access
-        .query(signature, |_, _, work| Ok(work.vector()))
-        .map_err(Error::Access)?;
-    let mut references = access
-        .query(signature, |_, _, work| Ok(work.vector()))
-        .map_err(Error::Access)?;
+    let work = access.execution();
+    let mut commitments = work.vector();
+    let mut timestamps = work.vector();
+    let mut material = work.vector();
+    let mut validation = work.vector();
+    let mut renewed = work.vector();
+    let mut references = work.vector();
     let refusal = |cause| Error::Resource { signature, cause };
     for index in 0..unsigned.entries().len() {
         admit(access, signature)?;
@@ -235,8 +360,8 @@ pub fn prepare<X: ReferenceXml, W: Work>(
             | unsigned::Role::Archive
             | unsigned::Role::SignatureAndReferencesTimestamp
             | unsigned::Role::ReferencesTimestamp => {
-                let stamp =
-                    timestamp::read(access, &bound, entry.node).map_err(Error::Timestamp)?;
+                let stamp = read_unsigned_stamp(access, &bound, &unsigned, entry, extended)
+                    .map_err(Error::Timestamp)?;
                 timestamps.try_push(stamp).map_err(refusal)?;
             }
             unsigned::Role::Certificates
@@ -259,16 +384,30 @@ pub fn prepare<X: ReferenceXml, W: Work>(
             | unsigned::Role::RevocationReferences
             | unsigned::Role::AttributeCertificateReferences
             | unsigned::Role::AttributeRevocationReferences => {
-                let values = validation::read_references(access, signature, entry)
-                    .map_err(Error::Property)?;
+                let values = validation::read_references_in(
+                    access,
+                    signature,
+                    entry.node,
+                    entry.role,
+                    extended.unwrap_or(timestamp::ReferenceSyntax::V2),
+                )
+                .map_err(Error::Property)?;
                 references.try_push(values).map_err(refusal)?;
             }
             _ => {} // Preserved in the complete inventory for subsequent execution.
         }
     }
-    signed_objects(access, &bound, &signed, &mut timestamps, &mut commitments)?;
+    signed_objects(
+        access,
+        &bound,
+        &signed,
+        &mut timestamps,
+        &mut commitments,
+        extended == Some(timestamp::ReferenceSyntax::Original),
+    )?;
     Ok(Preparation {
         requirements,
+        extended,
         bound,
         signed,
         header,
@@ -287,6 +426,47 @@ pub fn prepare<X: ReferenceXml, W: Work>(
     })
 }
 
+fn read_unsigned_stamp<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    bound: &binding::Selected<X>,
+    unsigned: &unsigned::Reading<X>,
+    entry: unsigned::Entry<X::Id>,
+    extended: Option<timestamp::ReferenceSyntax>,
+) -> timestamp::InputResult<timestamp::Timestamp<X>, X> {
+    let node = entry.node;
+    let Some(syntax) = extended else {
+        return timestamp::read(access, bound, node);
+    };
+    let signature = unsigned.signature();
+    let parent = unsigned
+        .parent()
+        .ok_or(timestamp::InputError::Foreign { node })?;
+    if entry.role == unsigned::Role::SignatureTimestamp {
+        return timestamp::read_fields_in(
+            access,
+            signature,
+            parent,
+            node,
+            timestamp::Role::Signature,
+            syntax == timestamp::ReferenceSyntax::Original,
+        );
+    }
+    let kind = access
+        .inspect(node, |value| {
+            if let crate::xml::Node::Element(name) = value {
+                // Four exact expanded-name comparisons, bounded by the constants.
+                access.execution().charge_work(384)?;
+                Ok(timestamp::ExtendedKind::from_name(name, syntax))
+            } else {
+                Ok(None)
+            }
+        })
+        .map_err(timestamp::InputError::Access)?
+        .map_err(|cause| timestamp::InputError::Resource { node, cause })?
+        .ok_or(timestamp::InputError::Unexpected { node })?;
+    timestamp::read_extended_at(access, signature, parent, node, kind)
+}
+
 fn admit<X: Xml, W: Work>(access: &Access<'_, X, W>, signature: X::Id) -> PrepareResult<(), X> {
     access
         .query(signature, |_, _, work| Ok(work.charge_work(1)))
@@ -300,6 +480,7 @@ fn signed_objects<X: ReferenceXml, W: Work>(
     signed: &properties::Reading<X>,
     timestamps: &mut OwnedVec<timestamp::Timestamp<X>, W>,
     commitments: &mut OwnedVec<commitment::Prepared<X>, W>,
+    historical: bool,
 ) -> PrepareResult<(), X> {
     let Some(objects) = signed.data_objects() else {
         return Ok(());
@@ -318,14 +499,26 @@ fn signed_objects<X: ReferenceXml, W: Work>(
                 })?;
             continue;
         }
-        let stamp = match entry.role {
-            properties::DataObjectRole::AllTimestamp => {
-                timestamp::read_all_data_objects(access, bound, signed, entry.node)
-            }
+        let role = match entry.role {
+            properties::DataObjectRole::AllTimestamp => timestamp::Role::AllDataObjects,
             properties::DataObjectRole::IndividualTimestamp => {
-                timestamp::read_individual_data_objects(access, bound, signed, entry.node)
+                timestamp::Role::IndividualDataObjects
             }
             _ => continue,
+        };
+        let stamp = if historical {
+            timestamp::read_fields_in(
+                access,
+                signed.signature(),
+                objects.parent(),
+                entry.node,
+                role,
+                true,
+            )
+        } else if role == timestamp::Role::AllDataObjects {
+            timestamp::read_all_data_objects(access, bound, signed, entry.node)
+        } else {
+            timestamp::read_individual_data_objects(access, bound, signed, entry.node)
         }
         .map_err(Error::Timestamp)?;
         timestamps

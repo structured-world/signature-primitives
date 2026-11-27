@@ -21,7 +21,7 @@ use structured_ltv::timestamp::{CheckedActor, Purpose, Verified};
 pub const XADES_141: &str = "http://uri.etsi.org/01903/v1.4.1#";
 
 mod counters;
-mod coverage;
+pub(crate) mod coverage;
 mod extended;
 mod material;
 pub use counters::{
@@ -33,7 +33,7 @@ pub(crate) use extended::read_at as read_extended_at;
 pub use extended::{ExtendedKind, ReferenceSyntax, read_extended};
 pub(crate) mod profile;
 mod selection;
-mod tokens;
+pub(crate) mod tokens;
 pub use material::{Carried, CarriedCause, CarriedError, CarriedMaterial, OtherCarried};
 pub use profile::{DigestError, DigestUse};
 pub use selection::{
@@ -283,6 +283,12 @@ pub struct Check<'xml, 'document, 'certificate, 'context, X, P> {
     /// Original candidate certificate/key, producing reader and explicit time facts.
     pub context: &'context CheckContext<'document, 'certificate>,
 }
+
+type CheckSite<'a, X> = (
+    Snapshot<<X as Xml>::Document, <X as Xml>::Generation>,
+    crate::container::Syntax,
+    tokens::TokenGroup<'a, <X as Xml>::Id>,
+);
 
 /// Original timestamp selection or complete-check refusal.
 #[derive(Debug)]
@@ -594,13 +600,51 @@ impl<'xml, 'document, 'certificate, X: TimestampXml + BinaryXml, P>
         P: for<'scope> SignatureProvider<'scope, Error = PE>,
     {
         let execution = operation.execution();
-        let access = Access::new(self.xml, stamp.snapshot, &execution);
+        self.check_site_from(
+            (
+                stamp.snapshot,
+                crate::container::Syntax::En319132,
+                tokens::TokenGroup {
+                    signature: stamp.signature,
+                    property: stamp.node,
+                    role: stamp.role,
+                    tokens: &stamp.tokens,
+                },
+            ),
+            entry,
+            (operation, &execution),
+            recognizes,
+            visitor,
+            prepare,
+        )
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "retain original source and callback causes"
+    )]
+    pub(crate) fn check_site_from<'work, 'operation, R, PE, RE, S>(
+        &self,
+        site: CheckSite<'_, X>,
+        entry: TokenEntry<'_, '_, X::Id, X::Document, X::Generation>,
+        operation: (&Reader<'operation>, &'work Execution<'operation>),
+        recognizes: impl FnMut(&TokenExtension<'_>, &Execution<'_>) -> Result<bool, RE>,
+        visitor: impl for<'checked> FnOnce(&CheckedTimestamp<'checked>) -> R,
+        prepare: impl FnOnce(&'work Execution<'operation>) -> InputResult<S, X>,
+    ) -> CheckResult<(R, Option<TimestampActor<'certificate, 'document, X>>), X, PE, RE>
+    where
+        P: for<'scope> SignatureProvider<'scope, Error = PE>,
+        S: Source<Error = InputError<X::Error, X::Id>>,
+    {
+        let (snapshot, syntax, group) = site;
+        let (operation, execution) = operation;
+        let access = Access::new(self.xml, snapshot, execution);
         access
-            .query(stamp.node, |_, _, work| Ok(work.charge_work(1)))
+            .query(group.property, |_, _, work| Ok(work.charge_work(1)))
             .map_err(|cause| CheckError::Input(InputError::Access(cause)))?
             .map_err(|cause| {
                 CheckError::Input(InputError::Resource {
-                    node: stamp.node,
+                    node: group.property,
                     cause,
                 })
             })?;
@@ -608,16 +652,16 @@ impl<'xml, 'document, 'certificate, X: TimestampXml + BinaryXml, P>
         let equal = |left, right| {
             access.equal_id(left, right).map_err(|cause| {
                 CheckError::Input(InputError::Resource {
-                    node: stamp.node,
+                    node: group.property,
                     cause,
                 })
             })
         };
-        let expected = stamp.tokens.get(source.token_index());
-        if source.location().snapshot != stamp.snapshot
-            || !equal(source.signature(), stamp.signature)?
-            || !equal(source.property(), stamp.node)?
-            || source.role() != stamp.role
+        let expected = group.tokens.get(source.token_index());
+        if source.location().snapshot != snapshot
+            || !equal(source.signature(), group.signature)?
+            || !equal(source.property(), group.property)?
+            || source.role() != group.role
             || match expected {
                 Some(expected) => !equal(source.location().node, *expected)?,
                 None => true,
@@ -627,7 +671,7 @@ impl<'xml, 'document, 'certificate, X: TimestampXml + BinaryXml, P>
                 node: source.location().node,
             }));
         }
-        let mut input = prepare(&execution).map_err(CheckError::Input)?;
+        let mut input = prepare(execution).map_err(CheckError::Input)?;
         let location = source.location();
         let reader = entry.reader_in(operation).map_err(|cause| {
             CheckError::Token(binary::Error::ReaderCreation { location, cause })
@@ -641,7 +685,17 @@ impl<'xml, 'document, 'certificate, X: TimestampXml + BinaryXml, P>
                 self.context,
                 &mut input,
                 recognizes,
-                |fields| profile::check(&fields),
+                |fields| {
+                    // TS 103 171 V2.1.1 §5.1 also prohibits MD5.
+                    // https://www.etsi.org/deliver/etsi_ts/103100_103199/103171/02.01.01_60/ts_103171v020101p.pdf
+                    match syntax {
+                        crate::container::Syntax::En319132 | crate::container::Syntax::Ts103171 => {
+                            profile::check(&fields)
+                        }
+                        crate::container::Syntax::Ts101903V111
+                        | crate::container::Syntax::Ts101903V122 => Ok(()),
+                    }
+                },
             )
             .map_err(|cause| {
                 CheckError::Token(binary::Error::Callback {
@@ -650,7 +704,7 @@ impl<'xml, 'document, 'certificate, X: TimestampXml + BinaryXml, P>
                 })
             })?;
         let projection = access
-            .query(stamp.node, |_, _, _| Ok(visitor(&checked)))
+            .query(group.property, |_, _, _| Ok(visitor(&checked)))
             .map_err(|cause| CheckError::Input(InputError::Access(cause)))?;
         let actor = checked.into_evidence().map(|evidence| {
             CheckedActor::new(
@@ -658,9 +712,9 @@ impl<'xml, 'document, 'certificate, X: TimestampXml + BinaryXml, P>
                 Verified::new(
                     ISSUER,
                     location,
-                    stamp.signature,
-                    stamp.node,
-                    stamp.role.purpose(),
+                    group.signature,
+                    group.property,
+                    group.role.purpose(),
                     evidence,
                 ),
                 self.context.certificate,
@@ -777,7 +831,12 @@ fn unsigned_parent_in<X: Xml, W: Work>(
         return Err(InputError::Access(AccessError::Changed { node }));
     }
     let unsigned = layout.unsigned().ok_or(InputError::Foreign { node })?;
-    singleton(access, unsigned, XADES, "UnsignedSignatureProperties")
+    singleton(
+        access,
+        unsigned,
+        layout.syntax().namespace(),
+        "UnsignedSignatureProperties",
+    )
 }
 
 /// Reads an implicit `AllDataObjectsTimeStamp` from the selected signature's

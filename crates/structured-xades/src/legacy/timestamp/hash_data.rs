@@ -56,7 +56,8 @@ pub struct HashDataInfo<N> {
 /// Original target of a resolved historical hash reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashDataTarget<N> {
-    /// Exact original element eligible for the timestamp's role.
+    /// Exact original element subtree supplied before transforms. The owner
+    /// returns no element target for a source that selects only a partial tree.
     Element(N),
     /// Authenticated `SignedInfo` reference with the same original raw source.
     /// The legacy transforms run on that source, before the reference's own
@@ -121,6 +122,10 @@ impl<X: Xml> HashDataStamp<X> {
     #[must_use]
     pub fn token(&self) -> Token<X::Id> {
         self.token
+    }
+
+    pub(in crate::legacy) fn original_token(&self) -> &Token<X::Id> {
+        &self.token
     }
 
     /// Original input declarations in document order.
@@ -464,4 +469,88 @@ impl<X: HashDataXml> Source for HashDataInput<'_, X> {
         }
         Ok(())
     }
+}
+
+impl<X: HashDataXml> HashDataInput<'_, X> {
+    pub(in crate::legacy) fn coverage<W: Work>(
+        &self,
+        stamp: &HashDataStamp<X>,
+        work: &W,
+    ) -> Result<crate::timestamp::CoverageFor<X, W>, crate::timestamp::CoverageError<X::Error, X::Id>>
+    {
+        let access = Access::new(self.xml, self.snapshot, work);
+        crate::timestamp::coverage::elements(
+            &access,
+            crate::binary::Location {
+                snapshot: self.snapshot,
+                node: stamp.node,
+            },
+            self.signature,
+            stamp.role,
+            self.parts.iter().map(|(data, target)| match target {
+                HashDataTarget::Element(node) => {
+                    preserves_subtree(&access, data.transforms).map(|whole| whole.then_some(*node))
+                }
+                HashDataTarget::Reference(_) => Ok(None),
+            }),
+        )
+    }
+}
+
+fn preserves_subtree<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    transforms: Option<X::Id>,
+) -> Result<bool, crate::timestamp::CoverageError<X::Error, X::Id>> {
+    use crate::timestamp::CoverageError;
+    use crate::xml::Node;
+    let Some(wrapper) = transforms else {
+        return Ok(true);
+    };
+    // XMLDSig 1.1 §§6.5 and 6.6: canonicalization of a complete subtree
+    // preserves its elements. A filtering or chained transform does not
+    // establish the same coverage, even if its timestamp imprint matches.
+    // https://www.w3.org/TR/2013/REC-xmldsig-core1-20130411/#sec-TransformAlg
+    let mut transform = None;
+    let mut cursor = access.first_child(wrapper).map_err(CoverageError::Access)?;
+    while let Some(node) = cursor {
+        if access
+            .inspect(node, |node| matches!(node, Node::Element(_)))
+            .map_err(CoverageError::Access)?
+            && transform.replace(node).is_some()
+        {
+            return Ok(false);
+        }
+        cursor = access
+            .next_sibling(wrapper, node)
+            .map_err(CoverageError::Access)?;
+    }
+    let Some(node) = transform else {
+        return Ok(false);
+    };
+    access
+        .attribute(
+            node,
+            Name {
+                namespace: "",
+                local: "Algorithm",
+            },
+            |value| {
+                // Six exact matches of up to 64 bytes; arbitrary URI length does not
+                // increase the comparisons.
+                access.execution().charge_work(384)?;
+                Ok(matches!(
+                    value,
+                    Some(
+                        "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
+                            | "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments"
+                            | "http://www.w3.org/2006/12/xml-c14n11"
+                            | "http://www.w3.org/2006/12/xml-c14n11#WithComments"
+                            | "http://www.w3.org/2001/10/xml-exc-c14n#"
+                            | "http://www.w3.org/2001/10/xml-exc-c14n#WithComments"
+                    )
+                ))
+            },
+        )
+        .map_err(CoverageError::Access)?
+        .map_err(|cause| CoverageError::Resource { node, cause })
 }

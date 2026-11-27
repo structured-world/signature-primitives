@@ -304,6 +304,14 @@ pub(crate) fn containers<X: Xml, W: Work>(
     access: &Access<'_, X, W>,
     unsigned: Option<X::Id>,
 ) -> PropertyResult<[Option<X::Id>; 2], X> {
+    containers_in(access, unsigned, XADES)
+}
+
+pub(crate) fn containers_in<X: Xml, W: Work>(
+    access: &Access<'_, X, W>,
+    unsigned: Option<X::Id>,
+    namespace: &'static str,
+) -> PropertyResult<[Option<X::Id>; 2], X> {
     let mut fields = [None; 2];
     let Some(unsigned) = unsigned else {
         return Ok(fields);
@@ -314,7 +322,7 @@ pub(crate) fn containers<X: Xml, W: Work>(
             .has_name(
                 node,
                 Name {
-                    namespace: XADES,
+                    namespace,
                     local: "UnsignedSignatureProperties",
                 },
             )
@@ -331,7 +339,7 @@ pub(crate) fn containers<X: Xml, W: Work>(
             .has_name(
                 node,
                 Name {
-                    namespace: XADES,
+                    namespace,
                     local: "UnsignedDataObjectProperties",
                 },
             )
@@ -348,7 +356,7 @@ pub(crate) fn containers<X: Xml, W: Work>(
                     .has_name(
                         child,
                         Name {
-                            namespace: XADES,
+                            namespace,
                             local: "UnsignedDataObjectProperty",
                         },
                     )

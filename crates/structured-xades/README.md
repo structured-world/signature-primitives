@@ -29,6 +29,20 @@ with the original encapsulated token. The `XMLTimeStamp` branch preserves
 its original node for inspection. For the pre-EN profile,
 `legacy::timestamp::read_pre_en` supplies the common timestamp checker.
 
+Use `legacy::inventory` for the root's original timestamp obligations, or
+`legacy::inventory_with_counters` for the complete checked counter tree.
+`Inventory::with_tokens` reads each original CMS token into the shared pool.
+`Inventory::check_actor_from` checks the token against its own historical input
+and yields a TSA actor only when the check establishes evidence. Archive
+requirements can be selected at an original archive ordinal.
+
+`material::with_historical_values` and `material::with_historical_counter_values`
+retain the original XML certificate and status material for the same document.
+Combine the retained values and tokens with `material::index_with_tokens`.
+`pki::historical_participants` and `material::historical_incorporation` use the
+same participant and material rules as current signatures. Path, status and
+policy inputs remain explicit.
+
 `produce::Basic::write_historical` writes the historical signing-certificate
 and policy vocabulary. `ExtendedAugmentation::prepare_historical_signature`
 binds the request and checked response to the staged `SignatureValue`.

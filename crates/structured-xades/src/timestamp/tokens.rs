@@ -114,6 +114,11 @@ pub struct TokenEntry<'view, 'source, N, D, G> {
     pub(super) source: &'view TokenSource<N, D, G>,
     pub(super) reading: &'view TokenReading<'source>,
 }
+impl<'view, N, D, G> TokenEntry<'view, '_, N, D, G> {
+    pub(crate) fn source(&self) -> &'view TokenSource<N, D, G> {
+        self.source
+    }
+}
 impl<'source> TokenReading<'source> {
     /// Current operation plus original parser/depth/source coordinate context.
     #[must_use]
@@ -380,19 +385,51 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
     {
         return Err(TokenPipelineError::Foreign { node: root.node });
     }
-    let mut sources = execution.vector();
     let children = counters
         .into_iter()
         .flat_map(|counters| counters.entries.iter().map(super::CounterStamp::stamp));
-    let mut timestamps = stamps.iter().chain(children).enumerate();
+    let groups = stamps.iter().chain(children).map(|stamp| TokenGroup {
+        signature: stamp.signature,
+        property: stamp.node(),
+        role: stamp.role(),
+        tokens: stamp.tokens(),
+    });
+    with_groups(xml, root, groups, operation, profile, visitor)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TokenGroup<'a, N> {
+    pub(crate) signature: N,
+    pub(crate) property: N,
+    pub(crate) role: Role,
+    pub(crate) tokens: &'a [N],
+}
+
+pub(crate) fn with_groups<'group, X: OwnedBinaryXml, R, VE>(
+    xml: &X,
+    root: Location<X::Id, X::Document, X::Generation>,
+    groups: impl Iterator<Item = TokenGroup<'group, X::Id>>,
+    operation: &Reader<'_>,
+    profile: TokenProfile,
+    visitor: impl for<'source> FnOnce(
+        &Reader<'source>,
+        TokenView<'source, X::Id, X::Document, X::Generation>,
+    ) -> Result<R, VE>,
+) -> TokenPipelineResult<R, X, VE>
+where
+    X::Id: 'group,
+{
+    let execution = operation.execution();
+    let access = Access::new(xml, root.snapshot, &execution);
+    let mut sources = execution.vector();
+    let mut timestamps = groups.enumerate();
     loop {
         admit(&access, root.node)?;
         let Some((stamp, timestamp)) = timestamps.next() else {
             break;
         };
-        for ordinal in 0..timestamp.tokens().len() {
-            admit(&access, timestamp.node())?;
-            let node = timestamp.tokens()[ordinal];
+        for (ordinal, &node) in timestamp.tokens.iter().enumerate() {
+            admit(&access, timestamp.property)?;
             let location = Location {
                 snapshot: root.snapshot,
                 node,
@@ -412,8 +449,8 @@ fn with_inputs<X: OwnedBinaryXml, R, VE>(
                 .try_push(TokenSource {
                     location,
                     signature: timestamp.signature,
-                    property: timestamp.node(),
-                    role: timestamp.role(),
+                    property: timestamp.property,
+                    role: timestamp.role,
                     stamp,
                     ordinal,
                     encoding,

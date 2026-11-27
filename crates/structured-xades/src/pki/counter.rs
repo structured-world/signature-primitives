@@ -228,11 +228,12 @@ fn counter_roles<X: CertificateXml, W: Work, PE>(
         return Ok(None);
     };
     let bound = crate::binding::bind(access, layout).map_err(CounterSelectionError::Binding)?;
-    crate::role::read_node(
+    crate::role::read_in(
         access,
         layout.snapshot(),
         bound.containers().signature(),
         node,
+        layout.syntax(),
     )
     .map(Some)
     .map_err(CounterSelectionError::Property)

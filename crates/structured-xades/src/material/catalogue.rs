@@ -52,6 +52,10 @@ impl<N: Copy, D: Copy, G: Copy> Catalogue<N, D, G> {
         self.parent
     }
 
+    pub(super) fn namespace(&self) -> &'static str {
+        self.namespace
+    }
+
     /// Original entries in document order. Obtaining the slice performs no scan;
     /// consumers must fund their subsequent data-dependent processing.
     #[must_use]
